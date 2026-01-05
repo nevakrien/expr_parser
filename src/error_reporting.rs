@@ -90,23 +90,18 @@ impl ErrorReporter {
                                 .with_message(format!("`{}` opened here", open.value)),
                         );
 
-                if let Some(tok) = got {
-                    let loc = &tok.loc;
-                    report = report.with_label(
-                        Label::new((loc.file, loc.range.clone()))
-                            .with_message(format!("expected `{}` before this", close)),
-                    );
-                } else {
-                    // EOF: underline end-of-input span
-                    let eof = open_loc.range.end;
-                    report = report.with_label(
-                        Label::new((open_loc.file, eof..eof))
-                            .with_message(format!("expected `{}` before end of input", close)),
-                    );
-                }
+                let loc = &got.loc;
+                report = report.with_label(
+                    Label::new((loc.file, loc.range.clone()))
+                        .with_message(format!(
+                            "expected `{}` before end of input",
+                            close
+                        )),
+                );
 
                 report.finish().print((open_loc.file, source))
             }
+
         }
     }
 

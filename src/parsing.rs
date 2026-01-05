@@ -463,7 +463,7 @@ pub enum ParseError {
     OpenDelimiter {
         open: LStr<'static>,
         close: &'static str,
-        got: Option<LTok>,
+        got: OTok,
     },
 }
 
@@ -664,10 +664,17 @@ impl<'a> Parser<'a> {
     }
 
     fn err_open_delim(&mut self, open: LStr<'static>, close: &'static str) -> ParseError {
+        let got = match self.peek_op(){
+            Ok(x)=>x,
+            Err(_)=>Located {
+                loc: self.lex.empty_loc(),
+                value: None,
+            },
+        };
         ParseError::OpenDelimiter {
             open,
             close,
-            got: self.peek().ok().flatten().cloned(),
+            got,
         }
     }
 }
@@ -1084,8 +1091,8 @@ mod parse_tests {
                 assert_eq!(open.value, "(");
                 assert_eq!(close, ")");
 
-                let got = got.expect("should have got token");
-                assert_eq!(got.value, Token::Ident("b".into()));
+                let got = got.as_ref().expect("should have got token");
+                assert_eq!(*got, Token::Ident("b".into()));
 
                 // span of '('
                 assert_loc(&open.loc, 1, 2);
@@ -1382,13 +1389,21 @@ mod parse_tests {
             ParseError::OpenDelimiter { open, close, got } => {
                 assert_eq!(open.value, "(");
                 assert_eq!(close, ")");
-                assert!(got.is_none());
+
+                // EOF is represented as Located { value: None }
+                assert!(got.value.is_none());
 
                 // ( a
                 // 0 1 2
                 assert_loc(&open.loc, 0, 1);
+
+                // EOF location is well-formed
+                assert_eq!(got.loc.file, 0);
+                assert_eq!(got.loc.range.start, src.len());
+                assert_eq!(got.loc.range.end, src.len());
             }
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
 }
