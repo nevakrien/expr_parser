@@ -29,9 +29,9 @@ fn pretty_print_expr(expr: &LExpr, indent: usize) -> String {
             let mut result = String::new();
             let indent_str = "  ".repeat(indent);
 
-            result.push_str("\"");
-            result.push_str(&op.value);
-            result.push_str("\"");
+            result.push('"');
+            result.push_str(op.value);
+            result.push('"');
 
             if args.is_empty() {
                 result.push_str("()");
@@ -54,7 +54,6 @@ fn pretty_print_expr(expr: &LExpr, indent: usize) -> String {
         }
     }
 }
-
 
 fn main() {
     let mut reporter = ErrorReporter::new();

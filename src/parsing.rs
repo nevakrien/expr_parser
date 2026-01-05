@@ -1,10 +1,10 @@
+use std::ops::{Deref, Range};
 use thiserror::Error;
-use std::ops::{Range,Deref};
 
-#[derive(Debug,Clone,PartialEq,Eq,Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Loc {
-    pub range:Range<usize>,
-    pub file:usize,
+    pub range: Range<usize>,
+    pub file: usize,
     // pub macro_site:Option<Box<MacroCtx>>
 }
 
@@ -16,40 +16,41 @@ pub struct Loc {
 //     pub expr_num:usize,
 // }
 
-#[derive(Debug,Clone,PartialEq)]
-pub struct Located<T>{
-    pub loc:Loc,
-    pub value:T
+#[derive(Debug, Clone, PartialEq)]
+pub struct Located<T> {
+    pub loc: Loc,
+    pub value: T,
 }
 
 impl<T> Located<T> {
-    pub fn with<U>(&self,value:U)->Located<U>{
-        Located{
-            loc:self.loc.clone(),
-            value
+    pub fn with<U>(&self, value: U) -> Located<U> {
+        Located {
+            loc: self.loc.clone(),
+            value,
         }
     }
 }
 
-impl<T> Deref for Located<T>{
-type Target = T;
-fn deref(&self) -> &T {&self.value}
+impl<T> Deref for Located<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
 }
 
 pub type LStr<'a> = Located<&'a str>;
 pub type LString = Located<String>;
 
-
 pub type LExpr = Located<Expr>;
-pub type LTok  = Located<Token>;
+pub type LTok = Located<Token>;
 
-#[derive(Debug,Clone,PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Atom(Token),
-    Combo(LStr<'static>,Vec<LExpr>),
+    Combo(LStr<'static>, Vec<LExpr>),
 }
 
-#[derive(Debug,Clone,PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     NumLit(u64),
     FloatLit(f64),
@@ -58,62 +59,32 @@ pub enum Token {
     Operator(&'static str),
 }
 
-#[derive(Debug, Error, Clone,PartialEq)]
+#[derive(Debug, Error, Clone, PartialEq)]
 pub enum LexError {
     #[error("unexpected character `{ch}`")]
-    UnexpectedChar {
-        ch: char,
-        loc: Loc,
-    },
+    UnexpectedChar { ch: char, loc: Loc },
 
     #[error("unterminated string literal")]
-    UnterminatedString {
-        loc: Loc,
-    },
+    UnterminatedString { loc: Loc },
 }
 
-
 pub const KEYWORDS: &[&str] = &[
-    "let", "if", "else", "while", "for",
-    "return", "break", "continue",
-    "type", "as", 
-    "fn", "cfn",
+    "let", "if", "else", "while", "for", "return", "break", "continue", "type", "as", "fn", "cfn",
 ];
 
 /// Ordered longest-first for greedy matching
 pub const OPERATORS: &[&str] = &[
     // --- assignment (longest first) ---
-    "<<=", ">>=",
-    "+=", "-=", "*=", "/=", "%=",
-    "&=", "|=", "^=",
-
-    // --- comparisons ---
-    "==", "!=", "<=", ">=",
-
-    // --- shifts ---
-    "<<", ">>",
-
-    // --- logical ---
-    "&&", "||",
-
-    // -- increments --
-    "++", "--",
-
-    // --- bitwise ---
-    "&", "|", "^", "~",
-
-    // --- arrows / paths ---
-    "->", "::", ".",
-
-    // --- arithmetic ---
-    "+", "-", "*", "/", "%",
-
-    // --- comparison / unary ---
-    "=", "<", ">", "!",
-
-    // --- delimiters ---
-    "(", ")", "{", "}", "[", "]",
-    ",", ";", ":",
+    "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", // --- comparisons ---
+    "==", "!=", "<=", ">=", // --- shifts ---
+    "<<", ">>", // --- logical ---
+    "&&", "||", // -- increments --
+    "++", "--", // --- bitwise ---
+    "&", "|", "^", "~", // --- arrows / paths ---
+    "->", "::", ".", // --- arithmetic ---
+    "+", "-", "*", "/", "%", // --- comparison / unary ---
+    "=", "<", ">", "!", // --- delimiters ---
+    "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
 
 pub struct Lexer<'a> {
@@ -230,7 +201,7 @@ impl<'a> Lexer<'a> {
                 }
 
                 let text = &self.src[start..self.pos];
-                if let Some(op) = KEYWORDS.iter().copied().find(|x| *x==text) {
+                if let Some(op) = KEYWORDS.iter().copied().find(|x| *x == text) {
                     Token::Operator(op)
                 } else {
                     Token::Ident(text.to_string())
@@ -332,7 +303,7 @@ impl<'a> Lexer<'a> {
         };
 
         if op != s {
-            return Ok(None)
+            return Ok(None);
         }
 
         let ans = tok.with(s);
@@ -350,7 +321,6 @@ impl<'a> Lexer<'a> {
         }
     }
 }
-
 
 #[cfg(test)]
 mod lex_tests {
@@ -431,7 +401,6 @@ mod lex_tests {
     }
 }
 
-
 pub type PResult<T> = Result<T, ParseError>;
 
 #[derive(Debug, Error, Clone, PartialEq)]
@@ -456,19 +425,18 @@ pub enum ParseError {
 
     #[error("opened {open} without closing with {close} but got {got:?}")]
     OpenDelimiter {
-        open:LStr<'static>,
-        close:&'static str,
-        got:Option<LTok>,
-    }
+        open: LStr<'static>,
+        close: &'static str,
+        got: Option<LTok>,
+    },
 }
 
 const BP_ASSIGN: u32 = 100;
-const BP_TYPES:  u32 = 500;
-const BP_PATH:   u32 = 850; // ., ->, ::
-const BP_CALL:   u32 = 800; // (), []
+const BP_TYPES: u32 = 500;
+const BP_PATH: u32 = 850; // ., ->, ::
+const BP_CALL: u32 = 800; // (), []
 const BP_POSTFIX_INC: u32 = 875;
 const BP_PREFIX: u32 = 900;
-
 
 fn prefix_bp(op: &str) -> Option<u32> {
     Some(match op {
@@ -480,12 +448,13 @@ fn prefix_bp(op: &str) -> Option<u32> {
 fn infix_bp(op: &str) -> Option<(u32, u32)> {
     Some(match op {
         // assignment (right-assoc)
-        "=" | "+=" | "-=" | "*=" | "/=" | "%="
-        | "&=" | "|=" | "^=" | "<<=" | ">>=" => (BP_ASSIGN+1, BP_ASSIGN),
+        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
+            (BP_ASSIGN + 1, BP_ASSIGN)
+        }
 
         // cast / annotation-ish
         "as" => (200, 201),
-        ":"  => (210, 211),
+        ":" => (210, 211),
 
         // logical
         "||" => (300, 301),
@@ -506,7 +475,7 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
         "+" | "-" => (700, 701),
         "*" | "/" | "%" => (800, 801),
 
-        "." | "::" | "->" => (BP_PATH,BP_PATH+1),
+        "." | "::" | "->" => (BP_PATH, BP_PATH + 1),
 
         _ => return None,
     })
@@ -515,7 +484,7 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
 fn postfix_bp(op: &str) -> Option<u32> {
     Some(match op {
         "++" | "--" => BP_POSTFIX_INC,
-        "("  | "["  => BP_CALL,
+        "(" | "[" => BP_CALL,
         _ => return None,
     })
 }
@@ -525,17 +494,22 @@ fn token_starts_expr(tok: &Token) -> bool {
         Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => true,
         Token::Operator(op) => {
             prefix_bp(op).is_some()
-            || matches!(
-                *op,
-                "(" | "{" |
-                "if" | "while" | "let" | "type" |
-                "return" | "break" | "continue" |
-                "fn" | "cfn"
-            )
+                || matches!(
+                    *op,
+                    "(" | "{"
+                        | "if"
+                        | "while"
+                        | "let"
+                        | "type"
+                        | "return"
+                        | "break"
+                        | "continue"
+                        | "fn"
+                        | "cfn"
+                )
         }
     }
 }
-
 
 pub struct Parser<'a> {
     lex: Lexer<'a>,
@@ -560,7 +534,7 @@ impl<'a> Parser<'a> {
         match self.try_expr()? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
-                got: self.peek()?.map(|t| t.clone()),
+                got: self.peek()?.cloned(),
             }),
         }
     }
@@ -589,24 +563,33 @@ impl<'a> Parser<'a> {
         match self.parse_stmt()? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
-                got: self.peek()?.map(|t| t.clone()),
+                got: self.peek()?.cloned(),
             }),
         }
     }
 }
 impl<'a> Parser<'a> {
     pub fn new(src: &'a str, file: usize) -> Self {
-        Self { lex: Lexer::new(src, file)}
+        Self {
+            lex: Lexer::new(src, file),
+        }
     }
 
     /* =============================
      * Forwarding + invariants
      * ============================= */
 
-    fn expr_start(&mut self) -> usize { self.lex.skip_whitespace(); self.lex.mark() }
-    fn produce_loc(&self, start: usize) -> Loc { self.lex.produce_loc(start) }
+    fn expr_start(&mut self) -> usize {
+        self.lex.skip_whitespace();
+        self.lex.mark()
+    }
+    fn produce_loc(&self, start: usize) -> Loc {
+        self.lex.produce_loc(start)
+    }
 
-    fn peek(&mut self) -> PResult<Option<&LTok>> { Ok(self.lex.peek()?) }
+    fn peek(&mut self) -> PResult<Option<&LTok>> {
+        Ok(self.lex.peek()?)
+    }
 
     fn next(&mut self) -> PResult<Option<LTok>> {
         let t = self.lex.next()?;
@@ -617,7 +600,7 @@ impl<'a> Parser<'a> {
         Ok(self.lex.try_ident()?)
     }
     fn try_op(&mut self) -> Result<Option<LStr<'static>>, LexError> {
-        Ok(self.lex.try_op()?)
+        self.lex.try_op()
     }
     fn try_operator(&mut self, op: &str) -> PResult<Option<LStr<'static>>> {
         Ok(self.lex.try_operator(op)?)
@@ -628,31 +611,25 @@ impl<'a> Parser<'a> {
             Some(t) => Ok(t),
             None => Err(ParseError::ExpectedToken {
                 expected: op,
-                got: self.peek()?.map(|t| t.clone()),
+                got: self.peek()?.cloned(),
             }),
         }
     }
 
-    fn err_open_delim(
-        &mut self,
-        open: LStr<'static>,
-        close: &'static str,
-    ) -> ParseError {
+    fn err_open_delim(&mut self, open: LStr<'static>, close: &'static str) -> ParseError {
         ParseError::OpenDelimiter {
             open,
             close,
             got: self.peek().ok().flatten().cloned(),
         }
     }
-
-
 }
 
-
 impl<'a> Parser<'a> {
-
     fn try_expr_bp(&mut self, min_bp: u32) -> PResult<Option<LExpr>> {
-        let Some(peek) = self.peek()? else { return Ok(None) };
+        let Some(peek) = self.peek()? else {
+            return Ok(None);
+        };
         if !token_starts_expr(&peek.value) {
             return Ok(None);
         }
@@ -677,27 +654,24 @@ impl<'a> Parser<'a> {
         Ok(Some(lhs))
     }
 
-
-
     fn consume_expr_bp(&mut self, min_bp: u32) -> PResult<LExpr> {
         match self.try_expr_bp(min_bp)? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
-                got: self.peek()?.map(|t| t.clone()),
+                got: self.peek()?.cloned(),
             }),
         }
     }
 }
 
 impl<'a> Parser<'a> {
-    fn try_parse_infix(
-        &mut self,
-        start: usize,
-        lhs: &mut LExpr,
-        min_bp: u32,
-    ) -> PResult<bool> {
-        let Some(peek) = self.peek()? else { return Ok(false) };
-        let Token::Operator(op) = &peek.value else { return Ok(false) };
+    fn try_parse_infix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
+        let Some(peek) = self.peek()? else {
+            return Ok(false);
+        };
+        let Token::Operator(op) = &peek.value else {
+            return Ok(false);
+        };
 
         let Some((l_bp, r_bp)) = infix_bp(op) else {
             return Ok(false);
@@ -729,29 +703,30 @@ impl<'a> Parser<'a> {
         Ok(true)
     }
 
-    fn try_parse_postfix(
-        &mut self,
-        start: usize,
-        lhs: &mut LExpr,
-        min_bp: u32,
-    ) -> PResult<bool> {
-        let Some(peek) = self.peek()? else { return Ok(false) };
-        let Token::Operator(op) = &peek.value else { return Ok(false) };
-        let Some(bp) = postfix_bp(op) else {return Ok(false)};
+    fn try_parse_postfix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
+        let Some(peek) = self.peek()? else {
+            return Ok(false);
+        };
+        let Token::Operator(op) = &peek.value else {
+            return Ok(false);
+        };
+        let Some(bp) = postfix_bp(op) else {
+            return Ok(false);
+        };
 
         //check if we need to special case later
         let end_op = match *op {
-            "("=>")",
-            "{"=>"}",
-            _=>""
+            "(" => ")",
+            "{" => "}",
+            _ => "",
         };
-        
+
         if bp < min_bp {
             return Ok(false);
         }
 
         let open = self.try_op()?.unwrap();
-        
+
         //swap the new lhs into place
         let loc = self.produce_loc(start);
         let mut new_expr = Located {
@@ -767,27 +742,27 @@ impl<'a> Parser<'a> {
         v.push(new_expr);
 
         //handle common case
-        if end_op.is_empty(){
+        if end_op.is_empty() {
             lhs.loc = self.produce_loc(start);
-            return Ok(true)
+            return Ok(true);
         }
-        
+
         //handle arg lists
         if self.try_operator(end_op)?.is_none() {
             loop {
                 let Some(exp) = self.try_expr()? else {
-                    return Err(self.err_open_delim(open, end_op))
+                    return Err(self.err_open_delim(open, end_op));
                 };
                 v.push(exp);
-                
+
                 if self.try_operator(",")?.is_some() {
                     continue;
                 }
 
-                if self.try_operator(end_op)?.is_some(){
+                if self.try_operator(end_op)?.is_some() {
                     break;
                 }
-                
+
                 return Err(self.err_open_delim(open, end_op));
             }
         }
@@ -801,7 +776,7 @@ impl<'a> Parser<'a> {
     /// Returns an expression representing the declaration:
     ///   - `x`  => Atom(Ident(x))
     ///   - `x:T`=> Combo(":", [Atom(Ident(x)), T])
-    fn try_var_dec(&mut self,bp:u32) -> PResult<Option<LExpr>> {
+    fn try_var_dec(&mut self, bp: u32) -> PResult<Option<LExpr>> {
         let start = self.expr_start();
 
         let Some(name) = self.try_ident()? else {
@@ -832,7 +807,7 @@ impl<'a> Parser<'a> {
         }))
     }
 
-    fn consume_var_dec(&mut self,bp:u32) -> PResult<LExpr> {
+    fn consume_var_dec(&mut self, bp: u32) -> PResult<LExpr> {
         match self.try_var_dec(bp)? {
             Some(v) => Ok(v),
             None => Err(ParseError::ExpectedToken {
@@ -842,7 +817,6 @@ impl<'a> Parser<'a> {
         }
     }
 }
-
 
 impl<'a> Parser<'a> {
     fn parse_prefix(&mut self, start: usize) -> PResult<LExpr> {
@@ -861,26 +835,26 @@ impl<'a> Parser<'a> {
 
                 // grouping / blocks
                 if op == "(" {
-                    return self.parse_after_lparen(start,op_s);
+                    return self.parse_after_lparen(start, op_s);
                 }
                 if op == "{" {
-                    return self.parse_after_lbrace(start,op_s);
+                    return self.parse_after_lbrace(start, op_s);
                 }
 
                 // control keywords
                 if op == "if" {
-                    return self.parse_after_if(start,op_s);
+                    return self.parse_after_if(start, op_s);
                 }
                 if op == "while" {
-                    return self.parse_after_while(start,op_s);
+                    return self.parse_after_while(start, op_s);
                 }
 
                 if op == "fn" || op == "cfn" {
-                    return self.parse_after_fn(start,op_s);
+                    return self.parse_after_fn(start, op_s);
                 }
 
                 if op == "let" {
-                    return self.parse_after_let(start,op_s);
+                    return self.parse_after_let(start, op_s);
                 }
 
                 // generic prefix operator via BP
@@ -898,7 +872,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_after_lparen(&mut self, start: usize,open:LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_lparen(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
         let inner = self.consume_expr()?;
         self.expect_operator(")")?;
 
@@ -909,7 +883,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_lbrace(&mut self, start: usize,open:LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_lbrace(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
         let mut items = Vec::new();
 
         loop {
@@ -919,9 +893,7 @@ impl<'a> Parser<'a> {
 
             match self.parse_stmt()? {
                 Some(s) => items.push(s),
-                None => {
-                    return Err(self.err_open_delim(open,"}"))                
-                }
+                None => return Err(self.err_open_delim(open, "}")),
             }
         }
 
@@ -932,8 +904,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_if(&mut self, start: usize,if_tok:LStr<'static>) -> PResult<LExpr> {
-
+    fn parse_after_if(&mut self, start: usize, if_tok: LStr<'static>) -> PResult<LExpr> {
         let cond = self.consume_expr()?;
         let then_expr = self.consume_stmt()?;
 
@@ -950,7 +921,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_while(&mut self, start: usize, w:LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_while(&mut self, start: usize, w: LStr<'static>) -> PResult<LExpr> {
         let cond = self.consume_expr()?;
         let body = self.consume_stmt()?;
 
@@ -987,20 +958,20 @@ impl<'a> Parser<'a> {
             value: Expr::Combo(open, params),
         };
 
-        if let Some(arrow) = self.try_operator("->")?{
+        if let Some(arrow) = self.try_operator("->")? {
             let output = self.consume_expr()?;
             sig = Located {
-                loc:self.produce_loc(paren_start),
-                value:Expr::Combo(arrow,vec![sig,output])
+                loc: self.produce_loc(paren_start),
+                value: Expr::Combo(arrow, vec![sig, output]),
             }
         }
 
         let mut v = vec![sig];
-        if let Some(body) = self.try_expr()?{
+        if let Some(body) = self.try_expr()? {
             v.push(body)
         }
         Ok(Located {
-            loc:self.produce_loc(start),
+            loc: self.produce_loc(start),
             value: Expr::Combo(fn_tok, v),
         })
     }
@@ -1012,8 +983,8 @@ impl<'a> Parser<'a> {
         let val = self.consume_expr()?;
 
         Ok(Located {
-            loc:self.produce_loc(start),
-            value: Expr::Combo(let_tok, vec![dec,val]),
+            loc: self.produce_loc(start),
+            value: Expr::Combo(let_tok, vec![dec, val]),
         })
     }
 }
@@ -1152,7 +1123,6 @@ mod parse_tests {
         }
     }
 
-
     #[test]
     fn double_semicolon_reports_correct_error_span() {
         let src = "x;;y";
@@ -1216,7 +1186,6 @@ mod parse_tests {
         }
     }
 
-
     #[test]
     fn fn_arrow_does_not_consume_body() {
         let src = "fn(x) -> T x + 1";
@@ -1243,5 +1212,55 @@ mod parse_tests {
         }
     }
 
+    #[test]
+    fn let_with_pointer_type() {
+        let src = "let x: *char = c";
+        let mut p = Parser::new(src, 0);
 
+        let expr = p.consume_expr().expect("let expr");
+
+        match expr.value {
+            Expr::Combo(let_tok, args) => {
+                assert_eq!(let_tok.value, "let");
+                assert_eq!(args.len(), 2);
+
+                // ---- declaration ----
+                match &args[0].value {
+                    Expr::Combo(colon, parts) => {
+                        assert_eq!(colon.value, ":");
+                        assert_eq!(parts.len(), 2);
+
+                        // x
+                        match &parts[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                            _ => panic!("expected variable name"),
+                        }
+
+                        // *char
+                        match &parts[1].value {
+                            Expr::Combo(star, inner) => {
+                                assert_eq!(star.value, "*");
+                                assert_eq!(inner.len(), 1);
+                                match &inner[0].value {
+                                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "char"),
+                                    _ => panic!("expected char"),
+                                }
+                            }
+                            _ => panic!("expected pointer type"),
+                        }
+                    }
+                    _ => panic!("expected typed declaration"),
+                }
+
+                // ---- value ----
+                match &args[1].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "c"),
+                    _ => panic!("expected initializer"),
+                }
+
+                assert_eq!(expr.loc.range, 0..src.len());
+            }
+            _ => panic!("expected let expression"),
+        }
+    }
 }
