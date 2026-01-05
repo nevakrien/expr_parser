@@ -350,15 +350,15 @@ impl<'a> Lexer<'a> {
         Ok(Some(ans))
     }
 
-    pub fn try_token(
-        &mut self,
-        pred: impl FnOnce(&Token) -> bool,
-    ) -> Result<Option<LTok>, LexError> {
-        match self.peek()? {
-            Some(tok) if pred(&tok.value) => Ok(self.next()?),
-            _ => Ok(None),
-        }
-    }
+    // pub fn try_token(
+    //     &mut self,
+    //     pred: impl FnOnce(&Token) -> bool,
+    // ) -> Result<Option<LTok>, LexError> {
+    //     match self.peek()? {
+    //         Some(tok) if pred(&tok.value) => Ok(self.next()?),
+    //         _ => Ok(None),
+    //     }
+    // }
 }
 
 #[cfg(test)]
@@ -554,10 +554,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn is_empty(&mut self) -> bool {
-        match self.peek() {
-            Ok(None) => true,
-            _ => false,
-        }
+        matches!(self.peek(), Ok(None))
     }
     /// Try parse an expression.
     /// Ok(None) => no expression starts here

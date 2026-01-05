@@ -51,7 +51,7 @@ impl ErrorReporter {
     pub fn report_parse_error(&self, error: &ParseError) -> io::Result<()> {
         match error {
             ParseError::Lex(err) => {
-                return self.report_lex_error(err);
+                self.report_lex_error(err)
             }
 
             ParseError::ExpectedExpr { got } => self.report_expected("expected expression", got),
