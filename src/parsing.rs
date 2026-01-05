@@ -69,11 +69,20 @@ pub enum LexError {
 }
 
 pub const KEYWORDS: &[&str] = &[
-    "let", "const", 
-    "if", "else", "while", "for", 
-    "return", "break", "continue", "
-    type", "as", 
-    "fn", "cfn",
+    "let",
+    "const",
+    "if",
+    "else",
+    "while",
+    "for",
+    "return",
+    "break",
+    "continue",
+    "
+    type",
+    "as",
+    "fn",
+    "cfn",
 ];
 
 pub const OPERATORS: &[&str] = &[
@@ -443,7 +452,7 @@ const BP_PREFIX: u32 = 900;
 
 fn prefix_bp(op: &str) -> Option<u32> {
     Some(match op {
-        "!" | "-" | "*" |"&" | "~" | "++" | "--"  | "const" => BP_PREFIX,
+        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" => BP_PREFIX,
         _ => return None,
     })
 }
@@ -717,7 +726,7 @@ impl<'a> Parser<'a> {
         //check if we need to special case later
         let end_op = match *op {
             "(" => ")",
-            "{" => "}",
+            "[" => "]",
             _ => "",
         };
 
@@ -1259,6 +1268,67 @@ mod parse_tests {
                 assert_eq!(expr.loc.range, 0..src.len());
             }
             _ => panic!("expected let expression"),
+        }
+    }
+
+    #[test]
+    fn index_with_2_ranges() {
+        let src = "x[0:2,1:2]";
+        let mut p = Parser::new(src, 0);
+
+        let expr = p.consume_expr().expect("index expr");
+
+        match expr.value {
+            Expr::Combo(open, args) => {
+                assert_eq!(open.value, "[");
+                assert_eq!(args.len(), 3);
+
+                // ---- base expression ----
+                match &args[0].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                    _ => panic!("expected base identifier"),
+                }
+
+                // ---- first slice: 0:2 ----
+                match &args[1].value {
+                    Expr::Combo(colon, parts) => {
+                        assert_eq!(colon.value, ":");
+                        assert_eq!(parts.len(), 2);
+
+                        match &parts[0].value {
+                            Expr::Atom(Token::NumLit(0)) => {}
+                            _ => panic!("expected 0"),
+                        }
+                        match &parts[1].value {
+                            Expr::Atom(Token::NumLit(2)) => {}
+                            _ => panic!("expected 2"),
+                        }
+                    }
+                    _ => panic!("expected colon expression"),
+                }
+
+                // ---- second slice: 1:2 ----
+                match &args[2].value {
+                    Expr::Combo(colon, parts) => {
+                        assert_eq!(colon.value, ":");
+                        assert_eq!(parts.len(), 2);
+
+                        match &parts[0].value {
+                            Expr::Atom(Token::NumLit(1)) => {}
+                            _ => panic!("expected 1"),
+                        }
+                        match &parts[1].value {
+                            Expr::Atom(Token::NumLit(2)) => {}
+                            _ => panic!("expected 2"),
+                        }
+                    }
+                    _ => panic!("expected colon expression"),
+                }
+
+                // full span
+                assert_eq!(expr.loc.range, 0..src.len());
+            }
+            _ => panic!("expected indexing expression"),
         }
     }
 }
