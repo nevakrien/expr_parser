@@ -31,10 +31,10 @@ impl<T> Located<T> {
         }
     }
 
-    pub fn map<U>(self, f:impl FnOnce(T)->U) -> Located<U> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Located<U> {
         Located {
             loc: self.loc,
-            value:f(self.value),
+            value: f(self.value),
         }
     }
 }
@@ -78,7 +78,6 @@ impl fmt::Display for Token {
         }
     }
 }
-
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum LexError {
@@ -136,10 +135,10 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn empty_loc(&self)->Loc{
-        Loc{
-            range:self.pos..self.pos,
-            file:self.file
+    fn empty_loc(&self) -> Loc {
+        Loc {
+            range: self.pos..self.pos,
+            file: self.file,
         }
     }
 
@@ -451,15 +450,11 @@ pub enum ParseError {
 
     // #[error("unexpected end of input")]
     // Eof,
-
     #[error("expected expression, got {got:?}")]
     ExpectedExpr { got: OTok },
 
     #[error("expected {expected}, got {got:?}")]
-    ExpectedToken {
-        expected: &'static str,
-        got: OTok,
-    },
+    ExpectedToken { expected: &'static str, got: OTok },
 
     #[error("unexpected token {got:?}")]
     UnexpectedToken { got: LTok },
@@ -629,18 +624,17 @@ impl<'a> Parser<'a> {
         self.lex.produce_loc(start)
     }
 
-
     fn peek(&mut self) -> PResult<Option<&LTok>> {
         Ok(self.lex.peek()?)
     }
 
-    fn peek_op(&mut self)->PResult<OTok>{
+    fn peek_op(&mut self) -> PResult<OTok> {
         Ok(match self.peek()? {
-            Some(t)=>t.clone().map(Some),
-            None => Located{
-                loc:self.lex.empty_loc(),
-                value:None
-            }
+            Some(t) => t.clone().map(Some),
+            None => Located {
+                loc: self.lex.empty_loc(),
+                value: None,
+            },
         })
     }
 
@@ -689,7 +683,7 @@ impl<'a> Parser<'a> {
 
         let start = self.expr_start();
         let Some(mut lhs) = self.parse_prefix(start)? else {
-            return Ok(None)
+            return Ok(None);
         };
 
         loop {
@@ -925,7 +919,9 @@ impl<'a> Parser<'a> {
 
     fn parse_after_lparen(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
         let inner = self.consume_expr()?;
-        self.expect_operator(")")?;
+        if self.try_operator(")")?.is_none() {
+            return Err(self.err_open_delim(open, ")"));
+        }
 
         let loc = self.produce_loc(start);
         Ok(Located {
@@ -1373,6 +1369,26 @@ mod parse_tests {
                 assert_eq!(expr.loc.range, 0..src.len());
             }
             _ => panic!("expected indexing expression"),
+        }
+    }
+
+    #[test]
+    fn unclosed_paren_at_eof_reports_open_delimiter() {
+        let src = "( a";
+        let mut p = Parser::new(src, 0);
+        let err = p.consume_expr().unwrap_err();
+
+        match err {
+            ParseError::OpenDelimiter { open, close, got } => {
+                assert_eq!(open.value, "(");
+                assert_eq!(close, ")");
+                assert!(got.is_none());
+
+                // ( a
+                // 0 1 2
+                assert_loc(&open.loc, 0, 1);
+            }
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 }
