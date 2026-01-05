@@ -1,6 +1,8 @@
-use crate::parsing::{LexError, Loc, ParseError};
+use crate::parsing::{LexError, ParseError};
+use crate::parsing::OTok;
 use ariadne::{Label, Report, ReportKind, Source};
 use std::collections::HashMap;
+use std::io;
 
 pub struct ErrorReporter {
     sources: HashMap<usize, String>,
@@ -17,78 +19,159 @@ impl ErrorReporter {
         self.sources.insert(file_id, source);
     }
 
-    pub fn report_lex_error(&self, error: &LexError) {
-        let (loc, message) = match error {
-            LexError::UnexpectedChar { ch, loc } => (loc, format!("unexpected character `{}`", ch)),
-            LexError::UnterminatedString { loc } => {
-                (loc, "unterminated string literal".to_string())
-            }
+    fn source(&self, file: usize) -> Option<Source<&str>> {
+        self.sources
+            .get(&file)
+            .map(|s| Source::from(s.as_str()))
+    }
+
+    pub fn report_lex_error(&self, error: &LexError) -> io::Result<()> {
+        let (loc, message, label) = match error {
+            LexError::UnexpectedChar { ch, loc } => (
+                loc,
+                format!("unexpected character `{}`", ch),
+                "this character is not valid here",
+            ),
+            LexError::UnterminatedString { loc } => (
+                loc,
+                "unterminated string literal".to_string(),
+                "string starts here",
+            ),
+        };
+
+        let Some(source) = self.source(loc.file) else {
+            return Ok(());
         };
 
         let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
             .with_message(message)
             .with_label(
-                Label::new((loc.file, loc.range.clone())).with_message("error occurred here"),
+                Label::new((loc.file, loc.range.clone()))
+                    .with_message(label),
             );
 
-        if let Some(source) = self.sources.get(&loc.file) {
-            report
-                .finish()
-                .print((loc.file, Source::from(source.as_str())))
-                .unwrap();
+        report.finish().print((loc.file, source))
+    }
+
+    pub fn report_parse_error(&self, error: &ParseError) -> io::Result<()> {
+        match error {
+            ParseError::Lex(err) => {
+                return self.report_lex_error(err);
+            }
+
+            ParseError::ExpectedExpr { got } => {
+                self.report_expected(
+                    "expected expression",
+                    got,
+                )
+            }
+
+            ParseError::ExpectedToken { expected, got } => {
+                self.report_expected(
+                    &format!("expected {}", expected),
+                    got,
+                )
+            }
+
+            ParseError::UnexpectedToken { got } => {
+                let loc = &got.loc;
+                let Some(source) = self.source(loc.file) else {
+                    return Ok(());
+                };
+
+                let report = Report::build(
+                    ReportKind::Error,
+                    loc.file,
+                    loc.range.start,
+                )
+                .with_message("unexpected token")
+                .with_label(
+                    Label::new((loc.file, loc.range.clone()))
+                        .with_message(format!(
+                            "`{}` is not valid here",
+                            got.value
+                        )),
+                );
+
+                report.finish().print((loc.file, source))
+            }
+
+            ParseError::OpenDelimiter { open, close, got } => {
+                let open_loc = &open.loc;
+                let Some(source) = self.source(open_loc.file) else {
+                    return Ok(());
+                };
+
+                let mut report = Report::build(
+                    ReportKind::Error,
+                    open_loc.file,
+                    open_loc.range.start,
+                )
+                .with_message(format!(
+                    "unclosed `{}` delimiter",
+                    open.value
+                ))
+                .with_label(
+                    Label::new((open_loc.file, open_loc.range.clone()))
+                        .with_message(format!(
+                            "`{}` opened here",
+                            open.value
+                        )),
+                );
+
+                if let Some(tok) = got {
+                    let loc = &tok.loc;
+                    report = report.with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(format!(
+                                "expected `{}` before this",
+                                close
+                            )),
+                    );
+                } else {
+                    // EOF: underline end-of-input span
+                    let eof = open_loc.range.end;
+                    report = report.with_label(
+                        Label::new((open_loc.file, eof..eof))
+                            .with_message(format!(
+                                "expected `{}` before end of input",
+                                close
+                            )),
+                    );
+                }
+
+                report.finish().print((open_loc.file, source))
+            }
         }
     }
 
-    pub fn report_parse_error(&self, error: &ParseError) {
-        match error {
-            ParseError::Lex(lex_err) => {
-                self.report_lex_error(lex_err);
-                return;
-            }
-            ParseError::Eof => {
-                eprintln!("unexpected end of input");
-                return;
-            }
-            _ => {}
-        }
-
-        let (loc, message) = match error {
-            ParseError::ExpectedExpr { got } => {
-                let loc = got.as_ref().map(|t| &t.loc).unwrap_or(&Loc {
-                    range: 0..0,
-                    file: 0,
-                });
-                (loc, "expected expression".to_string())
-            }
-            ParseError::ExpectedToken { expected, got } => {
-                let loc = got.as_ref().map(|t| &t.loc).unwrap_or(&Loc {
-                    range: 0..0,
-                    file: 0,
-                });
-                (loc, format!("expected {}", expected))
-            }
-            ParseError::UnexpectedToken { got } => {
-                (&got.loc, format!("unexpected token {:?}", got.value))
-            }
-            ParseError::OpenDelimiter { open, close, .. } => (
-                &open.loc,
-                format!("unclosed {}, missing {}", open.value, close),
-            ),
-            _ => unreachable!(),
+    fn report_expected(
+        &self,
+        message: &str,
+        got: &OTok,
+    ) -> io::Result<()> {
+        let loc = &got.loc;
+        let Some(source) = self.source(loc.file) else {
+            return Ok(());
         };
 
-        let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-            .with_message(&message)
-            .with_label(
-                Label::new((loc.file, loc.range.clone())).with_message("error occurred here"),
-            );
+        let label_msg = match &got.value {
+            Some(tok) => format!("found `{}` here", tok),
+            None => "unexpected end of input here".to_string(),
+        };
 
-        if let Some(source) = self.sources.get(&loc.file) {
-            report
-                .finish()
-                .print((loc.file, Source::from(source.as_str())))
-                .unwrap();
-        }
+        let report = Report::build(
+            ReportKind::Error,
+            loc.file,
+            loc.range.start,
+        )
+        .with_message(message)
+        .with_label(
+            Label::new((loc.file, loc.range.clone()))
+                .with_message(label_msg),
+        );
+
+        report.finish().print((loc.file, source))
     }
 }
 

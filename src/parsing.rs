@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::{Deref, Range};
 use thiserror::Error;
 
@@ -29,6 +30,13 @@ impl<T> Located<T> {
             value,
         }
     }
+
+    pub fn map<U>(self, f:impl FnOnce(T)->U) -> Located<U> {
+        Located {
+            loc: self.loc,
+            value:f(self.value),
+        }
+    }
 }
 
 impl<T> Deref for Located<T> {
@@ -58,6 +66,19 @@ pub enum Token {
     Ident(String),
     Operator(&'static str),
 }
+
+impl fmt::Display for Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Token::NumLit(n) => write!(f, "{}", n),
+            Token::FloatLit(x) => write!(f, "{}", x),
+            Token::StrLit(s) => write!(f, "{:?}", s), // quoted + escaped
+            Token::Ident(name) => write!(f, "{}", name),
+            Token::Operator(op) => write!(f, "{}", op),
+        }
+    }
+}
+
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum LexError {
@@ -112,6 +133,13 @@ impl<'a> Lexer<'a> {
             file,
             pos: 0,
             peeked: None,
+        }
+    }
+
+    fn empty_loc(&self)->Loc{
+        Loc{
+            range:self.pos..self.pos,
+            file:self.file
         }
     }
 
@@ -414,22 +442,23 @@ mod lex_tests {
 }
 
 pub type PResult<T> = Result<T, ParseError>;
+pub type OTok = Located<Option<Token>>;
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum ParseError {
     #[error(transparent)]
     Lex(#[from] LexError),
 
-    #[error("unexpected end of input")]
-    Eof,
+    // #[error("unexpected end of input")]
+    // Eof,
 
     #[error("expected expression, got {got:?}")]
-    ExpectedExpr { got: Option<LTok> },
+    ExpectedExpr { got: OTok },
 
     #[error("expected {expected}, got {got:?}")]
     ExpectedToken {
         expected: &'static str,
-        got: Option<LTok>,
+        got: OTok,
     },
 
     #[error("unexpected token {got:?}")]
@@ -547,7 +576,7 @@ impl<'a> Parser<'a> {
         match self.try_expr()? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
-                got: self.peek()?.cloned(),
+                got: self.peek_op()?,
             }),
         }
     }
@@ -576,7 +605,7 @@ impl<'a> Parser<'a> {
         match self.parse_stmt()? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
-                got: self.peek()?.cloned(),
+                got: self.peek_op()?,
             }),
         }
     }
@@ -600,8 +629,19 @@ impl<'a> Parser<'a> {
         self.lex.produce_loc(start)
     }
 
+
     fn peek(&mut self) -> PResult<Option<&LTok>> {
         Ok(self.lex.peek()?)
+    }
+
+    fn peek_op(&mut self)->PResult<OTok>{
+        Ok(match self.peek()? {
+            Some(t)=>t.clone().map(Some),
+            None => Located{
+                loc:self.lex.empty_loc(),
+                value:None
+            }
+        })
     }
 
     fn next(&mut self) -> PResult<Option<LTok>> {
@@ -624,7 +664,7 @@ impl<'a> Parser<'a> {
             Some(t) => Ok(t),
             None => Err(ParseError::ExpectedToken {
                 expected: op,
-                got: self.peek()?.cloned(),
+                got: self.peek_op()?,
             }),
         }
     }
@@ -648,7 +688,9 @@ impl<'a> Parser<'a> {
         }
 
         let start = self.expr_start();
-        let mut lhs = self.parse_prefix(start)?;
+        let Some(mut lhs) = self.parse_prefix(start)? else {
+            return Ok(None)
+        };
 
         loop {
             // postfix first
@@ -671,7 +713,7 @@ impl<'a> Parser<'a> {
         match self.try_expr_bp(min_bp)? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
-                got: self.peek()?.cloned(),
+                got: self.peek_op()?,
             }),
         }
     }
@@ -819,22 +861,24 @@ impl<'a> Parser<'a> {
             Some(v) => Ok(v),
             None => Err(ParseError::ExpectedToken {
                 expected: "identifier (variable declaration)",
-                got: self.peek()?.cloned(),
+                got: self.peek_op()?,
             }),
         }
     }
 }
 
 impl<'a> Parser<'a> {
-    fn parse_prefix(&mut self, start: usize) -> PResult<LExpr> {
-        let tok = self.next()?.ok_or(ParseError::Eof)?;
+    fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
+        let Some(tok) = self.next()? else {
+            return Ok(None);
+        };
 
         match tok.value {
             Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => {
-                Ok(Located {
+                Ok(Some(Located {
                     loc: self.produce_loc(start),
                     value: Expr::Atom(tok.value),
-                })
+                }))
             }
 
             Token::Operator(op) => {
@@ -842,36 +886,36 @@ impl<'a> Parser<'a> {
 
                 // grouping / blocks
                 if op == "(" {
-                    return self.parse_after_lparen(start, op_s);
+                    return self.parse_after_lparen(start, op_s).map(Some);
                 }
                 if op == "{" {
-                    return self.parse_after_lbrace(start, op_s);
+                    return self.parse_after_lbrace(start, op_s).map(Some);
                 }
 
                 // control keywords
                 if op == "if" {
-                    return self.parse_after_if(start, op_s);
+                    return self.parse_after_if(start, op_s).map(Some);
                 }
                 if op == "while" {
-                    return self.parse_after_while(start, op_s);
+                    return self.parse_after_while(start, op_s).map(Some);
                 }
 
                 if op == "fn" || op == "cfn" {
-                    return self.parse_after_fn(start, op_s);
+                    return self.parse_after_fn(start, op_s).map(Some);
                 }
 
                 if op == "let" {
-                    return self.parse_after_let(start, op_s);
+                    return self.parse_after_let(start, op_s).map(Some);
                 }
 
                 // generic prefix operator via BP
                 if let Some(bp) = prefix_bp(op) {
                     let rhs = self.consume_expr_bp(bp)?;
                     let loc = self.produce_loc(start);
-                    return Ok(Located {
+                    return Ok(Some(Located {
                         loc,
                         value: Expr::Combo(op_s, vec![rhs]),
-                    });
+                    }));
                 }
 
                 Err(ParseError::UnexpectedToken { got: tok })

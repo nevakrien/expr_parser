@@ -55,7 +55,7 @@ fn pretty_print_expr(expr: &LExpr, indent: usize) -> String {
     }
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reporter = ErrorReporter::new();
     let mut input = String::new();
 
@@ -102,7 +102,7 @@ fn main() {
                             break;
                         }
                         Err(err) => {
-                            reporter.report_parse_error(&err);
+                            reporter.report_parse_error(&err)?;
                             break;
                         }
                     }
@@ -116,4 +116,5 @@ fn main() {
     }
 
     println!("Goodbye!");
+    Ok(())
 }
