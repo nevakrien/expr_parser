@@ -664,18 +664,14 @@ impl<'a> Parser<'a> {
     }
 
     fn err_open_delim(&mut self, open: LStr<'static>, close: &'static str) -> ParseError {
-        let got = match self.peek_op(){
-            Ok(x)=>x,
-            Err(_)=>Located {
+        let got = match self.peek_op() {
+            Ok(x) => x,
+            Err(_) => Located {
                 loc: self.lex.empty_loc(),
                 value: None,
             },
         };
-        ParseError::OpenDelimiter {
-            open,
-            close,
-            got,
-        }
+        ParseError::OpenDelimiter { open, close, got }
     }
 }
 
@@ -1405,5 +1401,4 @@ mod parse_tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
-
 }

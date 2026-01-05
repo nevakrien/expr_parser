@@ -78,30 +78,25 @@ impl ErrorReporter {
 
             ParseError::OpenDelimiter { open, close, got } => {
                 let open_loc = &open.loc;
+                let close_loc = &got.loc;
+
                 let Some(source) = self.source(open_loc.file) else {
                     return Ok(());
                 };
 
-                let mut report =
-                    Report::build(ReportKind::Error, open_loc.file, open_loc.range.start)
-                        .with_message(format!("unclosed `{}` delimiter", open.value))
-                        .with_label(
-                            Label::new((open_loc.file, open_loc.range.clone()))
-                                .with_message(format!("`{}` opened here", open.value)),
-                        );
-
-                let loc = &got.loc;
-                report = report.with_label(
-                    Label::new((loc.file, loc.range.clone()))
-                        .with_message(format!(
-                            "expected `{}` before end of input",
-                            close
-                        )),
-                );
+                let report = Report::build(ReportKind::Error, open_loc.file, open_loc.range.start)
+                    .with_message(format!("unclosed `{}` delimiter", open.value))
+                    .with_label(
+                        Label::new((open_loc.file, open_loc.range.clone()))
+                            .with_message(format!("`{}` opened here", open.value)),
+                    )
+                    .with_label(
+                        Label::new((close_loc.file, close_loc.range.clone()))
+                            .with_message(format!("expected `{}`", close)),
+                    );
 
                 report.finish().print((open_loc.file, source))
             }
-
         }
     }
 
