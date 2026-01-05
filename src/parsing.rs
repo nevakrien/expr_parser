@@ -69,10 +69,13 @@ pub enum LexError {
 }
 
 pub const KEYWORDS: &[&str] = &[
-    "let", "if", "else", "while", "for", "return", "break", "continue", "type", "as", "fn", "cfn",
+    "let", "const", 
+    "if", "else", "while", "for", 
+    "return", "break", "continue", "
+    type", "as", 
+    "fn", "cfn",
 ];
 
-/// Ordered longest-first for greedy matching
 pub const OPERATORS: &[&str] = &[
     // --- assignment (longest first) ---
     "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", // --- comparisons ---
@@ -440,7 +443,7 @@ const BP_PREFIX: u32 = 900;
 
 fn prefix_bp(op: &str) -> Option<u32> {
     Some(match op {
-        "!" | "-" | "*" | "~" | "++" | "--" => BP_PREFIX,
+        "!" | "-" | "*" |"&" | "~" | "++" | "--"  | "const" => BP_PREFIX,
         _ => return None,
     })
 }
@@ -506,6 +509,7 @@ fn token_starts_expr(tok: &Token) -> bool {
                         | "continue"
                         | "fn"
                         | "cfn"
+                        | "const"
                 )
         }
     }
@@ -684,19 +688,15 @@ impl<'a> Parser<'a> {
         let op_tok = self.try_op()?.unwrap();
         let rhs = self.consume_expr_bp(r_bp)?;
 
-        // Construct final node with empty children
         let loc = self.produce_loc(start);
-        let mut new_expr = Located {
+        let mut temp = Located {
             loc,
             value: Expr::Combo(op_tok, Vec::new()),
         };
+        std::mem::swap(lhs, &mut temp);
 
-        // Swap old lhs into new_expr
-        std::mem::swap(lhs, &mut new_expr);
-
-        // lhs now owns the operator node
         if let Expr::Combo(_, ref mut v) = lhs.value {
-            v.push(new_expr); // old lhs
+            v.push(temp); // old lhs
             v.push(rhs);
         }
 
@@ -729,17 +729,17 @@ impl<'a> Parser<'a> {
 
         //swap the new lhs into place
         let loc = self.produce_loc(start);
-        let mut new_expr = Located {
+        let mut temp = Located {
             loc,
             value: Expr::Combo(open.clone(), Vec::new()),
         };
-        std::mem::swap(lhs, &mut new_expr);
+        std::mem::swap(lhs, &mut temp);
 
         //put the old lhs on in the new
         let Expr::Combo(_, ref mut v) = lhs.value else {
             unreachable!()
         };
-        v.push(new_expr);
+        v.push(temp);
 
         //handle common case
         if end_op.is_empty() {
@@ -788,9 +788,7 @@ impl<'a> Parser<'a> {
             value: Expr::Atom(Token::Ident(name.value)),
         };
 
-        // Optional type annotation
         if let Some(colon) = self.try_operator(":")? {
-            // Type is an expression (consistent with your language)
             let ty = self.consume_expr_bp(bp)?;
 
             let loc = self.produce_loc(start);
