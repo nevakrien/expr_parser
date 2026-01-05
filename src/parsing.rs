@@ -990,10 +990,13 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let body = self.consume_expr()?;
+        let mut v = vec![sig];
+        if let Some(body) = self.try_expr()?{
+            v.push(body)
+        }
         Ok(Located {
             loc:self.produce_loc(start),
-            value: Expr::Combo(fn_tok, vec![sig, body]),
+            value: Expr::Combo(fn_tok, v),
         })
     }
 
