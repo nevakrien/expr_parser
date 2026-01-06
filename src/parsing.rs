@@ -458,8 +458,8 @@ pub enum ParseError {
     #[error("expected {expected}, got {got:?}")]
     ExpectedToken { expected: &'static str, got: OTok },
 
-    #[error("unexpected token {got:?}")]
-    UnexpectedToken { got: LTok },
+    // #[error("unexpected token {got:?}")]
+    // UnexpectedToken { got: LTok },
 
     #[error("opened {open} without closing with {close} but got {got:?}")]
     OpenDelimiter {
@@ -527,28 +527,31 @@ fn postfix_bp(op: &str) -> Option<u32> {
     })
 }
 
-fn token_starts_expr(tok: &Token) -> bool {
-    match tok {
-        Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => true,
-        Token::Operator(op) => {
-            prefix_bp(op).is_some()
-                || matches!(
-                    *op,
-                    "(" | "{"
-                        | "if"
-                        | "while"
-                        | "let"
-                        | "type"
-                        | "return"
-                        | "break"
-                        | "continue"
-                        | "fn"
-                        | "cfn"
-                        | "const"
-                )
-        }
-    }
-}
+// fn token_starts_expr(tok: &Token) -> bool {
+//     match tok {
+//         Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => true,
+//         Token::Operator(op) => {
+//             prefix_bp(op).is_some()
+//                 || matches!(
+//                     *op,
+//                     "(" | "{"
+//                         | "if"
+//                         | "while"
+//                         | "let"
+//                         | "type"
+//                         | "return"
+//                         | "break"
+//                         | "continue"
+//                         | "fn"
+//                         | "struct"
+//                         | "union"
+//                         | "enum"
+//                         | "cfn"
+//                         | "const"
+//                 )
+//         }
+//     }
+// }
 
 pub struct Parser<'a> {
     lex: Lexer<'a>,
@@ -679,9 +682,9 @@ impl<'a> Parser<'a> {
         let Some(peek) = self.peek()? else {
             return Ok(None);
         };
-        if !token_starts_expr(&peek.value) {
-            return Ok(None);
-        }
+        // if !token_starts_expr(&peek.value) {
+        //     return Ok(None);
+        // }
 
         let start = self.expr_start();
         let Some(mut lhs) = self.parse_prefix(start)? else {
@@ -822,12 +825,13 @@ impl<'a> Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
-        let Some(tok) = self.next()? else {
+        let Some(tok) = self.peek()? else {
             return Ok(None);
         };
 
         match tok.value {
             Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => {
+                let tok = self.next()?.unwrap();
                 Ok(Some(Located {
                     loc: self.produce_loc(start),
                     value: Expr::Atom(tok.value),
@@ -839,30 +843,37 @@ impl<'a> Parser<'a> {
 
                 // grouping / blocks
                 if op == "(" {
+                    self.next()?.unwrap();
                     return self.parse_after_lparen(start, op_s).map(Some);
                 }
                 if op == "{" {
+                    self.next()?.unwrap();
                     return self.parse_after_lbrace(start, op_s).map(Some);
                 }
 
                 // control keywords
                 if op == "if" {
+                    self.next()?.unwrap();
                     return self.parse_after_if(start, op_s).map(Some);
                 }
                 if op == "while" {
+                    self.next()?.unwrap();
                     return self.parse_after_while(start, op_s).map(Some);
                 }
 
                 if op == "fn" || op == "cfn" {
+                    self.next()?.unwrap();
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
 
                 if op == "let" {
+                    self.next()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
                 }
 
                 // generic prefix operator via BP
                 if let Some(bp) = prefix_bp(op) {
+                    self.next()?.unwrap();
                     let rhs = self.consume_expr_bp(bp)?;
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
@@ -870,8 +881,8 @@ impl<'a> Parser<'a> {
                         value: Expr::Combo(op_s, vec![rhs]),
                     }));
                 }
-
-                Err(ParseError::UnexpectedToken { got: tok })
+                Ok(None)
+                // Err(ParseError::ExpectedToken { got: tok.map(Some),expected:"value or prefix operator" })
             }
         }
     }
@@ -1356,4 +1367,79 @@ mod parse_tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn block_parse_right() {
+        let src = "f((x)) { a; b } g";
+        let mut p = Parser::new(src, 0);
+
+        // ---- first expression: f((x)) ----
+        let first = p.consume_stmt().unwrap();
+
+        match first.value {
+            Expr::Combo(open, args) => {
+                assert_eq!(open.value, "(");
+                assert_eq!(args.len(), 2);
+
+                // f
+                match &args[0].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "f"),
+                    _ => panic!("expected identifier f"),
+                }
+
+                // (x)
+                match &args[1].value {
+                    Expr::Combo(inner_open, inner_args) => {
+                        assert_eq!(inner_open.value, "(");
+                        assert_eq!(inner_args.len(), 1);
+
+                        match &inner_args[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                            _ => panic!("expected identifier x"),
+                        }
+                    }
+                    _ => panic!("expected parenthesized expression"),
+                }
+            }
+            _ => panic!("expected call expression"),
+        }
+
+        // ---- second expression: { a; b } ----
+        let block = p.consume_stmt().unwrap();
+
+        match block.value {
+            Expr::Combo(open, items) => {
+                assert_eq!(open.value, "{");
+                assert_eq!(items.len(), 2);
+
+                // a;
+                match &items[0].value {
+                    Expr::Combo(tok, args) => {
+                        assert_eq!(tok.value, ";");
+                        assert_eq!(args.len(), 1);
+                    }
+                    _ => panic!("expected semicolon expression"),
+                }
+
+                // b
+                match &items[1].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "b"),
+                    _ => panic!("expected identifier b"),
+                }
+            }
+            _ => panic!("expected block expression"),
+        }
+
+        // ---- third expression: g ----
+        let last = p.consume_stmt().unwrap();
+
+        match last.value {
+            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "g"),
+            _ => panic!("expected identifier g"),
+        }
+
+        // ---- no trailing input ----
+        assert!(p.is_empty());
+    }
+
 }

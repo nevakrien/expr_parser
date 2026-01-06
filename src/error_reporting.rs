@@ -60,21 +60,21 @@ impl ErrorReporter {
                 self.report_expected(&format!("expected {}", expected), got)
             }
 
-            ParseError::UnexpectedToken { got } => {
-                let loc = &got.loc;
-                let Some(source) = self.source(loc.file) else {
-                    return Ok(());
-                };
+            // ParseError::UnexpectedToken { got } => {
+            //     let loc = &got.loc;
+            //     let Some(source) = self.source(loc.file) else {
+            //         return Ok(());
+            //     };
 
-                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-                    .with_message("unexpected token")
-                    .with_label(
-                        Label::new((loc.file, loc.range.clone()))
-                            .with_message(format!("`{}` is not valid here", got.value)),
-                    );
+            //     let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+            //         .with_message("unexpected token")
+            //         .with_label(
+            //             Label::new((loc.file, loc.range.clone()))
+            //                 .with_message(format!("`{}` is not valid here", got.value)),
+            //         );
 
-                report.finish().print((loc.file, source))
-            }
+            //     report.finish().print((loc.file, source))
+            // }
 
             ParseError::OpenDelimiter { open, close, got } => {
                 let open_loc = &open.loc;

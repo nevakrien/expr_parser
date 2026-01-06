@@ -83,24 +83,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Parse as many expressions as possible until we get None
                 let mut expr_count = 0;
-                loop {
-                    match parser.parse_stmt() {
-                        Ok(Some(expr)) => {
+                while !parser.is_empty() {
+                    match parser.consume_stmt() {
+                        Ok(expr) => {
                             println!("Expr {}: [{}]", expr_count + 1, format_span(&expr.loc));
                             println!("{}", pretty_print_expr(&expr, 0));
                             expr_count += 1;
                         }
-                        Ok(None) => {
-                            if expr_count == 0 {
-                                println!("No expression found");
-                            } else {
-                                // Check if there's remaining input that couldn't be parsed
-                                if !parser.is_empty() {
-                                    println!("Warning: Extra input after expressions");
-                                }
-                            }
-                            break;
-                        }
+
                         Err(err) => {
                             reporter.report_parse_error(&err)?;
                             break;
