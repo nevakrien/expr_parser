@@ -889,18 +889,17 @@ impl<'a> Parser<'a> {
 
     fn parse_after_lparen(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
         let mut parts = Vec::new();
+        let mut saw_comma = false;
+
         loop{
-            let mark = self.expr_start();
-            let Some(mut exp) = self.try_expr()? else {
+            let Some(exp) = self.try_expr()? else {
                 break;
             };
-            if let Some(c) = self.try_operator(",")?{
-                exp = Located{
-                    loc:self.produce_loc(mark),
-                    value:Expr::Combo(c,vec![exp])
-                }
-            }
             parts.push(exp);
+
+            if self.try_operator(",")?.is_some(){
+                saw_comma = true;
+            }
         }
 
         if self.try_operator(")")?.is_none() {
@@ -908,6 +907,12 @@ impl<'a> Parser<'a> {
         }
 
         let loc = self.produce_loc(start);
+        if !saw_comma && parts.len()==1 {
+           return Ok(Located {
+                loc,
+                value: parts.pop().unwrap().value,
+            }) 
+        }
         Ok(Located {
             loc,
             value: Expr::Combo(open, parts),
@@ -1403,17 +1408,21 @@ mod parse_tests {
 
                 // (x)
                 match &args[1].value {
-                    Expr::Combo(inner_open, inner_args) => {
-                        assert_eq!(inner_open.value, "(");
-                        assert_eq!(inner_args.len(), 1);
-
-                        match &inner_args[0].value {
-                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
-                            _ => panic!("expected identifier x"),
-                        }
-                    }
-                    _ => panic!("expected parenthesized expression"),
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                    _ => panic!("expected identifier x"),
                 }
+                // match &args[1].value {
+                //     Expr::Combo(inner_open, inner_args) => {
+                //         assert_eq!(inner_open.value, "(");
+                //         assert_eq!(inner_args.len(), 1);
+
+                //         match &inner_args[0].value {
+                //             Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                //             _ => panic!("expected identifier x"),
+                //         }
+                //     }
+                //     _ => panic!("expected parenthesized expression"),
+                // }
             }
             _ => panic!("expected call expression"),
         }
