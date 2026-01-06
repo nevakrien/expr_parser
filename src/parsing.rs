@@ -888,7 +888,17 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_after_lparen(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
-        let inner = self.consume_expr()?;
+        let mut parts = Vec::new();
+        loop{
+            let Some(exp) = self.try_expr()? else {
+                break;
+            };
+            parts.push(exp);
+            if self.try_operator(",")?.is_none(){
+                break;
+            }
+        }
+
         if self.try_operator(")")?.is_none() {
             return Err(self.err_open_delim(open, ")"));
         }
@@ -896,7 +906,7 @@ impl<'a> Parser<'a> {
         let loc = self.produce_loc(start);
         Ok(Located {
             loc,
-            value: Expr::Combo(open, vec![inner]),
+            value: Expr::Combo(open, parts),
         })
     }
 
