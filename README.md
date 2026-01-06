@@ -10,10 +10,19 @@ is a valid expression and so is
 x = y = z = 2 = 3 = if x y else {z w}
 ```
 
-";" and "(" are completly optional so the grammar is allowed to kinda go nuts.
-
+";" "," and "(" are almost completly optional so the grammar is allowed to kinda go nuts.
 
 the AST is fairly simplistic on purpose which should mean most functions on it are fairly small.
+it is essentially just
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr {
+    Atom(Token),
+    Combo(&'static str, Vec<Expr>),
+}
+```
+
 it should be fairly straight forward to add operators and behivior as the AST requires no design changes.
 
 the main issue is that later you would still need to run a few checks on the outputs because some operators dont really make sense in some places.
@@ -59,3 +68,17 @@ f[T] = fn (x:T)->T {
 
 or predclared by ommiting the body. function types are the same as predclartions in terms of syntax.
 
+similar to functions structs enums and unions are just type values to be assigned.
+they all share the exact same syntax for construction
+
+```
+Point[f] = struct {x:f,b:f};
+Point[f] = struct {x:f,b};
+Point[f] = struct {x:f b};
+```
+
+construction of a struct/union can be done like so
+```
+Point(4,y=2)
+Union(float=2.1)
+```

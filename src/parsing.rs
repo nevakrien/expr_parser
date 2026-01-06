@@ -89,27 +89,15 @@ pub enum LexError {
 }
 
 pub const KEYWORDS: &[&str] = &[
-    "let",
-    "const",
-    "if",
-    "else",
-    "while",
-    "for",
-    "return",
-    "break",
-    "continue",
-    "type",
-    "as",
-    "fn",
-    "cfn",
-    "struct",  
-    "union",  
-    "enum",  
+    "let", "const", "if", "else", "while", "for", "return", "break", "continue", "type", "as",
+    "fn", "cfn", "struct", "union", "enum",
 ];
 
+///greedy match
 pub const OPERATORS: &[&str] = &[
     // --- assignment (longest first) ---
     "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", // --- comparisons ---
+    "|>",
     "==", "!=", "<=", ">=", // --- shifts ---
     "<<", ">>", // --- logical ---
     "&&", "||", // -- increments --
@@ -460,7 +448,6 @@ pub enum ParseError {
 
     // #[error("unexpected token {got:?}")]
     // UnexpectedToken { got: LTok },
-
     #[error("opened {open} without closing with {close} but got {got:?}")]
     OpenDelimiter {
         open: LStr<'static>,
@@ -489,6 +476,7 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
         "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
             (BP_ASSIGN + 1, BP_ASSIGN)
         }
+        "|>" => (120, 121),
 
         // cast / annotation-ish
         "as" => (200, 201),
@@ -526,32 +514,6 @@ fn postfix_bp(op: &str) -> Option<u32> {
         _ => return None,
     })
 }
-
-// fn token_starts_expr(tok: &Token) -> bool {
-//     match tok {
-//         Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => true,
-//         Token::Operator(op) => {
-//             prefix_bp(op).is_some()
-//                 || matches!(
-//                     *op,
-//                     "(" | "{"
-//                         | "if"
-//                         | "while"
-//                         | "let"
-//                         | "type"
-//                         | "return"
-//                         | "break"
-//                         | "continue"
-//                         | "fn"
-//                         | "struct"
-//                         | "union"
-//                         | "enum"
-//                         | "cfn"
-//                         | "const"
-//                 )
-//         }
-//     }
-// }
 
 pub struct Parser<'a> {
     lex: Lexer<'a>,
@@ -679,13 +641,6 @@ impl<'a> Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn try_expr_bp(&mut self, min_bp: u32) -> PResult<Option<LExpr>> {
-        let Some(peek) = self.peek()? else {
-            return Ok(None);
-        };
-        // if !token_starts_expr(&peek.value) {
-        //     return Ok(None);
-        // }
-
         let start = self.expr_start();
         let Some(mut lhs) = self.parse_prefix(start)? else {
             return Ok(None);
@@ -798,30 +753,18 @@ impl<'a> Parser<'a> {
         }
 
         //handle arg lists
-        if self.try_operator(end_op)?.is_none() {
-            loop {
-                let Some(exp) = self.try_expr()? else {
-                    return Err(self.err_open_delim(open, end_op));
-                };
-                v.push(exp);
-
-                if self.try_operator(",")?.is_some() {
-                    continue;
-                }
-
-                if self.try_operator(end_op)?.is_some() {
-                    break;
-                }
-
+        while self.try_operator(end_op)?.is_none() {
+            let Some(exp) = self.try_expr()? else {
                 return Err(self.err_open_delim(open, end_op));
-            }
+            };
+            v.push(exp);
+            self.try_operator(",")?;
         }
 
         lhs.loc = self.produce_loc(start);
         Ok(true)
     }
 }
-
 
 impl<'a> Parser<'a> {
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
@@ -866,6 +809,11 @@ impl<'a> Parser<'a> {
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
 
+                if op == "struct" || op == "enum" || op=="union" {
+                    self.next()?.unwrap();
+                    return self.parse_after_struct(start, op_s).map(Some);
+                }
+
                 if op == "let" {
                     self.next()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
@@ -882,7 +830,6 @@ impl<'a> Parser<'a> {
                     }));
                 }
                 Ok(None)
-                // Err(ParseError::ExpectedToken { got: tok.map(Some),expected:"value or prefix operator" })
             }
         }
     }
@@ -891,42 +838,34 @@ impl<'a> Parser<'a> {
         let mut parts = Vec::new();
         let mut saw_comma = false;
 
-        loop{
+        while self.try_operator(")")?.is_none() {
             let Some(exp) = self.try_expr()? else {
-                break;
+                return Err(self.err_open_delim(open, ")"));
             };
             parts.push(exp);
 
-            if self.try_operator(",")?.is_some(){
+            if self.try_operator(",")?.is_some() {
                 saw_comma = true;
             }
         }
 
-        if self.try_operator(")")?.is_none() {
-            return Err(self.err_open_delim(open, ")"));
-        }
-
         let loc = self.produce_loc(start);
-        if !saw_comma && parts.len()==1 {
-           return Ok(Located {
+        if !saw_comma && parts.len() == 1 {
+            return Ok(Located {
                 loc,
                 value: parts.pop().unwrap().value,
-            }) 
+            });
         }
         Ok(Located {
             loc,
-            value: Expr::Combo(open, parts),
+            value: Expr::Combo(open.with("(,"), parts),
         })
     }
 
     fn parse_after_lbrace(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
         let mut items = Vec::new();
 
-        loop {
-            if self.try_operator("}")?.is_some() {
-                break;
-            }
-
+        while self.try_operator("}")?.is_none() {
             match self.parse_stmt()? {
                 Some(s) => items.push(s),
                 None => return Err(self.err_open_delim(open, "}")),
@@ -973,22 +912,13 @@ impl<'a> Parser<'a> {
         let open = self.expect_operator("(")?;
         let mut params: Vec<LExpr> = Vec::new();
 
-        if self.try_operator(")")?.is_none() {
-            loop {
-                let vd = self.consume_expr()?;
-                params.push(vd);
-
-                if self.try_operator(",")?.is_some() {
-                    continue;
-                }
-                if self.try_operator(")")?.is_some() {
-                    break;
-                }
-
+        while self.try_operator(")")?.is_none() {
+            let Some(vd) = self.try_expr()? else {
                 return Err(self.err_open_delim(open.clone(), ")"));
-            }
+            };
+            params.push(vd);
+            self.try_operator(",")?;
         }
-
         let mut sig = Located {
             loc: self.produce_loc(paren_start),
             value: Expr::Combo(open, params),
@@ -1020,6 +950,29 @@ impl<'a> Parser<'a> {
         Ok(Located {
             loc: self.produce_loc(start),
             value: Expr::Combo(let_tok, vec![dec, val]),
+        })
+    }
+
+    fn parse_after_struct(&mut self, start: usize, def_tok: LStr<'static>) -> PResult<LExpr> {
+        let mut fields = Vec::new();
+
+        let open = self.expect_operator("{")?;
+        while self.try_operator("}")?.is_none(){
+            let Some(exp) = self.try_expr()? else {
+                return Err(self.err_open_delim(open.clone(), ")"));
+            };
+            fields.push(exp);
+
+
+            match self.peek()?.map(|l|&l.value){
+                Some(Token::Operator(",") | 
+                Token::Operator(";")) => {self.next()?;}
+                _=>{}
+            };
+        }
+        Ok(Located {
+            loc: self.produce_loc(start),
+            value: Expr::Combo(def_tok, fields),
         })
     }
 }
@@ -1063,7 +1016,7 @@ mod parse_tests {
 
     #[test]
     fn garbage_in_arg_list_reports_open_paren_span() {
-        let src = "f(a b)";
+        let src = "f(a } b)";
         let mut p = Parser::new(src, 0);
         let err = p.consume_expr().unwrap_err();
 
@@ -1073,7 +1026,7 @@ mod parse_tests {
                 assert_eq!(close, ")");
 
                 let got = got.as_ref().expect("should have got token");
-                assert_eq!(*got, Token::Ident("b".into()));
+                assert_eq!(*got, Token::Operator("}"));
 
                 // span of '('
                 assert_loc(&open.loc, 1, 2);
@@ -1464,5 +1417,111 @@ mod parse_tests {
         // ---- no trailing input ----
         assert!(p.is_empty());
     }
+
+    #[test]
+    fn struct_type_definition() {
+        let src = "Point[f] = struct { x:f y }";
+        let mut p = Parser::new(src, 0);
+
+        let expr = p.consume_stmt().unwrap();
+
+        match expr.value {
+            Expr::Combo(eq, args) => {
+                assert_eq!(eq.value, "=");
+                assert_eq!(args.len(), 2);
+
+                // ---- LHS: Point[f] ----
+                match &args[0].value {
+                    Expr::Combo(bracket, gargs) => {
+                        assert_eq!(bracket.value, "[");
+                        assert_eq!(gargs.len(), 2);
+
+                        match &gargs[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Point"),
+                            _ => panic!("expected identifier Point"),
+                        }
+
+                        match &gargs[1].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "f"),
+                            _ => panic!("expected generic parameter f"),
+                        }
+                    }
+                    _ => panic!("expected generic application Point[f]"),
+                }
+
+                // ---- RHS: struct { x:f y } ----
+                match &args[1].value {
+                    Expr::Combo(struct_kw, fields) => {
+                        assert_eq!(struct_kw.value, "struct");
+                        assert_eq!(fields.len(), 2);
+
+                        // x:f
+                        match &fields[0].value {
+                            Expr::Combo(colon, parts) => {
+                                assert_eq!(colon.value, ":");
+                                assert_eq!(parts.len(), 2);
+                            }
+                            _ => panic!("expected field definition x:f"),
+                        }
+
+                        // y
+                        match &fields[1].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
+                            _ => panic!("expected identifier y"),
+                        }
+                    }
+                    _ => panic!("expected struct definition"),
+                }
+            }
+            _ => panic!("expected assignment expression"),
+        }
+
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn struct_construction() {
+        let src = "Point(4, y=2)";
+        let mut p = Parser::new(src, 0);
+
+        let expr = p.consume_stmt().unwrap();
+
+        match expr.value {
+            Expr::Combo(open, args) => {
+                assert_eq!(open.value, "(");
+                assert_eq!(args.len(), 3);
+
+                // Point
+                match &args[0].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Point"),
+                    _ => panic!("expected identifier Point"),
+                }
+
+                // 4
+                match &args[1].value {
+                    Expr::Atom(Token::NumLit(n)) => assert_eq!(*n, 4),
+                    _ => panic!("expected integer literal"),
+                }
+
+                // y=2
+                match &args[2].value {
+                    Expr::Combo(eq, parts) => {
+                        assert_eq!(eq.value, "=");
+                        assert_eq!(parts.len(), 2);
+
+                        match &parts[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
+                            _ => panic!("expected identifier y"),
+                        }
+                    }
+                    _ => panic!("expected named argument y=2"),
+                }
+            }
+            _ => panic!("expected application expression"),
+        }
+
+        assert!(p.is_empty());
+    }
+
 
 }
