@@ -98,11 +98,13 @@ pub const KEYWORDS: &[&str] = &[
     "return",
     "break",
     "continue",
-    "
-    type",
+    "type",
     "as",
     "fn",
     "cfn",
+    "struct",  
+    "union",  
+    "enum",  
 ];
 
 pub const OPERATORS: &[&str] = &[
@@ -468,7 +470,7 @@ pub enum ParseError {
 }
 
 const BP_ASSIGN: u32 = 100;
-const BP_TYPES: u32 = 500;
+const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 850; // ., ->, ::
 const BP_CALL: u32 = 800; // (), []
 const BP_POSTFIX_INC: u32 = 875;
@@ -817,49 +819,6 @@ impl<'a> Parser<'a> {
     }
 }
 
-impl<'a> Parser<'a> {
-    /// Returns an expression representing the declaration:
-    ///   - `x`  => Atom(Ident(x))
-    ///   - `x:T`=> Combo(":", [Atom(Ident(x)), T])
-    fn try_var_dec(&mut self, bp: u32) -> PResult<Option<LExpr>> {
-        let start = self.expr_start();
-
-        let Some(name) = self.try_ident()? else {
-            return Ok(None);
-        };
-
-        let name_expr: LExpr = Located {
-            loc: name.loc.clone(),
-            value: Expr::Atom(Token::Ident(name.value)),
-        };
-
-        if let Some(colon) = self.try_operator(":")? {
-            let ty = self.consume_expr_bp(bp)?;
-
-            let loc = self.produce_loc(start);
-            return Ok(Some(Located {
-                loc,
-                value: Expr::Combo(colon, vec![name_expr, ty]),
-            }));
-        }
-
-        // Just the name
-        Ok(Some(Located {
-            loc: self.produce_loc(start),
-            value: name_expr.value,
-        }))
-    }
-
-    fn consume_var_dec(&mut self, bp: u32) -> PResult<LExpr> {
-        match self.try_var_dec(bp)? {
-            Some(v) => Ok(v),
-            None => Err(ParseError::ExpectedToken {
-                expected: "identifier (variable declaration)",
-                got: self.peek_op()?,
-            }),
-        }
-    }
-}
 
 impl<'a> Parser<'a> {
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
@@ -986,7 +945,7 @@ impl<'a> Parser<'a> {
 
         if self.try_operator(")")?.is_none() {
             loop {
-                let vd = self.consume_var_dec(0)?;
+                let vd = self.consume_expr()?;
                 params.push(vd);
 
                 if self.try_operator(",")?.is_some() {
@@ -1024,8 +983,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_after_let(&mut self, start: usize, let_tok: LStr<'static>) -> PResult<LExpr> {
-        let dec = self.consume_var_dec(BP_TYPES)?;
-        self.lex.skip_whitespace();
+        let dec = self.consume_expr_bp(BP_PATTERN)?;
         self.expect_operator("=")?;
         let val = self.consume_expr()?;
 
