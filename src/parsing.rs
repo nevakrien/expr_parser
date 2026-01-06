@@ -890,13 +890,17 @@ impl<'a> Parser<'a> {
     fn parse_after_lparen(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
         let mut parts = Vec::new();
         loop{
-            let Some(exp) = self.try_expr()? else {
+            let mark = self.expr_start();
+            let Some(mut exp) = self.try_expr()? else {
                 break;
             };
-            parts.push(exp);
-            if self.try_operator(",")?.is_none(){
-                break;
+            if let Some(c) = self.try_operator(",")?{
+                exp = Located{
+                    loc:self.produce_loc(mark),
+                    value:Expr::Combo(c,vec![exp])
+                }
             }
+            parts.push(exp);
         }
 
         if self.try_operator(")")?.is_none() {
