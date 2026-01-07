@@ -1,16 +1,8 @@
-use crate::parsing::Expr;
-use crate::parsing::LExpr;
-use crate::parsing::Loc;
-use crate::parsing::Parser;
-use crate::parsing::Token;
-use std::io::{self, Write};
 mod error_reporting;
 mod parsing;
+use crate::parsing::{Expr, LExpr, Parser, Token};
 pub use error_reporting::ErrorReporter;
-
-fn format_span(loc: &Loc) -> String {
-    format!("{}..{}", loc.range.start, loc.range.end)
-}
+use std::io::{self, Write};
 
 fn pretty_print_token(token: &Token) -> String {
     match token {
@@ -86,7 +78,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 while !parser.is_empty() {
                     match parser.consume_stmt() {
                         Ok(expr) => {
-                            println!("Expr {}: [{}]", expr_count + 1, format_span(&expr.loc));
+                            println!(
+                                "Expr {}: [{}..{}]",
+                                expr_count + 1,
+                                expr.loc.range.start,
+                                expr.loc.range.end
+                            );
                             println!("{}", pretty_print_expr(&expr, 0));
                             expr_count += 1;
                         }

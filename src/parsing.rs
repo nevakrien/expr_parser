@@ -6,16 +6,7 @@ use thiserror::Error;
 pub struct Loc {
     pub range: Range<usize>,
     pub file: usize,
-    // pub macro_site:Option<Box<MacroCtx>>
 }
-
-// #[derive(Debug,Clone,PartialEq,Eq,Hash)]
-// pub struct MacroCtx {
-//     pub loc: Loc,
-//     ///macros produce [e0 e1 e2 e3 ...]
-//     ///this fields indicates which id we are
-//     pub expr_num:usize,
-// }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Located<T> {
@@ -47,7 +38,6 @@ impl<T> Deref for Located<T> {
 }
 
 pub type LStr<'a> = Located<&'a str>;
-pub type LString = Located<String>;
 
 pub type LExpr = Located<Expr>;
 pub type LTok = Located<Token>;
@@ -97,8 +87,7 @@ pub const KEYWORDS: &[&str] = &[
 pub const OPERATORS: &[&str] = &[
     // --- assignment (longest first) ---
     "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", // --- comparisons ---
-    "|>",
-    "==", "!=", "<=", ">=", // --- shifts ---
+    "|>", "==", "!=", "<=", ">=", // --- shifts ---
     "<<", ">>", // --- logical ---
     "&&", "||", // -- increments --
     "++", "--", // --- bitwise ---
@@ -292,22 +281,6 @@ impl<'a> Lexer<'a> {
      * Convenience helpers
      * ============================= */
 
-    pub fn try_ident(&mut self) -> Result<Option<Located<String>>, LexError> {
-        match self.peek()? {
-            Some(tok) => match tok.value.clone() {
-                Token::Ident(name) => {
-                    let tok = self.next()?.unwrap();
-                    Ok(Some(Located {
-                        loc: tok.loc,
-                        value: name,
-                    }))
-                }
-                _ => Ok(None),
-            },
-            None => Ok(None),
-        }
-    }
-
     pub fn try_op(&mut self) -> Result<Option<LStr<'static>>, LexError> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
@@ -339,16 +312,6 @@ impl<'a> Lexer<'a> {
         self.next()?;
         Ok(Some(ans))
     }
-
-    // pub fn try_token(
-    //     &mut self,
-    //     pred: impl FnOnce(&Token) -> bool,
-    // ) -> Result<Option<LTok>, LexError> {
-    //     match self.peek()? {
-    //         Some(tok) if pred(&tok.value) => Ok(self.next()?),
-    //         _ => Ok(None),
-    //     }
-    // }
 }
 
 #[cfg(test)]
@@ -438,16 +401,12 @@ pub enum ParseError {
     #[error(transparent)]
     Lex(#[from] LexError),
 
-    // #[error("unexpected end of input")]
-    // Eof,
     #[error("expected expression, got {got:?}")]
     ExpectedExpr { got: OTok },
 
     #[error("expected {expected}, got {got:?}")]
     ExpectedToken { expected: &'static str, got: OTok },
 
-    // #[error("unexpected token {got:?}")]
-    // UnexpectedToken { got: LTok },
     #[error("opened {open} without closing with {close} but got {got:?}")]
     OpenDelimiter {
         open: LStr<'static>,
@@ -520,6 +479,12 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    pub fn new(src: &'a str, file: usize) -> Self {
+        Self {
+            lex: Lexer::new(src, file),
+        }
+    }
+
     pub fn is_empty(&mut self) -> bool {
         matches!(self.peek(), Ok(None))
     }
@@ -568,13 +533,6 @@ impl<'a> Parser<'a> {
             }),
         }
     }
-}
-impl<'a> Parser<'a> {
-    pub fn new(src: &'a str, file: usize) -> Self {
-        Self {
-            lex: Lexer::new(src, file),
-        }
-    }
 
     /* =============================
      * Forwarding + invariants
@@ -607,9 +565,6 @@ impl<'a> Parser<'a> {
         Ok(t)
     }
 
-    fn try_ident(&mut self) -> PResult<Option<LString>> {
-        Ok(self.lex.try_ident()?)
-    }
     fn try_op(&mut self) -> Result<Option<LStr<'static>>, LexError> {
         self.lex.try_op()
     }
@@ -637,9 +592,6 @@ impl<'a> Parser<'a> {
         };
         ParseError::OpenDelimiter { open, close, got }
     }
-}
-
-impl<'a> Parser<'a> {
     fn try_expr_bp(&mut self, min_bp: u32) -> PResult<Option<LExpr>> {
         let start = self.expr_start();
         let Some(mut lhs) = self.parse_prefix(start)? else {
@@ -671,9 +623,6 @@ impl<'a> Parser<'a> {
             }),
         }
     }
-}
-
-impl<'a> Parser<'a> {
     fn try_parse_infix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
         let Some(peek) = self.peek()? else {
             return Ok(false);
@@ -764,9 +713,6 @@ impl<'a> Parser<'a> {
         lhs.loc = self.produce_loc(start);
         Ok(true)
     }
-}
-
-impl<'a> Parser<'a> {
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
@@ -809,7 +755,7 @@ impl<'a> Parser<'a> {
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
 
-                if op == "struct" || op == "enum" || op=="union" {
+                if op == "struct" || op == "enum" || op == "union" {
                     self.next()?.unwrap();
                     return self.parse_after_struct(start, op_s).map(Some);
                 }
@@ -957,17 +903,16 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
 
         let open = self.expect_operator("{")?;
-        while self.try_operator("}")?.is_none(){
+        while self.try_operator("}")?.is_none() {
             let Some(exp) = self.try_expr()? else {
                 return Err(self.err_open_delim(open.clone(), ")"));
             };
             fields.push(exp);
 
-
-            match self.peek()?.map(|l|&l.value){
-                Some(Token::Operator(",") | 
-                Token::Operator(";")) => {self.next()?;}
-                _=>{}
+            if let Some(Token::Operator(",") | Token::Operator(";")) =
+                self.peek()?.map(|l| &l.value)
+            {
+                self.next()?;
             };
         }
         Ok(Located {
@@ -1364,18 +1309,6 @@ mod parse_tests {
                     Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
                     _ => panic!("expected identifier x"),
                 }
-                // match &args[1].value {
-                //     Expr::Combo(inner_open, inner_args) => {
-                //         assert_eq!(inner_open.value, "(");
-                //         assert_eq!(inner_args.len(), 1);
-
-                //         match &inner_args[0].value {
-                //             Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
-                //             _ => panic!("expected identifier x"),
-                //         }
-                //     }
-                //     _ => panic!("expected parenthesized expression"),
-                // }
             }
             _ => panic!("expected call expression"),
         }
@@ -1522,6 +1455,4 @@ mod parse_tests {
 
         assert!(p.is_empty());
     }
-
-
 }
