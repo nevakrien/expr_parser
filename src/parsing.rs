@@ -80,23 +80,20 @@ pub enum LexError {
     UnterminatedString { loc: Loc },
 }
 
+// Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
-    "let", "const", "if", "else", "while", "for", "return", "break", "continue", "type", "as",
-    "fn", "cfn", "struct", "union", "enum",
+    "let", "const", "type", "struct", "union", "enum", "fn", "cfn", "if", "else", "while", "for",
+    "match", "return", "break", "continue", "as",
 ];
 
 ///greedy match
 pub const OPERATORS: &[&str] = &[
-    // --- assignment (longest first) ---
-    "<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", // --- comparisons ---
-    "|>", "==", "!=", "<=", ">=", // --- shifts ---
-    "<<", ">>", // --- logical ---
-    "&&", "||", // -- increments --
-    "++", "--", // --- bitwise ---
-    "&", "|", "^", "~", // --- arrows / paths ---
-    "->", "::", ".", // --- arithmetic ---
-    "+", "-", "*", "/", "%", // --- comparison / unary ---
-    "=", "<", ">", "!", // --- delimiters ---
+    // --- 3-char operators ---
+    "<<=", ">>=", // --- 2-char operators ---
+    "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "|>", "==", "!=", "<=", ">=", "~=", "=>", "<<",
+    ">>", "&&", "||", "++", "--", "->", "::", // --- 1-char operators ---
+    "&", "|", "^", "~", "+", "-", "*", "/", "%", "=", "<", ">", "!", ".",
+    // --- delimiters ---
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
 
@@ -354,7 +351,7 @@ mod lex_tests {
      * ========================================= */
     #[test]
     fn keywords_and_multi_char_operators() {
-        let src = "let x == y && return";
+        let src = "let x ~= y => z && match";
         let mut lex = Lexer::new(src, 0);
 
         let kinds: Vec<String> = std::iter::from_fn(|| lex.next().unwrap())
@@ -370,10 +367,12 @@ mod lex_tests {
             vec![
                 "op(let)",
                 "id(x)",
-                "op(==)",
+                "op(~=)",
                 "id(y)",
+                "op(=>)",
+                "id(z)",
                 "op(&&)",
-                "op(return)",
+                "op(match)",
             ]
         );
     }
@@ -418,6 +417,7 @@ pub enum ParseError {
 }
 
 const BP_ASSIGN: u32 = 100;
+const BP_MATCH_ARM: u32 = 90;
 const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 850; // ., ->, ::
 const BP_CALL: u32 = 800; // (), []
@@ -433,6 +433,9 @@ fn prefix_bp(op: &str) -> Option<u32> {
 
 fn infix_bp(op: &str) -> Option<(u32, u32)> {
     Some(match op {
+        // match arm (right-assoc)
+        "=>" => (BP_MATCH_ARM + 1, BP_MATCH_ARM),
+
         // assignment (right-assoc)
         "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
             (BP_ASSIGN + 1, BP_ASSIGN)
@@ -750,6 +753,10 @@ impl<'a> Parser<'a> {
                     self.next()?.unwrap();
                     return self.parse_after_while(start, op_s).map(Some);
                 }
+                if op == "match" {
+                    self.next()?.unwrap();
+                    return self.parse_after_match(start, op_s).map(Some);
+                }
 
                 if op == "fn" || op == "cfn" {
                     self.next()?.unwrap();
@@ -851,6 +858,37 @@ impl<'a> Parser<'a> {
         Ok(Located {
             loc,
             value: Expr::Prefix(w, vec![cond, body]),
+        })
+    }
+
+    fn parse_after_match(&mut self, start: usize, m: LStr<'static>) -> PResult<LExpr> {
+        let subject = self.consume_expr()?;
+        let open = self.expect_operator("{")?;
+        let mut args = vec![subject];
+
+        while self.try_operator("}")?.is_none() {
+            let arm_start = self.expr_start();
+            let Some(pat) = self.try_expr_bp(BP_PATTERN)? else {
+                return Err(self.err_open_delim(open.clone(), "}"));
+            };
+            let arrow = self.expect_operator("=>")?;
+            let body = self.consume_expr()?;
+
+            args.push(Located {
+                loc: self.produce_loc(arm_start),
+                value: Expr::Bin(arrow, Box::new((pat, body))),
+            });
+
+            if let Some(Token::Operator(",") | Token::Operator(";")) =
+                self.peek()?.map(|l| &l.value)
+            {
+                self.next()?;
+            }
+        }
+
+        Ok(Located {
+            loc: self.produce_loc(start),
+            value: Expr::Prefix(m, args),
         })
     }
 
@@ -1021,6 +1059,98 @@ mod parse_tests {
                 assert_loc(&expr.loc, 0, src.len());
             }
             _ => panic!("expected if-else"),
+        }
+    }
+
+    #[test]
+    fn match_parses_arms_and_allows_separators() {
+        let src = "match x { 0 => y, Some(\"hi\"|\"by\") => w }";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Prefix(match_kw, args) => {
+                assert_eq!(match_kw.value, "match");
+                assert_eq!(args.len(), 3);
+
+                match &args[0].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                    _ => panic!("expected match scrutinee"),
+                }
+
+                match &args[1].value {
+                    Expr::Bin(arrow, parts) => {
+                        assert_eq!(arrow.value, "=>");
+                        let (pat, body) = &**parts;
+                        match &pat.value {
+                            Expr::Atom(Token::NumLit(0)) => {}
+                            _ => panic!("expected 0 pattern"),
+                        }
+                        match &body.value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
+                            _ => panic!("expected y body"),
+                        }
+                    }
+                    _ => panic!("expected match arm"),
+                }
+
+                match &args[2].value {
+                    Expr::Bin(arrow, parts) => {
+                        assert_eq!(arrow.value, "=>");
+                        let (pat, body) = &**parts;
+                        match &pat.value {
+                            Expr::Postfix(open, args) => {
+                                assert_eq!(open.value, "(");
+                                assert_eq!(args.len(), 2);
+                                match &args[0].value {
+                                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Some"),
+                                    _ => panic!("expected Some"),
+                                }
+                                match &args[1].value {
+                                    Expr::Bin(pipe, parts) => {
+                                        assert_eq!(pipe.value, "|");
+                                        let (lhs, rhs) = &**parts;
+                                        match &lhs.value {
+                                            Expr::Atom(Token::StrLit(name)) => {
+                                                assert_eq!(name, "hi")
+                                            }
+                                            _ => panic!("expected hi string"),
+                                        }
+                                        match &rhs.value {
+                                            Expr::Atom(Token::StrLit(name)) => {
+                                                assert_eq!(name, "by")
+                                            }
+                                            _ => panic!("expected by string"),
+                                        }
+                                    }
+                                    _ => panic!("expected \"hi\"|\"by\""),
+                                }
+                            }
+                            _ => panic!("expected Some(\"hi\"|\"by\") pattern"),
+                        }
+                        match &body.value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "w"),
+                            _ => panic!("expected w body"),
+                        }
+                    }
+                    _ => panic!("expected match arm"),
+                }
+
+                assert_eq!(expr.loc.range, 0..src.len());
+            }
+            _ => panic!("expected match"),
+        }
+
+        let src = "match x { 0 => y; z => w }";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Prefix(match_kw, args) => {
+                assert_eq!(match_kw.value, "match");
+                assert_eq!(args.len(), 3);
+            }
+            _ => panic!("expected match"),
         }
     }
 
