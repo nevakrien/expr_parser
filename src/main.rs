@@ -10,41 +10,49 @@ fn pretty_print_token(token: &Token) -> String {
         Token::FloatLit(n) => n.to_string(),
         Token::StrLit(s) => format!("\"{}\"", s),
         Token::Ident(s) => s.clone(),
-        Token::Operator(s) => s.to_string(),
+        Token::Operator(s) => format!("\"{}\"", s),
     }
 }
 
 fn pretty_print_expr(expr: &LExpr, indent: usize) -> String {
     match &expr.value {
         Expr::Atom(token) => pretty_print_token(token),
-        Expr::Combo(op, args) => {
-            let mut result = String::new();
-            let indent_str = "  ".repeat(indent);
-
-            result.push('"');
-            result.push_str(op.value);
-            result.push('"');
-
-            if args.is_empty() {
-                result.push_str("()");
-            } else if args.len() == 1 {
-                result.push(' ');
-                result.push_str(&pretty_print_expr(&args[0], 0));
-            } else {
-                result.push_str("(\n");
-                for arg in args {
-                    result.push_str(&indent_str);
-                    result.push_str("  ");
-                    result.push_str(&pretty_print_expr(arg, indent + 1));
-                    result.push('\n');
-                }
-                result.push_str(&indent_str);
-                result.push(')');
-            }
-
-            result
+        Expr::Bin(op, pair) => {
+            let (lhs, rhs) = &**pair;
+            let label = format!("_ \"{}\" _  ", op.value);
+            pretty_print_node(&label, [lhs, rhs], indent)
+        }
+        Expr::Prefix(op, args) => {
+            let label = format!("\"{}\" _  ", op.value);
+            pretty_print_node(&label, args.iter(), indent)
+        }
+        Expr::Postfix(op, args) => {
+            let label = format!("_ \"{}\"  ", op.value);
+            pretty_print_node(&label, args.iter(), indent)
         }
     }
+}
+
+fn pretty_print_node<'a, I>(label: &str, args: I, indent: usize) -> String
+where
+    I: IntoIterator<Item = &'a LExpr>,
+{
+    let mut result = String::new();
+    let indent_str = "  ".repeat(indent);
+
+    result.push_str(label);
+
+    result.push_str("(\n");
+    for arg in args.into_iter() {
+        result.push_str(&indent_str);
+        result.push_str("  ");
+        result.push_str(&pretty_print_expr(arg, indent + 1));
+        result.push('\n');
+    }
+    result.push_str(&indent_str);
+    result.push(')');
+
+    result
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

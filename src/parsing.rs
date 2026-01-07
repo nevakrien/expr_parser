@@ -45,7 +45,9 @@ pub type LTok = Located<Token>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Atom(Token),
-    Combo(LStr<'static>, Vec<LExpr>),
+    Bin(LStr<'static>, Box<(LExpr, LExpr)>),
+    Prefix(LStr<'static>, Vec<LExpr>),
+    Postfix(LStr<'static>, Vec<LExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -517,7 +519,7 @@ impl<'a> Parser<'a> {
             let loc = self.produce_loc(start);
             return Ok(Some(Located {
                 loc,
-                value: Expr::Combo(semi, vec![expr]),
+                value: Expr::Postfix(semi, vec![expr]),
             }));
         }
 
@@ -644,15 +646,14 @@ impl<'a> Parser<'a> {
 
         let loc = self.produce_loc(start);
         let mut temp = Located {
-            loc,
-            value: Expr::Combo(op_tok, Vec::new()),
+            loc: self.produce_loc(start),
+            value: Expr::Atom(Token::Operator("<tmp>")),
         };
         std::mem::swap(lhs, &mut temp);
-
-        if let Expr::Combo(_, ref mut v) = lhs.value {
-            v.push(temp); // old lhs
-            v.push(rhs);
-        }
+        *lhs = Located {
+            loc,
+            value: Expr::Bin(op_tok, Box::new((temp, rhs))),
+        };
 
         Ok(true)
     }
@@ -682,22 +683,19 @@ impl<'a> Parser<'a> {
         let open = self.try_op()?.unwrap();
 
         //swap the new lhs into place
-        let loc = self.produce_loc(start);
         let mut temp = Located {
-            loc,
-            value: Expr::Combo(open.clone(), Vec::new()),
+            loc: self.produce_loc(start),
+            value: Expr::Atom(Token::Operator("<tmp>")),
         };
         std::mem::swap(lhs, &mut temp);
-
-        //put the old lhs on in the new
-        let Expr::Combo(_, ref mut v) = lhs.value else {
-            unreachable!()
-        };
-        v.push(temp);
+        let mut args = vec![temp];
 
         //handle common case
         if end_op.is_empty() {
-            lhs.loc = self.produce_loc(start);
+            *lhs = Located {
+                loc: self.produce_loc(start),
+                value: Expr::Postfix(open, args),
+            };
             return Ok(true);
         }
 
@@ -706,11 +704,14 @@ impl<'a> Parser<'a> {
             let Some(exp) = self.try_expr()? else {
                 return Err(self.err_open_delim(open, end_op));
             };
-            v.push(exp);
+            args.push(exp);
             self.try_operator(",")?;
         }
 
-        lhs.loc = self.produce_loc(start);
+        *lhs = Located {
+            loc: self.produce_loc(start),
+            value: Expr::Postfix(open, args),
+        };
         Ok(true)
     }
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
@@ -772,7 +773,7 @@ impl<'a> Parser<'a> {
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
                         loc,
-                        value: Expr::Combo(op_s, vec![rhs]),
+                        value: Expr::Prefix(op_s, vec![rhs]),
                     }));
                 }
                 Ok(None)
@@ -804,7 +805,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Located {
             loc,
-            value: Expr::Combo(open.with("(,"), parts),
+            value: Expr::Prefix(open, parts),
         })
     }
 
@@ -821,7 +822,7 @@ impl<'a> Parser<'a> {
         let loc = self.produce_loc(start);
         Ok(Located {
             loc,
-            value: Expr::Combo(open, items),
+            value: Expr::Prefix(open, items),
         })
     }
 
@@ -838,7 +839,7 @@ impl<'a> Parser<'a> {
         let loc = self.produce_loc(start);
         Ok(Located {
             loc,
-            value: Expr::Combo(if_tok, args),
+            value: Expr::Prefix(if_tok, args),
         })
     }
 
@@ -849,7 +850,7 @@ impl<'a> Parser<'a> {
         let loc = self.produce_loc(start);
         Ok(Located {
             loc,
-            value: Expr::Combo(w, vec![cond, body]),
+            value: Expr::Prefix(w, vec![cond, body]),
         })
     }
 
@@ -867,14 +868,14 @@ impl<'a> Parser<'a> {
         }
         let mut sig = Located {
             loc: self.produce_loc(paren_start),
-            value: Expr::Combo(open, params),
+            value: Expr::Prefix(open, params),
         };
 
         if let Some(arrow) = self.try_operator("->")? {
             let output = self.consume_expr()?;
             sig = Located {
                 loc: self.produce_loc(paren_start),
-                value: Expr::Combo(arrow, vec![sig, output]),
+                value: Expr::Bin(arrow, Box::new((sig, output))),
             }
         }
 
@@ -884,7 +885,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Located {
             loc: self.produce_loc(start),
-            value: Expr::Combo(fn_tok, v),
+            value: Expr::Prefix(fn_tok, v),
         })
     }
 
@@ -895,7 +896,7 @@ impl<'a> Parser<'a> {
 
         Ok(Located {
             loc: self.produce_loc(start),
-            value: Expr::Combo(let_tok, vec![dec, val]),
+            value: Expr::Prefix(let_tok, vec![dec, val]),
         })
     }
 
@@ -917,7 +918,7 @@ impl<'a> Parser<'a> {
         }
         Ok(Located {
             loc: self.produce_loc(start),
-            value: Expr::Combo(def_tok, fields),
+            value: Expr::Prefix(def_tok, fields),
         })
     }
 }
@@ -970,7 +971,7 @@ mod parse_tests {
                 assert_eq!(open.value, "(");
                 assert_eq!(close, ")");
 
-                let got = got.as_ref().expect("should have got token");
+                let got = got.as_ref().unwrap();
                 assert_eq!(*got, Token::Operator("}"));
 
                 // span of '('
@@ -989,11 +990,11 @@ mod parse_tests {
         let src = "if x y z";
         let mut p = Parser::new(src, 0);
 
-        let first = p.consume_stmt().expect("if stmt");
-        let second = p.consume_stmt().expect("z stmt");
+        let first = p.consume_stmt().unwrap();
+        let second = p.consume_stmt().unwrap();
 
         match first.value {
-            Expr::Combo(tok, _) => {
+            Expr::Prefix(tok, _) => {
                 assert_eq!(tok.value, "if");
                 assert_loc(&first.loc, 0, 6); // "if x y"
             }
@@ -1012,10 +1013,10 @@ mod parse_tests {
     fn if_else_span_covers_entire_expression() {
         let src = "if x y else z";
         let mut p = Parser::new(src, 0);
-        let expr = p.consume_expr().expect("if-else");
+        let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Combo(tok, _) => {
+            Expr::Prefix(tok, _) => {
                 assert_eq!(tok.value, "if");
                 assert_loc(&expr.loc, 0, src.len());
             }
@@ -1032,11 +1033,11 @@ mod parse_tests {
         let src = "x; y";
         let mut p = Parser::new(src, 0);
 
-        let first = p.consume_stmt().expect("x; stmt");
-        let second = p.consume_stmt().expect("y stmt");
+        let first = p.consume_stmt().unwrap();
+        let second = p.consume_stmt().unwrap();
 
         match first.value {
-            Expr::Combo(tok, args) => {
+            Expr::Postfix(tok, args) => {
                 assert_eq!(tok.value, ";");
                 assert_eq!(args.len(), 1);
 
@@ -1094,10 +1095,10 @@ mod parse_tests {
         let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Combo(_, args) => {
+            Expr::Prefix(_, args) => {
                 let sig = &args[0];
                 match &sig.value {
-                    Expr::Combo(_, params) => {
+                    Expr::Prefix(_, params) => {
                         assert_eq!(params.len(), 2);
 
                         // x : T
@@ -1126,18 +1127,18 @@ mod parse_tests {
         let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Combo(_, args) => {
+            Expr::Prefix(_, args) => {
                 assert_eq!(args.len(), 2);
 
                 // signature is arrow
                 match &args[0].value {
-                    Expr::Combo(op, _) => assert_eq!(op.value, "->"),
+                    Expr::Bin(op, _) => assert_eq!(op.value, "->"),
                     _ => panic!("expected arrow sig"),
                 }
 
                 // body is x + 1
                 match &args[1].value {
-                    Expr::Combo(op, _) => assert_eq!(op.value, "+"),
+                    Expr::Bin(op, _) => assert_eq!(op.value, "+"),
                     _ => panic!("expected body expression"),
                 }
             }
@@ -1150,28 +1151,28 @@ mod parse_tests {
         let src = "let x: *char = c";
         let mut p = Parser::new(src, 0);
 
-        let expr = p.consume_expr().expect("let expr");
+        let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Combo(let_tok, args) => {
+            Expr::Prefix(let_tok, args) => {
                 assert_eq!(let_tok.value, "let");
                 assert_eq!(args.len(), 2);
 
                 // ---- declaration ----
                 match &args[0].value {
-                    Expr::Combo(colon, parts) => {
+                    Expr::Bin(colon, parts) => {
                         assert_eq!(colon.value, ":");
-                        assert_eq!(parts.len(), 2);
+                        let (name, ty) = &**parts;
 
                         // x
-                        match &parts[0].value {
+                        match &name.value {
                             Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
                             _ => panic!("expected variable name"),
                         }
 
                         // *char
-                        match &parts[1].value {
-                            Expr::Combo(star, inner) => {
+                        match &ty.value {
+                            Expr::Prefix(star, inner) => {
                                 assert_eq!(star.value, "*");
                                 assert_eq!(inner.len(), 1);
                                 match &inner[0].value {
@@ -1202,10 +1203,10 @@ mod parse_tests {
         let src = "x[0:2,1:2]";
         let mut p = Parser::new(src, 0);
 
-        let expr = p.consume_expr().expect("index expr");
+        let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Combo(open, args) => {
+            Expr::Postfix(open, args) => {
                 assert_eq!(open.value, "[");
                 assert_eq!(args.len(), 3);
 
@@ -1217,15 +1218,15 @@ mod parse_tests {
 
                 // ---- first slice: 0:2 ----
                 match &args[1].value {
-                    Expr::Combo(colon, parts) => {
+                    Expr::Bin(colon, parts) => {
                         assert_eq!(colon.value, ":");
-                        assert_eq!(parts.len(), 2);
+                        let (lhs, rhs) = &**parts;
 
-                        match &parts[0].value {
+                        match &lhs.value {
                             Expr::Atom(Token::NumLit(0)) => {}
                             _ => panic!("expected 0"),
                         }
-                        match &parts[1].value {
+                        match &rhs.value {
                             Expr::Atom(Token::NumLit(2)) => {}
                             _ => panic!("expected 2"),
                         }
@@ -1235,15 +1236,15 @@ mod parse_tests {
 
                 // ---- second slice: 1:2 ----
                 match &args[2].value {
-                    Expr::Combo(colon, parts) => {
+                    Expr::Bin(colon, parts) => {
                         assert_eq!(colon.value, ":");
-                        assert_eq!(parts.len(), 2);
+                        let (lhs, rhs) = &**parts;
 
-                        match &parts[0].value {
+                        match &lhs.value {
                             Expr::Atom(Token::NumLit(1)) => {}
                             _ => panic!("expected 1"),
                         }
-                        match &parts[1].value {
+                        match &rhs.value {
                             Expr::Atom(Token::NumLit(2)) => {}
                             _ => panic!("expected 2"),
                         }
@@ -1294,7 +1295,7 @@ mod parse_tests {
         let first = p.consume_stmt().unwrap();
 
         match first.value {
-            Expr::Combo(open, args) => {
+            Expr::Postfix(open, args) => {
                 assert_eq!(open.value, "(");
                 assert_eq!(args.len(), 2);
 
@@ -1317,13 +1318,13 @@ mod parse_tests {
         let block = p.consume_stmt().unwrap();
 
         match block.value {
-            Expr::Combo(open, items) => {
+            Expr::Prefix(open, items) => {
                 assert_eq!(open.value, "{");
                 assert_eq!(items.len(), 2);
 
                 // a;
                 match &items[0].value {
-                    Expr::Combo(tok, args) => {
+                    Expr::Postfix(tok, args) => {
                         assert_eq!(tok.value, ";");
                         assert_eq!(args.len(), 1);
                     }
@@ -1359,13 +1360,13 @@ mod parse_tests {
         let expr = p.consume_stmt().unwrap();
 
         match expr.value {
-            Expr::Combo(eq, args) => {
+            Expr::Bin(eq, args) => {
                 assert_eq!(eq.value, "=");
-                assert_eq!(args.len(), 2);
+                let (lhs, rhs) = &*args;
 
                 // ---- LHS: Point[f] ----
-                match &args[0].value {
-                    Expr::Combo(bracket, gargs) => {
+                match &lhs.value {
+                    Expr::Postfix(bracket, gargs) => {
                         assert_eq!(bracket.value, "[");
                         assert_eq!(gargs.len(), 2);
 
@@ -1383,16 +1384,15 @@ mod parse_tests {
                 }
 
                 // ---- RHS: struct { x:f y } ----
-                match &args[1].value {
-                    Expr::Combo(struct_kw, fields) => {
+                match &rhs.value {
+                    Expr::Prefix(struct_kw, fields) => {
                         assert_eq!(struct_kw.value, "struct");
                         assert_eq!(fields.len(), 2);
 
                         // x:f
                         match &fields[0].value {
-                            Expr::Combo(colon, parts) => {
+                            Expr::Bin(colon, _parts) => {
                                 assert_eq!(colon.value, ":");
-                                assert_eq!(parts.len(), 2);
                             }
                             _ => panic!("expected field definition x:f"),
                         }
@@ -1420,7 +1420,7 @@ mod parse_tests {
         let expr = p.consume_stmt().unwrap();
 
         match expr.value {
-            Expr::Combo(open, args) => {
+            Expr::Postfix(open, args) => {
                 assert_eq!(open.value, "(");
                 assert_eq!(args.len(), 3);
 
@@ -1438,11 +1438,11 @@ mod parse_tests {
 
                 // y=2
                 match &args[2].value {
-                    Expr::Combo(eq, parts) => {
+                    Expr::Bin(eq, parts) => {
                         assert_eq!(eq.value, "=");
-                        assert_eq!(parts.len(), 2);
+                        let (lhs, _) = &**parts;
 
-                        match &parts[0].value {
+                        match &lhs.value {
                             Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
                             _ => panic!("expected identifier y"),
                         }

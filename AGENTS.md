@@ -15,6 +15,7 @@
 - `cargo test` should be used routinely to verify new changes.
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
+- tests should generally prefer unwrap to except because unwrap has more usefull debug info
 
 ## Agent-Specific Instructions
 - Keep contributor docs concise and focused on this repo’s parser/lexer workflow.

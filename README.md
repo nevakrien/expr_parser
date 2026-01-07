@@ -13,19 +13,11 @@ x = y = z = 2 = 3 = if x y else {z w}
 ";" "," and "(" are almost completly optional so the grammar is allowed to kinda go nuts.
 
 the AST is fairly simplistic on purpose which should mean most functions on it are fairly small.
-it is essentially just
-
-```rust
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expr {
-    Atom(Token),
-    Combo(&'static str, Vec<Expr>),
-}
-```
+we are destinguishing between prefix postfix and infix operations to allow using just the operator string directly.
 
 it should be fairly straight forward to add operators and behivior as the AST requires no design changes.
 
-the main issue is that later you would still need to run a few checks on the outputs because some operators dont really make sense in some places.
+the main issue is that later you would still need to run a few checks on the outputs because some operators dont really make sense in some places, and there is no enum for them.
 
 
 # syntax
