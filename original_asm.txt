@@ -1,0 +1,1418 @@
+.section .text.expr_parser::parsing::Lexer::lex_token,"ax",@progbits
+	.p2align	4
+	.type	expr_parser::parsing::Lexer::lex_token,@function
+expr_parser::parsing::Lexer::lex_token:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 166
+		fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
+	.cfi_startproc
+	push rbp
+	.cfi_def_cfa_offset 16
+	push r15
+	.cfi_def_cfa_offset 24
+	push r14
+	.cfi_def_cfa_offset 32
+	push r13
+	.cfi_def_cfa_offset 40
+	push r12
+	.cfi_def_cfa_offset 48
+	push rbx
+	.cfi_def_cfa_offset 56
+	sub rsp, 56
+	.cfi_def_cfa_offset 112
+	.cfi_offset rbx, -56
+	.cfi_offset r12, -48
+	.cfi_offset r13, -40
+	.cfi_offset r14, -32
+	.cfi_offset r15, -24
+	.cfi_offset rbp, -16
+	mov r15, rsi
+	mov r14, rdi
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 167
+		let start = self.pos;
+	mov rbx, qword ptr [rsi + 80]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 168
+		let ch = match self.bump() {
+	mov rdi, rsi
+	call expr_parser::parsing::Lexer::bump
+	cmp eax, 1114112
+	jne .LBB98_2
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 170
+		None => return Ok(None),
+	mov qword ptr [r14], 5
+	jmp .LBB98_199
+.LBB98_2:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 175
+		'0'..='9' => {
+	lea ecx, [rax - 48]
+	cmp ecx, 9
+	ja .LBB98_17
+	.p2align	4
+.LBB98_3:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 128
+		self.src[self.pos..].chars().next()
+	mov rdi, qword ptr [r15 + 56]
+	mov rsi, qword ptr [r15 + 64]
+	mov r12, qword ptr [r15 + 80]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_7
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp r12, rsi
+	jae .LBB98_6
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rdi + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	jge .LBB98_7
+	jmp .LBB98_203
+	.p2align	4
+.LBB98_6:
+	jne .LBB98_203
+.LBB98_7:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs : 179
+		if ptr == crate::intrinsics::transmute::<$ptr, NonNull<T>>(end_or_len) {
+	je .LBB98_21
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 37
+		let x = *bytes.next()?;
+	movzx eax, byte ptr [rdi + r12]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 38
+		if x < 128 {
+	test al, al
+	js .LBB98_9
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 176
+		while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+	add eax, -48
+	cmp eax, 10
+	jae .LBB98_16
+.LBB98_14:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 177
+		self.bump();
+	mov rdi, r15
+	call expr_parser::parsing::Lexer::bump
+	jmp .LBB98_3
+	.p2align	4
+.LBB98_9:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 11
+		(byte & (0x7F >> width)) as u32
+	mov ecx, eax
+	and ecx, 31
+	movzx r8d, byte ptr [rdi + r12 + 1]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	and r8d, 63
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 50
+		if x >= 0xE0 {
+	cmp al, -33
+	jbe .LBB98_12
+	movzx edx, byte ptr [rdi + r12 + 2]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl r8d, 6
+	and edx, 63
+	or edx, r8d
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 58
+		if x >= 0xF0 {
+	cmp al, -16
+	jb .LBB98_15
+	movzx eax, byte ptr [rdi + r12 + 3]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	and ecx, 7
+	shl ecx, 18
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl edx, 6
+	and eax, 63
+	or eax, edx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	or eax, ecx
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 176
+		while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+	add eax, -48
+	cmp eax, 10
+	jb .LBB98_14
+	jmp .LBB98_16
+.LBB98_12:
+	shl ecx, 6
+	or ecx, r8d
+	mov eax, ecx
+	add eax, -48
+	cmp eax, 10
+	jb .LBB98_14
+	jmp .LBB98_16
+.LBB98_15:
+	shl ecx, 12
+	or edx, ecx
+	mov eax, edx
+	add eax, -48
+	cmp eax, 10
+	jb .LBB98_14
+.LBB98_16:
+	mov rcx, r12
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	jne .LBB98_22
+	jmp .LBB98_24
+.LBB98_17:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 173
+		let value = match ch {
+	cmp eax, 34
+	jne .LBB98_29
+	.p2align	4
+.LBB98_18:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 195
+		while let Some(c) = self.bump() {
+	mov rdi, r15
+	call expr_parser::parsing::Lexer::bump
+	cmp eax, 34
+	je .LBB98_52
+	cmp eax, 1114112
+	jne .LBB98_18
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 206
+		return Err(LexError::UnterminatedString {
+	mov dword ptr [r14 + 8], 1
+	mov qword ptr [r14 + 16], rbx
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 152
+		file: self.file,
+	movdqu xmm0, xmmword ptr [r15 + 72]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 206
+		return Err(LexError::UnterminatedString {
+	pshufd xmm0, xmm0, 78
+	movdqu xmmword ptr [r14 + 24], xmm0
+	mov qword ptr [r14], 6
+	jmp .LBB98_199
+.LBB98_21:
+	mov rcx, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_24
+.LBB98_22:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rcx, rsi
+	jae .LBB98_50
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rdi + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	jl .LBB98_51
+.LBB98_24:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs : 179
+		if ptr == crate::intrinsics::transmute::<$ptr, NonNull<T>>(end_or_len) {
+	je .LBB98_128
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 37
+		let x = *bytes.next()?;
+	movzx eax, byte ptr [rdi + r12]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 38
+		if x < 128 {
+	test al, al
+	jns .LBB98_127
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 11
+		(byte & (0x7F >> width)) as u32
+	mov edx, eax
+	and edx, 31
+	movzx r9d, byte ptr [rdi + r12 + 1]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	and r9d, 63
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 50
+		if x >= 0xE0 {
+	cmp al, -33
+	jbe .LBB98_85
+	movzx r8d, byte ptr [rdi + r12 + 2]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl r9d, 6
+	and r8d, 63
+	or r8d, r9d
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 58
+		if x >= 0xF0 {
+	cmp al, -16
+	jb .LBB98_126
+	movzx eax, byte ptr [rdi + r12 + 3]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	and edx, 7
+	shl edx, 18
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl r8d, 6
+	and eax, 63
+	or eax, r8d
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	or eax, edx
+	jmp .LBB98_127
+.LBB98_29:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/char/methods.rs : 1404
+		matches!(*self, 'A'..='Z' | 'a'..='z')
+	lea ecx, [rax - 65]
+	cmp ecx, 26
+	jb .LBB98_36
+	lea ecx, [rax - 97]
+	cmp ecx, 26
+	setb cl
+	cmp eax, 95
+	sete al
+	or al, cl
+	jne .LBB98_36
+	mov qword ptr [rsp + 16], r14
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 230
+		self.pos = start; // rewind and try operator matching
+	mov qword ptr [r15 + 80], rbx
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 138
+		&self.src[self.pos..]
+	mov r14, qword ptr [r15 + 56]
+	mov rcx, qword ptr [r15 + 64]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test rbx, rbx
+	je .LBB98_107
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rcx, rbx
+	jbe .LBB98_106
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [r14 + rbx], -65
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	jg .LBB98_107
+.LBB98_34:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 549
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.140]
+	mov rdi, r14
+	mov rsi, rcx
+	mov rdx, rbx
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+	.p2align	4
+.LBB98_35:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 217
+		self.bump();
+	mov rdi, r15
+	call expr_parser::parsing::Lexer::bump
+.LBB98_36:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 128
+		self.src[self.pos..].chars().next()
+	mov rbp, qword ptr [r15 + 56]
+	mov rsi, qword ptr [r15 + 64]
+	mov r12, qword ptr [r15 + 80]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_40
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp r12, rsi
+	jae .LBB98_39
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rbp + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	jge .LBB98_40
+	jmp .LBB98_206
+	.p2align	4
+.LBB98_39:
+	jne .LBB98_206
+.LBB98_40:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs : 179
+		if ptr == crate::intrinsics::transmute::<$ptr, NonNull<T>>(end_or_len) {
+	je .LBB98_57
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 37
+		let x = *bytes.next()?;
+	movzx eax, byte ptr [rbp + r12]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 38
+		if x < 128 {
+	test al, al
+	jns .LBB98_46
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 11
+		(byte & (0x7F >> width)) as u32
+	mov ecx, eax
+	and ecx, 31
+	movzx edi, byte ptr [rbp + r12 + 1]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	and edi, 63
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 50
+		if x >= 0xE0 {
+	cmp al, -33
+	jbe .LBB98_45
+	movzx edx, byte ptr [rbp + r12 + 2]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl edi, 6
+	and edx, 63
+	or edx, edi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 58
+		if x >= 0xF0 {
+	cmp al, -17
+	jbe .LBB98_49
+	movzx eax, byte ptr [rbp + r12 + 3]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	and ecx, 7
+	shl ecx, 18
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl edx, 6
+	and eax, 63
+	or eax, edx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	or eax, ecx
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 214
+		self.peek_char(),
+	cmp eax, 1114112
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 213
+		while matches!(
+	jne .LBB98_46
+	jmp .LBB98_56
+.LBB98_45:
+	shl ecx, 6
+	or ecx, edi
+	mov eax, ecx
+	.p2align	4
+.LBB98_46:
+	cmp eax, 95
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 215
+		Some(c) if c.is_ascii_alphanumeric() || c == '_'
+	je .LBB98_35
+.LBB98_47:
+	lea ecx, [rax - 48]
+	cmp ecx, 10
+	jb .LBB98_35
+	and eax, -33
+	add eax, -65
+	cmp eax, 26
+	jb .LBB98_35
+	jmp .LBB98_56
+.LBB98_49:
+	shl ecx, 12
+	or edx, ecx
+	mov eax, edx
+	cmp eax, 95
+	jne .LBB98_47
+	jmp .LBB98_35
+.LBB98_50:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	je .LBB98_128
+.LBB98_51:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 549
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.139]
+	mov rdx, rcx
+	mov rcx, rsi
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_52:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 197
+		let text = &self.src[start + 1..self.pos - 1];
+	mov r13, qword ptr [r15 + 56]
+	mov rsi, qword ptr [r15 + 64]
+	lea rbp, [rbx + 1]
+	mov rax, qword ptr [r15 + 80]
+	lea r12, [rax - 1]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 168
+		if self.start <= self.end
+	cmp r12, rbp
+	jb .LBB98_77
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test rbp, rbp
+	je .LBB98_74
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rbp, rsi
+	jae .LBB98_73
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [r13 + rbp], -65
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 169
+		&& slice.is_char_boundary(self.start)
+	jg .LBB98_74
+	jmp .LBB98_77
+.LBB98_56:
+	mov rcx, r12
+	jmp .LBB98_58
+.LBB98_57:
+	mov rcx, rsi
+.LBB98_58:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 168
+		if self.start <= self.end
+	mov r8, rcx
+	sub r8, rbx
+	jb .LBB98_66
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test rbx, rbx
+	je .LBB98_63
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rbx, rsi
+	jae .LBB98_62
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rbp + rbx], -65
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 169
+		&& slice.is_char_boundary(self.start)
+	jg .LBB98_63
+	jmp .LBB98_66
+.LBB98_62:
+	jne .LBB98_66
+.LBB98_63:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_68
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rcx, rsi
+	jae .LBB98_67
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rbp + r12], -65
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jg .LBB98_68
+.LBB98_66:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 247
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.143]
+	mov rdi, rbp
+	mov rdx, rbx
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_67:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jne .LBB98_66
+.LBB98_68:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/const_ptr.rs : 915
+		unsafe { intrinsics::offset(self, count) }
+	add rbp, rbx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 144
+		if self.len() != other.len() {
+	lea rax, [r8 - 2]
+	cmp rax, 4
+	ja .LBB98_105
+	lea rcx, [rip + .LJTI98_0]
+	movsxd rax, dword ptr [rcx + 4*rax]
+	add rax, rcx
+	jmp rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp word ptr [rbp], 28262
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_184
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp word ptr [rbp], 26217
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_193
+	mov al, 1
+	xor ecx, ecx
+	jmp .LBB98_102
+.LBB98_73:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 169
+		&& slice.is_char_boundary(self.start)
+	jne .LBB98_77
+.LBB98_74:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_79
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp r12, rsi
+	jae .LBB98_78
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [r13 + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jge .LBB98_79
+.LBB98_77:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 247
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.141]
+	mov rdi, r13
+	mov rdx, rbp
+	mov rcx, r12
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_78:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jne .LBB98_77
+.LBB98_79:
+	sub r12, rbp
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs : 444
+		if b {
+	jns .LBB98_82
+	xor edi, edi
+.LBB98_81:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs : 430
+		Err(err) => handle_error(err),
+	lea rdx, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.110]
+	mov rsi, r12
+	call qword ptr [rip + alloc::raw_vec::handle_error@GOTPCREL]
+.LBB98_82:
+	mov qword ptr [rsp + 24], rax
+	mov rax, qword ptr [r15 + 72]
+	mov qword ptr [rsp + 16], rax
+	mov r15d, 1
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs : 467
+		if layout.size() == 0 {
+	je .LBB98_84
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs : 92
+		__rust_no_alloc_shim_is_unstable_v2();
+	call qword ptr [rip + __rustc::__rust_no_alloc_shim_is_unstable_v2@GOTPCREL]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs : 94
+		__rust_alloc(layout.size(), layout.align())
+	mov esi, 1
+	mov rdi, r12
+	call qword ptr [rip + __rustc::__rust_alloc@GOTPCREL]
+	mov edi, 1
+	mov r15, rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs : 480
+		let ptr = match result {
+	test rax, rax
+	je .LBB98_81
+.LBB98_84:
+	add r13, rbp
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs : 547
+		unsafe { crate::intrinsics::copy_nonoverlapping(src, dst, count) }
+	mov rdi, r15
+	mov rsi, r13
+	mov rdx, r12
+	call qword ptr [rip + memcpy@GOTPCREL]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 198
+		return Ok(Some(Located {
+	mov qword ptr [r14], 2
+	mov qword ptr [r14 + 8], r12
+	mov qword ptr [r14 + 16], r15
+	mov qword ptr [r14 + 24], r12
+	mov qword ptr [r14 + 32], rbx
+	mov rax, qword ptr [rsp + 24]
+	mov qword ptr [r14 + 40], rax
+	mov rax, qword ptr [rsp + 16]
+	mov qword ptr [r14 + 48], rax
+	jmp .LBB98_199
+.LBB98_85:
+	shl edx, 6
+	or edx, r9d
+	mov eax, edx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 50
+		if x >= 0xE0 {
+	jmp .LBB98_127
+	mov eax, 1970435187
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor eax, dword ptr [rbp]
+	movzx ecx, word ptr [rbp + 4]
+	xor ecx, 29795
+	or ecx, eax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_181
+	mov eax, 1970562418
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor eax, dword ptr [rbp]
+	movzx ecx, word ptr [rbp + 4]
+	xor ecx, 28274
+	or ecx, eax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_190
+	xor ecx, ecx
+	xor eax, eax
+	jmp .LBB98_115
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp dword ptr [rbp], 1701869940
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_182
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp dword ptr [rbp], 1836412517
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_191
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp dword ptr [rbp], 1702063205
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	jne .LBB98_100
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.153]
+	jmp .LBB98_197
+	mov eax, 1936617315
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor eax, dword ptr [rbp]
+	movzx ecx, byte ptr [rbp + 4]
+	xor ecx, 116
+	or ecx, eax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_183
+	mov eax, 1869180533
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor eax, dword ptr [rbp]
+	movzx ecx, byte ptr [rbp + 4]
+	xor ecx, 110
+	or ecx, eax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_192
+	mov eax, 1818847351
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor eax, dword ptr [rbp]
+	movzx ecx, byte ptr [rbp + 4]
+	xor ecx, 101
+	or ecx, eax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_195
+	mov cl, 1
+	jmp .LBB98_101
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	movzx eax, word ptr [rbp]
+	xor eax, 25964
+	movzx ecx, byte ptr [rbp + 2]
+	xor ecx, 116
+	or cx, ax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_185
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	movzx eax, word ptr [rbp]
+	xor eax, 26211
+	movzx ecx, byte ptr [rbp + 2]
+	xor ecx, 110
+	or cx, ax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_194
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	movzx eax, word ptr [rbp]
+	xor eax, 28518
+	movzx ecx, byte ptr [rbp + 2]
+	xor ecx, 114
+	or cx, ax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_196
+.LBB98_100:
+	xor ecx, ecx
+.LBB98_101:
+	xor eax, eax
+.LBB98_102:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 144
+		if self.len() != other.len() {
+	test cl, cl
+	je .LBB98_114
+	mov edx, 1668571501
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor edx, dword ptr [rbp]
+	movzx esi, byte ptr [rbp + 4]
+	xor esi, 104
+	mov cl, 1
+	or esi, edx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	jne .LBB98_115
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.156]
+	jmp .LBB98_197
+.LBB98_105:
+	xor eax, eax
+	jmp .LBB98_117
+.LBB98_106:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	jne .LBB98_34
+.LBB98_107:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 217
+		let new_len = unchecked_sub(self.end, self.start);
+	sub rcx, rbx
+	mov qword ptr [rsp + 32], rbx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/const_ptr.rs : 915
+		unsafe { intrinsics::offset(self, count) }
+	add r14, rbx
+	mov ebx, 8
+	lea r12, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.211]
+	jmp .LBB98_109
+	.p2align	4
+.LBB98_108:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	add rbx, 16
+	cmp rbx, 776
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs : 179
+		if ptr == crate::intrinsics::transmute::<$ptr, NonNull<T>>(end_or_len) {
+	je .LBB98_112
+.LBB98_109:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2426
+		accum = f(accum, x)?;
+	mov rbp, qword ptr [rbx + r12]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/mod.rs : 2618
+		self.len() >= n && needle == &self[..n]
+	cmp rcx, rbp
+	jb .LBB98_108
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2426
+		accum = f(accum, x)?;
+	mov rdi, qword ptr [rbx + r12 - 8]
+	mov qword ptr [rsp + 24], rdi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	mov rsi, r14
+	mov rdx, rbp
+	mov r13, rcx
+	call qword ptr [rip + bcmp@GOTPCREL]
+	mov rcx, r13
+	test eax, eax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	jne .LBB98_108
+	mov r13, rbp
+	mov rbx, qword ptr [rsp + 32]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 232
+		self.pos += op.len();
+	lea r12, [rbx + rbp]
+	mov qword ptr [r15 + 80], r12
+	mov ecx, 4
+	mov rax, qword ptr [rsp + 24]
+	mov r14, qword ptr [rsp + 16]
+	jmp .LBB98_198
+.LBB98_112:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 235
+		let bad = self.bump().unwrap();
+	mov rdi, r15
+	call expr_parser::parsing::Lexer::bump
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs : 1007
+		match self {
+	cmp eax, 1114112
+	je .LBB98_201
+	mov rcx, qword ptr [rsp + 16]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 236
+		return Err(LexError::UnexpectedChar {
+	mov dword ptr [rcx + 8], 0
+	mov dword ptr [rcx + 12], eax
+	mov rax, qword ptr [rsp + 32]
+	mov qword ptr [rcx + 16], rax
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 152
+		file: self.file,
+	movdqu xmm0, xmmword ptr [r15 + 72]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 236
+		return Err(LexError::UnexpectedChar {
+	pshufd xmm0, xmm0, 78
+	movdqu xmmword ptr [rcx + 24], xmm0
+	mov qword ptr [rcx], 6
+	jmp .LBB98_199
+.LBB98_114:
+	xor ecx, ecx
+.LBB98_115:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 144
+		if self.len() != other.len() {
+	test cl, cl
+	je .LBB98_117
+	mov ecx, 1634038370
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	xor ecx, dword ptr [rbp]
+	movzx edx, byte ptr [rbp + 4]
+	xor edx, 107
+	or edx, ecx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_189
+.LBB98_117:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 144
+		if self.len() != other.len() {
+	cmp r8, 8
+	jne .LBB98_119
+	movabs rcx, 7310870969309884259
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp qword ptr [rbp], rcx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_180
+.LBB98_119:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 144
+		if self.len() != other.len() {
+	test al, al
+	je .LBB98_121
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs : 152
+		compare_bytes(self.as_ptr() as *const u8, other.as_ptr() as *const u8, size) == 0
+	cmp word ptr [rbp], 29537
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/iter/traits/iterator.rs : 2884
+		if predicate(&x) { ControlFlow::Break(x) } else { ControlFlow::Continue(()) }
+	je .LBB98_186
+.LBB98_121:
+	test r8, r8
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/intrinsics/mod.rs : 444
+		if b {
+	jns .LBB98_124
+	xor edi, edi
+.LBB98_123:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs : 430
+		Err(err) => handle_error(err),
+	lea rdx, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.110]
+	mov rsi, r8
+	call qword ptr [rip + alloc::raw_vec::handle_error@GOTPCREL]
+.LBB98_124:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs : 467
+		if layout.size() == 0 {
+	je .LBB98_187
+	mov r13, r8
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs : 92
+		__rust_no_alloc_shim_is_unstable_v2();
+	call qword ptr [rip + __rustc::__rust_no_alloc_shim_is_unstable_v2@GOTPCREL]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/alloc.rs : 94
+		__rust_alloc(layout.size(), layout.align())
+	mov esi, 1
+	mov rdi, r13
+	call qword ptr [rip + __rustc::__rust_alloc@GOTPCREL]
+	mov edi, 1
+	mov r8, r13
+	mov r13, rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/raw_vec/mod.rs : 480
+		let ptr = match result {
+	test rax, rax
+	jne .LBB98_188
+	jmp .LBB98_123
+.LBB98_126:
+	shl edx, 12
+	or r8d, edx
+	mov eax, r8d
+.LBB98_127:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs : 2315
+		match (self, other) {
+	cmp eax, 46
+	je .LBB98_134
+.LBB98_128:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 168
+		if self.start <= self.end
+	mov r8, rcx
+	sub r8, rbx
+	jb .LBB98_148
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test rbx, rbx
+	je .LBB98_145
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rbx, rsi
+	jae .LBB98_144
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rdi + rbx], -65
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 169
+		&& slice.is_char_boundary(self.start)
+	jg .LBB98_145
+	jmp .LBB98_148
+.LBB98_132:
+	shl edx, 6
+	or edx, r8d
+	mov ecx, edx
+	.p2align	4
+.LBB98_133:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 182
+		while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
+	add ecx, -48
+	cmp ecx, 10
+	jae .LBB98_167
+.LBB98_134:
+	mov rdi, r15
+	call expr_parser::parsing::Lexer::bump
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 128
+		self.src[self.pos..].chars().next()
+	mov rsi, qword ptr [r15 + 56]
+	mov rax, qword ptr [r15 + 64]
+	mov r12, qword ptr [r15 + 80]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_138
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp r12, rax
+	jae .LBB98_137
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rsi + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 514
+		if slice.is_char_boundary(self.start) {
+	jge .LBB98_138
+	jmp .LBB98_207
+	.p2align	4
+.LBB98_137:
+	jne .LBB98_207
+.LBB98_138:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs : 179
+		if ptr == crate::intrinsics::transmute::<$ptr, NonNull<T>>(end_or_len) {
+	je .LBB98_166
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 37
+		let x = *bytes.next()?;
+	movzx ecx, byte ptr [rsi + r12]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 38
+		if x < 128 {
+	test cl, cl
+	jns .LBB98_133
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 11
+		(byte & (0x7F >> width)) as u32
+	mov edx, ecx
+	and edx, 31
+	movzx r8d, byte ptr [rsi + r12 + 1]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	and r8d, 63
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 50
+		if x >= 0xE0 {
+	cmp cl, -33
+	jbe .LBB98_132
+	movzx edi, byte ptr [rsi + r12 + 2]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl r8d, 6
+	and edi, 63
+	or edi, r8d
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 58
+		if x >= 0xF0 {
+	cmp cl, -16
+	jb .LBB98_143
+	movzx ecx, byte ptr [rsi + r12 + 3]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	and edx, 7
+	shl edx, 18
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 17
+		(ch << 6) | (byte & CONT_MASK) as u32
+	shl edi, 6
+	and ecx, 63
+	or ecx, edi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 64
+		ch = (init & 7) << 18 | utf8_acc_cont_byte(y_z, w);
+	or ecx, edx
+	jmp .LBB98_133
+.LBB98_143:
+	shl edx, 12
+	or edi, edx
+	mov ecx, edi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/validations.rs : 58
+		if x >= 0xF0 {
+	jmp .LBB98_133
+.LBB98_144:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 169
+		&& slice.is_char_boundary(self.start)
+	jne .LBB98_148
+.LBB98_145:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_150
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rcx, rsi
+	jae .LBB98_149
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rdi + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jge .LBB98_150
+.LBB98_148:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 247
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.161]
+	mov rdx, rbx
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_149:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rsi
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jne .LBB98_148
+.LBB98_150:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/const_ptr.rs : 915
+		unsafe { intrinsics::offset(self, count) }
+	add rdi, rbx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1545
+		if src.is_empty() {
+	cmp r8, 1
+	je .LBB98_154
+	test r8, r8
+	je .LBB98_208
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1552
+		let (is_positive, mut digits) = match src {
+	cmp byte ptr [rdi], 43
+	jne .LBB98_156
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1556
+		[b'+', rest @ ..] => (true, rest),
+	inc rdi
+	lea rax, [r8 - 1]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1363
+		radix <= 16 && digits.len() <= size_of::<T>() * 2 - is_signed_ty as usize
+	cmp r8, 18
+	mov r8, rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1572
+		if can_not_overflow::<$int_ty>(radix, is_signed_ty, digits) {
+	jb .LBB98_157
+	jmp .LBB98_161
+.LBB98_154:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1552
+		let (is_positive, mut digits) = match src {
+	movzx eax, byte ptr [rdi]
+	mov dl, 1
+	cmp eax, 43
+	je .LBB98_205
+	mov r8d, 1
+	cmp eax, 45
+	jne .LBB98_157
+	jmp .LBB98_205
+.LBB98_156:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1363
+		radix <= 16 && digits.len() <= size_of::<T>() * 2 - is_signed_ty as usize
+	cmp r8, 17
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1572
+		if can_not_overflow::<$int_ty>(radix, is_signed_ty, digits) {
+	jae .LBB98_161
+.LBB98_157:
+	xor ecx, ecx
+	xor edx, edx
+	xor eax, eax
+	.p2align	4
+.LBB98_158:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1585
+		let x = unwrap_or_PIE!((*c as char).to_digit(radix), InvalidDigit);
+	movzx esi, byte ptr [rdi + rdx]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs : 2112
+		intrinsics::wrapping_sub(self, rhs)
+	add esi, -48
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/char/methods.rs : 423
+		if value < radix { Some(value) } else { None }
+	cmp esi, 9
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1565
+		match $option {
+	ja .LBB98_204
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1584
+		result = result * (radix as $int_ty);
+	lea rax, [rax + 4*rax]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1586
+		result = result $unchecked_additive_op (x as $int_ty);
+	mov esi, esi
+	lea rax, [rsi + 2*rax]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1583
+		while let [c, rest @ ..] = digits {
+	inc rdx
+	cmp r8, rdx
+	jne .LBB98_158
+.LBB98_160:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1599
+		while let [c, rest @ ..] = digits {
+	jmp .LBB98_198
+.LBB98_161:
+	xor ecx, ecx
+	mov esi, 10
+	xor r9d, r9d
+	xor eax, eax
+	.p2align	4
+.LBB98_162:
+	cmp r8, r9
+	je .LBB98_160
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs : 2643
+		let (a, b) = intrinsics::mul_with_overflow(self as $ActualT, rhs as $ActualT);
+	mul rsi
+	seto r11b
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1611
+		let x = unwrap_or_PIE!((*c as char).to_digit(radix), InvalidDigit) as $int_ty;
+	movzx r10d, byte ptr [rdi + r9]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs : 2112
+		intrinsics::wrapping_sub(self, rhs)
+	add r10d, -48
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/char/methods.rs : 423
+		if value < radix { Some(value) } else { None }
+	cmp r10d, 9
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1565
+		match $option {
+	ja .LBB98_204
+	mov dl, 2
+	test r11b, r11b
+	jne .LBB98_205
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1611
+		let x = unwrap_or_PIE!((*c as char).to_digit(radix), InvalidDigit) as $int_ty;
+	mov r10d, r10d
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1565
+		match $option {
+	inc r9
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/uint_macros.rs : 521
+		if intrinsics::unlikely(intrinsics::add_with_overflow(self, rhs).1) {
+	add rax, r10
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1565
+		match $option {
+	jae .LBB98_162
+	jmp .LBB98_205
+.LBB98_166:
+	mov rcx, rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs : 179
+		if ptr == crate::intrinsics::transmute::<$ptr, NonNull<T>>(end_or_len) {
+	jmp .LBB98_168
+.LBB98_167:
+	mov rcx, r12
+.LBB98_168:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 168
+		if self.start <= self.end
+	mov rdx, rcx
+	sub rdx, rbx
+	jb .LBB98_176
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test rbx, rbx
+	je .LBB98_173
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rbx, rax
+	jae .LBB98_172
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rsi + rbx], -65
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 169
+		&& slice.is_char_boundary(self.start)
+	jg .LBB98_173
+	jmp .LBB98_176
+.LBB98_172:
+	jne .LBB98_176
+.LBB98_173:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 366
+		if index == 0 {
+	test r12, r12
+	je .LBB98_178
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 370
+		if index >= self.len() {
+	cmp rcx, rax
+	jae .LBB98_177
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1076
+		(self as i8) >= -0x40
+	cmp byte ptr [rsi + r12], -64
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jge .LBB98_178
+.LBB98_176:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 247
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.163]
+	mov rdi, rsi
+	mov rsi, rax
+	mov rdx, rbx
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_177:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/non_null.rs : 1654
+		self.as_ptr() == other.as_ptr()
+	cmp r12, rax
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 170
+		&& slice.is_char_boundary(self.end)
+	jne .LBB98_176
+.LBB98_178:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/const_ptr.rs : 915
+		unsafe { intrinsics::offset(self, count) }
+	add rsi, rbx
+	lea rdi, [rsp + 40]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/mod.rs : 2702
+		FromStr::from_str(self)
+	call qword ptr [rip + core::num::dec2flt::<impl core::str::traits::FromStr for f64>::from_str@GOTPCREL]
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs : 1165
+		match self {
+	cmp byte ptr [rsp + 40], 1
+	je .LBB98_200
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs : 1166
+		Ok(t) => t,
+	mov rax, qword ptr [rsp + 48]
+	mov ecx, 1
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1599
+		while let [c, rest @ ..] = digits {
+	jmp .LBB98_198
+.LBB98_180:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.159]
+	jmp .LBB98_197
+.LBB98_181:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.147]
+	jmp .LBB98_197
+.LBB98_182:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.146]
+	jmp .LBB98_197
+.LBB98_183:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.145]
+	jmp .LBB98_197
+.LBB98_184:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.150]
+	jmp .LBB98_197
+.LBB98_185:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.144]
+	jmp .LBB98_197
+.LBB98_186:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.160]
+	jmp .LBB98_197
+.LBB98_187:
+	mov r13d, 1
+.LBB98_188:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs : 547
+		unsafe { crate::intrinsics::copy_nonoverlapping(src, dst, count) }
+	mov rdi, r13
+	mov rsi, rbp
+	mov rdx, r8
+	mov rbp, r8
+	call qword ptr [rip + memcpy@GOTPCREL]
+	mov r8, rbp
+	mov ecx, 3
+	mov rax, rbp
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 221
+		if let Some(op) = KEYWORDS.iter().copied().find(|x| *x == text) {
+	jmp .LBB98_198
+.LBB98_189:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.158]
+	jmp .LBB98_197
+.LBB98_190:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.157]
+	jmp .LBB98_197
+.LBB98_191:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.149]
+	jmp .LBB98_197
+.LBB98_192:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.148]
+	jmp .LBB98_197
+.LBB98_193:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.152]
+	jmp .LBB98_197
+.LBB98_194:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.151]
+	jmp .LBB98_197
+.LBB98_195:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.154]
+	jmp .LBB98_197
+.LBB98_196:
+	lea rax, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.155]
+.LBB98_197:
+	mov ecx, 4
+	mov r13, r8
+.LBB98_198:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 152
+		file: self.file,
+	mov rdx, qword ptr [r15 + 72]
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 244
+		Ok(Some(Located {
+	mov qword ptr [r14], rcx
+	mov qword ptr [r14 + 8], rax
+	mov qword ptr [r14 + 16], r13
+	mov qword ptr [r14 + 24], r8
+	mov qword ptr [r14 + 32], rbx
+	mov qword ptr [r14 + 40], r12
+	mov qword ptr [r14 + 48], rdx
+.LBB98_199:
+		// /home/user/Desktop/rust_stuff/expr_parser/src/parsing.rs : 248
+		}
+	add rsp, 56
+	.cfi_def_cfa_offset 56
+	pop rbx
+	.cfi_def_cfa_offset 48
+	pop r12
+	.cfi_def_cfa_offset 40
+	pop r13
+	.cfi_def_cfa_offset 32
+	pop r14
+	.cfi_def_cfa_offset 24
+	pop r15
+	.cfi_def_cfa_offset 16
+	pop rbp
+	.cfi_def_cfa_offset 8
+	ret
+.LBB98_200:
+	.cfi_def_cfa_offset 112
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs : 1167
+		Err(e) => unwrap_failed("called `Result::unwrap()` on an `Err` value", &e),
+	movzx eax, byte ptr [rsp + 41]
+	mov byte ptr [rsp + 15], al
+	lea rdi, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.20]
+	lea rcx, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.19]
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.164]
+	lea rdx, [rsp + 15]
+	mov esi, 43
+	call qword ptr [rip + core::result::unwrap_failed@GOTPCREL]
+.LBB98_201:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs : 1009
+		None => unwrap_failed(),
+	lea rdi, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.142]
+	call qword ptr [rip + core::option::unwrap_failed@GOTPCREL]
+.LBB98_204:
+	mov dl, 1
+.LBB98_205:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs : 1167
+		Err(e) => unwrap_failed("called `Result::unwrap()` on an `Err` value", &e),
+	mov byte ptr [rsp + 40], dl
+	lea rdi, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.20]
+	lea rcx, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.22]
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.162]
+	lea rdx, [rsp + 40]
+	mov esi, 43
+	call qword ptr [rip + core::result::unwrap_failed@GOTPCREL]
+.LBB98_203:
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/str/traits.rs : 549
+		None => super::slice_error_fail(slice, start, end),
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.139]
+	mov rdx, r12
+	mov rcx, rsi
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_206:
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.139]
+	mov rdi, rbp
+	mov rdx, r12
+	mov rcx, rsi
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_207:
+	lea r8, [rip + .Lanon.dc0bd834fce3867f5b90821eb4dacbea.139]
+	mov rdi, rsi
+	mov rsi, rax
+	mov rdx, r12
+	mov rcx, rax
+	call qword ptr [rip + core::str::slice_error_fail@GOTPCREL]
+.LBB98_208:
+	xor edx, edx
+		// /home/user/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/num/mod.rs : 1545
+		if src.is_empty() {
+	jmp .LBB98_205

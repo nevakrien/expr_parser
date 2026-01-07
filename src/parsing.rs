@@ -100,6 +100,7 @@ pub const OPERATORS: &[&str] = &[
 pub struct Lexer<'a> {
     src: &'a str,
     file: usize,
+    ///safety critical
     pos: usize,
     peeked: Option<LTok>,
 }
@@ -123,19 +124,43 @@ impl<'a> Lexer<'a> {
     /* =============================
      * Low-level character handling
      * ============================= */
-
+    #[inline]
     fn peek_char(&self) -> Option<char> {
-        self.src[self.pos..].chars().next()
+        unsafe{
+            self.src.get_unchecked(self.pos..).chars().next()
+        }
     }
 
+    #[inline]
     fn bump(&mut self) -> Option<char> {
-        let ch = self.peek_char()?;
-        self.pos += ch.len_utf8();
+        let mut chars = unsafe {
+            self.src.get_unchecked(self.pos..).char_indices()
+        };
+        let (_,ch) = chars.next()?;
+        self.pos += chars.offset();
         Some(ch)
     }
 
+    #[inline]
+    fn try_char(&mut self,f:impl FnOnce(char)->bool) -> bool {
+        let mut chars = unsafe {
+            self.src.get_unchecked(self.pos..).char_indices()
+        };
+        let Some((_,ch)) = chars.next() else {
+            return false;
+        };
+        if !f(ch) {
+            return false;
+        }
+        self.pos += chars.offset();
+        Some(ch).is_some()
+    }
+
+
     fn remaining(&self) -> &'a str {
-        &self.src[self.pos..]
+        unsafe{
+            self.src.get_unchecked(self.pos..)
+        }
     }
 
     /* =============================
@@ -173,19 +198,18 @@ impl<'a> Lexer<'a> {
         let value = match ch {
             // -------- numbers --------
             '0'..='9' => {
-                while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
-                    self.bump();
+                while self.try_char(|c| c.is_ascii_digit()) {
+                    
                 }
 
-                if self.peek_char() == Some('.') {
-                    self.bump();
-                    while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
-                        self.bump();
+                if self.try_char(|c| c=='.') {
+                    while self.try_char(|c| c.is_ascii_digit()) {
+                    
                     }
-                    let text = &self.src[start..self.pos];
+                    let text = unsafe{self.src.get_unchecked(start..self.pos)};
                     Token::FloatLit(text.parse().unwrap())
                 } else {
-                    let text = &self.src[start..self.pos];
+                    let text = unsafe{self.src.get_unchecked(start..self.pos)};
                     Token::NumLit(text.parse().unwrap())
                 }
             }
@@ -194,7 +218,7 @@ impl<'a> Lexer<'a> {
             '"' => {
                 while let Some(c) = self.bump() {
                     if c == '"' {
-                        let text = &self.src[start + 1..self.pos - 1];
+                        let text = unsafe{&self.src.get_unchecked(start + 1..self.pos - 1)};
                         return Ok(Some(Located {
                             loc: self.produce_loc(start),
                             value: Token::StrLit(text.to_string()),
@@ -210,14 +234,10 @@ impl<'a> Lexer<'a> {
 
             // -------- identifiers / keywords --------
             c if c.is_ascii_alphabetic() || c == '_' => {
-                while matches!(
-                    self.peek_char(),
-                    Some(c) if c.is_ascii_alphanumeric() || c == '_'
-                ) {
-                    self.bump();
-                }
+                while self.try_char(|c| c.is_ascii_alphanumeric() || c == '_'){
 
-                let text = &self.src[start..self.pos];
+                }
+                let text = unsafe{self.src.get_unchecked(start..self.pos)};
                 if let Some(op) = KEYWORDS.iter().copied().find(|x| *x == text) {
                     Token::Operator(op)
                 } else {
