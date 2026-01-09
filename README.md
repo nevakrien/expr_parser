@@ -74,3 +74,6 @@ construction of a struct/union can be done like so
 Point(4,y=2)
 Union(float=2.1)
 ```
+
+# Performance
+this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.
