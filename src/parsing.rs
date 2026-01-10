@@ -56,7 +56,13 @@ pub enum Token {
     FloatLit(f64),
     StrLit(String),
     Ident(String),
-    Operator(&'static str),
+    Operator(FixedToken),
+}
+
+impl Token {
+    pub const fn new_operator(s: &str) -> Self {
+        Token::Operator(FixedToken::new(s))
+    }
 }
 
 impl fmt::Display for Token {
@@ -97,84 +103,6 @@ pub const OPERATORS: &[&str] = &[
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
 
-#[inline(always)]
-fn match_operator(input: &str) -> Option<&'static str> {
-    let b = input.as_bytes();
-    let b0 = *b.get(0)?;
-    let b1 = *b.get(1).unwrap_or(&0);
-    let b2 = *b.get(2).unwrap_or(&0);
-
-    //more vectorization friendly aproch
-
-    match (b0, b1, b2) {
-        // common arithmetic first
-        (b'+', b'=', _) => Some("+="),
-        (b'+', b'+', _) => Some("++"),
-        (b'+', _, _) => Some("+"),
-
-        (b'-', b'=', _) => Some("-="),
-        (b'-', b'-', _) => Some("--"),
-        (b'-', b'>', _) => Some("->"),
-        (b'-', _, _) => Some("-"),
-
-        (b'*', b'=', _) => Some("*="),
-        (b'*', _, _) => Some("*"),
-
-        (b'/', b'=', _) => Some("/="),
-        (b'/', _, _) => Some("/"),
-
-        (b'&', b'=', _) => Some("&="),
-        (b'&', b'&', _) => Some("&&"),
-        (b'&', _, _) => Some("&"),
-
-        (b'|', b'=', _) => Some("|="),
-        (b'|', b'>', _) => Some("|>"),
-        (b'|', b'|', _) => Some("||"),
-        (b'|', _, _) => Some("|"),
-
-        // comparisons/assignment
-        (b'=', b'=', _) => Some("=="),
-        (b'=', b'>', _) => Some("=>"),
-        (b'=', _, _) => Some("="),
-
-        (b'!', b'=', _) => Some("!="),
-        (b'!', _, _) => Some("!"),
-
-        (b'<', b'=', _) => Some("<="),
-        (b'>', b'=', _) => Some(">="),
-
-        // shifts (rarer; still greedy-correct via 3-byte checks first)
-        (b'<', b'<', b'=') => Some("<<="),
-        (b'>', b'>', b'=') => Some(">>="),
-        (b'<', b'<', _) => Some("<<"),
-        (b'>', b'>', _) => Some(">>"),
-        (b'<', _, _) => Some("<"),
-        (b'>', _, _) => Some(">"),
-
-        // rest + delimiters
-        (b'^', b'=', _) => Some("^="),
-        (b'^', _, _) => Some("^"),
-        (b'%', b'=', _) => Some("%="),
-        (b'%', _, _) => Some("%"),
-        (b'~', b'=', _) => Some("~="),
-        (b'~', _, _) => Some("~"),
-        (b':', b':', _) => Some("::"),
-        (b':', _, _) => Some(":"),
-        (b'.', _, _) => Some("."),
-
-        (b'(', _, _) => Some("("),
-        (b')', _, _) => Some(")"),
-        (b'{', _, _) => Some("{"),
-        (b'}', _, _) => Some("}"),
-        (b'[', _, _) => Some("["),
-        (b']', _, _) => Some("]"),
-        (b',', _, _) => Some(","),
-        (b';', _, _) => Some(";"),
-
-        _ => None,
-    }
-}
-
 #[repr(C, align(8))]
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pack8(pub [u8; 8]);
@@ -200,53 +128,350 @@ pub const fn pack8(s: &str) -> Pack8 {
 }
 
 
-#[inline(always)]
-fn match_keyword(input: &str) -> Option<&'static str> {
-    // If you truly rely on "no NUL in source", it can be good to enforce it in debug:
-    // debug_assert!(!input.as_bytes().contains(&0));
+// ==================== Fixed tokens ====================
 
-    const K_LET: Pack8     = pack8("let");
-    const K_CONST: Pack8   = pack8("const");
-    const K_TYPE: Pack8    = pack8("type");
-    const K_STRUCT: Pack8  = pack8("struct");
-    const K_UNION: Pack8   = pack8("union");
-    const K_ENUM: Pack8    = pack8("enum");
-    const K_FN: Pack8      = pack8("fn");
-    const K_CFN: Pack8     = pack8("cfn");
-    const K_IF: Pack8      = pack8("if");
-    const K_ELSE: Pack8    = pack8("else");
-    const K_WHILE: Pack8   = pack8("while");
-    const K_FOR: Pack8     = pack8("for");
-    const K_MATCH: Pack8   = pack8("match");
-    const K_RETURN: Pack8  = pack8("return");
-    const K_BREAK: Pack8   = pack8("break");
-    const K_CONTINUE: Pack8= pack8("continue");
-    const K_AS: Pack8      = pack8("as");
+#[repr(u64)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub enum FixedToken {
+    // ====================
+    // Keywords
+    // ====================
+    Let      = u64::from_le_bytes(pack8("let").0),
+    Const    = u64::from_le_bytes(pack8("const").0),
+    Type     = u64::from_le_bytes(pack8("type").0),
+    Struct   = u64::from_le_bytes(pack8("struct").0),
+    Union    = u64::from_le_bytes(pack8("union").0),
+    Enum     = u64::from_le_bytes(pack8("enum").0),
+    Fn       = u64::from_le_bytes(pack8("fn").0),
+    Cfn      = u64::from_le_bytes(pack8("cfn").0),
+    If       = u64::from_le_bytes(pack8("if").0),
+    Else     = u64::from_le_bytes(pack8("else").0),
+    While    = u64::from_le_bytes(pack8("while").0),
+    For      = u64::from_le_bytes(pack8("for").0),
+    Match    = u64::from_le_bytes(pack8("match").0),
+    Return   = u64::from_le_bytes(pack8("return").0),
+    Break    = u64::from_le_bytes(pack8("break").0),
+    Continue = u64::from_le_bytes(pack8("continue").0),
+    As       = u64::from_le_bytes(pack8("as").0),
+
+    // ====================
+    // 3-char operators
+    // ====================
+    ShlEq = u64::from_le_bytes(pack8("<<=").0),
+    ShrEq = u64::from_le_bytes(pack8(">>=").0),
+
+    // ====================
+    // 2-char operators
+    // ====================
+    AddEq   = u64::from_le_bytes(pack8("+=").0),
+    SubEq   = u64::from_le_bytes(pack8("-=").0),
+    MulEq   = u64::from_le_bytes(pack8("*=").0),
+    DivEq   = u64::from_le_bytes(pack8("/=").0),
+    ModEq   = u64::from_le_bytes(pack8("%=").0),
+    AndEq   = u64::from_le_bytes(pack8("&=").0),
+    OrEq    = u64::from_le_bytes(pack8("|=").0),
+    XorEq   = u64::from_le_bytes(pack8("^=").0),
+    PipeFwd = u64::from_le_bytes(pack8("|>").0),
+    EqEq    = u64::from_le_bytes(pack8("==").0),
+    Ne      = u64::from_le_bytes(pack8("!=").0),
+    Le      = u64::from_le_bytes(pack8("<=").0),
+    Ge      = u64::from_le_bytes(pack8(">=").0),
+    TildeEq = u64::from_le_bytes(pack8("~=").0),
+    FatArrow= u64::from_le_bytes(pack8("=>").0),
+    Shl     = u64::from_le_bytes(pack8("<<").0),
+    Shr     = u64::from_le_bytes(pack8(">>").0),
+    AndAnd  = u64::from_le_bytes(pack8("&&").0),
+    OrOr    = u64::from_le_bytes(pack8("||").0),
+    Inc     = u64::from_le_bytes(pack8("++").0),
+    Dec     = u64::from_le_bytes(pack8("--").0),
+    Arrow   = u64::from_le_bytes(pack8("->").0),
+    Path    = u64::from_le_bytes(pack8("::").0),
+
+    // ====================
+    // 1-char operators
+    // ====================
+    And     = u64::from_le_bytes(pack8("&").0),
+    Or      = u64::from_le_bytes(pack8("|").0),
+    Xor     = u64::from_le_bytes(pack8("^").0),
+    Tilde   = u64::from_le_bytes(pack8("~").0),
+    Add     = u64::from_le_bytes(pack8("+").0),
+    Sub     = u64::from_le_bytes(pack8("-").0),
+    Mul     = u64::from_le_bytes(pack8("*").0),
+    Div     = u64::from_le_bytes(pack8("/").0),
+    Mod     = u64::from_le_bytes(pack8("%").0),
+    Assign = u64::from_le_bytes(pack8("=").0),
+    Lt      = u64::from_le_bytes(pack8("<").0),
+    Gt      = u64::from_le_bytes(pack8(">").0),
+    Not     = u64::from_le_bytes(pack8("!").0),
+    Dot     = u64::from_le_bytes(pack8(".").0),
+
+    // ====================
+    // Delimiters
+    // ====================
+    LParen   = u64::from_le_bytes(pack8("(").0),
+    RParen   = u64::from_le_bytes(pack8(")").0),
+    LBrace   = u64::from_le_bytes(pack8("{").0),
+    RBrace   = u64::from_le_bytes(pack8("}").0),
+    LBracket = u64::from_le_bytes(pack8("[").0),
+    RBracket = u64::from_le_bytes(pack8("]").0),
+    Comma    = u64::from_le_bytes(pack8(",").0),
+    Semi     = u64::from_le_bytes(pack8(";").0),
+    Colon    = u64::from_le_bytes(pack8(":").0),
+}
+
+impl FixedToken {
+    pub const fn try_new(s: &str) -> Option<Self> {
+        if let Some(w) = match_keyword(s) {
+            return Some(w);
+        }
+
+        match match_operator(s) {
+            Some(w) => {
+                if w.as_str().len() == s.len() {
+                    Some(w)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    }
+    pub const fn new(s: &str) -> Self {
+        match Self::try_new(s) {
+            Some(x) => x,
+            None => panic!("bad operator"),
+        }
+    }
+    #[inline(always)]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            FixedToken::Let => "let",
+            FixedToken::Const => "const",
+            FixedToken::Type => "type",
+            FixedToken::Struct => "struct",
+            FixedToken::Union => "union",
+            FixedToken::Enum => "enum",
+            FixedToken::Fn => "fn",
+            FixedToken::Cfn => "cfn",
+            FixedToken::If => "if",
+            FixedToken::Else => "else",
+            FixedToken::While => "while",
+            FixedToken::For => "for",
+            FixedToken::Match => "match",
+            FixedToken::Return => "return",
+            FixedToken::Break => "break",
+            FixedToken::Continue => "continue",
+            FixedToken::As => "as",
+
+            FixedToken::ShlEq => "<<=",
+            FixedToken::ShrEq => ">>=",
+            FixedToken::AddEq => "+=",
+            FixedToken::SubEq => "-=",
+            FixedToken::MulEq => "*=",
+            FixedToken::DivEq => "/=",
+            FixedToken::ModEq => "%=",
+            FixedToken::AndEq => "&=",
+            FixedToken::OrEq => "|=",
+            FixedToken::XorEq => "^=",
+            FixedToken::PipeFwd => "|>",
+            FixedToken::EqEq => "==",
+            FixedToken::Ne => "!=",
+            FixedToken::Le => "<=",
+            FixedToken::Ge => ">=",
+            FixedToken::TildeEq => "~=",
+            FixedToken::FatArrow => "=>",
+            FixedToken::Shl => "<<",
+            FixedToken::Shr => ">>",
+            FixedToken::AndAnd => "&&",
+            FixedToken::OrOr => "||",
+            FixedToken::Inc => "++",
+            FixedToken::Dec => "--",
+            FixedToken::Arrow => "->",
+            FixedToken::Path => "::",
+
+            FixedToken::And => "&",
+            FixedToken::Or => "|",
+            FixedToken::Xor => "^",
+            FixedToken::Tilde => "~",
+            FixedToken::Add => "+",
+            FixedToken::Sub => "-",
+            FixedToken::Mul => "*",
+            FixedToken::Div => "/",
+            FixedToken::Mod => "%",
+            FixedToken::Assign => "=",
+            FixedToken::Lt => "<",
+            FixedToken::Gt => ">",
+            FixedToken::Not => "!",
+            FixedToken::Dot => ".",
+
+            FixedToken::LParen => "(",
+            FixedToken::RParen => ")",
+            FixedToken::LBrace => "{",
+            FixedToken::RBrace => "}",
+            FixedToken::LBracket => "[",
+            FixedToken::RBracket => "]",
+            FixedToken::Comma => ",",
+            FixedToken::Semi => ";",
+            FixedToken::Colon => ":",
+        }
+    }
+}
+
+impl TryFrom<&str> for FixedToken{
+
+type Error = ();
+fn try_from(s: &str) -> Result<Self, ()> {
+    if let Some(w) = match_keyword(s){
+        return Ok(w);
+    }
+
+    let Some(w) = match_operator(s) else {
+        return Err(())
+    };
+
+    if w.as_str()==s{
+        Ok(w)
+    }else{
+        Err(())
+    }
+}
+}
+
+impl core::fmt::Display for FixedToken {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str((*self).as_str())
+    }
+}
+impl core::fmt::Debug for FixedToken {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str((*self).as_str())
+    }
+}
+
+#[inline(always)]
+const fn match_operator(input: &str) -> Option<FixedToken> {
+    let b = input.as_bytes();
+    let len = b.len();
+    if len == 0 {
+        return None;
+    }
+    let b0 = b[0];
+    let b1 = if len > 1 { b[1] } else { 0 };
+    let b2 = if len > 2 { b[2] } else { 0 };
+
+    match (b0, b1, b2) {
+        // common arithmetic first
+        (b'+', b'=', _) => Some(FixedToken::AddEq),
+        (b'+', b'+', _) => Some(FixedToken::Inc),
+        (b'+', _, _) => Some(FixedToken::Add),
+
+        (b'-', b'=', _) => Some(FixedToken::SubEq),
+        (b'-', b'-', _) => Some(FixedToken::Dec),
+        (b'-', b'>', _) => Some(FixedToken::Arrow),
+        (b'-', _, _) => Some(FixedToken::Sub),
+
+        (b'*', b'=', _) => Some(FixedToken::MulEq),
+        (b'*', _, _) => Some(FixedToken::Mul),
+
+        (b'/', b'=', _) => Some(FixedToken::DivEq),
+        (b'/', _, _) => Some(FixedToken::Div),
+
+        (b'&', b'=', _) => Some(FixedToken::AndEq),
+        (b'&', b'&', _) => Some(FixedToken::AndAnd),
+        (b'&', _, _) => Some(FixedToken::And),
+
+        (b'|', b'=', _) => Some(FixedToken::OrEq),
+        (b'|', b'>', _) => Some(FixedToken::PipeFwd),
+        (b'|', b'|', _) => Some(FixedToken::OrOr),
+        (b'|', _, _) => Some(FixedToken::Or),
+
+        // comparisons / assignment
+        (b'=', b'=', _) => Some(FixedToken::EqEq),
+        (b'=', b'>', _) => Some(FixedToken::FatArrow),
+        (b'=', _, _) => Some(FixedToken::Assign),
+
+        (b'!', b'=', _) => Some(FixedToken::Ne),
+        (b'!', _, _) => Some(FixedToken::Not),
+
+        (b'<', b'=', _) => Some(FixedToken::Le),
+        (b'>', b'=', _) => Some(FixedToken::Ge),
+
+        // shifts (greedy via 3-byte checks)
+        (b'<', b'<', b'=') => Some(FixedToken::ShlEq),
+        (b'>', b'>', b'=') => Some(FixedToken::ShrEq),
+        (b'<', b'<', _) => Some(FixedToken::Shl),
+        (b'>', b'>', _) => Some(FixedToken::Shr),
+        (b'<', _, _) => Some(FixedToken::Lt),
+        (b'>', _, _) => Some(FixedToken::Gt),
+
+        // rest + delimiters
+        (b'^', b'=', _) => Some(FixedToken::XorEq),
+        (b'^', _, _) => Some(FixedToken::Xor),
+        (b'%', b'=', _) => Some(FixedToken::ModEq),
+        (b'%', _, _) => Some(FixedToken::Mod),
+        (b'~', b'=', _) => Some(FixedToken::TildeEq),
+        (b'~', _, _) => Some(FixedToken::Tilde),
+        (b':', b':', _) => Some(FixedToken::Path),
+        (b':', _, _) => Some(FixedToken::Colon),
+        (b'.', _, _) => Some(FixedToken::Dot),
+
+        (b'(', _, _) => Some(FixedToken::LParen),
+        (b')', _, _) => Some(FixedToken::RParen),
+        (b'{', _, _) => Some(FixedToken::LBrace),
+        (b'}', _, _) => Some(FixedToken::RBrace),
+        (b'[', _, _) => Some(FixedToken::LBracket),
+        (b']', _, _) => Some(FixedToken::RBracket),
+        (b',', _, _) => Some(FixedToken::Comma),
+        (b';', _, _) => Some(FixedToken::Semi),
+
+        _ => None,
+    }
+}
+
+#[inline(always)]
+const fn match_keyword(input: &str) -> Option<FixedToken> {
+    const K_LET: Pack8      = pack8("let");
+    const K_CONST: Pack8    = pack8("const");
+    const K_TYPE: Pack8     = pack8("type");
+    const K_STRUCT: Pack8   = pack8("struct");
+    const K_UNION: Pack8    = pack8("union");
+    const K_ENUM: Pack8     = pack8("enum");
+    const K_FN: Pack8       = pack8("fn");
+    const K_CFN: Pack8      = pack8("cfn");
+    const K_IF: Pack8       = pack8("if");
+    const K_ELSE: Pack8     = pack8("else");
+    const K_WHILE: Pack8    = pack8("while");
+    const K_FOR: Pack8      = pack8("for");
+    const K_MATCH: Pack8    = pack8("match");
+    const K_RETURN: Pack8   = pack8("return");
+    const K_BREAK: Pack8    = pack8("break");
+    const K_CONTINUE: Pack8 = pack8("continue");
+    const K_AS: Pack8       = pack8("as");
 
     let k = pack8(input);
 
     match k {
-        // reorder these for “common first” if you want branch bias
-        K_LET => Some("let"),
-        K_IF => Some("if"),
-        K_ELSE => Some("else"),
-        K_WHILE => Some("while"),
-        K_FOR => Some("for"),
-        K_FN => Some("fn"),
-        K_RETURN => Some("return"),
-        K_MATCH => Some("match"),
-        K_BREAK => Some("break"),
-        K_CONTINUE => Some("continue"),
-        K_CONST => Some("const"),
-        K_TYPE => Some("type"),
-        K_STRUCT => Some("struct"),
-        K_UNION => Some("union"),
-        K_ENUM => Some("enum"),
-        K_CFN => Some("cfn"),
-        K_AS => Some("as"),
+        K_LET      => Some(FixedToken::Let),
+        K_IF       => Some(FixedToken::If),
+        K_ELSE     => Some(FixedToken::Else),
+        K_WHILE    => Some(FixedToken::While),
+        K_FOR      => Some(FixedToken::For),
+        K_FN       => Some(FixedToken::Fn),
+        K_RETURN   => Some(FixedToken::Return),
+        K_MATCH    => Some(FixedToken::Match),
+        K_BREAK    => Some(FixedToken::Break),
+        K_CONTINUE => Some(FixedToken::Continue),
+        K_CONST    => Some(FixedToken::Const),
+        K_TYPE     => Some(FixedToken::Type),
+        K_STRUCT   => Some(FixedToken::Struct),
+        K_UNION    => Some(FixedToken::Union),
+        K_ENUM     => Some(FixedToken::Enum),
+        K_CFN      => Some(FixedToken::Cfn),
+        K_AS       => Some(FixedToken::As),
         _ => None,
     }
 }
+
 
 
 pub struct Lexer<'a> {
@@ -553,7 +778,7 @@ impl<'a> Lexer<'a> {
     #[inline(always)]
     fn lex_operator(&mut self, start: usize) -> Result<Token, LexError> {
         if let Some(op) = match_operator(&self.src[self.pos..]) {
-            self.pos += op.len();
+            self.pos += op.as_str().len();
             Ok(Token::Operator(op))
         } else {
             let bad = self.src[self.pos..].chars().next().unwrap();
@@ -654,7 +879,7 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        let ans = tok.with(s);
+        let ans = tok.with(s.as_str());
         self.next()?;
         Ok(Some(ans))
     }
@@ -668,11 +893,11 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        if op != s {
+        if op != s.as_str() {
             return Ok(None);
         }
 
-        let ans = tok.with(s);
+        let ans = tok.with(s.as_str());
         self.next()?;
         Ok(Some(ans))
     }
@@ -722,7 +947,7 @@ mod lex_tests {
 
         let kinds: Vec<String> = std::iter::from_fn(|| lex.next().unwrap())
             .map(|tok| match tok.value {
-                Token::Operator(s) => format!("op({})", s),
+                Token::Operator(s) => format!("op({})", s.as_str()),
                 Token::Ident(s) => format!("id({})", s),
                 _ => "other".to_string(),
             })
@@ -764,7 +989,7 @@ mod lex_tests {
         for word in KEYWORDS.iter().chain(OPERATORS.iter()) {
             let mut lex = Lexer::new(word,0);
             let t = lex.next().unwrap().unwrap();
-            assert_eq!(t.value,Token::Operator(word));
+            assert_eq!(t.value, Token::new_operator(word));
             assert_eq!(lex.next().unwrap(),None);
         }
     }
@@ -781,19 +1006,19 @@ mod lex_tests {
         let mut lex = Lexer::new(src, 0);
 
         let t0 = lex.next().unwrap().unwrap();
-        assert!(matches!(t0.value, Token::Operator("let")));
+        assert_eq!(t0.value, Token::new_operator("let"));
 
         let t1 = lex.next().unwrap().unwrap();
         assert!(matches!(t1.value, Token::Ident(ref s) if s == "x"));
 
         let t2 = lex.next().unwrap().unwrap();
-        assert!(matches!(t2.value, Token::Operator("=")));
+        assert_eq!(t2.value, Token::new_operator("="));
 
         let t3 = lex.next().unwrap().unwrap();
         assert!(matches!(t3.value, Token::NumLit(1)));
 
         let t4 = lex.next().unwrap().unwrap();
-        assert!(matches!(t4.value, Token::Operator(";")));
+        assert_eq!(t4.value, Token::new_operator(";"));
 
         assert_eq!(lex.next().unwrap(), None);
     }
@@ -807,23 +1032,23 @@ mod lex_tests {
         let mut lex = Lexer::new(src, 0);
 
         let t0 = lex.next().unwrap().unwrap();
-        assert!(matches!(t0.value, Token::Operator("let")));
+        assert_eq!(t0.value, Token::new_operator("let"));
 
         let t1 = lex.next().unwrap().unwrap();
         assert!(matches!(t1.value, Token::Ident(ref s) if s == "שלום"));
 
         let t2 = lex.next().unwrap().unwrap();
-        assert!(matches!(t2.value, Token::Operator("=")));
+        assert_eq!(t2.value, Token::new_operator("="));
 
         let t3 = lex.next().unwrap().unwrap();
         assert!(matches!(t3.value, Token::NumLit(3)));
 
         let t4 = lex.next().unwrap().unwrap();
-        assert!(matches!(t4.value, Token::Operator(";")));
+        assert_eq!(t4.value, Token::new_operator(";"));
 
         // "match" here should still be recognized as a keyword/operator
         let t5 = lex.next().unwrap().unwrap();
-        assert!(matches!(t5.value, Token::Operator("match")));
+        assert_eq!(t5.value, Token::new_operator("match"));
 
         assert_eq!(lex.next().unwrap(), None);
     }
@@ -1072,7 +1297,7 @@ impl<'a> Parser<'a> {
             return Ok(false);
         };
 
-        let Some((l_bp, r_bp)) = infix_bp(op) else {
+        let Some((l_bp, r_bp)) = infix_bp(op.as_str()) else {
             return Ok(false);
         };
 
@@ -1086,7 +1311,7 @@ impl<'a> Parser<'a> {
         let loc = self.produce_loc(start);
         let mut temp = Located {
             loc: self.produce_loc(start),
-            value: Expr::Atom(Token::Operator("<tmp>")),
+            value: Expr::Atom(Token::NumLit(0)),
         };
         std::mem::swap(lhs, &mut temp);
         *lhs = Located {
@@ -1104,12 +1329,12 @@ impl<'a> Parser<'a> {
         let Token::Operator(op) = &peek.value else {
             return Ok(false);
         };
-        let Some(bp) = postfix_bp(op) else {
+        let Some(bp) = postfix_bp(op.as_str()) else {
             return Ok(false);
         };
 
         //check if we need to special case later
-        let end_op = match *op {
+        let end_op = match op.as_str() {
             "(" => ")",
             "[" => "]",
             _ => "",
@@ -1124,7 +1349,7 @@ impl<'a> Parser<'a> {
         //swap the new lhs into place
         let mut temp = Located {
             loc: self.produce_loc(start),
-            value: Expr::Atom(Token::Operator("<tmp>")),
+            value: Expr::Atom(Token::NumLit(0)),
         };
         std::mem::swap(lhs, &mut temp);
         let mut args = vec![temp];
@@ -1168,49 +1393,50 @@ impl<'a> Parser<'a> {
             }
 
             Token::Operator(op) => {
-                let op_s = tok.with(op);
+                let op_str = op.as_str();
+                let op_s = tok.with(op_str);
 
                 // grouping / blocks
-                if op == "(" {
+                if op_str == "(" {
                     self.next()?.unwrap();
                     return self.parse_after_lparen(start, op_s).map(Some);
                 }
-                if op == "{" {
+                if op_str == "{" {
                     self.next()?.unwrap();
                     return self.parse_after_lbrace(start, op_s).map(Some);
                 }
 
                 // control keywords
-                if op == "if" {
+                if op_str == "if" {
                     self.next()?.unwrap();
                     return self.parse_after_if(start, op_s).map(Some);
                 }
-                if op == "while" {
+                if op_str == "while" {
                     self.next()?.unwrap();
                     return self.parse_after_while(start, op_s).map(Some);
                 }
-                if op == "match" {
+                if op_str == "match" {
                     self.next()?.unwrap();
                     return self.parse_after_match(start, op_s).map(Some);
                 }
 
-                if op == "fn" || op == "cfn" {
+                if op_str == "fn" || op_str == "cfn" {
                     self.next()?.unwrap();
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
 
-                if op == "struct" || op == "enum" || op == "union" {
+                if op_str == "struct" || op_str == "enum" || op_str == "union" {
                     self.next()?.unwrap();
                     return self.parse_after_struct(start, op_s).map(Some);
                 }
 
-                if op == "let" {
+                if op_str == "let" {
                     self.next()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
                 }
 
                 // generic prefix operator via BP
-                if let Some(bp) = prefix_bp(op) {
+                if let Some(bp) = prefix_bp(op_str) {
                     self.next()?.unwrap();
                     let rhs = self.consume_expr_bp(bp)?;
                     let loc = self.produce_loc(start);
@@ -1315,10 +1541,10 @@ impl<'a> Parser<'a> {
                 value: Expr::Bin(arrow, Box::new((pat, body))),
             });
 
-            if let Some(Token::Operator(",") | Token::Operator(";")) =
-                self.peek()?.map(|l| &l.value)
-            {
-                self.next()?;
+            if let Some(Token::Operator(op)) = self.peek()?.map(|l| &l.value) {
+                if matches!(op.as_str(), "," | ";") {
+                    self.next()?;
+                }
             }
         }
 
@@ -1384,10 +1610,10 @@ impl<'a> Parser<'a> {
             };
             fields.push(exp);
 
-            if let Some(Token::Operator(",") | Token::Operator(";")) =
-                self.peek()?.map(|l| &l.value)
-            {
-                self.next()?;
+            if let Some(Token::Operator(op)) = self.peek()?.map(|l| &l.value) {
+                if matches!(op.as_str(), "," | ";") {
+                    self.next()?;
+                }
             };
         }
         Ok(Located {
@@ -1446,7 +1672,7 @@ mod parse_tests {
                 assert_eq!(close, ")");
 
                 let got = got.as_ref().unwrap();
-                assert_eq!(*got, Token::Operator("}"));
+                assert_eq!(*got, Token::new_operator("}"));
 
                 // span of '('
                 assert_loc(&open.loc, 1, 2);
