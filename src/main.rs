@@ -1,5 +1,5 @@
-use expr_parser::parsing::{Expr, LExpr, Parser, Token};
 use expr_parser::error_reporting::ErrorReporter;
+use expr_parser::parsing::{Expr, LExpr, Parser, Token};
 use std::io::{self, Write};
 
 fn pretty_print_token(token: &Token) -> String {

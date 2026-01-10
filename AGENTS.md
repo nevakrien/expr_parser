@@ -23,3 +23,4 @@
 - Keep the language style in mind when adding features.
 - ";" "," and "(" are almost completely optional to the grammar try and make sure it stays this way.
 - Run fmt and test before commiting and consider also runing clippy
+- Dont change unrelated code

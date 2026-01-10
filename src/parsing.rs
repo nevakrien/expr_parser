@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::fmt;
 use std::ops::{Deref, Range};
 use thiserror::Error;
@@ -37,17 +38,26 @@ impl<T> Deref for Located<T> {
     }
 }
 
+impl <T:Display> Display for Located<T>{
+
+fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), std::fmt::Error> { self.value.fmt(f) }
+}
+
 pub type LStr<'a> = Located<&'a str>;
 
 pub type LExpr = Located<Expr>;
 pub type LTok = Located<Token>;
+pub type LOp = Located<FixedToken>;
+
+
+
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Atom(Token),
-    Bin(LStr<'static>, Box<(LExpr, LExpr)>),
-    Prefix(LStr<'static>, Vec<LExpr>),
-    Postfix(LStr<'static>, Vec<LExpr>),
+    Bin(LOp, Box<(LExpr, LExpr)>),
+    Prefix(LOp, Vec<LExpr>),
+    Postfix(LOp, Vec<LExpr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -219,6 +229,7 @@ pub enum FixedToken {
     Colon    = u64::from_le_bytes(pack8(":").0),
 }
 
+
 impl FixedToken {
     pub const fn try_new(s: &str) -> Option<Self> {
         if let Some(w) = match_keyword(s) {
@@ -347,6 +358,7 @@ impl core::fmt::Debug for FixedToken {
         f.write_str((*self).as_str())
     }
 }
+
 
 #[inline(always)]
 const fn match_operator(input: &str) -> Option<FixedToken> {
@@ -841,10 +853,6 @@ impl<'a> Lexer<'a> {
         }))
     }
 
-    /* =============================
-     * Peek / consume
-     * ============================= */
-
     pub fn peek(&mut self) -> Result<Option<&LTok>, LexError> {
         if self.peeked.is_none() {
             let saved = self.pos;
@@ -870,7 +878,7 @@ impl<'a> Lexer<'a> {
      * Convenience helpers
      * ============================= */
 
-    pub fn try_op(&mut self) -> Result<Option<LStr<'static>>, LexError> {
+    pub fn try_op(&mut self) -> Result<Option<LOp>, LexError> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
         };
@@ -879,12 +887,12 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        let ans = tok.with(s.as_str());
+        let ans = tok.with(s);
         self.next()?;
         Ok(Some(ans))
     }
 
-    pub fn try_operator(&mut self, op: &str) -> Result<Option<LStr<'static>>, LexError> {
+    pub fn try_operator(&mut self, op: FixedToken) -> Result<Option<LOp>, LexError> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
         };
@@ -893,14 +901,16 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        if op != s.as_str() {
+        if op != s {
             return Ok(None);
         }
 
-        let ans = tok.with(s.as_str());
+        let ans = tok.with(s);
         self.next()?;
         Ok(Some(ans))
     }
+
+
 }
 
 
@@ -1071,7 +1081,7 @@ pub enum ParseError {
 
     #[error("opened {open} without closing with {close} but got {got:?}")]
     OpenDelimiter {
-        open: LStr<'static>,
+        open: LOp,
         close: &'static str,
         got: OTok,
     },
@@ -1085,60 +1095,112 @@ const BP_CALL: u32 = 800; // (), []
 const BP_POSTFIX_INC: u32 = 875;
 const BP_PREFIX: u32 = 900;
 
-fn prefix_bp(op: &str) -> Option<u32> {
-    Some(match op {
-        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" => BP_PREFIX,
-        _ => return None,
-    })
+fn prefix_bp(op: FixedToken) -> Option<u32> {
+    match op {
+        FixedToken::Not
+        | FixedToken::Sub
+        | FixedToken::Mul
+        | FixedToken::And
+        | FixedToken::Tilde
+        | FixedToken::Inc
+        | FixedToken::Dec
+        | FixedToken::Const => Some(BP_PREFIX),
+
+        _ => None,
+    }
 }
 
-fn infix_bp(op: &str) -> Option<(u32, u32)> {
-    Some(match op {
+fn infix_bp(op: FixedToken) -> Option<(u32, u32)> {
+    match op {
         // match arm (right-assoc)
-        "=>" => (BP_MATCH_ARM + 1, BP_MATCH_ARM),
+        FixedToken::FatArrow =>
+            Some((BP_MATCH_ARM + 1, BP_MATCH_ARM)),
 
         // assignment (right-assoc)
-        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
-            (BP_ASSIGN + 1, BP_ASSIGN)
-        }
-        "|>" => (120, 121),
+        FixedToken::Assign
+        | FixedToken::AddEq
+        | FixedToken::SubEq
+        | FixedToken::MulEq
+        | FixedToken::DivEq
+        | FixedToken::ModEq
+        | FixedToken::AndEq
+        | FixedToken::OrEq
+        | FixedToken::XorEq
+        | FixedToken::ShlEq
+        | FixedToken::ShrEq =>
+            Some((BP_ASSIGN + 1, BP_ASSIGN)),
+
+        FixedToken::PipeFwd =>
+            Some((120, 121)),
 
         // cast / annotation-ish
-        "as" => (200, 201),
-        ":" => (210, 211),
+        FixedToken::As =>
+            Some((200, 201)),
+        FixedToken::Colon =>
+            Some((210, 211)),
 
         // logical
-        "||" => (300, 301),
-        "&&" => (310, 311),
+        FixedToken::OrOr =>
+            Some((300, 301)),
+        FixedToken::AndAnd =>
+            Some((310, 311)),
 
         // bitwise
-        "|" => (400, 401),
-        "^" => (410, 411),
-        "&" => (420, 421),
+        FixedToken::Or =>
+            Some((400, 401)),
+        FixedToken::Xor =>
+            Some((410, 411)),
+        FixedToken::And =>
+            Some((420, 421)),
 
         // comparisons
-        "==" | "!=" | "<" | ">" | "<=" | ">=" => (500, 501),
+        FixedToken::EqEq
+        | FixedToken::Ne
+        | FixedToken::Lt
+        | FixedToken::Gt
+        | FixedToken::Le
+        | FixedToken::Ge =>
+            Some((500, 501)),
 
         // shifts
-        "<<" | ">>" => (600, 601),
+        FixedToken::Shl
+        | FixedToken::Shr =>
+            Some((600, 601)),
 
         // arithmetic
-        "+" | "-" => (700, 701),
-        "*" | "/" | "%" => (800, 801),
+        FixedToken::Add
+        | FixedToken::Sub =>
+            Some((700, 701)),
 
-        "." | "::" | "->" => (BP_PATH, BP_PATH + 1),
+        FixedToken::Mul
+        | FixedToken::Div
+        | FixedToken::Mod =>
+            Some((800, 801)),
 
-        _ => return None,
-    })
+        // path / access
+        FixedToken::Dot
+        | FixedToken::Path
+        | FixedToken::Arrow =>
+            Some((BP_PATH, BP_PATH + 1)),
+
+        _ => None,
+    }
 }
 
-fn postfix_bp(op: &str) -> Option<u32> {
-    Some(match op {
-        "++" | "--" => BP_POSTFIX_INC,
-        "(" | "[" => BP_CALL,
-        _ => return None,
-    })
+fn postfix_bp(op: FixedToken) -> Option<u32> {
+    match op {
+        FixedToken::Inc
+        | FixedToken::Dec =>
+            Some(BP_POSTFIX_INC),
+
+        FixedToken::LParen
+        | FixedToken::LBracket =>
+            Some(BP_CALL),
+
+        _ => None,
+    }
 }
+
 
 pub struct Parser<'a> {
     lex: Lexer<'a>,
@@ -1231,14 +1293,14 @@ impl<'a> Parser<'a> {
         Ok(t)
     }
 
-    fn try_op(&mut self) -> Result<Option<LStr<'static>>, LexError> {
+    fn try_op(&mut self) -> Result<Option<LOp>, LexError> {
         self.lex.try_op()
     }
-    fn try_operator(&mut self, op: &str) -> PResult<Option<LStr<'static>>> {
-        Ok(self.lex.try_operator(op)?)
+    fn try_operator(&mut self, op: &str) -> PResult<Option<LOp>> {
+        Ok(self.lex.try_operator(op.try_into().unwrap())?)
     }
 
-    fn expect_operator(&mut self, op: &'static str) -> PResult<LStr<'static>> {
+    fn expect_operator(&mut self, op: &'static str) -> PResult<LOp> {
         match self.try_operator(op)? {
             Some(t) => Ok(t),
             None => Err(ParseError::ExpectedToken {
@@ -1248,7 +1310,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn err_open_delim(&mut self, open: LStr<'static>, close: &'static str) -> ParseError {
+    fn err_open_delim(&mut self, open: LOp, close: &'static str) -> ParseError {
         let got = match self.peek_op() {
             Ok(x) => x,
             Err(_) => Located {
@@ -1297,7 +1359,7 @@ impl<'a> Parser<'a> {
             return Ok(false);
         };
 
-        let Some((l_bp, r_bp)) = infix_bp(op.as_str()) else {
+        let Some((l_bp, r_bp)) = infix_bp(*op) else {
             return Ok(false);
         };
 
@@ -1329,7 +1391,7 @@ impl<'a> Parser<'a> {
         let Token::Operator(op) = &peek.value else {
             return Ok(false);
         };
-        let Some(bp) = postfix_bp(op.as_str()) else {
+        let Some(bp) = postfix_bp(*op) else {
             return Ok(false);
         };
 
@@ -1393,50 +1455,53 @@ impl<'a> Parser<'a> {
             }
 
             Token::Operator(op) => {
-                let op_str = op.as_str();
-                let op_s = tok.with(op_str);
+                let op_s = tok.with(op);
 
-                // grouping / blocks
-                if op_str == "(" {
-                    self.next()?.unwrap();
-                    return self.parse_after_lparen(start, op_s).map(Some);
-                }
-                if op_str == "{" {
-                    self.next()?.unwrap();
-                    return self.parse_after_lbrace(start, op_s).map(Some);
-                }
+                match op {
+                    // grouping / blocks
+                    FixedToken::LParen => {
+                        self.next()?.unwrap();
+                        return self.parse_after_lparen(start, op_s).map(Some);
+                    }
+                    FixedToken::LBrace => {
+                        self.next()?.unwrap();
+                        return self.parse_after_lbrace(start, op_s).map(Some);
+                    }
 
-                // control keywords
-                if op_str == "if" {
-                    self.next()?.unwrap();
-                    return self.parse_after_if(start, op_s).map(Some);
-                }
-                if op_str == "while" {
-                    self.next()?.unwrap();
-                    return self.parse_after_while(start, op_s).map(Some);
-                }
-                if op_str == "match" {
-                    self.next()?.unwrap();
-                    return self.parse_after_match(start, op_s).map(Some);
-                }
+                    // control keywords
+                    FixedToken::If => {
+                        self.next()?.unwrap();
+                        return self.parse_after_if(start, op_s).map(Some);
+                    }
+                    FixedToken::While => {
+                        self.next()?.unwrap();
+                        return self.parse_after_while(start, op_s).map(Some);
+                    }
+                    FixedToken::Match => {
+                        self.next()?.unwrap();
+                        return self.parse_after_match(start, op_s).map(Some);
+                    }
 
-                if op_str == "fn" || op_str == "cfn" {
-                    self.next()?.unwrap();
-                    return self.parse_after_fn(start, op_s).map(Some);
-                }
+                    FixedToken::Fn | FixedToken::Cfn => {
+                        self.next()?.unwrap();
+                        return self.parse_after_fn(start, op_s).map(Some);
+                    }
 
-                if op_str == "struct" || op_str == "enum" || op_str == "union" {
-                    self.next()?.unwrap();
-                    return self.parse_after_struct(start, op_s).map(Some);
-                }
+                    FixedToken::Struct | FixedToken::Enum | FixedToken::Union => {
+                        self.next()?.unwrap();
+                        return self.parse_after_struct(start, op_s).map(Some);
+                    }
 
-                if op_str == "let" {
-                    self.next()?.unwrap();
-                    return self.parse_after_let(start, op_s).map(Some);
+                    FixedToken::Let => {
+                        self.next()?.unwrap();
+                        return self.parse_after_let(start, op_s).map(Some);
+                    }
+
+                    _ => {}
                 }
 
                 // generic prefix operator via BP
-                if let Some(bp) = prefix_bp(op_str) {
+                if let Some(bp) = prefix_bp(op) {
                     self.next()?.unwrap();
                     let rhs = self.consume_expr_bp(bp)?;
                     let loc = self.produce_loc(start);
@@ -1445,12 +1510,14 @@ impl<'a> Parser<'a> {
                         value: Expr::Prefix(op_s, vec![rhs]),
                     }));
                 }
+
                 Ok(None)
             }
+
         }
     }
 
-    fn parse_after_lparen(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_lparen(&mut self, start: usize, open: LOp) -> PResult<LExpr> {
         let mut parts = Vec::new();
         let mut saw_comma = false;
 
@@ -1478,7 +1545,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_lbrace(&mut self, start: usize, open: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_lbrace(&mut self, start: usize, open: LOp) -> PResult<LExpr> {
         let mut items = Vec::new();
 
         while self.try_operator("}")?.is_none() {
@@ -1495,7 +1562,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_if(&mut self, start: usize, if_tok: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_if(&mut self, start: usize, if_tok: LOp) -> PResult<LExpr> {
         let cond = self.consume_expr()?;
         let then_expr = self.consume_stmt()?;
 
@@ -1512,7 +1579,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_while(&mut self, start: usize, w: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_while(&mut self, start: usize, w: LOp) -> PResult<LExpr> {
         let cond = self.consume_expr()?;
         let body = self.consume_stmt()?;
 
@@ -1523,7 +1590,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_match(&mut self, start: usize, m: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_match(&mut self, start: usize, m: LOp) -> PResult<LExpr> {
         let subject = self.consume_expr()?;
         let open = self.expect_operator("{")?;
         let mut args = vec![subject];
@@ -1554,7 +1621,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_fn(&mut self, start: usize, fn_tok: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_fn(&mut self, start: usize, fn_tok: LOp) -> PResult<LExpr> {
         let paren_start = self.expr_start();
         let open = self.expect_operator("(")?;
         let mut params: Vec<LExpr> = Vec::new();
@@ -1589,7 +1656,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_let(&mut self, start: usize, let_tok: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_let(&mut self, start: usize, let_tok: LOp) -> PResult<LExpr> {
         let dec = self.consume_expr_bp(BP_PATTERN)?;
         self.expect_operator("=")?;
         let val = self.consume_expr()?;
@@ -1600,7 +1667,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_after_struct(&mut self, start: usize, def_tok: LStr<'static>) -> PResult<LExpr> {
+    fn parse_after_struct(&mut self, start: usize, def_tok: LOp) -> PResult<LExpr> {
         let mut fields = Vec::new();
 
         let open = self.expect_operator("{")?;
@@ -1648,7 +1715,7 @@ mod parse_tests {
 
         match err {
             ParseError::OpenDelimiter { open, close, got } => {
-                assert_eq!(open.value, "(");
+                assert_eq!(open.as_str(), "(");
                 assert_eq!(close, ")");
                 assert!(got.is_none());
 
@@ -1668,7 +1735,7 @@ mod parse_tests {
 
         match err {
             ParseError::OpenDelimiter { open, close, got } => {
-                assert_eq!(open.value, "(");
+                assert_eq!(open.as_str(), "(");
                 assert_eq!(close, ")");
 
                 let got = got.as_ref().unwrap();
@@ -1695,7 +1762,7 @@ mod parse_tests {
 
         match first.value {
             Expr::Prefix(tok, _) => {
-                assert_eq!(tok.value, "if");
+                assert_eq!(tok.as_str(), "if");
                 assert_loc(&first.loc, 0, 6); // "if x y"
             }
             _ => panic!("expected if"),
@@ -1717,7 +1784,7 @@ mod parse_tests {
 
         match expr.value {
             Expr::Prefix(tok, _) => {
-                assert_eq!(tok.value, "if");
+                assert_eq!(tok.as_str(), "if");
                 assert_loc(&expr.loc, 0, src.len());
             }
             _ => panic!("expected if-else"),
@@ -1732,7 +1799,7 @@ mod parse_tests {
 
         match expr.value {
             Expr::Prefix(match_kw, args) => {
-                assert_eq!(match_kw.value, "match");
+                assert_eq!(match_kw.as_str(), "match");
                 assert_eq!(args.len(), 3);
 
                 match &args[0].value {
@@ -1742,7 +1809,7 @@ mod parse_tests {
 
                 match &args[1].value {
                     Expr::Bin(arrow, parts) => {
-                        assert_eq!(arrow.value, "=>");
+                        assert_eq!(arrow.as_str(), "=>");
                         let (pat, body) = &**parts;
                         match &pat.value {
                             Expr::Atom(Token::NumLit(0)) => {}
@@ -1758,11 +1825,11 @@ mod parse_tests {
 
                 match &args[2].value {
                     Expr::Bin(arrow, parts) => {
-                        assert_eq!(arrow.value, "=>");
+                        assert_eq!(arrow.as_str(), "=>");
                         let (pat, body) = &**parts;
                         match &pat.value {
                             Expr::Postfix(open, args) => {
-                                assert_eq!(open.value, "(");
+                                assert_eq!(open.as_str(), "(");
                                 assert_eq!(args.len(), 2);
                                 match &args[0].value {
                                     Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Some"),
@@ -1770,7 +1837,7 @@ mod parse_tests {
                                 }
                                 match &args[1].value {
                                     Expr::Bin(pipe, parts) => {
-                                        assert_eq!(pipe.value, "|");
+                                        assert_eq!(pipe.as_str(), "|");
                                         let (lhs, rhs) = &**parts;
                                         match &lhs.value {
                                             Expr::Atom(Token::StrLit(name)) => {
@@ -1809,7 +1876,7 @@ mod parse_tests {
 
         match expr.value {
             Expr::Prefix(match_kw, args) => {
-                assert_eq!(match_kw.value, "match");
+                assert_eq!(match_kw.as_str(), "match");
                 assert_eq!(args.len(), 3);
             }
             _ => panic!("expected match"),
@@ -1830,7 +1897,7 @@ mod parse_tests {
 
         match first.value {
             Expr::Postfix(tok, args) => {
-                assert_eq!(tok.value, ";");
+                assert_eq!(tok.as_str(), ";");
                 assert_eq!(args.len(), 1);
 
                 // span includes the semicolon
@@ -1870,7 +1937,7 @@ mod parse_tests {
 
         match err {
             ParseError::OpenDelimiter { open, close, got } => {
-                assert_eq!(open.value, "{");
+                assert_eq!(open.as_str(), "{");
                 assert_eq!(close, "}");
                 assert!(got.is_none());
 
@@ -1924,13 +1991,13 @@ mod parse_tests {
 
                 // signature is arrow
                 match &args[0].value {
-                    Expr::Bin(op, _) => assert_eq!(op.value, "->"),
+                    Expr::Bin(op, _) => assert_eq!(op.as_str(), "->"),
                     _ => panic!("expected arrow sig"),
                 }
 
                 // body is x + 1
                 match &args[1].value {
-                    Expr::Bin(op, _) => assert_eq!(op.value, "+"),
+                    Expr::Bin(op, _) => assert_eq!(op.as_str(), "+"),
                     _ => panic!("expected body expression"),
                 }
             }
@@ -1947,13 +2014,13 @@ mod parse_tests {
 
         match expr.value {
             Expr::Prefix(let_tok, args) => {
-                assert_eq!(let_tok.value, "let");
+                assert_eq!(let_tok.as_str(), "let");
                 assert_eq!(args.len(), 2);
 
                 // ---- declaration ----
                 match &args[0].value {
                     Expr::Bin(colon, parts) => {
-                        assert_eq!(colon.value, ":");
+                        assert_eq!(colon.as_str(), ":");
                         let (name, ty) = &**parts;
 
                         // x
@@ -1965,7 +2032,7 @@ mod parse_tests {
                         // *char
                         match &ty.value {
                             Expr::Prefix(star, inner) => {
-                                assert_eq!(star.value, "*");
+                                assert_eq!(star.as_str(), "*");
                                 assert_eq!(inner.len(), 1);
                                 match &inner[0].value {
                                     Expr::Atom(Token::Ident(name)) => assert_eq!(name, "char"),
@@ -1999,7 +2066,7 @@ mod parse_tests {
 
         match expr.value {
             Expr::Postfix(open, args) => {
-                assert_eq!(open.value, "[");
+                assert_eq!(open.as_str(), "[");
                 assert_eq!(args.len(), 3);
 
                 // ---- base expression ----
@@ -2011,7 +2078,7 @@ mod parse_tests {
                 // ---- first slice: 0:2 ----
                 match &args[1].value {
                     Expr::Bin(colon, parts) => {
-                        assert_eq!(colon.value, ":");
+                        assert_eq!(colon.as_str(), ":");
                         let (lhs, rhs) = &**parts;
 
                         match &lhs.value {
@@ -2029,7 +2096,7 @@ mod parse_tests {
                 // ---- second slice: 1:2 ----
                 match &args[2].value {
                     Expr::Bin(colon, parts) => {
-                        assert_eq!(colon.value, ":");
+                        assert_eq!(colon.as_str(), ":");
                         let (lhs, rhs) = &**parts;
 
                         match &lhs.value {
@@ -2059,7 +2126,7 @@ mod parse_tests {
 
         match err {
             ParseError::OpenDelimiter { open, close, got } => {
-                assert_eq!(open.value, "(");
+                assert_eq!(open.as_str(), "(");
                 assert_eq!(close, ")");
 
                 // EOF is represented as Located { value: None }
@@ -2088,7 +2155,7 @@ mod parse_tests {
 
         match first.value {
             Expr::Postfix(open, args) => {
-                assert_eq!(open.value, "(");
+                assert_eq!(open.as_str(), "(");
                 assert_eq!(args.len(), 2);
 
                 // f
@@ -2111,13 +2178,13 @@ mod parse_tests {
 
         match block.value {
             Expr::Prefix(open, items) => {
-                assert_eq!(open.value, "{");
+                assert_eq!(open.as_str(), "{");
                 assert_eq!(items.len(), 2);
 
                 // a;
                 match &items[0].value {
                     Expr::Postfix(tok, args) => {
-                        assert_eq!(tok.value, ";");
+                        assert_eq!(tok.as_str(), ";");
                         assert_eq!(args.len(), 1);
                     }
                     _ => panic!("expected semicolon expression"),
@@ -2153,13 +2220,13 @@ mod parse_tests {
 
         match expr.value {
             Expr::Bin(eq, args) => {
-                assert_eq!(eq.value, "=");
+                assert_eq!(eq.as_str(), "=");
                 let (lhs, rhs) = &*args;
 
                 // ---- LHS: Point[f] ----
                 match &lhs.value {
                     Expr::Postfix(bracket, gargs) => {
-                        assert_eq!(bracket.value, "[");
+                        assert_eq!(bracket.as_str(), "[");
                         assert_eq!(gargs.len(), 2);
 
                         match &gargs[0].value {
@@ -2178,13 +2245,13 @@ mod parse_tests {
                 // ---- RHS: struct { x:f y } ----
                 match &rhs.value {
                     Expr::Prefix(struct_kw, fields) => {
-                        assert_eq!(struct_kw.value, "struct");
+                        assert_eq!(struct_kw.as_str(), "struct");
                         assert_eq!(fields.len(), 2);
 
                         // x:f
                         match &fields[0].value {
                             Expr::Bin(colon, _parts) => {
-                                assert_eq!(colon.value, ":");
+                                assert_eq!(colon.as_str(), ":");
                             }
                             _ => panic!("expected field definition x:f"),
                         }
@@ -2213,7 +2280,7 @@ mod parse_tests {
 
         match expr.value {
             Expr::Postfix(open, args) => {
-                assert_eq!(open.value, "(");
+                assert_eq!(open.as_str(), "(");
                 assert_eq!(args.len(), 3);
 
                 // Point
@@ -2231,7 +2298,7 @@ mod parse_tests {
                 // y=2
                 match &args[2].value {
                     Expr::Bin(eq, parts) => {
-                        assert_eq!(eq.value, "=");
+                        assert_eq!(eq.as_str(), "=");
                         let (lhs, _) = &**parts;
 
                         match &lhs.value {
