@@ -889,7 +889,7 @@ impl<'a> Lexer<'a> {
         Ok(Some(ans))
     }
 
-    pub fn try_operator(&mut self, op: FixedToken) -> Result<Option<LFixed>, LexError> {
+    pub fn try_operator(&mut self, op: &str) -> Result<Option<LFixed>, LexError> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
         };
@@ -898,7 +898,7 @@ impl<'a> Lexer<'a> {
             return Ok(None);
         };
 
-        if op != s {
+        if op != s.as_str() {
             return Ok(None);
         }
 
@@ -1093,7 +1093,7 @@ impl<'a> Parser<'a> {
         self.lex.try_op()
     }
     fn try_operator(&mut self, op: &str) -> PResult<Option<LFixed>> {
-        Ok(self.lex.try_operator(FixedToken::new(op))?)
+        Ok(self.lex.try_operator(op)?)
     }
 
     fn expect_operator(&mut self, op: &'static str) -> PResult<LFixed> {
