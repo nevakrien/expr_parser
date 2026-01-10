@@ -175,48 +175,53 @@ fn match_operator(input: &str) -> Option<&'static str> {
     }
 }
 
+#[repr(C, align(8))]
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct Pack8(pub [u8; 8]);
+
+
 #[inline(always)]
-const fn pack8(s: &str) -> u64 {
+pub const fn pack8(s: &str) -> Pack8 {
     let b = s.as_bytes();
 
-    // If too long, return a value that can't match any ASCII keyword pack.
-    // (All your keywords are ASCII => their packed u64 has top bit = 0.)
+    // Too long => sentinel that can't match any ASCII keyword
     if b.len() > 8 {
-        return 1u64 << 63;
+        return Pack8([0; 8]);
     }
 
-    let mut x = 0u64;
+    let mut out = [0u8; 8];
     let mut i = 0usize;
     while i < b.len() {
-        x |= (b[i] as u64) << (i * 8);
+        out[i] = b[i];
         i += 1;
     }
-    // remaining bytes are implicitly 0 (null-padded)
-    x
+
+    Pack8(out)
 }
+
 
 #[inline(always)]
 fn match_keyword(input: &str) -> Option<&'static str> {
     // If you truly rely on "no NUL in source", it can be good to enforce it in debug:
     // debug_assert!(!input.as_bytes().contains(&0));
 
-    const K_LET: u64      = pack8("let");
-    const K_CONST: u64    = pack8("const");
-    const K_TYPE: u64     = pack8("type");
-    const K_STRUCT: u64   = pack8("struct");
-    const K_UNION: u64    = pack8("union");
-    const K_ENUM: u64     = pack8("enum");
-    const K_FN: u64       = pack8("fn");
-    const K_CFN: u64      = pack8("cfn");
-    const K_IF: u64       = pack8("if");
-    const K_ELSE: u64     = pack8("else");
-    const K_WHILE: u64    = pack8("while");
-    const K_FOR: u64      = pack8("for");
-    const K_MATCH: u64    = pack8("match");
-    const K_RETURN: u64   = pack8("return");
-    const K_BREAK: u64    = pack8("break");
-    const K_CONTINUE: u64 = pack8("continue");
-    const K_AS: u64       = pack8("as");
+    const K_LET: Pack8     = pack8("let");
+    const K_CONST: Pack8   = pack8("const");
+    const K_TYPE: Pack8    = pack8("type");
+    const K_STRUCT: Pack8  = pack8("struct");
+    const K_UNION: Pack8   = pack8("union");
+    const K_ENUM: Pack8    = pack8("enum");
+    const K_FN: Pack8      = pack8("fn");
+    const K_CFN: Pack8     = pack8("cfn");
+    const K_IF: Pack8      = pack8("if");
+    const K_ELSE: Pack8    = pack8("else");
+    const K_WHILE: Pack8   = pack8("while");
+    const K_FOR: Pack8     = pack8("for");
+    const K_MATCH: Pack8   = pack8("match");
+    const K_RETURN: Pack8  = pack8("return");
+    const K_BREAK: Pack8   = pack8("break");
+    const K_CONTINUE: Pack8= pack8("continue");
+    const K_AS: Pack8      = pack8("as");
 
     let k = pack8(input);
 
@@ -561,7 +566,7 @@ impl<'a> Lexer<'a> {
     }
 
     // #[unsafe(no_mangle)]
-    pub fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
+    fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
         let start = self.pos;
 
         let Some(b0) = self.src.as_bytes().get(self.pos).copied() else {

@@ -9,7 +9,7 @@ fn main() {
     let mut parsed_count = 0;
     let mut error_count = 0;
 
-    for _ in 0..10000 {
+    for _ in 0..100000 {
         // Create expressions fresh each iteration (like file allocation)
         let lines = vec![
             "1 + 2 * 3",
