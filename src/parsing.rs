@@ -477,8 +477,7 @@ const fn match_keyword(input: &str) -> Option<FixedToken> {
     }
 }
 
-
-
+#[repr(align(16))]
 pub struct Lexer<'a> {
     src: &'a str,
     file: usize,
@@ -849,7 +848,7 @@ impl<'a> Lexer<'a> {
     /* =============================
      * Peek / consume
      * ============================= */
-
+    #[inline(always)]
     pub fn peek(&mut self) -> Result<Option<&LTok>, LexError> {
         if self.peeked.is_none() {
             let saved = self.pos;
@@ -874,7 +873,7 @@ impl<'a> Lexer<'a> {
     /* =============================
      * Convenience helpers
      * ============================= */
-
+    #[inline(always)]
     pub fn try_op(&mut self) -> Result<Option<LFixed>, LexError> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
@@ -889,6 +888,7 @@ impl<'a> Lexer<'a> {
         Ok(Some(ans))
     }
 
+    #[inline(always)]
     pub fn try_operator(&mut self, op: &str) -> Result<Option<LFixed>, LexError> {
         let Some(tok) = self.peek()? else {
             return Ok(None);
@@ -1070,10 +1070,12 @@ impl<'a> Parser<'a> {
         self.lex.produce_loc(start)
     }
 
+    #[inline(always)]
     fn peek(&mut self) -> PResult<Option<&LTok>> {
         Ok(self.lex.peek()?)
     }
 
+    #[inline(always)]
     fn peek_op(&mut self) -> PResult<OTok> {
         Ok(match self.peek()? {
             Some(t) => t.clone().map(Some),
@@ -1089,9 +1091,12 @@ impl<'a> Parser<'a> {
         Ok(t)
     }
 
+    #[inline(always)]
     fn try_op(&mut self) -> Result<Option<LFixed>, LexError> {
         self.lex.try_op()
     }
+
+    #[inline(always)]
     fn try_operator(&mut self, op: &str) -> PResult<Option<LFixed>> {
         Ok(self.lex.try_operator(op)?)
     }
