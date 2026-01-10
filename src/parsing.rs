@@ -97,12 +97,160 @@ pub const OPERATORS: &[&str] = &[
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
 
+#[inline(always)]
+fn match_operator(input: &str) -> Option<&'static str> {
+    let b = input.as_bytes();
+    let b0 = *b.get(0)?;
+    let b1 = *b.get(1).unwrap_or(&0);
+    let b2 = *b.get(2).unwrap_or(&0);
+
+    //more vectorization friendly aproch
+
+    match (b0, b1, b2) {
+        // common arithmetic first
+        (b'+', b'=', _) => Some("+="),
+        (b'+', b'+', _) => Some("++"),
+        (b'+', _, _) => Some("+"),
+
+        (b'-', b'=', _) => Some("-="),
+        (b'-', b'-', _) => Some("--"),
+        (b'-', b'>', _) => Some("->"),
+        (b'-', _, _) => Some("-"),
+
+        (b'*', b'=', _) => Some("*="),
+        (b'*', _, _) => Some("*"),
+
+        (b'/', b'=', _) => Some("/="),
+        (b'/', _, _) => Some("/"),
+
+        (b'&', b'=', _) => Some("&="),
+        (b'&', b'&', _) => Some("&&"),
+        (b'&', _, _) => Some("&"),
+
+        (b'|', b'=', _) => Some("|="),
+        (b'|', b'>', _) => Some("|>"),
+        (b'|', b'|', _) => Some("||"),
+        (b'|', _, _) => Some("|"),
+
+        // comparisons/assignment
+        (b'=', b'=', _) => Some("=="),
+        (b'=', b'>', _) => Some("=>"),
+        (b'=', _, _) => Some("="),
+
+        (b'!', b'=', _) => Some("!="),
+        (b'!', _, _) => Some("!"),
+
+        (b'<', b'=', _) => Some("<="),
+        (b'>', b'=', _) => Some(">="),
+
+        // shifts (rarer; still greedy-correct via 3-byte checks first)
+        (b'<', b'<', b'=') => Some("<<="),
+        (b'>', b'>', b'=') => Some(">>="),
+        (b'<', b'<', _) => Some("<<"),
+        (b'>', b'>', _) => Some(">>"),
+        (b'<', _, _) => Some("<"),
+        (b'>', _, _) => Some(">"),
+
+        // rest + delimiters
+        (b'^', b'=', _) => Some("^="),
+        (b'^', _, _) => Some("^"),
+        (b'%', b'=', _) => Some("%="),
+        (b'%', _, _) => Some("%"),
+        (b'~', b'=', _) => Some("~="),
+        (b'~', _, _) => Some("~"),
+        (b':', b':', _) => Some("::"),
+        (b':', _, _) => Some(":"),
+        (b'.', _, _) => Some("."),
+
+        (b'(', _, _) => Some("("),
+        (b')', _, _) => Some(")"),
+        (b'{', _, _) => Some("{"),
+        (b'}', _, _) => Some("}"),
+        (b'[', _, _) => Some("["),
+        (b']', _, _) => Some("]"),
+        (b',', _, _) => Some(","),
+        (b';', _, _) => Some(";"),
+
+        _ => None,
+    }
+}
+
+#[inline(always)]
+const fn pack8(s: &str) -> u64 {
+    let b = s.as_bytes();
+
+    // If too long, return a value that can't match any ASCII keyword pack.
+    // (All your keywords are ASCII => their packed u64 has top bit = 0.)
+    if b.len() > 8 {
+        return 1u64 << 63;
+    }
+
+    let mut x = 0u64;
+    let mut i = 0usize;
+    while i < b.len() {
+        x |= (b[i] as u64) << (i * 8);
+        i += 1;
+    }
+    // remaining bytes are implicitly 0 (null-padded)
+    x
+}
+
+#[inline(always)]
+fn match_keyword(input: &str) -> Option<&'static str> {
+    // If you truly rely on "no NUL in source", it can be good to enforce it in debug:
+    // debug_assert!(!input.as_bytes().contains(&0));
+
+    const K_LET: u64      = pack8("let");
+    const K_CONST: u64    = pack8("const");
+    const K_TYPE: u64     = pack8("type");
+    const K_STRUCT: u64   = pack8("struct");
+    const K_UNION: u64    = pack8("union");
+    const K_ENUM: u64     = pack8("enum");
+    const K_FN: u64       = pack8("fn");
+    const K_CFN: u64      = pack8("cfn");
+    const K_IF: u64       = pack8("if");
+    const K_ELSE: u64     = pack8("else");
+    const K_WHILE: u64    = pack8("while");
+    const K_FOR: u64      = pack8("for");
+    const K_MATCH: u64    = pack8("match");
+    const K_RETURN: u64   = pack8("return");
+    const K_BREAK: u64    = pack8("break");
+    const K_CONTINUE: u64 = pack8("continue");
+    const K_AS: u64       = pack8("as");
+
+    let k = pack8(input);
+
+    match k {
+        // reorder these for “common first” if you want branch bias
+        K_LET => Some("let"),
+        K_IF => Some("if"),
+        K_ELSE => Some("else"),
+        K_WHILE => Some("while"),
+        K_FOR => Some("for"),
+        K_FN => Some("fn"),
+        K_RETURN => Some("return"),
+        K_MATCH => Some("match"),
+        K_BREAK => Some("break"),
+        K_CONTINUE => Some("continue"),
+        K_CONST => Some("const"),
+        K_TYPE => Some("type"),
+        K_STRUCT => Some("struct"),
+        K_UNION => Some("union"),
+        K_ENUM => Some("enum"),
+        K_CFN => Some("cfn"),
+        K_AS => Some("as"),
+        _ => None,
+    }
+}
+
+
 pub struct Lexer<'a> {
     src: &'a str,
     file: usize,
     pos: usize,
     peeked: Option<LTok>,
 }
+
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str, file: usize) -> Self {
         Self {
@@ -121,21 +269,17 @@ impl<'a> Lexer<'a> {
     }
 
     /* =============================
-     * Low-level character handling
+     * Low-level byte handling
      * ============================= */
 
-    fn peek_char(&self) -> Option<char> {
-        self.src[self.pos..].chars().next()
+    #[inline]
+    fn bytes(&self) -> &'a [u8] {
+        self.src.as_bytes()
     }
 
-    fn bump(&mut self) -> Option<char> {
-        let ch = self.peek_char()?;
-        self.pos += ch.len_utf8();
-        Some(ch)
-    }
-
-    fn remaining(&self) -> &'a str {
-        &self.src[self.pos..]
+    #[inline]
+    fn peek_byte(&self) -> Option<u8> {
+        self.bytes().get(self.pos).copied()
     }
 
     /* =============================
@@ -153,91 +297,311 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn skip_whitespace(&mut self) {
-        while matches!(self.peek_char(), Some(c) if c.is_whitespace()) {
-            self.bump();
+    #[cold]
+    fn skip_unicode_whitespace_slow(&mut self) {
+        let bytes = self.src.as_bytes();
+
+        loop {
+            let rest = &self.src[self.pos..];
+            let Some(ch) = rest.chars().next() else { return; };
+
+            if !ch.is_whitespace() {
+                return;
+            }
+
+            self.pos += ch.len_utf8();
+
+            // After consuming Unicode whitespace, gobble ASCII whitespace cheaply.
+            while let Some(&b) = bytes.get(self.pos) {
+                if b.is_ascii_whitespace() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // If next byte is ASCII, it's definitely not Unicode whitespace
+            // (and also not ASCII whitespace because we just consumed it).
+            let Some(&b0) = bytes.get(self.pos) else { return; };
+            if b0.is_ascii() {
+                return;
+            }
         }
     }
 
-    /* =============================
-     * Tokenization
-     * ============================= */
+    /// Fast path: ASCII whitespace. Slow path: Unicode whitespace (`char::is_whitespace()`).
+    #[inline]
+    pub fn skip_whitespace(&mut self) {
+        let bytes = self.src.as_bytes();
 
-    fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
-        let start = self.pos;
-        let ch = match self.bump() {
-            Some(c) => c,
-            None => return Ok(None),
-        };
-
-        let value = match ch {
-            // -------- numbers --------
-            '0'..='9' => {
-                while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
-                    self.bump();
-                }
-
-                if self.peek_char() == Some('.') {
-                    self.bump();
-                    while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
-                        self.bump();
-                    }
-                    let text = &self.src[start..self.pos];
-                    Token::FloatLit(text.parse().unwrap())
-                } else {
-                    let text = &self.src[start..self.pos];
-                    Token::NumLit(text.parse().unwrap())
-                }
+        // ---- fast ASCII whitespace loop ----
+        while let Some(&b) = bytes.get(self.pos) {
+            if b.is_ascii_whitespace() {
+                self.pos += 1;
+            } else {
+                break;
             }
+        }
 
-            // -------- strings --------
-            '"' => {
-                while let Some(c) = self.bump() {
-                    if c == '"' {
-                        let text = &self.src[start + 1..self.pos - 1];
-                        return Ok(Some(Located {
-                            loc: self.produce_loc(start),
-                            value: Token::StrLit(text.to_string()),
-                        }));
-                    }
-                }
+        // If EOF or next byte is ASCII, we're done.
+        let Some(&b0) = bytes.get(self.pos) else { return; };
+        if b0.is_ascii() {
+            return;
+        }
 
-                // EOF without closing quote
+        // Otherwise, only now pay for UTF-8 decoding.
+        self.skip_unicode_whitespace_slow();
+    }
+
+    /* =============================
+     * Tokenization helpers
+     * ============================= */
+    #[inline(always)]
+    fn lex_number(&mut self, start: usize) -> Token {
+        // first digit already consumed by caller
+        while matches!(self.peek_byte(), Some(b) if b.is_ascii_digit()) {
+            self.pos += 1;
+        }
+
+        if self.peek_byte() == Some(b'.') {
+            self.pos += 1;
+            while matches!(self.peek_byte(), Some(b) if b.is_ascii_digit()) {
+                self.pos += 1;
+            }
+            let text = &self.src[start..self.pos];
+            Token::FloatLit(text.parse().unwrap())
+        } else {
+            let text = &self.src[start..self.pos];
+            Token::NumLit(text.parse().unwrap())
+        }
+    }
+
+    #[inline]
+    fn is_ident_start(c: char) -> bool {
+        c == '_' || c.is_alphabetic()
+    }
+
+    #[inline]
+    fn is_ident_continue(c: char) -> bool {
+        c == '_' || c.is_alphanumeric()
+    }
+
+    #[inline(always)]
+    fn lex_string(&mut self, start: usize) -> Result<Token, LexError> {
+        // opening quote already consumed by caller
+        let bytes = self.src.as_bytes();
+        let mut chunk_start = self.pos;
+        let mut out: Option<String> = None;
+
+        loop {
+            let Some(&b) = bytes.get(self.pos) else {
                 return Err(LexError::UnterminatedString {
                     loc: self.produce_loc(start),
                 });
-            }
+            };
 
-            // -------- identifiers / keywords --------
-            c if c.is_ascii_alphabetic() || c == '_' => {
-                while matches!(
-                    self.peek_char(),
-                    Some(c) if c.is_ascii_alphanumeric() || c == '_'
-                ) {
-                    self.bump();
+            match b {
+                b'"' => {
+                    // end of string
+                    let end = self.pos;
+                    self.pos += 1; // consume closing quote
+
+                    if let Some(mut s) = out {
+                        s.push_str(&self.src[chunk_start..end]);
+                        return Ok(Token::StrLit(s));
+                    } else {
+                        return Ok(Token::StrLit(self.src[chunk_start..end].to_string()));
+                    }
                 }
 
-                let text = &self.src[start..self.pos];
-                if let Some(op) = KEYWORDS.iter().copied().find(|x| *x == text) {
-                    Token::Operator(op)
+                b'\\' => {
+                    if out.is_none() {
+                        out = Some(String::new());
+                    }
+                    let s = out.as_mut().unwrap();
+
+                    // push pending chunk before the backslash
+                    s.push_str(&self.src[chunk_start..self.pos]);
+
+                    self.pos += 1; // consume '\\'
+                    let Some(&esc) = bytes.get(self.pos) else {
+                        return Err(LexError::UnterminatedString {
+                            loc: self.produce_loc(start),
+                        });
+                    };
+
+                    match esc {
+                        b'"' => { s.push('"'); self.pos += 1; }
+                        b'\\' => { s.push('\\'); self.pos += 1; }
+                        b'n' => { s.push('\n'); self.pos += 1; }
+                        b'r' => { s.push('\r'); self.pos += 1; }
+                        b't' => { s.push('\t'); self.pos += 1; }
+                        b'0' => { s.push('\0'); self.pos += 1; }
+
+                        // Unicode escape: \u{HEX...}
+                        b'u' => {
+                            self.pos += 1; // consume 'u'
+                            if bytes.get(self.pos) != Some(&b'{') {
+                                let bad = self.src[self.pos..].chars().next().unwrap();
+                                self.pos += bad.len_utf8();
+                                return Err(LexError::UnexpectedChar {
+                                    ch: bad,
+                                    loc: self.produce_loc(start),
+                                });
+                            }
+                            self.pos += 1; // consume '{'
+
+                            let hex_start = self.pos;
+                            while let Some(&hb) = bytes.get(self.pos) {
+                                if hb == b'}' {
+                                    break;
+                                }
+                                if !(hb as char).is_ascii_hexdigit() {
+                                    let bad = self.src[self.pos..].chars().next().unwrap();
+                                    self.pos += bad.len_utf8();
+                                    return Err(LexError::UnexpectedChar {
+                                        ch: bad,
+                                        loc: self.produce_loc(start),
+                                    });
+                                }
+                                self.pos += 1;
+                            }
+
+                            if bytes.get(self.pos) != Some(&b'}') {
+                                return Err(LexError::UnterminatedString {
+                                    loc: self.produce_loc(start),
+                                });
+                            }
+
+                            let hex = &self.src[hex_start..self.pos];
+                            self.pos += 1; // consume '}'
+
+                            let code = u32::from_str_radix(hex, 16).unwrap();
+                            let ch = char::from_u32(code).ok_or_else(|| LexError::UnexpectedChar {
+                                ch: '\u{FFFD}',
+                                loc: self.produce_loc(start),
+                            })?;
+                            s.push(ch);
+                        }
+
+                        _ => {
+                            let bad = self.src[self.pos..].chars().next().unwrap();
+                            self.pos += bad.len_utf8();
+                            return Err(LexError::UnexpectedChar {
+                                ch: bad,
+                                loc: self.produce_loc(start),
+                            });
+                        }
+                    }
+
+                    chunk_start = self.pos;
+                }
+
+                _ => {
+                    // Advance by one byte. Safe: bytes for '"' (0x22) and '\\' (0x5C)
+                    // never appear inside UTF-8 continuation bytes (0x80..=0xBF).
+                    self.pos += 1;
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn lex_ident_or_keyword(&mut self, start: usize, saw_non_ascii: bool) -> Token {
+        let bytes = self.src.as_bytes();
+
+        // ASCII fast path continues as long as we stay ASCII.
+        while let Some(&b) = bytes.get(self.pos) {
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                self.pos += 1;
+                continue;
+            }
+            break;
+        }
+
+        // If the identifier began with non-ASCII, or if the next byte is non-ASCII,
+        // we must switch to Unicode scanning.
+        if saw_non_ascii || matches!(bytes.get(self.pos), Some(b) if !b.is_ascii()) {
+            loop {
+                let rest = &self.src[self.pos..];
+                let Some(ch) = rest.chars().next() else { break; };
+                if Self::is_ident_continue(ch) {
+                    self.pos += ch.len_utf8();
                 } else {
-                    Token::Ident(text.to_string())
+                    break;
                 }
             }
 
-            // -------- operators --------
+            let text = &self.src[start..self.pos];
+            return Token::Ident(text.to_string()); // not a keyword
+        }
+
+        // ASCII-only ident: keyword check is valid
+        let text = &self.src[start..self.pos];
+        if let Some(kw) = match_keyword(text) {
+            Token::Operator(kw) // preserving your existing model
+        } else {
+            Token::Ident(text.to_string())
+        }
+    }
+
+    #[inline(always)]
+    fn lex_operator(&mut self, start: usize) -> Result<Token, LexError> {
+        if let Some(op) = match_operator(&self.src[self.pos..]) {
+            self.pos += op.len();
+            Ok(Token::Operator(op))
+        } else {
+            let bad = self.src[self.pos..].chars().next().unwrap();
+            self.pos += bad.len_utf8();
+            Err(LexError::UnexpectedChar {
+                ch: bad,
+                loc: self.produce_loc(start),
+            })
+        }
+    }
+
+    // #[unsafe(no_mangle)]
+    pub fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
+        let start = self.pos;
+
+        let Some(b0) = self.src.as_bytes().get(self.pos).copied() else {
+            return Ok(None);
+        };
+
+        let value = match b0 {
+            b'0'..=b'9' => {
+                self.pos += 1;
+                self.lex_number(start)
+            }
+
+            b'"' => {
+                self.pos += 1;
+                self.lex_string(start)?
+            }
+
+            // ASCII start of ident
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                self.pos += 1;
+                self.lex_ident_or_keyword(start, false)
+            }
+
+            _ if !b0.is_ascii() => {
+                // Non-ASCII: decode one char and decide if it's an identifier start.
+                let rest = &self.src[self.pos..];
+                let ch = rest.chars().next().unwrap();
+
+                if Self::is_ident_start(ch) {
+                    self.pos += ch.len_utf8();
+                    self.lex_ident_or_keyword(start, true)
+                } else {
+                    // Not an identifier start; try operator (will likely error)
+                    self.lex_operator(start)?
+                }
+            }
+
             _ => {
-                self.pos = start; // rewind and try operator matching
-                if let Some(op) = Self::match_operator(self.remaining()) {
-                    self.pos += op.len();
-                    Token::Operator(op)
-                } else {
-                    let bad = self.bump().unwrap();
-                    return Err(LexError::UnexpectedChar {
-                        ch: bad,
-                        loc: self.produce_loc(start),
-                    });
-                }
+                // ASCII non-ident start: operator/delimiter/unknown
+                self.lex_operator(start)?
             }
         };
 
@@ -245,10 +609,6 @@ impl<'a> Lexer<'a> {
             loc: self.produce_loc(start),
             value,
         }))
-    }
-
-    fn match_operator(input: &str) -> Option<&'static str> {
-        OPERATORS.iter().copied().find(|op| input.starts_with(op))
     }
 
     /* =============================
@@ -312,6 +672,7 @@ impl<'a> Lexer<'a> {
         Ok(Some(ans))
     }
 }
+
 
 #[cfg(test)]
 mod lex_tests {
@@ -392,6 +753,76 @@ mod lex_tests {
         let err = lex.next().unwrap_err();
         assert!(matches!(err, LexError::UnexpectedChar { ch: '@', .. }));
     }
+
+    #[test]
+    fn lexer_gets_all_operators(){
+        for word in KEYWORDS.iter().chain(OPERATORS.iter()) {
+            let mut lex = Lexer::new(word,0);
+            let t = lex.next().unwrap().unwrap();
+            assert_eq!(t.value,Token::Operator(word));
+            assert_eq!(lex.next().unwrap(),None);
+        }
+    }
+
+     /* =========================================
+     * 4) Unicode whitespace is skipped (not just ASCII)
+     * ========================================= */
+    #[test]
+    fn unicode_whitespace_is_skipped() {
+        // NBSP + EM SPACE around tokens
+        let src = "  let x = 1;";
+        //          ^ ^   ^ ^  ^ ^
+        //        NBSP EM  NBSP  EM NBSP
+        let mut lex = Lexer::new(src, 0);
+
+        let t0 = lex.next().unwrap().unwrap();
+        assert!(matches!(t0.value, Token::Operator("let")));
+
+        let t1 = lex.next().unwrap().unwrap();
+        assert!(matches!(t1.value, Token::Ident(ref s) if s == "x"));
+
+        let t2 = lex.next().unwrap().unwrap();
+        assert!(matches!(t2.value, Token::Operator("=")));
+
+        let t3 = lex.next().unwrap().unwrap();
+        assert!(matches!(t3.value, Token::NumLit(1)));
+
+        let t4 = lex.next().unwrap().unwrap();
+        assert!(matches!(t4.value, Token::Operator(";")));
+
+        assert_eq!(lex.next().unwrap(), None);
+    }
+
+    /* =========================================
+     * 5) Unicode identifiers are allowed and are never keywords
+     * ========================================= */
+    #[test]
+    fn unicode_ident_is_not_keyword() {
+        let src = "let שלום = 3; match";
+        let mut lex = Lexer::new(src, 0);
+
+        let t0 = lex.next().unwrap().unwrap();
+        assert!(matches!(t0.value, Token::Operator("let")));
+
+        let t1 = lex.next().unwrap().unwrap();
+        assert!(matches!(t1.value, Token::Ident(ref s) if s == "שלום"));
+
+        let t2 = lex.next().unwrap().unwrap();
+        assert!(matches!(t2.value, Token::Operator("=")));
+
+        let t3 = lex.next().unwrap().unwrap();
+        assert!(matches!(t3.value, Token::NumLit(3)));
+
+        let t4 = lex.next().unwrap().unwrap();
+        assert!(matches!(t4.value, Token::Operator(";")));
+
+        // "match" here should still be recognized as a keyword/operator
+        let t5 = lex.next().unwrap().unwrap();
+        assert!(matches!(t5.value, Token::Operator("match")));
+
+        assert_eq!(lex.next().unwrap(), None);
+    }
+
 }
 
 pub type PResult<T> = Result<T, ParseError>;
