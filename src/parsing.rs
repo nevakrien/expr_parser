@@ -112,7 +112,6 @@ pub const OPERATORS: &[&str] = &[
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct Pack8(pub [u8; 8]);
 
-
 #[inline(always)]
 pub const fn pack8(s: &str) -> Pack8 {
     let b = s.as_bytes();
@@ -132,7 +131,6 @@ pub const fn pack8(s: &str) -> Pack8 {
     Pack8(out)
 }
 
-
 // ==================== Fixed tokens ====================
 
 #[repr(u64)]
@@ -141,23 +139,23 @@ pub enum FixedToken {
     // ====================
     // Keywords
     // ====================
-    Let      = u64::from_ne_bytes(pack8("let").0),
-    Const    = u64::from_ne_bytes(pack8("const").0),
-    Type     = u64::from_ne_bytes(pack8("type").0),
-    Struct   = u64::from_ne_bytes(pack8("struct").0),
-    Union    = u64::from_ne_bytes(pack8("union").0),
-    Enum     = u64::from_ne_bytes(pack8("enum").0),
-    Fn       = u64::from_ne_bytes(pack8("fn").0),
-    Cfn      = u64::from_ne_bytes(pack8("cfn").0),
-    If       = u64::from_ne_bytes(pack8("if").0),
-    Else     = u64::from_ne_bytes(pack8("else").0),
-    While    = u64::from_ne_bytes(pack8("while").0),
-    For      = u64::from_ne_bytes(pack8("for").0),
-    Match    = u64::from_ne_bytes(pack8("match").0),
-    Return   = u64::from_ne_bytes(pack8("return").0),
-    Break    = u64::from_ne_bytes(pack8("break").0),
+    Let = u64::from_ne_bytes(pack8("let").0),
+    Const = u64::from_ne_bytes(pack8("const").0),
+    Type = u64::from_ne_bytes(pack8("type").0),
+    Struct = u64::from_ne_bytes(pack8("struct").0),
+    Union = u64::from_ne_bytes(pack8("union").0),
+    Enum = u64::from_ne_bytes(pack8("enum").0),
+    Fn = u64::from_ne_bytes(pack8("fn").0),
+    Cfn = u64::from_ne_bytes(pack8("cfn").0),
+    If = u64::from_ne_bytes(pack8("if").0),
+    Else = u64::from_ne_bytes(pack8("else").0),
+    While = u64::from_ne_bytes(pack8("while").0),
+    For = u64::from_ne_bytes(pack8("for").0),
+    Match = u64::from_ne_bytes(pack8("match").0),
+    Return = u64::from_ne_bytes(pack8("return").0),
+    Break = u64::from_ne_bytes(pack8("break").0),
     Continue = u64::from_ne_bytes(pack8("continue").0),
-    As       = u64::from_ne_bytes(pack8("as").0),
+    As = u64::from_ne_bytes(pack8("as").0),
 
     // ====================
     // 3-char operators
@@ -168,60 +166,60 @@ pub enum FixedToken {
     // ====================
     // 2-char operators
     // ====================
-    AddEq   = u64::from_ne_bytes(pack8("+=").0),
-    SubEq   = u64::from_ne_bytes(pack8("-=").0),
-    MulEq   = u64::from_ne_bytes(pack8("*=").0),
-    DivEq   = u64::from_ne_bytes(pack8("/=").0),
-    ModEq   = u64::from_ne_bytes(pack8("%=").0),
-    AndEq   = u64::from_ne_bytes(pack8("&=").0),
-    OrEq    = u64::from_ne_bytes(pack8("|=").0),
-    XorEq   = u64::from_ne_bytes(pack8("^=").0),
+    AddEq = u64::from_ne_bytes(pack8("+=").0),
+    SubEq = u64::from_ne_bytes(pack8("-=").0),
+    MulEq = u64::from_ne_bytes(pack8("*=").0),
+    DivEq = u64::from_ne_bytes(pack8("/=").0),
+    ModEq = u64::from_ne_bytes(pack8("%=").0),
+    AndEq = u64::from_ne_bytes(pack8("&=").0),
+    OrEq = u64::from_ne_bytes(pack8("|=").0),
+    XorEq = u64::from_ne_bytes(pack8("^=").0),
     PipeFwd = u64::from_ne_bytes(pack8("|>").0),
-    EqEq    = u64::from_ne_bytes(pack8("==").0),
-    Ne      = u64::from_ne_bytes(pack8("!=").0),
-    Le      = u64::from_ne_bytes(pack8("<=").0),
-    Ge      = u64::from_ne_bytes(pack8(">=").0),
+    EqEq = u64::from_ne_bytes(pack8("==").0),
+    Ne = u64::from_ne_bytes(pack8("!=").0),
+    Le = u64::from_ne_bytes(pack8("<=").0),
+    Ge = u64::from_ne_bytes(pack8(">=").0),
     TildeEq = u64::from_ne_bytes(pack8("~=").0),
-    FatArrow= u64::from_ne_bytes(pack8("=>").0),
-    Shl     = u64::from_ne_bytes(pack8("<<").0),
-    Shr     = u64::from_ne_bytes(pack8(">>").0),
-    AndAnd  = u64::from_ne_bytes(pack8("&&").0),
-    OrOr    = u64::from_ne_bytes(pack8("||").0),
-    Inc     = u64::from_ne_bytes(pack8("++").0),
-    Dec     = u64::from_ne_bytes(pack8("--").0),
-    Arrow   = u64::from_ne_bytes(pack8("->").0),
-    Path    = u64::from_ne_bytes(pack8("::").0),
+    FatArrow = u64::from_ne_bytes(pack8("=>").0),
+    Shl = u64::from_ne_bytes(pack8("<<").0),
+    Shr = u64::from_ne_bytes(pack8(">>").0),
+    AndAnd = u64::from_ne_bytes(pack8("&&").0),
+    OrOr = u64::from_ne_bytes(pack8("||").0),
+    Inc = u64::from_ne_bytes(pack8("++").0),
+    Dec = u64::from_ne_bytes(pack8("--").0),
+    Arrow = u64::from_ne_bytes(pack8("->").0),
+    Path = u64::from_ne_bytes(pack8("::").0),
 
     // ====================
     // 1-char operators
     // ====================
-    And     = u64::from_ne_bytes(pack8("&").0),
-    Or      = u64::from_ne_bytes(pack8("|").0),
-    Xor     = u64::from_ne_bytes(pack8("^").0),
-    Tilde   = u64::from_ne_bytes(pack8("~").0),
-    Add     = u64::from_ne_bytes(pack8("+").0),
-    Sub     = u64::from_ne_bytes(pack8("-").0),
-    Mul     = u64::from_ne_bytes(pack8("*").0),
-    Div     = u64::from_ne_bytes(pack8("/").0),
-    Mod     = u64::from_ne_bytes(pack8("%").0),
+    And = u64::from_ne_bytes(pack8("&").0),
+    Or = u64::from_ne_bytes(pack8("|").0),
+    Xor = u64::from_ne_bytes(pack8("^").0),
+    Tilde = u64::from_ne_bytes(pack8("~").0),
+    Add = u64::from_ne_bytes(pack8("+").0),
+    Sub = u64::from_ne_bytes(pack8("-").0),
+    Mul = u64::from_ne_bytes(pack8("*").0),
+    Div = u64::from_ne_bytes(pack8("/").0),
+    Mod = u64::from_ne_bytes(pack8("%").0),
     Assign = u64::from_ne_bytes(pack8("=").0),
-    Lt      = u64::from_ne_bytes(pack8("<").0),
-    Gt      = u64::from_ne_bytes(pack8(">").0),
-    Not     = u64::from_ne_bytes(pack8("!").0),
-    Dot     = u64::from_ne_bytes(pack8(".").0),
+    Lt = u64::from_ne_bytes(pack8("<").0),
+    Gt = u64::from_ne_bytes(pack8(">").0),
+    Not = u64::from_ne_bytes(pack8("!").0),
+    Dot = u64::from_ne_bytes(pack8(".").0),
 
     // ====================
     // Delimiters
     // ====================
-    LParen   = u64::from_ne_bytes(pack8("(").0),
-    RParen   = u64::from_ne_bytes(pack8(")").0),
-    LBrace   = u64::from_ne_bytes(pack8("{").0),
-    RBrace   = u64::from_ne_bytes(pack8("}").0),
+    LParen = u64::from_ne_bytes(pack8("(").0),
+    RParen = u64::from_ne_bytes(pack8(")").0),
+    LBrace = u64::from_ne_bytes(pack8("{").0),
+    RBrace = u64::from_ne_bytes(pack8("}").0),
     LBracket = u64::from_ne_bytes(pack8("[").0),
     RBracket = u64::from_ne_bytes(pack8("]").0),
-    Comma    = u64::from_ne_bytes(pack8(",").0),
-    Semi     = u64::from_ne_bytes(pack8(";").0),
-    Colon    = u64::from_ne_bytes(pack8(":").0),
+    Comma = u64::from_ne_bytes(pack8(",").0),
+    Semi = u64::from_ne_bytes(pack8(";").0),
+    Colon = u64::from_ne_bytes(pack8(":").0),
 }
 
 impl FixedToken {
@@ -322,24 +320,19 @@ impl FixedToken {
     }
 }
 
-impl TryFrom<&str> for FixedToken{
+impl TryFrom<&str> for FixedToken {
+    type Error = ();
+    fn try_from(s: &str) -> Result<Self, ()> {
+        if let Some(w) = match_keyword(s) {
+            return Ok(w);
+        }
 
-type Error = ();
-fn try_from(s: &str) -> Result<Self, ()> {
-    if let Some(w) = match_keyword(s){
-        return Ok(w);
+        let Some(w) = match_operator(s) else {
+            return Err(());
+        };
+
+        if w.as_str() == s { Ok(w) } else { Err(()) }
     }
-
-    let Some(w) = match_operator(s) else {
-        return Err(())
-    };
-
-    if w.as_str()==s{
-        Ok(w)
-    }else{
-        Err(())
-    }
-}
 }
 
 impl core::fmt::Display for FixedToken {
@@ -435,44 +428,44 @@ const fn match_operator(input: &str) -> Option<FixedToken> {
 
 #[inline(always)]
 const fn match_keyword(input: &str) -> Option<FixedToken> {
-    const K_LET: Pack8      = pack8("let");
-    const K_CONST: Pack8    = pack8("const");
-    const K_TYPE: Pack8     = pack8("type");
-    const K_STRUCT: Pack8   = pack8("struct");
-    const K_UNION: Pack8    = pack8("union");
-    const K_ENUM: Pack8     = pack8("enum");
-    const K_FN: Pack8       = pack8("fn");
-    const K_CFN: Pack8      = pack8("cfn");
-    const K_IF: Pack8       = pack8("if");
-    const K_ELSE: Pack8     = pack8("else");
-    const K_WHILE: Pack8    = pack8("while");
-    const K_FOR: Pack8      = pack8("for");
-    const K_MATCH: Pack8    = pack8("match");
-    const K_RETURN: Pack8   = pack8("return");
-    const K_BREAK: Pack8    = pack8("break");
+    const K_LET: Pack8 = pack8("let");
+    const K_CONST: Pack8 = pack8("const");
+    const K_TYPE: Pack8 = pack8("type");
+    const K_STRUCT: Pack8 = pack8("struct");
+    const K_UNION: Pack8 = pack8("union");
+    const K_ENUM: Pack8 = pack8("enum");
+    const K_FN: Pack8 = pack8("fn");
+    const K_CFN: Pack8 = pack8("cfn");
+    const K_IF: Pack8 = pack8("if");
+    const K_ELSE: Pack8 = pack8("else");
+    const K_WHILE: Pack8 = pack8("while");
+    const K_FOR: Pack8 = pack8("for");
+    const K_MATCH: Pack8 = pack8("match");
+    const K_RETURN: Pack8 = pack8("return");
+    const K_BREAK: Pack8 = pack8("break");
     const K_CONTINUE: Pack8 = pack8("continue");
-    const K_AS: Pack8       = pack8("as");
+    const K_AS: Pack8 = pack8("as");
 
     let k = pack8(input);
 
     match k {
-        K_LET      => Some(FixedToken::Let),
-        K_IF       => Some(FixedToken::If),
-        K_ELSE     => Some(FixedToken::Else),
-        K_WHILE    => Some(FixedToken::While),
-        K_FOR      => Some(FixedToken::For),
-        K_FN       => Some(FixedToken::Fn),
-        K_RETURN   => Some(FixedToken::Return),
-        K_MATCH    => Some(FixedToken::Match),
-        K_BREAK    => Some(FixedToken::Break),
+        K_LET => Some(FixedToken::Let),
+        K_IF => Some(FixedToken::If),
+        K_ELSE => Some(FixedToken::Else),
+        K_WHILE => Some(FixedToken::While),
+        K_FOR => Some(FixedToken::For),
+        K_FN => Some(FixedToken::Fn),
+        K_RETURN => Some(FixedToken::Return),
+        K_MATCH => Some(FixedToken::Match),
+        K_BREAK => Some(FixedToken::Break),
         K_CONTINUE => Some(FixedToken::Continue),
-        K_CONST    => Some(FixedToken::Const),
-        K_TYPE     => Some(FixedToken::Type),
-        K_STRUCT   => Some(FixedToken::Struct),
-        K_UNION    => Some(FixedToken::Union),
-        K_ENUM     => Some(FixedToken::Enum),
-        K_CFN      => Some(FixedToken::Cfn),
-        K_AS       => Some(FixedToken::As),
+        K_CONST => Some(FixedToken::Const),
+        K_TYPE => Some(FixedToken::Type),
+        K_STRUCT => Some(FixedToken::Struct),
+        K_UNION => Some(FixedToken::Union),
+        K_ENUM => Some(FixedToken::Enum),
+        K_CFN => Some(FixedToken::Cfn),
+        K_AS => Some(FixedToken::As),
         _ => None,
     }
 }
@@ -537,7 +530,9 @@ impl<'a> Lexer<'a> {
 
         loop {
             let rest = &self.src[self.pos..];
-            let Some(ch) = rest.chars().next() else { return; };
+            let Some(ch) = rest.chars().next() else {
+                return;
+            };
 
             if !ch.is_whitespace() {
                 return;
@@ -556,7 +551,9 @@ impl<'a> Lexer<'a> {
 
             // If next byte is ASCII, it's definitely not Unicode whitespace
             // (and also not ASCII whitespace because we just consumed it).
-            let Some(&b0) = bytes.get(self.pos) else { return; };
+            let Some(&b0) = bytes.get(self.pos) else {
+                return;
+            };
             if b0.is_ascii() {
                 return;
             }
@@ -578,7 +575,9 @@ impl<'a> Lexer<'a> {
         }
 
         // If EOF or next byte is ASCII, we're done.
-        let Some(&b0) = bytes.get(self.pos) else { return; };
+        let Some(&b0) = bytes.get(self.pos) else {
+            return;
+        };
         if b0.is_ascii() {
             return;
         }
@@ -665,12 +664,30 @@ impl<'a> Lexer<'a> {
                     };
 
                     match esc {
-                        b'"' => { s.push('"'); self.pos += 1; }
-                        b'\\' => { s.push('\\'); self.pos += 1; }
-                        b'n' => { s.push('\n'); self.pos += 1; }
-                        b'r' => { s.push('\r'); self.pos += 1; }
-                        b't' => { s.push('\t'); self.pos += 1; }
-                        b'0' => { s.push('\0'); self.pos += 1; }
+                        b'"' => {
+                            s.push('"');
+                            self.pos += 1;
+                        }
+                        b'\\' => {
+                            s.push('\\');
+                            self.pos += 1;
+                        }
+                        b'n' => {
+                            s.push('\n');
+                            self.pos += 1;
+                        }
+                        b'r' => {
+                            s.push('\r');
+                            self.pos += 1;
+                        }
+                        b't' => {
+                            s.push('\t');
+                            self.pos += 1;
+                        }
+                        b'0' => {
+                            s.push('\0');
+                            self.pos += 1;
+                        }
 
                         // Unicode escape: \u{HEX...}
                         b'u' => {
@@ -711,10 +728,11 @@ impl<'a> Lexer<'a> {
                             self.pos += 1; // consume '}'
 
                             let code = u32::from_str_radix(hex, 16).unwrap();
-                            let ch = char::from_u32(code).ok_or_else(|| LexError::UnexpectedChar {
-                                ch: '\u{FFFD}',
-                                loc: self.produce_loc(start),
-                            })?;
+                            let ch =
+                                char::from_u32(code).ok_or_else(|| LexError::UnexpectedChar {
+                                    ch: '\u{FFFD}',
+                                    loc: self.produce_loc(start),
+                                })?;
                             s.push(ch);
                         }
 
@@ -758,7 +776,9 @@ impl<'a> Lexer<'a> {
         if saw_non_ascii || matches!(bytes.get(self.pos), Some(b) if !b.is_ascii()) {
             loop {
                 let rest = &self.src[self.pos..];
-                let Some(ch) = rest.chars().next() else { break; };
+                let Some(ch) = rest.chars().next() else {
+                    break;
+                };
                 if Self::is_ident_continue(ch) {
                     self.pos += ch.len_utf8();
                 } else {
@@ -794,7 +814,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // #[unsafe(no_mangle)]
     fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
         let start = self.pos;
 
@@ -907,8 +926,6 @@ impl<'a> Lexer<'a> {
         Ok(Some(ans))
     }
 }
-
-
 
 pub type PResult<T> = Result<T, ParseError>;
 pub type OTok = Located<Option<Token>>;
@@ -1396,10 +1413,7 @@ impl<'a> Parser<'a> {
         while self.try_operator("}")?.is_none() {
             let arm_start = self.expr_start();
             let Some(pat) = self.try_expr_bp(BP_PATTERN)? else {
-                return Err(self.err_open_delim(
-                    open.clone(),
-                    FixedToken::new("}"),
-                ));
+                return Err(self.err_open_delim(open.clone(), FixedToken::new("}")));
             };
             let arrow = self.expect_operator("=>")?;
             let body = self.consume_expr()?;
@@ -1429,10 +1443,7 @@ impl<'a> Parser<'a> {
 
         while self.try_operator(")")?.is_none() {
             let Some(vd) = self.try_expr()? else {
-                return Err(self.err_open_delim(
-                    open.clone(),
-                    FixedToken::new(")"),
-                ));
+                return Err(self.err_open_delim(open.clone(), FixedToken::new(")")));
             };
             params.push(vd);
             self.try_operator(",")?;
@@ -1477,10 +1488,7 @@ impl<'a> Parser<'a> {
         let open = self.expect_operator("{")?;
         while self.try_operator("}")?.is_none() {
             let Some(exp) = self.try_expr()? else {
-                return Err(self.err_open_delim(
-                    open.clone(),
-                    FixedToken::new(")"),
-                ));
+                return Err(self.err_open_delim(open.clone(), FixedToken::new(")")));
             };
             fields.push(exp);
 

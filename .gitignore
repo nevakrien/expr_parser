@@ -24,3 +24,10 @@ target
 # Added by cargo
 
 /target
+
+# Benchmark artifacts
+benchmark_data.txt
+perf.data
+perf.data.old
+perf_*.data
+massif.out.*

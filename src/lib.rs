@@ -5,7 +5,6 @@ pub mod parsing;
 pub use error_reporting::ErrorReporter;
 pub use parsing::{Expr, LExpr, Parser, Token};
 
-
 #[cfg(test)]
 mod lex_tests {
     use crate::parsing::*;
@@ -87,16 +86,16 @@ mod lex_tests {
     }
 
     #[test]
-    fn lexer_gets_all_operators(){
+    fn lexer_gets_all_operators() {
         for word in KEYWORDS.iter().chain(OPERATORS.iter()) {
-            let mut lex = Lexer::new(word,0);
+            let mut lex = Lexer::new(word, 0);
             let t = lex.next().unwrap().unwrap();
             assert_eq!(t.value, Token::new_operator(word));
-            assert_eq!(lex.next().unwrap(),None);
+            assert_eq!(lex.next().unwrap(), None);
         }
     }
 
-     /* =========================================
+    /* =========================================
      * 4) Unicode whitespace is skipped (not just ASCII)
      * ========================================= */
     #[test]
@@ -154,7 +153,6 @@ mod lex_tests {
 
         assert_eq!(lex.next().unwrap(), None);
     }
-
 }
 
 #[cfg(test)]

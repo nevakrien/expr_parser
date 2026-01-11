@@ -77,3 +77,18 @@ Union(float=2.1)
 
 # Performance
 this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.
+
+## benchmarks
+- generate a large benchmark file:
+  - `cargo run --release --example generate_benchmark_data -- benchmark_data.txt 1000000 20`
+- run the file benchmark (stores expressions in a vector):
+  - `cargo run --release --example file_parser_benchmark -- benchmark_data.txt`
+- run the lexer peek benchmark:
+  - `cargo run --release --example lexer_peek_benchmark`
+
+recent profiling notes (file-based benchmark on a ~1M expression input):
+- baseline throughput (dropping expressions immediately) ~0.75–0.78M expressions/sec on this machine.
+- retaining expressions in a vector drops throughput to ~0.58M expressions/sec and raises LLC miss rate to ~71% (cpu_core).
+- cache misses are dominated by `core::str::from_utf8` while validating the mmap'd input buffer.
+- parser hot spots (`Parser::try_expr_bp`, `Lexer::lex_token`) show measurable misses but far below the utf-8 scan.
+- branch miss rate remains low (<=~2% on cpu_core in both modes).
