@@ -93,7 +93,7 @@ pub enum LexError {
 
 // Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
-    "let", "const", "type", "struct", "union", "enum", "fn", "cfn", "if", "else", "while", "for",
+    "let", "const", "type", "struct", "union", "enum", "fn", "cfn","macro", "if", "else", "while", "for",
     "match", "return", "break", "continue", "as",
 ];
 
@@ -147,6 +147,7 @@ pub enum FixedToken {
     Enum = u64::from_ne_bytes(pack8("enum").0),
     Fn = u64::from_ne_bytes(pack8("fn").0),
     Cfn = u64::from_ne_bytes(pack8("cfn").0),
+    Macro = u64::from_ne_bytes(pack8("macro").0),
     If = u64::from_ne_bytes(pack8("if").0),
     Else = u64::from_ne_bytes(pack8("else").0),
     While = u64::from_ne_bytes(pack8("while").0),
@@ -256,6 +257,7 @@ impl FixedToken {
             FixedToken::Enum => "enum",
             FixedToken::Fn => "fn",
             FixedToken::Cfn => "cfn",
+            FixedToken::Macro => "macro",
             FixedToken::If => "if",
             FixedToken::Else => "else",
             FixedToken::While => "while",
@@ -436,6 +438,7 @@ const fn match_keyword(input: &str) -> Option<FixedToken> {
     const K_ENUM: Pack8 = pack8("enum");
     const K_FN: Pack8 = pack8("fn");
     const K_CFN: Pack8 = pack8("cfn");
+    const K_MACRO: Pack8 = pack8("macro");
     const K_IF: Pack8 = pack8("if");
     const K_ELSE: Pack8 = pack8("else");
     const K_WHILE: Pack8 = pack8("while");
@@ -465,6 +468,7 @@ const fn match_keyword(input: &str) -> Option<FixedToken> {
         K_UNION => Some(FixedToken::Union),
         K_ENUM => Some(FixedToken::Enum),
         K_CFN => Some(FixedToken::Cfn),
+        K_MACRO => Some(FixedToken::Macro),
         K_AS => Some(FixedToken::As),
         _ => None,
     }
@@ -1302,7 +1306,7 @@ impl<'a> Parser<'a> {
                     return self.parse_after_match(start, op_s).map(Some);
                 }
 
-                if op_str == "fn" || op_str == "cfn" {
+                if op_str == "fn" || op_str == "cfn" || op_str == "macro" {
                     self.next()?.unwrap();
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
