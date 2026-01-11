@@ -30,7 +30,7 @@ fn ident(rng: &mut Rng) -> String {
     let bases = [
         "foo", "bar", "baz", "alpha", "beta", "gamma", "delta", "theta",
     ];
-    let suffix = rng.range(10_000);
+    let suffix = rng.range(10); //most code isnt that unique
     format!("{}_{}", rng.pick(&bases), suffix)
 }
 

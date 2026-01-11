@@ -82,19 +82,10 @@ impl fmt::Display for Token {
     }
 }
 
-#[derive(Debug, Error, Clone, PartialEq)]
-pub enum LexError {
-    #[error("unexpected character `{ch}`")]
-    UnexpectedChar { ch: char, loc: Loc },
-
-    #[error("unterminated string literal")]
-    UnterminatedString { loc: Loc },
-}
-
 // Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
-    "let", "const", "type", "struct", "union", "enum", "fn", "cfn","macro", "if", "else", "while", "for",
-    "match", "return", "break", "continue", "as",
+    "let", "const", "type", "struct", "union", "enum", "fn", "cfn", "macro", "if", "else", "while",
+    "for", "match", "return", "break", "continue", "as",
 ];
 
 ///greedy match
@@ -474,15 +465,106 @@ const fn match_keyword(input: &str) -> Option<FixedToken> {
     }
 }
 
+pub type PResult<T> = Result<T, ParseError>;
+pub type OTok = Located<Option<Token>>;
+
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum ParseError {
+    #[error("unexpected character `{ch}`")]
+    UnexpectedChar { ch: char, loc: Loc },
+
+    #[error("unterminated string literal")]
+    UnterminatedString { loc: Loc },
+
+    #[error("expected expression, got {got:?}")]
+    ExpectedExpr { got: OTok },
+
+    #[error("expected {expected}, got {got:?}")]
+    ExpectedToken { expected: &'static str, got: OTok },
+
+    #[error("opened {open} without closing with {close} but got {got:?}")]
+    OpenDelimiter {
+        open: LFixed,
+        close: FixedToken,
+        got: OTok,
+    },
+}
+
+const BP_ASSIGN: u32 = 100;
+const BP_MATCH_ARM: u32 = 90;
+const BP_PATTERN: u32 = 110;
+const BP_PATH: u32 = 850; // ., ->, ::
+const BP_CALL: u32 = 800; // (), []
+const BP_POSTFIX_INC: u32 = 875;
+const BP_PREFIX: u32 = 900;
+
+#[inline]
+fn prefix_bp(op: FixedToken) -> Option<u32> {
+    Some(match op.as_str() {
+        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" => BP_PREFIX,
+        _ => return None,
+    })
+}
+
+#[inline]
+fn infix_bp(op: FixedToken) -> Option<(u32, u32)> {
+    Some(match op.as_str() {
+        // match arm (right-assoc)
+        "=>" => (BP_MATCH_ARM + 1, BP_MATCH_ARM),
+
+        // assignment (right-assoc)
+        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
+            (BP_ASSIGN + 1, BP_ASSIGN)
+        }
+        "|>" => (120, 121),
+
+        // cast / annotation-ish
+        "as" => (200, 201),
+        ":" => (210, 211),
+
+        // logical
+        "||" => (300, 301),
+        "&&" => (310, 311),
+
+        // bitwise
+        "|" => (400, 401),
+        "^" => (410, 411),
+        "&" => (420, 421),
+
+        // comparisons
+        "==" | "!=" | "<" | ">" | "<=" | ">=" => (500, 501),
+
+        // shifts
+        "<<" | ">>" => (600, 601),
+
+        // arithmetic
+        "+" | "-" => (700, 701),
+        "*" | "/" | "%" => (800, 801),
+
+        "." | "::" | "->" => (BP_PATH, BP_PATH + 1),
+
+        _ => return None,
+    })
+}
+
+#[inline]
+fn postfix_bp(op: FixedToken) -> Option<u32> {
+    Some(match op.as_str() {
+        "++" | "--" => BP_POSTFIX_INC,
+        "(" | "[" => BP_CALL,
+        _ => return None,
+    })
+}
+
 #[repr(align(16))]
-pub struct Lexer<'a> {
+pub struct Parser<'a> {
     src: &'a str,
     file: usize,
     pos: usize,
     peeked: Option<LTok>,
 }
 
-impl<'a> Lexer<'a> {
+impl<'a> Parser<'a> {
     pub fn new(src: &'a str, file: usize) -> Self {
         Self {
             src,
@@ -594,7 +676,7 @@ impl<'a> Lexer<'a> {
      * Tokenization helpers
      * ============================= */
     #[inline(always)]
-    fn lex_number(&mut self, start: usize) -> Token {
+    fn parse_number(&mut self, start: usize) -> Token {
         // first digit already consumed by caller
         while matches!(self.peek_byte(), Some(b) if b.is_ascii_digit()) {
             self.pos += 1;
@@ -624,7 +706,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[inline(always)]
-    fn lex_string(&mut self, start: usize) -> Result<Token, LexError> {
+    fn parse_string(&mut self, start: usize) -> Result<Token, ParseError> {
         // opening quote already consumed by caller
         let bytes = self.src.as_bytes();
         let mut chunk_start = self.pos;
@@ -632,7 +714,7 @@ impl<'a> Lexer<'a> {
 
         loop {
             let Some(&b) = bytes.get(self.pos) else {
-                return Err(LexError::UnterminatedString {
+                return Err(ParseError::UnterminatedString {
                     loc: self.produce_loc(start),
                 });
             };
@@ -662,7 +744,7 @@ impl<'a> Lexer<'a> {
 
                     self.pos += 1; // consume '\\'
                     let Some(&esc) = bytes.get(self.pos) else {
-                        return Err(LexError::UnterminatedString {
+                        return Err(ParseError::UnterminatedString {
                             loc: self.produce_loc(start),
                         });
                     };
@@ -699,7 +781,7 @@ impl<'a> Lexer<'a> {
                             if bytes.get(self.pos) != Some(&b'{') {
                                 let bad = self.src[self.pos..].chars().next().unwrap();
                                 self.pos += bad.len_utf8();
-                                return Err(LexError::UnexpectedChar {
+                                return Err(ParseError::UnexpectedChar {
                                     ch: bad,
                                     loc: self.produce_loc(start),
                                 });
@@ -714,7 +796,7 @@ impl<'a> Lexer<'a> {
                                 if !(hb as char).is_ascii_hexdigit() {
                                     let bad = self.src[self.pos..].chars().next().unwrap();
                                     self.pos += bad.len_utf8();
-                                    return Err(LexError::UnexpectedChar {
+                                    return Err(ParseError::UnexpectedChar {
                                         ch: bad,
                                         loc: self.produce_loc(start),
                                     });
@@ -723,7 +805,7 @@ impl<'a> Lexer<'a> {
                             }
 
                             if bytes.get(self.pos) != Some(&b'}') {
-                                return Err(LexError::UnterminatedString {
+                                return Err(ParseError::UnterminatedString {
                                     loc: self.produce_loc(start),
                                 });
                             }
@@ -733,7 +815,7 @@ impl<'a> Lexer<'a> {
 
                             let code = u32::from_str_radix(hex, 16).unwrap();
                             let ch =
-                                char::from_u32(code).ok_or_else(|| LexError::UnexpectedChar {
+                                char::from_u32(code).ok_or_else(|| ParseError::UnexpectedChar {
                                     ch: '\u{FFFD}',
                                     loc: self.produce_loc(start),
                                 })?;
@@ -743,7 +825,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let bad = self.src[self.pos..].chars().next().unwrap();
                             self.pos += bad.len_utf8();
-                            return Err(LexError::UnexpectedChar {
+                            return Err(ParseError::UnexpectedChar {
                                 ch: bad,
                                 loc: self.produce_loc(start),
                             });
@@ -763,7 +845,7 @@ impl<'a> Lexer<'a> {
     }
 
     #[inline(always)]
-    fn lex_ident_or_keyword(&mut self, start: usize, saw_non_ascii: bool) -> Token {
+    fn parse_ident_or_keyword(&mut self, start: usize, saw_non_ascii: bool) -> Token {
         let bytes = self.src.as_bytes();
 
         // ASCII fast path continues as long as we stay ASCII.
@@ -804,21 +886,21 @@ impl<'a> Lexer<'a> {
     }
 
     #[inline(always)]
-    fn lex_operator(&mut self, start: usize) -> Result<Token, LexError> {
+    fn parse_operator(&mut self, start: usize) -> Result<Token, ParseError> {
         if let Some(op) = match_operator(&self.src[self.pos..]) {
             self.pos += op.as_str().len();
             Ok(Token::Operator(op))
         } else {
             let bad = self.src[self.pos..].chars().next().unwrap();
             self.pos += bad.len_utf8();
-            Err(LexError::UnexpectedChar {
+            Err(ParseError::UnexpectedChar {
                 ch: bad,
                 loc: self.produce_loc(start),
             })
         }
     }
 
-    fn lex_token(&mut self) -> Result<Option<LTok>, LexError> {
+    fn parse_token(&mut self) -> Result<Option<LTok>, ParseError> {
         let start = self.pos;
 
         let Some(b0) = self.src.as_bytes().get(self.pos).copied() else {
@@ -828,18 +910,18 @@ impl<'a> Lexer<'a> {
         let value = match b0 {
             b'0'..=b'9' => {
                 self.pos += 1;
-                self.lex_number(start)
+                self.parse_number(start)
             }
 
             b'"' => {
                 self.pos += 1;
-                self.lex_string(start)?
+                self.parse_string(start)?
             }
 
             // ASCII start of ident
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
                 self.pos += 1;
-                self.lex_ident_or_keyword(start, false)
+                self.parse_ident_or_keyword(start, false)
             }
 
             _ if !b0.is_ascii() => {
@@ -849,16 +931,16 @@ impl<'a> Lexer<'a> {
 
                 if Self::is_ident_start(ch) {
                     self.pos += ch.len_utf8();
-                    self.lex_ident_or_keyword(start, true)
+                    self.parse_ident_or_keyword(start, true)
                 } else {
                     // Not an identifier start; try operator (will likely error)
-                    self.lex_operator(start)?
+                    self.parse_operator(start)?
                 }
             }
 
             _ => {
                 // ASCII non-ident start: operator/delimiter/unknown
-                self.lex_operator(start)?
+                self.parse_operator(start)?
             }
         };
 
@@ -872,33 +954,33 @@ impl<'a> Lexer<'a> {
      * Peek / consume
      * ============================= */
     #[inline(always)]
-    pub fn peek(&mut self) -> Result<Option<&LTok>, LexError> {
+    pub fn peek_token(&mut self) -> Result<Option<&LTok>, ParseError> {
         if self.peeked.is_none() {
             let saved = self.pos;
             self.skip_whitespace();
-            let tok = self.lex_token()?;
+            let tok = self.parse_token()?;
             self.pos = saved;
             self.peeked = tok;
         }
         Ok(self.peeked.as_ref())
     }
 
-    pub fn next(&mut self) -> Result<Option<LTok>, LexError> {
+    pub fn next_token(&mut self) -> Result<Option<LTok>, ParseError> {
         if let Some(tok) = self.peeked.take() {
             self.pos = tok.loc.range.end;
             return Ok(Some(tok));
         }
 
         self.skip_whitespace();
-        self.lex_token()
+        self.parse_token()
     }
 
     /* =============================
      * Convenience helpers
      * ============================= */
     #[inline(always)]
-    pub fn try_op(&mut self) -> Result<Option<LFixed>, LexError> {
-        let Some(tok) = self.peek()? else {
+    pub fn try_op(&mut self) -> Result<Option<LFixed>, ParseError> {
+        let Some(tok) = self.peek_token()? else {
             return Ok(None);
         };
 
@@ -907,13 +989,13 @@ impl<'a> Lexer<'a> {
         };
 
         let ans = tok.with(s);
-        self.next()?;
+        self.next_token()?;
         Ok(Some(ans))
     }
 
     #[inline(always)]
-    pub fn try_operator(&mut self, op: &str) -> Result<Option<LFixed>, LexError> {
-        let Some(tok) = self.peek()? else {
+    pub fn try_operator(&mut self, op: &str) -> Result<Option<LFixed>, ParseError> {
+        let Some(tok) = self.peek_token()? else {
             return Ok(None);
         };
 
@@ -926,112 +1008,12 @@ impl<'a> Lexer<'a> {
         }
 
         let ans = tok.with(s);
-        self.next()?;
+        self.next_token()?;
         Ok(Some(ans))
-    }
-}
-
-pub type PResult<T> = Result<T, ParseError>;
-pub type OTok = Located<Option<Token>>;
-
-#[derive(Debug, Error, Clone, PartialEq)]
-pub enum ParseError {
-    #[error(transparent)]
-    Lex(#[from] LexError),
-
-    #[error("expected expression, got {got:?}")]
-    ExpectedExpr { got: OTok },
-
-    #[error("expected {expected}, got {got:?}")]
-    ExpectedToken { expected: &'static str, got: OTok },
-
-    #[error("opened {open} without closing with {close} but got {got:?}")]
-    OpenDelimiter {
-        open: LFixed,
-        close: FixedToken,
-        got: OTok,
-    },
-}
-
-const BP_ASSIGN: u32 = 100;
-const BP_MATCH_ARM: u32 = 90;
-const BP_PATTERN: u32 = 110;
-const BP_PATH: u32 = 850; // ., ->, ::
-const BP_CALL: u32 = 800; // (), []
-const BP_POSTFIX_INC: u32 = 875;
-const BP_PREFIX: u32 = 900;
-
-#[inline]
-fn prefix_bp(op: FixedToken) -> Option<u32> {
-    Some(match op.as_str() {
-        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" => BP_PREFIX,
-        _ => return None,
-    })
-}
-
-#[inline]
-fn infix_bp(op: FixedToken) -> Option<(u32, u32)> {
-    Some(match op.as_str() {
-        // match arm (right-assoc)
-        "=>" => (BP_MATCH_ARM + 1, BP_MATCH_ARM),
-
-        // assignment (right-assoc)
-        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" => {
-            (BP_ASSIGN + 1, BP_ASSIGN)
-        }
-        "|>" => (120, 121),
-
-        // cast / annotation-ish
-        "as" => (200, 201),
-        ":" => (210, 211),
-
-        // logical
-        "||" => (300, 301),
-        "&&" => (310, 311),
-
-        // bitwise
-        "|" => (400, 401),
-        "^" => (410, 411),
-        "&" => (420, 421),
-
-        // comparisons
-        "==" | "!=" | "<" | ">" | "<=" | ">=" => (500, 501),
-
-        // shifts
-        "<<" | ">>" => (600, 601),
-
-        // arithmetic
-        "+" | "-" => (700, 701),
-        "*" | "/" | "%" => (800, 801),
-
-        "." | "::" | "->" => (BP_PATH, BP_PATH + 1),
-
-        _ => return None,
-    })
-}
-
-#[inline]
-fn postfix_bp(op: FixedToken) -> Option<u32> {
-    Some(match op.as_str() {
-        "++" | "--" => BP_POSTFIX_INC,
-        "(" | "[" => BP_CALL,
-        _ => return None,
-    })
-}
-
-pub struct Parser<'a> {
-    lex: Lexer<'a>,
-}
-
-impl<'a> Parser<'a> {
-    pub fn new(src: &'a str, file: usize) -> Self {
-        Self {
-            lex: Lexer::new(src, file),
-        }
     }
 
     pub fn is_empty(&mut self) -> bool {
-        matches!(self.peek(), Ok(None))
+        matches!(self.peek_token(), Ok(None))
     }
     /// Try parse an expression.
     /// Ok(None) => no expression starts here
@@ -1080,46 +1062,23 @@ impl<'a> Parser<'a> {
     }
 
     /* =============================
-     * Forwarding + invariants
+     * Helper methods for parsing
      * ============================= */
 
     fn expr_start(&mut self) -> usize {
-        self.lex.skip_whitespace();
-        self.lex.mark()
-    }
-    fn produce_loc(&self, start: usize) -> Loc {
-        self.lex.produce_loc(start)
-    }
-
-    #[inline(always)]
-    fn peek(&mut self) -> PResult<Option<&LTok>> {
-        Ok(self.lex.peek()?)
+        self.skip_whitespace();
+        self.mark()
     }
 
     #[inline(always)]
     fn peek_op(&mut self) -> PResult<OTok> {
-        Ok(match self.peek()? {
+        Ok(match self.peek_token()? {
             Some(t) => t.clone().map(Some),
             None => Located {
-                loc: self.lex.empty_loc(),
+                loc: self.empty_loc(),
                 value: None,
             },
         })
-    }
-
-    fn next(&mut self) -> PResult<Option<LTok>> {
-        let t = self.lex.next()?;
-        Ok(t)
-    }
-
-    #[inline(always)]
-    fn try_op(&mut self) -> Result<Option<LFixed>, LexError> {
-        self.lex.try_op()
-    }
-
-    #[inline(always)]
-    fn try_operator(&mut self, op: &str) -> PResult<Option<LFixed>> {
-        Ok(self.lex.try_operator(op)?)
     }
 
     fn expect_operator(&mut self, op: &'static str) -> PResult<LFixed> {
@@ -1136,7 +1095,7 @@ impl<'a> Parser<'a> {
         let got = match self.peek_op() {
             Ok(x) => x,
             Err(_) => Located {
-                loc: self.lex.empty_loc(),
+                loc: self.empty_loc(),
                 value: None,
             },
         };
@@ -1174,7 +1133,7 @@ impl<'a> Parser<'a> {
         }
     }
     fn try_parse_infix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
-        let Some(peek) = self.peek()? else {
+        let Some(peek) = self.peek_token()? else {
             return Ok(false);
         };
         let Token::Operator(op) = &peek.value else {
@@ -1207,7 +1166,7 @@ impl<'a> Parser<'a> {
     }
 
     fn try_parse_postfix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
-        let Some(peek) = self.peek()? else {
+        let Some(peek) = self.peek_token()? else {
             return Ok(false);
         };
         let Token::Operator(op) = &peek.value else {
@@ -1263,13 +1222,13 @@ impl<'a> Parser<'a> {
         Ok(true)
     }
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
-        let Some(tok) = self.peek()? else {
+        let Some(tok) = self.peek_token()? else {
             return Ok(None);
         };
 
         match tok.value {
             Token::NumLit(_) | Token::FloatLit(_) | Token::StrLit(_) | Token::Ident(_) => {
-                let tok = self.next()?.unwrap();
+                let tok = self.next_token()?.unwrap();
                 Ok(Some(Located {
                     loc: self.produce_loc(start),
                     value: Expr::Atom(tok.value),
@@ -1284,46 +1243,46 @@ impl<'a> Parser<'a> {
 
                 // grouping / blocks
                 if op_str == "(" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_lparen(start, op_s).map(Some);
                 }
                 if op_str == "{" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_lbrace(start, op_s).map(Some);
                 }
 
                 // control keywords
                 if op_str == "if" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_if(start, op_s).map(Some);
                 }
                 if op_str == "while" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_while(start, op_s).map(Some);
                 }
                 if op_str == "match" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_match(start, op_s).map(Some);
                 }
 
                 if op_str == "fn" || op_str == "cfn" || op_str == "macro" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
 
                 if op_str == "struct" || op_str == "enum" || op_str == "union" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_struct(start, op_s).map(Some);
                 }
 
                 if op_str == "let" {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
                 }
 
                 // generic prefix operator via BP
                 if let Some(bp) = prefix_bp(op) {
-                    self.next()?.unwrap();
+                    self.next_token()?.unwrap();
                     let rhs = self.consume_expr_bp(bp)?;
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
@@ -1427,10 +1386,10 @@ impl<'a> Parser<'a> {
                 value: Expr::Bin(arrow, Box::new((pat, body))),
             });
 
-            if let Some(Token::Operator(op)) = self.peek()?.map(|l| &l.value) {
-                if matches!(op.as_str(), "," | ";") {
-                    self.next()?;
-                }
+            if let Some(Token::Operator(op)) = self.peek_token()?.map(|l| &l.value)
+                && matches!(op.as_str(), "," | ";")
+            {
+                self.next_token()?;
             }
         }
 
@@ -1496,11 +1455,11 @@ impl<'a> Parser<'a> {
             };
             fields.push(exp);
 
-            if let Some(Token::Operator(op)) = self.peek()?.map(|l| &l.value) {
-                if matches!(op.as_str(), "," | ";") {
-                    self.next()?;
-                }
-            };
+            if let Some(Token::Operator(op)) = self.peek_token()?.map(|l| &l.value)
+                && matches!(op.as_str(), "," | ";")
+            {
+                self.next_token()?;
+            }
         }
         Ok(Located {
             loc: self.produce_loc(start),

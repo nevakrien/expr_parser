@@ -14,12 +14,12 @@ mod lex_tests {
      * ========================================= */
     #[test]
     fn peek_does_not_advance_mark() {
-        let mut lex = Lexer::new("foo bar", 0);
+        let mut lex = Parser::new("foo bar", 0);
 
         let m0 = lex.mark();
 
         // Peek should not move position
-        let p = lex.peek().unwrap().unwrap();
+        let p = lex.peek_token().unwrap().unwrap();
         assert!(matches!(p.value, Token::Ident(ref s) if s == "foo"));
         assert_eq!(p.loc.range, 0..3);
 
@@ -27,14 +27,14 @@ mod lex_tests {
         assert_eq!(m0, m1, "mark changed after peek");
 
         // Now consume and ensure span is correct
-        let tok = lex.next().unwrap().unwrap();
+        let tok = lex.next_token().unwrap().unwrap();
         assert_eq!(tok.loc.range, 0..3);
 
         let loc = lex.produce_loc(m1);
         assert_eq!(loc.range, 0..3);
 
         // Still sane afterwards
-        let bar = lex.next().unwrap().unwrap();
+        let bar = lex.next_token().unwrap().unwrap();
         assert!(matches!(bar.value, Token::Ident(ref s) if s == "bar"));
     }
 
@@ -44,9 +44,9 @@ mod lex_tests {
     #[test]
     fn keywords_and_multi_char_operators() {
         let src = "let x ~= y => z && match";
-        let mut lex = Lexer::new(src, 0);
+        let mut lex = Parser::new(src, 0);
 
-        let kinds: Vec<String> = std::iter::from_fn(|| lex.next().unwrap())
+        let kinds: Vec<String> = std::iter::from_fn(|| lex.next_token().unwrap())
             .map(|tok| match tok.value {
                 Token::Operator(s) => format!("op({})", s.as_str()),
                 Token::Ident(s) => format!("id({})", s),
@@ -75,23 +75,23 @@ mod lex_tests {
     #[test]
     fn lexer_error_cases() {
         // Unterminated string
-        let mut lex = Lexer::new("\"hello", 0);
-        let err = lex.next().unwrap_err();
-        assert!(matches!(err, LexError::UnterminatedString { .. }));
+        let mut lex = Parser::new("\"hello", 0);
+        let err = lex.next_token().unwrap_err();
+        assert!(matches!(err, ParseError::UnterminatedString { .. }));
 
         // Invalid operator / unexpected char
-        let mut lex = Lexer::new("@", 0);
-        let err = lex.next().unwrap_err();
-        assert!(matches!(err, LexError::UnexpectedChar { ch: '@', .. }));
+        let mut lex = Parser::new("@", 0);
+        let err = lex.next_token().unwrap_err();
+        assert!(matches!(err, ParseError::UnexpectedChar { ch: '@', .. }));
     }
 
     #[test]
     fn lexer_gets_all_operators() {
         for word in KEYWORDS.iter().chain(OPERATORS.iter()) {
-            let mut lex = Lexer::new(word, 0);
-            let t = lex.next().unwrap().unwrap();
+            let mut lex = Parser::new(word, 0);
+            let t = lex.next_token().unwrap().unwrap();
             assert_eq!(t.value, Token::new_operator(word));
-            assert_eq!(lex.next().unwrap(), None);
+            assert_eq!(lex.next_token().unwrap(), None);
         }
     }
 
@@ -104,24 +104,24 @@ mod lex_tests {
         let src = "  let x = 1;";
         //          ^ ^   ^ ^  ^ ^
         //        NBSP EM  NBSP  EM NBSP
-        let mut lex = Lexer::new(src, 0);
+        let mut lex = Parser::new(src, 0);
 
-        let t0 = lex.next().unwrap().unwrap();
+        let t0 = lex.next_token().unwrap().unwrap();
         assert_eq!(t0.value, Token::new_operator("let"));
 
-        let t1 = lex.next().unwrap().unwrap();
+        let t1 = lex.next_token().unwrap().unwrap();
         assert!(matches!(t1.value, Token::Ident(ref s) if s == "x"));
 
-        let t2 = lex.next().unwrap().unwrap();
+        let t2 = lex.next_token().unwrap().unwrap();
         assert_eq!(t2.value, Token::new_operator("="));
 
-        let t3 = lex.next().unwrap().unwrap();
+        let t3 = lex.next_token().unwrap().unwrap();
         assert!(matches!(t3.value, Token::NumLit(1)));
 
-        let t4 = lex.next().unwrap().unwrap();
+        let t4 = lex.next_token().unwrap().unwrap();
         assert_eq!(t4.value, Token::new_operator(";"));
 
-        assert_eq!(lex.next().unwrap(), None);
+        assert_eq!(lex.next_token().unwrap(), None);
     }
 
     /* =========================================
@@ -130,28 +130,28 @@ mod lex_tests {
     #[test]
     fn unicode_ident_is_not_keyword() {
         let src = "let שלום = 3; match";
-        let mut lex = Lexer::new(src, 0);
+        let mut lex = Parser::new(src, 0);
 
-        let t0 = lex.next().unwrap().unwrap();
+        let t0 = lex.next_token().unwrap().unwrap();
         assert_eq!(t0.value, Token::new_operator("let"));
 
-        let t1 = lex.next().unwrap().unwrap();
+        let t1 = lex.next_token().unwrap().unwrap();
         assert!(matches!(t1.value, Token::Ident(ref s) if s == "שלום"));
 
-        let t2 = lex.next().unwrap().unwrap();
+        let t2 = lex.next_token().unwrap().unwrap();
         assert_eq!(t2.value, Token::new_operator("="));
 
-        let t3 = lex.next().unwrap().unwrap();
+        let t3 = lex.next_token().unwrap().unwrap();
         assert!(matches!(t3.value, Token::NumLit(3)));
 
-        let t4 = lex.next().unwrap().unwrap();
+        let t4 = lex.next_token().unwrap().unwrap();
         assert_eq!(t4.value, Token::new_operator(";"));
 
         // "match" here should still be recognized as a keyword/operator
-        let t5 = lex.next().unwrap().unwrap();
+        let t5 = lex.next_token().unwrap().unwrap();
         assert_eq!(t5.value, Token::new_operator("match"));
 
-        assert_eq!(lex.next().unwrap(), None);
+        assert_eq!(lex.next_token().unwrap(), None);
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::parsing::OTok;
-use crate::parsing::{LexError, ParseError};
+use crate::parsing::ParseError;
 use ariadne::{Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
@@ -23,34 +23,37 @@ impl ErrorReporter {
         self.sources.get(&file).map(|s| Source::from(s.as_str()))
     }
 
-    pub fn report_lex_error(&self, error: &LexError) -> io::Result<()> {
-        let (loc, message, label) = match error {
-            LexError::UnexpectedChar { ch, loc } => (
-                loc,
-                format!("unexpected character `{}`", ch),
-                "this character is not valid here",
-            ),
-            LexError::UnterminatedString { loc } => (
-                loc,
-                "unterminated string literal".to_string(),
-                "string starts here",
-            ),
-        };
-
-        let Some(source) = self.source(loc.file) else {
-            return Ok(());
-        };
-
-        let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-            .with_message(message)
-            .with_label(Label::new((loc.file, loc.range.clone())).with_message(label));
-
-        report.finish().print((loc.file, source))
-    }
-
     pub fn report_parse_error(&self, error: &ParseError) -> io::Result<()> {
         match error {
-            ParseError::Lex(err) => self.report_lex_error(err),
+            ParseError::UnexpectedChar { ch, loc } => {
+                let Some(source) = self.source(loc.file) else {
+                    return Ok(());
+                };
+
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!("unexpected character `{}`", ch))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("this character is not valid here"),
+                    );
+
+                report.finish().print((loc.file, source))
+            }
+
+            ParseError::UnterminatedString { loc } => {
+                let Some(source) = self.source(loc.file) else {
+                    return Ok(());
+                };
+
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message("unterminated string literal".to_string())
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("string starts here"),
+                    );
+
+                report.finish().print((loc.file, source))
+            }
 
             ParseError::ExpectedExpr { got } => self.report_expected("expected expression", got),
 

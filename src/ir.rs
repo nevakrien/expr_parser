@@ -1,24 +1,55 @@
-// pub struct SimpleOp;
-// pub struct Value;
+// pub enum BasicOp{
+// 	Assign,
+// 	Deref,Adder,
+
+// 	Call,Index,
+
+// 	Add,Sub,Mul,Div,Mod,
+// 	ShiftLeft,ShiftRight,
+
+// 	//...
+// }
+
+// pub struct Value{
+// 	id:ValueId,
+// 	op:BasicOp,
+// 	parts:Vec<ValueId>,
+// }
 
 // #[derive(Debug,Copy,Clone,PartialEq,Eq,Hash)]
-// pub struct BlockId(u32);
+// pub struct ValueId(u32);
 
-// pub enum Block {
-// 	Many{
-// 		parts:Vec<BlockId>,
+// pub struct Block {
+// 	id:ValueId,
+// 	parts:Vec<Statment>,
+// 	returns:Option<ValueId>,
+// }
+
+// pub enum Statment {
+// 	VarDef{
+// 		id:ValueId,
+// 		//some info can go here
 // 	},
-// 	Basic{
-// 		parts:Vec<SimpleOp>,
+// 	ValueOp{
+// 		val:Value,
+// 	},
+// 	Block{
+// 		inner:Block,
+// 		tgt:ValueId,
 // 	},
 // 	If{
-// 		cond:Value,
-// 		yes:BlockId,
-// 		no:BlockId,
+// 		tgt:ValueId,
+// 		cond:ValueId,
+// 		yes:Block,
+// 		no:Block,
 // 	},
 // 	While{
-// 		cond:Value,
-// 		body:BlockId,
+// 		tgt:ValueId,
+
+// 		cond:Block,
+// 		body:Block,
 // 	},
 // 	Ret(Value),
+// 	Break,
+// 	Continue,
 // }

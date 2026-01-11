@@ -1,4 +1,4 @@
-use expr_parser::parsing::Lexer;
+use expr_parser::parsing::Parser;
 use std::time::Instant;
 
 fn build_input(tokens: &[&str], repeat: usize, separator: &str) -> String {
@@ -13,10 +13,10 @@ fn build_input(tokens: &[&str], repeat: usize, separator: &str) -> String {
 }
 
 fn run_next_only(label: &str, input: &str) -> usize {
-    let mut lexer = Lexer::new(input, 0);
+    let mut lexer = Parser::new(input, 0);
     let mut token_count = 0;
     loop {
-        match lexer.next().expect("lexing failed") {
+        match lexer.next_token().expect("lexing failed") {
             Some(_) => token_count += 1,
             None => break,
         }
@@ -26,14 +26,14 @@ fn run_next_only(label: &str, input: &str) -> usize {
 }
 
 fn run_peek_then_next(label: &str, input: &str) -> usize {
-    let mut lexer = Lexer::new(input, 0);
+    let mut lexer = Parser::new(input, 0);
     let mut token_count = 0;
     loop {
-        let peeked = lexer.peek().expect("lexing failed");
+        let peeked = lexer.peek_token().expect("lexing failed");
         if peeked.is_none() {
             break;
         }
-        let _ = lexer.next().expect("lexing failed");
+        let _ = lexer.next_token().expect("lexing failed");
         token_count += 1;
     }
     println!("{label}: peek+next -> {token_count} tokens");
