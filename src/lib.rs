@@ -244,7 +244,7 @@ mod parse_tests {
 
     #[test]
     fn if_else_span_covers_entire_expression() {
-        let src = "if x y else z";
+        let src = "if let Some(x) = y z1 else z2";
         let mut p = Parser::new(src, 0);
         let expr = p.consume_expr().unwrap();
 
@@ -521,6 +521,56 @@ mod parse_tests {
             }
             _ => panic!("expected let expression"),
         }
+
+        let src = "let Some(x) = y else z;";
+        let mut p = Parser::new(src, 0);
+        let stmt = p.consume_stmt().unwrap();
+
+        match stmt.value {
+            Expr::Postfix(semi, args) => {
+                assert_eq!(semi.as_str(), ";");
+                assert_eq!(args.len(), 1);
+
+                match &args[0].value {
+                    Expr::Prefix(let_tok, args) => {
+                        assert_eq!(let_tok.as_str(), "let");
+                        assert_eq!(args.len(), 3);
+
+                        match &args[0].value {
+                            Expr::Postfix(open, items) => {
+                                assert_eq!(open.as_str(), "(");
+                                assert_eq!(items.len(), 2);
+                                match &items[0].value {
+                                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Some"),
+                                    _ => panic!("expected Some"),
+                                }
+                                match &items[1].value {
+                                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                                    _ => panic!("expected x"),
+                                }
+                            }
+                            _ => panic!("expected Some(x) pattern"),
+                        }
+
+                        match &args[1].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
+                            _ => panic!("expected y"),
+                        }
+
+                        match &args[2].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "z"),
+                            _ => panic!("expected z"),
+                        }
+                    }
+                    _ => panic!("expected let expression"),
+                }
+
+                assert_eq!(stmt.loc.range, 0..src.len());
+            }
+            _ => panic!("expected semicolon expression"),
+        }
+
+        assert!(p.is_empty());
     }
 
     #[test]

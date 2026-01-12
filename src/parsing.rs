@@ -1439,7 +1439,7 @@ impl<'a> Parser<'a> {
         vals.push(self.consume_expr_bp(BP_PATTERN)?);
         self.expect_operator("=")?;
         vals.push(self.consume_expr()?);
-        
+
         if self.try_operator("else")?.is_some() {
             vals.push(self.consume_expr()?);
         }
