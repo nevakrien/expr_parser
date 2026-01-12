@@ -1435,13 +1435,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_after_let(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
-        let dec = self.consume_expr_bp(BP_PATTERN)?;
+        let mut vals = Vec::new();
+        vals.push(self.consume_expr_bp(BP_PATTERN)?);
         self.expect_operator("=")?;
-        let val = self.consume_expr()?;
+        vals.push(self.consume_expr()?);
+        
+        if self.try_operator("else")?.is_some() {
+            vals.push(self.consume_expr()?);
+        }
 
         Ok(Located {
             loc: self.produce_loc(start),
-            value: Expr::Prefix(let_tok, vec![dec, val]),
+            value: Expr::Prefix(let_tok, vals),
         })
     }
 
