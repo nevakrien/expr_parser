@@ -75,6 +75,18 @@ Point(4,y=2)
 Union(float=2.1)
 ```
 
+defining dot methods destructors and constructors are viewed as just operator overloading.
+so constructing a class for point would look like
+```
+Point.dist = fn(self,other:Point)->float {
+	let dx = self.x-other.x
+	let dy = self.y-other.y
+	sqrt(dx*dx+dy*dy)
+}
+drop(Point) = fn(self) {}
+Point() = fn()->Point {Point(0,0)}
+```
+
 # Performance
 this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.
 
