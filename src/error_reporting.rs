@@ -105,7 +105,7 @@ impl ErrorReporter {
 
     pub fn report_compile_error(&self, error: &CompileError) -> io::Result<()> {
         match error {
-            CompileError::SimpleError { loc, .. } | CompileError::MacroApply { loc, .. } => {
+            CompileError::SimpleError { loc, .. } | CompileError::Arity { loc, .. } => {
                 let Some(source) = self.source(loc.file) else {
                     return Ok(());
                 };

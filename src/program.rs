@@ -10,8 +10,13 @@ pub enum CompileError {
     #[error("{s}")]
     SimpleError { loc: Loc, s: &'static str },
 
-    #[error("Macro expansion failed: {message}")]
-    MacroApply { message: String, loc: Loc },
+    #[error("{call_name} expected {expected} arguments, got {got}")]
+    Arity {
+        loc: Loc,
+        call_name: &'static str,
+        expected: usize,
+        got: usize,
+    },
 
     #[error(transparent)]
     Parse(#[from] crate::parsing::ParseError),
@@ -49,15 +54,7 @@ fn expand_macros_recursive(expr: LExpr, program: &mut Program) -> CResult<LExpr>
                 && let Expr::Atom(Token::Ident(name)) = &callee.value
                 && let Some(macro_def) = program.get_macro(name)
             {
-                let expanded = match macro_def.apply(rest, &loc) {
-                    Ok(expanded) => expanded,
-                    Err(e) => {
-                        return Err(CompileError::MacroApply {
-                            message: e.message,
-                            loc,
-                        });
-                    }
-                };
+                let expanded = macro_def.apply(rest, &loc)?;
                 return expand_macros_recursive(expanded, program);
             }
 

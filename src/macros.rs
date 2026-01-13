@@ -4,19 +4,6 @@ use crate::parsing::{LExpr, Loc, Located};
 use crate::program::{CResult, CompileError};
 
 #[derive(Debug)]
-pub struct MacroError {
-    pub message: String,
-}
-
-impl std::fmt::Display for MacroError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Macro error: {}", self.message)
-    }
-}
-
-impl std::error::Error for MacroError {}
-
-#[derive(Debug)]
 pub struct Macro {
     vars: Vec<String>,
     body: Expr,
@@ -65,22 +52,20 @@ impl Macro {
         })
     }
 
-    pub fn apply(&self, vars: &[LExpr], call_site: &Loc) -> Result<LExpr, MacroError> {
+    pub fn apply(&self, vars: &[LExpr], call_site: &Loc) -> CResult<LExpr> {
         if vars.len() != self.vars.len() {
-            return Err(MacroError {
-                message: format!("Expected {} arguments, got {}", self.vars.len(), vars.len()),
+            return Err(CompileError::Arity {
+                loc: call_site.clone(),
+                call_name: "Macro expansion",
+                expected: self.vars.len(),
+                got: vars.len(),
             });
         }
 
         self.substitute_expr(&self.body, vars, call_site)
     }
 
-    fn substitute_expr(
-        &self,
-        expr: &Expr,
-        args: &[LExpr],
-        call_site: &Loc,
-    ) -> Result<LExpr, MacroError> {
+    fn substitute_expr(&self, expr: &Expr, args: &[LExpr], call_site: &Loc) -> CResult<LExpr> {
         match expr {
             Expr::Atom(Token::Ident(s)) => {
                 if let Some(idx) = self.vars.iter().position(|v| v == s) {
