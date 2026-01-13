@@ -409,7 +409,7 @@ impl<'a> IrLowerer<'a> {
             }
             Expr::Atom(Token::Ident(name)) => {
                 //TODO decide if this should pass name by value here.
-                let id = self.resolve_or_insert_value(&name);
+                let id = self.insert_value_in_current_scope(&name);
                 Ok(self.typed_pattern(expr.loc, Pattern::Bind(id)))
             }
             Expr::Prefix(open, items) if open.value == FixedToken::LParen => {
@@ -456,11 +456,21 @@ impl<'a> IrLowerer<'a> {
 
     /// Resolve a name to a NameId, creating a new binding if not found
     fn resolve_or_insert_value(&mut self, name: &str) -> NameId {
+        // Resolve name in scopes, inserting in current scope if not found
         for (value_scope, _) in self.scopes.iter().rev() {
             if let Some(id) = value_scope.get(name) {
                 return *id;
             }
         }
+        let id = self.fresh_name_id();
+        if let Some((value_scope, _)) = self.scopes.last_mut() {
+            value_scope.insert(name.to_string(), id);
+        }
+        id
+    }
+
+    /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
+    fn insert_value_in_current_scope(&mut self, name: &str) -> NameId {
         let id = self.fresh_name_id();
         if let Some((value_scope, _)) = self.scopes.last_mut() {
             value_scope.insert(name.to_string(), id);
@@ -578,3 +588,63 @@ fn split_postfix(
     }
 }
 
+#[cfg(test)]
+mod var_scope_test {
+    use super::*;
+    use crate::parsing::Parser;
+    use crate::program::Program;
+    #[test]
+    fn var_scope_is_respected() {
+        // { let a = 1; { let a = 2; a } a }
+        let src = "{ let a = 1; { let a = 2; a; } a; }";
+        let mut parser = Parser::new(src, 0);
+        let expr = parser.consume_expr().expect("failed to parse expr");
+        let ir = lower_expr(&Program::new(), expr).expect("lowering failed");
+        // top-level should be a block
+        let top_block = match ir.value {
+            Value::Block { ref statements, .. } => statements,
+            _ => panic!("expected top-level block"),
+        };
+        // expect three statements: let a, inner block, final a
+        assert_eq!(top_block.len(), 3);
+        // Grab outer let bind id
+        let outer_pat = match &top_block[0].value {
+            Value::Let { pat, .. } => pat,
+            _ => panic!("expected outer let"),
+        };
+        let outer_id = match &outer_pat.value {
+            Pattern::Bind(id) => *id,
+            _ => panic!("expected bind pattern"),
+        };
+        // Final name ref refers to outer
+        let final_ref = match &top_block[2].value {
+            Value::NameRef(id) => *id,
+            _ => panic!("expected final name reference"),
+        };
+        assert_eq!(outer_id, final_ref);
+        // Inner block
+        let inner_block = match &top_block[1].value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected inner block"),
+        };
+        assert_eq!(inner_block.len(), 2);
+        let inner_pat = match &inner_block[0].value {
+            Value::Let { pat, .. } => pat,
+            _ => panic!("expected inner let"),
+        };
+        let inner_id = match &inner_pat.value {
+            Pattern::Bind(id) => *id,
+            _ => panic!("expected bind pattern"),
+        };
+        let inner_ref = match &inner_block[1].value {
+            Value::NameRef(id) => *id,
+            _ => panic!("expected inner name reference"),
+        };
+        assert_eq!(inner_id, inner_ref);
+        // Ensure inner and outer ids differ
+        assert_ne!(
+            outer_id, inner_id,
+            "inner and outer bindings must not collide"
+        );
+    }
+}
