@@ -91,6 +91,7 @@ Point() = fn()->Point {Point(0,0)}
 this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.
 
 ## benchmarks
+### parser
 - generate a large benchmark file:
   - `cargo run --release --example generate_benchmark_data -- benchmark_data.txt 1000000 20`
 - run the file benchmark (stores expressions in a vector):
@@ -104,3 +105,32 @@ recent profiling notes (file-based benchmark on a ~1M expression input):
 - cache misses are dominated by `core::str::from_utf8` while validating the mmap'd input buffer.
 - parser hot spots (`Parser::try_expr_bp`, `Lexer::lex_token`) show measurable misses but far below the utf-8 scan.
 - branch miss rate remains low (<=~2% on cpu_core in both modes).
+
+### macros
+we started benchmarking macros before the rest of the compilation was made.
+this lets us see how they compare to regular parsing and what cache behivior they show.
+
+we see that macros can take around the same time as parsing.
+regardless of if we have or dont have macros there is about 40% of just setup and cleanup that has to happen.
+the remaining 60% is split diffrently with macros sometimes dominating the work.
+
+even in the most agrigous cases of macros dominating the work its never completly out takes parsing.
+at most beating it to 5x which is probably fine. still this can probably be optimized
+
+hard data:
+
+we can find 3 of work
+1. parsing
+2. hash-table inserts (this is likely mostly macros because other parts dont need this yet)
+   hash-table searches memory fetching
+3. actually just macro calls
+
+comparing macros to no macro cases we see this (on perf 6.8.12 on 13th Gen Intel(R) Core(TM) i9-13900K)
+
+- cache miss rate from `perf stat`: no-macros 17.75% (cpu_core), macros 53.84% (cpu_atom); 
+
+- cpu_core share from `perf record`:
+  - parse:      no-macros 50.46%, macros 13.87% (`Parser::try_expr_bp` + `Parser::parse_token`)
+  - macro core: no-macros 17.40%, macros 30.75% (`expand_macros_recursive` + `Macro::substitute_expr`)
+  - hash/alloc: no-macros ~0%,    macros ~28.55% (`BuildHasher::hash_one` + `malloc`/`_int_malloc`)
+

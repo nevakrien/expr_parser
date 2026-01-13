@@ -30,4 +30,5 @@ benchmark_data.txt
 perf.data
 perf.data.old
 perf_*.data
+perf*.data
 massif.out.*

@@ -15,6 +15,11 @@
 - `cargo fmt` formats Rust code; run before committing style changes.
 - `cargo clippy` runs lint checks; fix warnings before submitting.
 
+## Benchmarks
+- Benchmark are build using `cargo build/run --release --example bench_name`
+- Benchmark binaries are built into `target/release/examples/`.
+- Use `perf stat` or `perf record` on the example binaries (for example `target/release/examples/no_macros_benchmark`).
+
 ## Tests
 - `cargo test` should be used routinely to verify new changes.
 - New tests should conform to the current style, usually covering more than one thing in a single test.
