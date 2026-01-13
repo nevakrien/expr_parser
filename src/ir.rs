@@ -181,6 +181,9 @@ pub struct Param {
 /// - Pattern matching (match expressions, function parameters)
 /// - Type annotations (e.g., Option[Result[T, E]])
 /// - Assignment targets (e.g., id[T] = fn(x: T) { x })
+///
+/// TODO: figure out if this should have a field for Value
+///        this would come up for *x[T] = 2; or similar
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
     /// Bind a value to a name (variable binding)
@@ -358,6 +361,7 @@ impl<'a> IrLowerer<'a> {
                 }
                 Ok(self.typed_value(loc, Value::Index { base, args }))
             }
+            //TODO fix the LHS of this to check for paterns maybe
             Expr::Bin(op, pair) if op.value == FixedToken::Assign => {
                 let (lhs, rhs) = pair.as_ref();
                 let target = Box::new(self.lower_value(lhs.clone())?);
@@ -404,6 +408,7 @@ impl<'a> IrLowerer<'a> {
                 Ok(self.typed_pattern(expr.loc, Pattern::Wildcard))
             }
             Expr::Atom(Token::Ident(name)) => {
+                //TODO decide if this should pass name by value here.
                 let id = self.resolve_or_insert_value(&name);
                 Ok(self.typed_pattern(expr.loc, Pattern::Bind(id)))
             }
@@ -562,6 +567,8 @@ fn split_postfix(
     if let Some(first) = items.pop() {
         Ok((first, items))
     } else {
+        //TODO this is likely the wrong error message.
+        //arity should only aplly to calls
         Err(CompileError::Arity {
             loc,
             call_name: name,
@@ -571,10 +578,3 @@ fn split_postfix(
     }
 }
 
-/// Get a fallback location from the first expression in a list
-fn fallback_loc(exprs: &[LExpr]) -> Loc {
-    exprs.first().map(|expr| expr.loc.clone()).unwrap_or(Loc {
-        range: 0..0,
-        file: 0,
-    })
-}

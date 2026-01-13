@@ -53,6 +53,8 @@ We may add macros in other languages as extensions in the future, which is one o
 Macros should resolve recursively starting from the outermost call, repeatedly expanding until the result is not a macro call. Then we descend into the AST to resolve inner macros.
 
 ## first ir
+this is already sketched but currently implemented badly:
+
 The first IR is desugared so `a && b` and
 "if (a as bool) { b as bool } else false"
 are equivalent.
@@ -61,5 +63,6 @@ The first IR should have variables already resolved to IDs. This is trickier tha
 "let Some(x) = 5" need to know that `x` is a new binding, while `Some` is a reference to an existing name.
 
 There is an open design decision here: either treat constructor names as known because they are already defined (making match validity depend on prior definitions), or infer constructor/pattern names by convention (for example, leading-capital identifiers). The former introduces a context-dependent element to the grammar that can make for confusing error messages when moving struct/enum definitions. The latter is more ergonomic but introduces language and Unicode considerations for non-capitalized scripts.
+
 
 ##
