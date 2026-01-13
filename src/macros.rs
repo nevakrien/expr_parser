@@ -62,39 +62,39 @@ impl Macro {
             });
         }
 
-        self.substitute_expr(&self.body, vars, call_site)
+        Ok(self.substitute_expr(&self.body, vars, call_site))
     }
 
-    fn substitute_expr(&self, expr: &Expr, args: &[LExpr], call_site: &Loc) -> CResult<LExpr> {
+    fn substitute_expr(&self, expr: &Expr, args: &[LExpr], call_site: &Loc) -> LExpr {
         match expr {
             Expr::Atom(Token::Ident(s)) => {
                 if let Some(idx) = self.vars.iter().position(|v| v == s) {
-                    Ok(args[idx].clone())
+                    args[idx].clone()
                 } else {
-                    Ok(Located {
+                    Located {
                         loc: call_site.clone(),
                         value: Expr::Atom(Token::Ident(s.clone())),
-                    })
+                    }
                 }
             }
-            Expr::Atom(token) => Ok(Located {
+            Expr::Atom(token) => Located {
                 loc: call_site.clone(),
                 value: Expr::Atom(token.clone()),
-            }),
+            },
             Expr::Bin(op, box_exprs) => {
-                let left = self.substitute_expr(&box_exprs.0.value, args, call_site)?;
-                let right = self.substitute_expr(&box_exprs.1.value, args, call_site)?;
+                let left = self.substitute_expr(&box_exprs.0.value, args, call_site);
+                let right = self.substitute_expr(&box_exprs.1.value, args, call_site);
                 let op_loc = Located {
                     loc: call_site.clone(),
                     value: op.value,
                 };
-                Ok(Located {
+                Located {
                     loc: call_site.clone(),
                     value: Expr::Bin(op_loc, Box::new((left, right))),
-                })
+                }
             }
             Expr::Prefix(op, exprs) => {
-                let new_exprs: Result<Vec<_>, _> = exprs
+                let new_exprs: Vec<_> = exprs
                     .iter()
                     .map(|e| self.substitute_expr(&e.value, args, call_site))
                     .collect();
@@ -102,13 +102,13 @@ impl Macro {
                     loc: call_site.clone(),
                     value: op.value,
                 };
-                Ok(Located {
+                Located {
                     loc: call_site.clone(),
-                    value: Expr::Prefix(op_loc, new_exprs?),
-                })
+                    value: Expr::Prefix(op_loc, new_exprs),
+                }
             }
             Expr::Postfix(op, exprs) => {
-                let new_exprs: Result<Vec<_>, _> = exprs
+                let new_exprs: Vec<_> = exprs
                     .iter()
                     .map(|e| self.substitute_expr(&e.value, args, call_site))
                     .collect();
@@ -116,10 +116,10 @@ impl Macro {
                     loc: call_site.clone(),
                     value: op.value,
                 };
-                Ok(Located {
+                Located {
                     loc: call_site.clone(),
-                    value: Expr::Postfix(op_loc, new_exprs?),
-                })
+                    value: Expr::Postfix(op_loc, new_exprs),
+                }
             }
         }
     }
