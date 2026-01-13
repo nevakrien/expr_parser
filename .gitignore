@@ -34,3 +34,4 @@ perf*.data
 perf*.data.old
 perf*.data.*
 massif.out.*
+profile.json.gz

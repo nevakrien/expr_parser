@@ -111,7 +111,7 @@ we started benchmarking macros before the rest of the compilation was made.
 this lets us see how they compare to regular parsing and what cache behivior they show.
 
 we see that macro expansion is still slower than the no-macro parser.
-recent runs (macro_expansion_benchmark vs no_macros_benchmark) show ~0.99M expr/s vs ~3.87M expr/s and the data is very diffrent so this isnt necirally super meaningful.
+recent runs (macro_expansion_benchmark vs no_macros_benchmark) show ~1.23M expr/s vs ~3.93M expr/s and the data is very diffrent so this isnt necirally super meaningful.
 mutating macro substitution in place did not hold up, so we kept the original apply/substitute flow.
 regardless of if we have or dont have macros there is about 40% of setup/cleanup work.
 the remaining 60% is split diffrently with macros sometimes dominating the work.
