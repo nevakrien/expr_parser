@@ -168,3 +168,109 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parsing::Expr;
+    use crate::program::{CompileError, Program, ProgramParser};
+
+    #[test]
+    fn expands_recursive_and_nested_macros() {
+        let src = "\
+            m = macro(name, var) { name = macro() { var } }\
+            id = macro(x) { x }\
+            m(foo, 7)\
+            id(foo())\
+        ";
+
+        let mut program = Program::new();
+        let mut parser = ProgramParser::new(src, 0);
+        while !parser.is_empty() {
+            let _ = parser.consume_expr(&mut program, &mut |_| {}).unwrap();
+        }
+
+        assert!(program.get_macro("m").is_some());
+        assert!(program.get_macro("id").is_some());
+        assert!(program.get_macro("foo").is_some());
+    }
+
+    #[test]
+    fn expands_macros_inside_arguments() {
+        let src = "m = macro(x) { x(x) } m(m(f))";
+        let mut program = Program::new();
+        let mut parser = ProgramParser::new(src, 0);
+        let mut last_expr = None;
+
+        while !parser.is_empty() {
+            let mut handler = |expr: &LExpr| {
+                last_expr = Some(expr.clone());
+            };
+            let _ = parser.consume_expr(&mut program, &mut handler).unwrap();
+        }
+
+        let expr = last_expr.expect("expected expanded expression");
+        match expr.value {
+            Expr::Prefix(open, items) => {
+                assert_eq!(open.as_str(), "{");
+                assert_eq!(items.len(), 1);
+                assert_double_blocked_ff_call(&items[0]);
+            }
+            _ => panic!("expected block expression"),
+        }
+    }
+
+    #[test]
+    fn macro_requires_body() {
+        let src = "m = macro(x)";
+        let mut program = Program::new();
+        let mut parser = ProgramParser::new(src, 0);
+        let err = parser
+            .consume_expr(&mut program, &mut |_| {})
+            .expect_err("expected missing body error");
+
+        assert!(matches!(
+            err,
+            CompileError::SimpleError {
+                s: "Macro definition requires a body",
+                ..
+            }
+        ));
+    }
+
+    fn assert_double_blocked_ff_call(expr: &LExpr) {
+        match &expr.value {
+            Expr::Postfix(open, args) => {
+                assert_eq!(open.as_str(), "(");
+                assert_eq!(args.len(), 2);
+                for arg in args {
+                    assert_blocked_ff_call(arg);
+                }
+            }
+            _ => panic!("expected (f(f))(f(f)) expression"),
+        }
+    }
+
+    fn assert_blocked_ff_call(expr: &LExpr) {
+        match &expr.value {
+            Expr::Prefix(open, items) => {
+                assert_eq!(open.as_str(), "{");
+                assert_eq!(items.len(), 1);
+                assert_ff_call(&items[0]);
+            }
+            _ => panic!("expected block with f(f) expression"),
+        }
+    }
+
+    fn assert_ff_call(expr: &LExpr) {
+        match &expr.value {
+            Expr::Postfix(open, args) => {
+                assert_eq!(open.as_str(), "(");
+                assert_eq!(args.len(), 2);
+                assert!(matches!(&args[0].value, Expr::Atom(Token::Ident(name)) if name == "f"));
+                assert!(matches!(&args[1].value, Expr::Atom(Token::Ident(name)) if name == "f"));
+            }
+            _ => panic!("expected f(f) expression"),
+        }
+    }
+}
