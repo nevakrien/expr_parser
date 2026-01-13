@@ -31,4 +31,6 @@ perf.data
 perf.data.old
 perf_*.data
 perf*.data
+perf*.data.old
+perf*.data.*
 massif.out.*

@@ -52,7 +52,7 @@ impl Macro {
         })
     }
 
-    pub fn apply(&self, vars: &[LExpr], call_site: &Loc) -> CResult<LExpr> {
+    fn apply(&self, vars: &[LExpr], call_site: &Loc) -> CResult<LExpr> {
         if vars.len() != self.vars.len() {
             return Err(CompileError::Arity {
                 loc: call_site.clone(),

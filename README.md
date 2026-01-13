@@ -111,7 +111,8 @@ we started benchmarking macros before the rest of the compilation was made.
 this lets us see how they compare to regular parsing and what cache behivior they show.
 
 we see that macro expansion is still slower than the no-macro parser.
-recent runs (macro_expansion_benchmark vs no_macros_benchmark) show ~0.99M expr/s vs ~3.68M expr/s note the data is very diffrent so this isnt necirally super meaningful.
+recent runs (macro_expansion_benchmark vs no_macros_benchmark) show ~0.99M expr/s vs ~3.87M expr/s and the data is very diffrent so this isnt necirally super meaningful.
+mutating macro substitution in place did not hold up, so we kept the original apply/substitute flow.
 regardless of if we have or dont have macros there is about 40% of setup/cleanup work.
 the remaining 60% is split diffrently with macros sometimes dominating the work.
 
@@ -120,21 +121,23 @@ at most beating it to around 5x ish.
 
 hard data:
 
-we can find 5 chunks of work
+we can find 6 chunks of work
 1. parsing (`Parser::try_expr_bp` + `Parser::parse_token`)
 2. macro core (`expand_macros_recursive` + `Macro::substitute_expr`)
 3. allocator churn (malloc/free family)
 4. control-flow glue (`ProgramParser::consume_expr` + `Parser::parse_stmt` + `Parser::parse_after_fn`)
-5. iterator/vec plumbing (`map::try_fold` + `Vec::from_iter` + `try_process`)
+5. clone/vec churn (`Vec::clone` + `Located::clone` + `Expr::clone`)
+6. hash/lookup (`BuildHasher::hash_one` + `HashMap::insert`)
 
 comparing macros to no macro cases we see this (on perf 6.8.12 on 13th Gen Intel(R) Core(TM) i9-13900K)
 
-- cache miss rate from `perf stat`: no-macros 14.56% (cpu_core) / 44.73% (cpu_atom), macros 7.54% (cpu_core) / 28.76% (cpu_atom)
+- cache miss rate from `perf stat`: no-macros 11.56% (cpu_core) / 52.61% (cpu_atom), macros 8.83% (cpu_core) / 37.77% (cpu_atom)
 
 - cpu_core share from `perf record`:
-  - parse:         no-macros 44.49%, macros 11.81% (`Parser::try_expr_bp` + `Parser::parse_token`)
-  - macro core:    no-macros 13.49%, macros 17.77% (`expand_macros_recursive` + `Macro::substitute_expr`)
-  - alloc/free:    no-macros ~19.4%, macros ~31.9% (malloc/free family)
-  - control-flow:  no-macros ~12.5%, macros ~3.2% (`ProgramParser::consume_expr` + `Parser::parse_stmt` + `Parser::parse_after_fn`)
-  - iter/vec work: no-macros ~0%,    macros ~18.7% (`map::try_fold` + `Vec::from_iter` + `try_process`)
+  - parse:         no-macros 54.74%, macros 15.09% (`Parser::try_expr_bp` + `Parser::parse_token`)
+  - macro core:    no-macros 4.50%,  macros 11.63% (`expand_macros_recursive` + `Macro::substitute_expr`)
+  - alloc/free:    no-macros ~12.6%, macros ~23.9% (malloc/free family)
+  - control-flow:  no-macros ~11.0%, macros ~3.7% (`ProgramParser::consume_expr` + `Parser::parse_stmt` + `Parser::parse_after_fn`)
+  - clone/vec:     no-macros ~0%,    macros ~22.2% (`map::try_fold` + `Vec::from_iter` + `try_process`)
+  - hash/lookup:   no-macros ~0%,    macros ~1.6% (`BuildHasher::hash_one` + `HashMap::insert`)
 

@@ -1,7 +1,7 @@
 use expr_parser::program::{Program, ProgramParser};
 use std::time::Instant;
 
-const ITERATIONS: usize = 30000;
+const ITERATIONS: usize = 60000;
 
 const SOURCE: &str = r#"
 add = fn(a, b) { a + b }
