@@ -1034,20 +1034,11 @@ impl<'a> Parser<'a> {
 
     /// Parse a statement: expr [';']
     pub fn parse_stmt(&mut self) -> PResult<Option<LExpr>> {
-        let start = self.expr_start();
-
         let Some(expr) = self.try_expr()? else {
             return Ok(None);
         };
 
-        if let Some(semi) = self.try_operator(";")? {
-            let loc = self.produce_loc(start);
-            return Ok(Some(Located {
-                loc,
-                value: Expr::Postfix(semi, vec![expr]),
-            }));
-        }
-
+        self.try_operator(";")?;
         Ok(Some(expr))
     }
 
@@ -1325,12 +1316,19 @@ impl<'a> Parser<'a> {
 
     fn parse_after_lbrace(&mut self, start: usize, open: LFixed) -> PResult<LExpr> {
         let mut items = Vec::new();
+        let mut semi = None;
 
         while self.try_operator("}")?.is_none() {
-            match self.parse_stmt()? {
+            match self.try_expr()? {
                 Some(s) => items.push(s),
                 None => return Err(self.err_open_delim(open, FixedToken::new("}"))),
             }
+
+            semi = self.try_operator(";")?;
+        }
+
+        if let Some(x) = semi {
+            items.push(x.map(|x| Expr::Atom(Token::Operator(x))));
         }
 
         let loc = self.produce_loc(start);
@@ -1822,7 +1820,7 @@ mod parse_tests {
      * ============================= */
 
     #[test]
-    fn semicolon_is_postfix_on_statement() {
+    fn semicolon_is_consumed_by_statement() {
         let src = "x; y";
         let mut p = Parser::new(src, 0);
 
@@ -1830,15 +1828,12 @@ mod parse_tests {
         let second = p.consume_stmt().unwrap();
 
         match first.value {
-            Expr::Postfix(tok, args) => {
-                assert_eq!(tok.as_str(), ";");
-                assert_eq!(args.len(), 1);
-
-                // span includes the semicolon
+            Expr::Atom(Token::Ident(ref s)) if s == "x" => {
+                // span should only include the expression, not the semicolon
                 assert_eq!(first.loc.range.start, 0);
-                assert_eq!(first.loc.range.end, 2);
+                assert_eq!(first.loc.range.end, 1);
             }
-            _ => panic!("expected semicolon postfix expression"),
+            _ => panic!("expected identifier x"),
         }
 
         match second.value {
@@ -1995,47 +1990,41 @@ mod parse_tests {
         let stmt = p.consume_stmt().unwrap();
 
         match stmt.value {
-            Expr::Postfix(semi, args) => {
-                assert_eq!(semi.as_str(), ";");
-                assert_eq!(args.len(), 1);
+            Expr::Prefix(let_tok, args) => {
+                assert_eq!(let_tok.as_str(), "let");
+                assert_eq!(args.len(), 3);
 
                 match &args[0].value {
-                    Expr::Prefix(let_tok, args) => {
-                        assert_eq!(let_tok.as_str(), "let");
-                        assert_eq!(args.len(), 3);
-
-                        match &args[0].value {
-                            Expr::Postfix(open, items) => {
-                                assert_eq!(open.as_str(), "(");
-                                assert_eq!(items.len(), 2);
-                                match &items[0].value {
-                                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Some"),
-                                    _ => panic!("expected Some"),
-                                }
-                                match &items[1].value {
-                                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
-                                    _ => panic!("expected x"),
-                                }
-                            }
-                            _ => panic!("expected Some(x) pattern"),
+                    Expr::Postfix(open, items) => {
+                        assert_eq!(open.as_str(), "(");
+                        assert_eq!(items.len(), 2);
+                        match &items[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "Some"),
+                            _ => panic!("expected Some"),
                         }
-
-                        match &args[1].value {
-                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
-                            _ => panic!("expected y"),
-                        }
-
-                        match &args[2].value {
-                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "z"),
-                            _ => panic!("expected z"),
+                        match &items[1].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                            _ => panic!("expected x"),
                         }
                     }
-                    _ => panic!("expected let expression"),
+                    _ => panic!("expected Some(x) pattern"),
                 }
 
-                assert_eq!(stmt.loc.range, 0..src.len());
+                match &args[1].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
+                    _ => panic!("expected y"),
+                }
+
+                match &args[2].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "z"),
+                    _ => panic!("expected z"),
+                }
+
+                // span should only include the expression, not the semicolon
+                assert_eq!(stmt.loc.range.start, 0);
+                assert_eq!(stmt.loc.range.end, src.len() - 1);
             }
-            _ => panic!("expected semicolon expression"),
+            _ => panic!("expected let expression"),
         }
 
         assert!(p.is_empty());
@@ -2165,13 +2154,10 @@ mod parse_tests {
                 assert_eq!(open.as_str(), "{");
                 assert_eq!(items.len(), 2);
 
-                // a;
+                // a
                 match &items[0].value {
-                    Expr::Postfix(tok, args) => {
-                        assert_eq!(tok.as_str(), ";");
-                        assert_eq!(args.len(), 1);
-                    }
-                    _ => panic!("expected semicolon expression"),
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "a"),
+                    _ => panic!("expected identifier a"),
                 }
 
                 // b
