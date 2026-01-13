@@ -25,7 +25,10 @@ pub struct Macro {
 impl Macro {
     pub fn new(args: Vec<LExpr>, loc: Loc) -> CResult<Self> {
         if args.len() < 2 {
-            return Err(CompileError::MissingMacroBody { loc });
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "Macro definition requires a body",
+            });
         }
 
         let mut args = args.into_iter();
@@ -39,8 +42,9 @@ impl Macro {
                     match &param_expr.value {
                         Expr::Atom(Token::Ident(name)) => param_names.push(name.clone()),
                         _ => {
-                            return Err(CompileError::InvalidMacroParam {
+                            return Err(CompileError::SimpleError {
                                 loc: param_expr.loc.clone(),
+                                s: "Macro parameters must be identifiers",
                             });
                         }
                     }
@@ -48,8 +52,9 @@ impl Macro {
                 param_names
             }
             _ => {
-                return Err(CompileError::InvalidMacroSignature {
+                return Err(CompileError::SimpleError {
                     loc: params_expr.loc.clone(),
+                    s: "Macro signature must be in parentheses",
                 });
             }
         };

@@ -7,40 +7,14 @@ pub type CResult<T> = Result<T, CompileError>;
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum CompileError {
-    #[error("Expected single identifier for macro name")]
-    InvalidMacroName { loc: Loc },
-
-    #[error("Macro definition requires a body")]
-    MissingMacroBody { loc: Loc },
-
-    #[error("Macro signature must be in parentheses")]
-    InvalidMacroSignature { loc: Loc },
-
-    #[error("Macro parameters must be identifiers")]
-    InvalidMacroParam { loc: Loc },
-
-    #[error("Unsupported definition")]
-    UnsupportedDefinition { loc: Loc },
+    #[error("{s}")]
+    SimpleError { loc: Loc, s: &'static str },
 
     #[error("Macro expansion failed: {message}")]
     MacroApply { message: String, loc: Loc },
 
     #[error(transparent)]
     Parse(#[from] crate::parsing::ParseError),
-}
-
-impl CompileError {
-    pub fn loc(&self) -> Option<&Loc> {
-        match self {
-            CompileError::InvalidMacroName { loc }
-            | CompileError::MissingMacroBody { loc }
-            | CompileError::InvalidMacroSignature { loc }
-            | CompileError::InvalidMacroParam { loc }
-            | CompileError::UnsupportedDefinition { loc }
-            | CompileError::MacroApply { loc, .. } => Some(loc),
-            CompileError::Parse(_) => None,
-        }
-    }
 }
 
 #[derive(Debug, Default)]
@@ -118,7 +92,6 @@ fn expand_macros_recursive(expr: LExpr, program: &mut Program) -> CResult<LExpr>
         Expr::Atom(_) => Ok(Located { loc, value }),
     }
 }
-
 
 pub struct ProgramParser<'a> {
     parser: Parser<'a>,
@@ -214,7 +187,10 @@ impl<'a> ProgramParser<'a> {
                 });
                 Ok(())
             }
-            _ => Err(CompileError::UnsupportedDefinition { loc: lhs.loc }),
+            _ => Err(CompileError::SimpleError {
+                loc: lhs.loc,
+                s: "Unsupported definition",
+            }),
         }
     }
 }
@@ -222,7 +198,10 @@ impl<'a> ProgramParser<'a> {
 pub fn get_single_ident(expr: LExpr) -> CResult<String> {
     match expr.value {
         Expr::Atom(Token::Ident(name)) => Ok(name),
-        _ => Err(CompileError::InvalidMacroName { loc: expr.loc }),
+        _ => Err(CompileError::SimpleError {
+            loc: expr.loc,
+            s: "Expected single identifier for macro name",
+        }),
     }
 }
 
@@ -284,7 +263,13 @@ mod tests {
             .consume_expr(&mut program, &mut |_| {})
             .expect_err("expected missing body error");
 
-        assert!(matches!(err, CompileError::MissingMacroBody { .. }));
+        assert!(matches!(
+            err,
+            CompileError::SimpleError {
+                s: "Macro definition requires a body",
+                ..
+            }
+        ));
     }
 
     fn assert_double_blocked_ff_call(expr: &LExpr) {

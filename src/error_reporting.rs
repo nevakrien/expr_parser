@@ -104,18 +104,20 @@ impl ErrorReporter {
     }
 
     pub fn report_compile_error(&self, error: &CompileError) -> io::Result<()> {
-        let Some(loc) = error.loc() else {
-            return Ok(());
-        };
-        let Some(source) = self.source(loc.file) else {
-            return Ok(());
-        };
+        match error {
+            CompileError::SimpleError { loc, .. } | CompileError::MacroApply { loc, .. } => {
+                let Some(source) = self.source(loc.file) else {
+                    return Ok(());
+                };
 
-        let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-            .with_message(error.to_string())
-            .with_label(Label::new((loc.file, loc.range.clone())).with_message("here"));
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(error.to_string())
+                    .with_label(Label::new((loc.file, loc.range.clone())).with_message("here"));
 
-        report.finish().print((loc.file, source))
+                report.finish().print((loc.file, source))
+            }
+            CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
+        }
     }
 }
 
