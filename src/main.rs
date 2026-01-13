@@ -83,18 +83,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut expr_count = 0;
 
                 while !parser.is_empty() {
-                    match parser.consume_expr(&mut program) {
-                        Ok(Some(expr)) => {
-                            println!(
-                                "Expr {}: [{}..{}]",
-                                expr_count + 1,
-                                expr.loc.range.start,
-                                expr.loc.range.end
-                            );
-                            println!("{}", pretty_print_expr(&expr, 0));
-                            expr_count += 1;
-                        }
-                        Ok(None) => {}
+                    let mut handler = |expr: &LExpr| {
+                        println!(
+                            "Expr {}: [{}..{}]",
+                            expr_count + 1,
+                            expr.loc.range.start,
+                            expr.loc.range.end
+                        );
+                        println!("{}", pretty_print_expr(expr, 0));
+                        expr_count += 1;
+                    };
+                    match parser.consume_expr(&mut program, &mut handler) {
+                        Ok(_) => {}
                         Err(err) => {
                             if let expr_parser::program::CompileError::Parse(parse_err) = &err {
                                 reporter.report_parse_error(parse_err)?;
