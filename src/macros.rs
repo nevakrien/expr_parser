@@ -1,6 +1,7 @@
 use crate::Expr;
 use crate::Token;
 use crate::parsing::{LExpr, Loc, Located};
+use crate::program::{CResult, CompileError};
 
 #[derive(Debug)]
 pub struct MacroError {
@@ -15,14 +16,54 @@ impl std::fmt::Display for MacroError {
 
 impl std::error::Error for MacroError {}
 
+#[derive(Debug)]
 pub struct Macro {
     vars: Vec<String>,
     body: Expr,
 }
 
 impl Macro {
-    pub fn new(vars: Vec<String>, body: Expr) -> Self {
-        Self { vars, body }
+    pub fn new(args: &[LExpr], loc: Loc) -> CResult<Self> {
+        if args.is_empty() {
+            return Err(CompileError::MissingMacroBody { loc });
+        }
+
+        let (params_expr, body_expr) = if args.len() > 1 {
+            (Some(&args[0]), &args[1])
+        } else {
+            (None, &args[0])
+        };
+
+        let params = if let Some(sig) = params_expr {
+            match &sig.value {
+                Expr::Prefix(open, param_exprs) if open.value.as_str() == "(" => {
+                    let mut param_names = Vec::new();
+                    for param_expr in param_exprs {
+                        match &param_expr.value {
+                            Expr::Atom(Token::Ident(name)) => param_names.push(name.clone()),
+                            _ => {
+                                return Err(CompileError::InvalidMacroParam {
+                                    loc: param_expr.loc.clone(),
+                                });
+                            }
+                        }
+                    }
+                    param_names
+                }
+                _ => {
+                    return Err(CompileError::InvalidMacroSignature {
+                        loc: sig.loc.clone(),
+                    });
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            vars: params,
+            body: body_expr.value.clone(),
+        })
     }
 
     pub fn apply(&self, vars: &[LExpr], call_site: &Loc) -> Result<LExpr, MacroError> {

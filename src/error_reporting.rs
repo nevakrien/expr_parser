@@ -1,5 +1,5 @@
-use crate::parsing::OTok;
-use crate::parsing::ParseError;
+use crate::parsing::{OTok, ParseError};
+use crate::program::CompileError;
 use ariadne::{Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
@@ -99,6 +99,21 @@ impl ErrorReporter {
         let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
             .with_message(message)
             .with_label(Label::new((loc.file, loc.range.clone())).with_message(label_msg));
+
+        report.finish().print((loc.file, source))
+    }
+
+    pub fn report_compile_error(&self, error: &CompileError) -> io::Result<()> {
+        let Some(loc) = error.loc() else {
+            return Ok(());
+        };
+        let Some(source) = self.source(loc.file) else {
+            return Ok(());
+        };
+
+        let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+            .with_message(error.to_string())
+            .with_label(Label::new((loc.file, loc.range.clone())).with_message("here"));
 
         report.finish().print((loc.file, source))
     }

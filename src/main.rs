@@ -1,5 +1,6 @@
 use expr_parser::error_reporting::ErrorReporter;
-use expr_parser::parsing::{Expr, LExpr, Parser, Token};
+use expr_parser::parsing::{Expr, LExpr, Token};
+use expr_parser::program::{Program, ProgramParser};
 use std::io::{self, Write};
 
 fn pretty_print_token(token: &Token) -> String {
@@ -56,6 +57,7 @@ where
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reporter = ErrorReporter::new();
     let mut input = String::new();
+    let mut program = Program::new();
 
     println!("Expression Parser REPL");
     println!("Type expressions to parse, or 'quit' to exit");
@@ -77,9 +79,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 reporter.add_source(0, input.to_string());
-                let mut parser = Parser::new(input, 0);
+                let mut parser = ProgramParser::new(input, 0);
+                let mut expr_count = 0;
 
-                // Parse as many expressions as possible until we get None
+                while !parser.is_empty() {
+                    match parser.consume_expr(&mut program) {
+                        Ok(Some(expr)) => {
+                            println!(
+                                "Expr {}: [{}..{}]",
+                                expr_count + 1,
+                                expr.loc.range.start,
+                                expr.loc.range.end
+                            );
+                            println!("{}", pretty_print_expr(&expr, 0));
+                            expr_count += 1;
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            if let expr_parser::program::CompileError::Parse(parse_err) = &err {
+                                reporter.report_parse_error(parse_err)?;
+                            } else {
+                                reporter.report_compile_error(&err)?;
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                /*
+                // Legacy AST-only REPL (kept for reference)
+                let mut parser = Parser::new(input, 0);
                 let mut expr_count = 0;
                 while !parser.is_empty() {
                     match parser.consume_stmt() {
@@ -93,13 +122,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("{}", pretty_print_expr(&expr, 0));
                             expr_count += 1;
                         }
-
                         Err(err) => {
                             reporter.report_parse_error(&err)?;
                             break;
                         }
                     }
                 }
+                */
             }
             Err(err) => {
                 eprintln!("Error reading input: {}", err);
