@@ -4,6 +4,10 @@
 - `src/main.rs` hosts the REPL entry point and pretty-printing helpers.
 - `src/parsing.rs` contains tokens, AST types, lexer, and parser logic.
 - `src/error_reporting.rs` centralizes error formatting with `ariadne`.
+- `src/macros.rs` implements unhygienic macro system with parameter substitution.
+- `src/program.rs` provides Program struct and high-level parsing with macro expansion.
+- `src/ir.rs` contains commented-out first IR design (not yet implemented).
+- `src/lib.rs` is the library entry point.
 - `target/` is build output and should not be edited.
 
 ## Commands
@@ -31,7 +35,7 @@ The general plan is to grow this project into a language. It is not realistic fo
 
 The pipeline should look like this:
 
-lexer/parser (done) -> macros (planned) -> name resolution (in progress) -> first IR (sketched)
+lexer/parser (done) -> macros (implemented) -> name resolution (planned) -> first IR (sketched)
 -> type inference (?) -> run/LLVM (?)
 
 We do not have a plan for everything yet, but the first few stages are sketched out.

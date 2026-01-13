@@ -96,7 +96,7 @@ impl Macro {
                 let right = self.substitute_expr(&box_exprs.1.value, args, call_site)?;
                 let op_loc = Located {
                     loc: call_site.clone(),
-                    value: op.value.clone(),
+                    value: op.value,
                 };
                 Ok(Located {
                     loc: call_site.clone(),
@@ -110,7 +110,7 @@ impl Macro {
                     .collect();
                 let op_loc = Located {
                     loc: call_site.clone(),
-                    value: op.value.clone(),
+                    value: op.value,
                 };
                 Ok(Located {
                     loc: call_site.clone(),
@@ -124,7 +124,7 @@ impl Macro {
                     .collect();
                 let op_loc = Located {
                     loc: call_site.clone(),
-                    value: op.value.clone(),
+                    value: op.value,
                 };
                 Ok(Located {
                     loc: call_site.clone(),

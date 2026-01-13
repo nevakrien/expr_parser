@@ -22,9 +22,6 @@ pub enum CompileError {
     #[error("Unsupported definition")]
     UnsupportedDefinition { loc: Loc },
 
-    #[error("Expected expression")]
-    ExpectedExpr { loc: Loc },
-
     #[error("Macro expansion failed: {message}")]
     MacroApply { message: String, loc: Loc },
 
@@ -40,7 +37,6 @@ impl CompileError {
             | CompileError::InvalidMacroSignature { loc }
             | CompileError::InvalidMacroParam { loc }
             | CompileError::UnsupportedDefinition { loc }
-            | CompileError::ExpectedExpr { loc }
             | CompileError::MacroApply { loc, .. } => Some(loc),
             CompileError::Parse(_) => None,
         }
@@ -70,6 +66,60 @@ impl Program {
     }
 }
 
+fn expand_macros_recursive(expr: LExpr, program: &mut Program) -> CResult<LExpr> {
+    let Located { loc, value } = expr;
+    match value {
+        Expr::Postfix(open, args) => {
+            if open.value.as_str() == "("
+                && let Some((callee, rest)) = args.split_first()
+                && let Expr::Atom(Token::Ident(name)) = &callee.value
+                && let Some(macro_def) = program.get_macro(name)
+            {
+                let expanded = match macro_def.apply(rest, &loc) {
+                    Ok(expanded) => expanded,
+                    Err(e) => {
+                        return Err(CompileError::MacroApply {
+                            message: e.message,
+                            loc,
+                        });
+                    }
+                };
+                return expand_macros_recursive(expanded, program);
+            }
+
+            let mut new_args = Vec::with_capacity(args.len());
+            for arg in args {
+                new_args.push(expand_macros_recursive(arg, program)?);
+            }
+            Ok(Located {
+                loc,
+                value: Expr::Postfix(open, new_args),
+            })
+        }
+        Expr::Prefix(op, args) => {
+            let mut new_args = Vec::with_capacity(args.len());
+            for arg in args {
+                new_args.push(expand_macros_recursive(arg, program)?);
+            }
+            Ok(Located {
+                loc,
+                value: Expr::Prefix(op, new_args),
+            })
+        }
+        Expr::Bin(op, box_pair) => {
+            let (left_expr, right_expr) = *box_pair;
+            let left = expand_macros_recursive(left_expr, program)?;
+            let right = expand_macros_recursive(right_expr, program)?;
+            Ok(Located {
+                loc,
+                value: Expr::Bin(op, Box::new((left, right))),
+            })
+        }
+        Expr::Atom(_) => Ok(Located { loc, value }),
+    }
+}
+
+
 pub struct ProgramParser<'a> {
     parser: Parser<'a>,
 }
@@ -93,7 +143,7 @@ impl<'a> ProgramParser<'a> {
         let Some(expr) = self.parser.parse_stmt()? else {
             return Ok(false);
         };
-        let expanded = self.expand_macros_recursive(expr, program)?;
+        let expanded = expand_macros_recursive(expr, program)?;
         on_expr(&expanded);
 
         self.handle_definition(expanded, program)?;
@@ -118,61 +168,6 @@ impl<'a> ProgramParser<'a> {
                 Ok(())
             }
             _ => Ok(()),
-        }
-    }
-
-    fn expand_macros_recursive(&mut self, expr: LExpr, program: &mut Program) -> CResult<LExpr> {
-        let Located { loc, value } = expr;
-        match value {
-            Expr::Postfix(open, args) => {
-                if open.value.as_str() == "(" {
-                    if let Some((callee, rest)) = args.split_first() {
-                        if let Expr::Atom(Token::Ident(name)) = &callee.value {
-                            if let Some(macro_def) = program.get_macro(name) {
-                                let expanded = match macro_def.apply(rest, &loc) {
-                                    Ok(expanded) => expanded,
-                                    Err(e) => {
-                                        return Err(CompileError::MacroApply {
-                                            message: e.message,
-                                            loc,
-                                        });
-                                    }
-                                };
-                                return self.expand_macros_recursive(expanded, program);
-                            }
-                        }
-                    }
-                }
-
-                let mut new_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    new_args.push(self.expand_macros_recursive(arg, program)?);
-                }
-                Ok(Located {
-                    loc,
-                    value: Expr::Postfix(open, new_args),
-                })
-            }
-            Expr::Prefix(op, args) => {
-                let mut new_args = Vec::with_capacity(args.len());
-                for arg in args {
-                    new_args.push(self.expand_macros_recursive(arg, program)?);
-                }
-                Ok(Located {
-                    loc,
-                    value: Expr::Prefix(op, new_args),
-                })
-            }
-            Expr::Bin(op, box_pair) => {
-                let (left_expr, right_expr) = *box_pair;
-                let left = self.expand_macros_recursive(left_expr, program)?;
-                let right = self.expand_macros_recursive(right_expr, program)?;
-                Ok(Located {
-                    loc,
-                    value: Expr::Bin(op, Box::new((left, right))),
-                })
-            }
-            Expr::Atom(_) => Ok(Located { loc, value }),
         }
     }
 
