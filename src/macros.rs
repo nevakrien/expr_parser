@@ -1,7 +1,7 @@
 use crate::Expr;
 use crate::Token;
 use crate::parsing::{LExpr, Loc, Located};
-use crate::program::{CResult, CompileError};
+use crate::program::{CResult, CompileError, Program};
 
 #[derive(Debug)]
 pub struct Macro {
@@ -123,4 +123,48 @@ impl Macro {
             }
         }
     }
+}
+
+pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<()> {
+    loop {
+        let expansion = match &expr.value {
+            Expr::Postfix(open, args) if open.value.as_str() == "(" => {
+                if let Some((callee, rest)) = args.split_first() {
+                    if let Expr::Atom(Token::Ident(name)) = &callee.value {
+                        program
+                            .get_macro(name)
+                            .map(|macro_def| macro_def.apply(rest, &expr.loc))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+
+        match expansion {
+            Some(expanded) => {
+                *expr = expanded?;
+            }
+            None => break,
+        }
+    }
+
+    match &mut expr.value {
+        Expr::Postfix(_, args) | Expr::Prefix(_, args) => {
+            for arg in args {
+                expand_macros_recursive(arg, program)?;
+            }
+        }
+        Expr::Bin(_, box_pair) => {
+            let (left, right) = box_pair.as_mut();
+            expand_macros_recursive(left, program)?;
+            expand_macros_recursive(right, program)?;
+        }
+        Expr::Atom(_) => {}
+    }
+
+    Ok(())
 }

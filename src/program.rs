@@ -1,4 +1,4 @@
-use crate::macros::Macro;
+use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -45,51 +45,6 @@ impl Program {
     }
 }
 
-fn expand_macros_recursive(expr: LExpr, program: &mut Program) -> CResult<LExpr> {
-    let Located { loc, value } = expr;
-    match value {
-        Expr::Postfix(open, args) => {
-            if open.value.as_str() == "("
-                && let Some((callee, rest)) = args.split_first()
-                && let Expr::Atom(Token::Ident(name)) = &callee.value
-                && let Some(macro_def) = program.get_macro(name)
-            {
-                let expanded = macro_def.apply(rest, &loc)?;
-                return expand_macros_recursive(expanded, program);
-            }
-
-            let mut new_args = Vec::with_capacity(args.len());
-            for arg in args {
-                new_args.push(expand_macros_recursive(arg, program)?);
-            }
-            Ok(Located {
-                loc,
-                value: Expr::Postfix(open, new_args),
-            })
-        }
-        Expr::Prefix(op, args) => {
-            let mut new_args = Vec::with_capacity(args.len());
-            for arg in args {
-                new_args.push(expand_macros_recursive(arg, program)?);
-            }
-            Ok(Located {
-                loc,
-                value: Expr::Prefix(op, new_args),
-            })
-        }
-        Expr::Bin(op, box_pair) => {
-            let (left_expr, right_expr) = *box_pair;
-            let left = expand_macros_recursive(left_expr, program)?;
-            let right = expand_macros_recursive(right_expr, program)?;
-            Ok(Located {
-                loc,
-                value: Expr::Bin(op, Box::new((left, right))),
-            })
-        }
-        Expr::Atom(_) => Ok(Located { loc, value }),
-    }
-}
-
 pub struct ProgramParser<'a> {
     parser: Parser<'a>,
 }
@@ -110,13 +65,13 @@ impl<'a> ProgramParser<'a> {
         program: &mut Program,
         on_expr: &mut dyn FnMut(&LExpr),
     ) -> CResult<bool> {
-        let Some(expr) = self.parser.parse_stmt()? else {
+        let Some(mut expr) = self.parser.parse_stmt()? else {
             return Ok(false);
         };
-        let expanded = expand_macros_recursive(expr, program)?;
-        on_expr(&expanded);
+        expand_macros_recursive(&mut expr, program)?;
+        on_expr(&expr);
 
-        self.handle_definition(expanded, program)?;
+        self.handle_definition(expr, program)?;
         Ok(true)
     }
 
