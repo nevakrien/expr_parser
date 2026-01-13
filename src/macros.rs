@@ -23,46 +23,40 @@ pub struct Macro {
 }
 
 impl Macro {
-    pub fn new(args: &[LExpr], loc: Loc) -> CResult<Self> {
-        if args.is_empty() {
+    pub fn new(args: Vec<LExpr>, loc: Loc) -> CResult<Self> {
+        if args.len() < 2 {
             return Err(CompileError::MissingMacroBody { loc });
         }
 
-        let (params_expr, body_expr) = if args.len() > 1 {
-            (Some(&args[0]), &args[1])
-        } else {
-            (None, &args[0])
-        };
+        let mut args = args.into_iter();
+        let params_expr = args.next().expect("checked length");
+        let body_expr = args.next().expect("checked length");
 
-        let params = if let Some(sig) = params_expr {
-            match &sig.value {
-                Expr::Prefix(open, param_exprs) if open.value.as_str() == "(" => {
-                    let mut param_names = Vec::new();
-                    for param_expr in param_exprs {
-                        match &param_expr.value {
-                            Expr::Atom(Token::Ident(name)) => param_names.push(name.clone()),
-                            _ => {
-                                return Err(CompileError::InvalidMacroParam {
-                                    loc: param_expr.loc.clone(),
-                                });
-                            }
+        let params = match &params_expr.value {
+            Expr::Prefix(open, param_exprs) if open.value.as_str() == "(" => {
+                let mut param_names = Vec::new();
+                for param_expr in param_exprs {
+                    match &param_expr.value {
+                        Expr::Atom(Token::Ident(name)) => param_names.push(name.clone()),
+                        _ => {
+                            return Err(CompileError::InvalidMacroParam {
+                                loc: param_expr.loc.clone(),
+                            });
                         }
                     }
-                    param_names
                 }
-                _ => {
-                    return Err(CompileError::InvalidMacroSignature {
-                        loc: sig.loc.clone(),
-                    });
-                }
+                param_names
             }
-        } else {
-            Vec::new()
+            _ => {
+                return Err(CompileError::InvalidMacroSignature {
+                    loc: params_expr.loc.clone(),
+                });
+            }
         };
 
         Ok(Self {
             vars: params,
-            body: body_expr.value.clone(),
+            body: body_expr.value,
         })
     }
 

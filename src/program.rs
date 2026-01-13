@@ -96,7 +96,6 @@ impl<'a> ProgramParser<'a> {
         let expanded = self.expand_macros_recursive(expr, program)?;
         on_expr(&expanded);
 
-
         self.handle_definition(expanded, program)?;
         Ok(true)
     }
@@ -178,29 +177,46 @@ impl<'a> ProgramParser<'a> {
     }
 
     fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr, program: &mut Program) -> CResult<()> {
-        match &rhs.value {
+        let Located {
+            loc: rhs_loc,
+            value: rhs_value,
+        } = rhs;
+
+        match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value.as_str() == "macro" => {
                 let name = get_single_ident(lhs)?;
-                let macro_def = Macro::new(args, rhs.loc)?;
+                let macro_def = Macro::new(args, rhs_loc)?;
                 program.add_macro(name, macro_def);
                 Ok(())
             }
-            Expr::Prefix(fn_kw, _)
+            Expr::Prefix(fn_kw, args)
                 if fn_kw.value.as_str() == "fn" || fn_kw.value.as_str() == "cfn" =>
             {
-                program.functions.push(rhs);
+                program.functions.push(Located {
+                    loc: rhs_loc,
+                    value: Expr::Prefix(fn_kw, args),
+                });
                 Ok(())
             }
-            Expr::Prefix(struct_kw, _) if struct_kw.value.as_str() == "struct" => {
-                program.structs.push(rhs);
+            Expr::Prefix(struct_kw, args) if struct_kw.value.as_str() == "struct" => {
+                program.structs.push(Located {
+                    loc: rhs_loc,
+                    value: Expr::Prefix(struct_kw, args),
+                });
                 Ok(())
             }
-            Expr::Prefix(enum_kw, _) if enum_kw.value.as_str() == "enum" => {
-                program.enums.push(rhs);
+            Expr::Prefix(enum_kw, args) if enum_kw.value.as_str() == "enum" => {
+                program.enums.push(Located {
+                    loc: rhs_loc,
+                    value: Expr::Prefix(enum_kw, args),
+                });
                 Ok(())
             }
-            Expr::Prefix(union_kw, _) if union_kw.value.as_str() == "union" => {
-                program.unions.push(rhs);
+            Expr::Prefix(union_kw, args) if union_kw.value.as_str() == "union" => {
+                program.unions.push(Located {
+                    loc: rhs_loc,
+                    value: Expr::Prefix(union_kw, args),
+                });
                 Ok(())
             }
             _ => Err(CompileError::UnsupportedDefinition { loc: lhs.loc }),
@@ -262,6 +278,18 @@ mod tests {
             }
             _ => panic!("expected block expression"),
         }
+    }
+
+    #[test]
+    fn macro_requires_body() {
+        let src = "m = macro(x)";
+        let mut program = Program::new();
+        let mut parser = ProgramParser::new(src, 0);
+        let err = parser
+            .consume_expr(&mut program, &mut |_| {})
+            .expect_err("expected missing body error");
+
+        assert!(matches!(err, CompileError::MissingMacroBody { .. }));
     }
 
     fn assert_double_blocked_ff_call(expr: &LExpr) {
