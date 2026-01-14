@@ -171,23 +171,24 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::Parser;
+use super::*;
     use crate::parsing::Expr;
-    use crate::program::{CompileError, Program, ProgramParser};
+    use crate::program::{CompileError, Program,};
 
     #[test]
     fn expands_recursive_and_nested_macros() {
         let src = "\
-            m = macro(name, var) { name = macro() { var } }\
+            m = macro(name, v) { name = macro() { v } }\
             id = macro(x) { x }\
             m(foo, 7)\
             id(foo())\
         ";
 
         let mut program = Program::new();
-        let mut parser = ProgramParser::new(src, 0);
+        let mut parser = Parser::new(src, 0);
         while !parser.is_empty() {
-            let _ = parser.consume_expr(&mut program, &mut |_| {}).unwrap();
+            let _ = parser.compile_expr(&mut program, &mut |_| {}).unwrap();
         }
 
         assert!(program.get_macro("m").is_some());
@@ -199,14 +200,14 @@ mod tests {
     fn expands_macros_inside_arguments() {
         let src = "m = macro(x) { x(x) } m(m(f))";
         let mut program = Program::new();
-        let mut parser = ProgramParser::new(src, 0);
+        let mut parser = Parser::new(src, 0);
         let mut last_expr = None;
 
         while !parser.is_empty() {
             let mut handler = |expr: &LExpr| {
                 last_expr = Some(expr.clone());
             };
-            let _ = parser.consume_expr(&mut program, &mut handler).unwrap();
+            let _ = parser.compile_expr(&mut program, &mut handler).unwrap();
         }
 
         let expr = last_expr.expect("expected expanded expression");
@@ -224,9 +225,9 @@ mod tests {
     fn macro_requires_body() {
         let src = "m = macro(x)";
         let mut program = Program::new();
-        let mut parser = ProgramParser::new(src, 0);
+        let mut parser = Parser::new(src, 0);
         let err = parser
-            .consume_expr(&mut program, &mut |_| {})
+            .compile_expr(&mut program, &mut |_| {})
             .expect_err("expected missing body error");
 
         assert!(matches!(

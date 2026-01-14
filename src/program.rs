@@ -49,27 +49,13 @@ impl Program {
     }
 }
 
-pub struct ProgramParser<'a> {
-    parser: Parser<'a>,
-}
-
-impl<'a> ProgramParser<'a> {
-    pub fn new(src: &'a str, file: usize) -> Self {
-        Self {
-            parser: Parser::new(src, file),
-        }
-    }
-
-    pub fn is_empty(&mut self) -> bool {
-        self.parser.is_empty()
-    }
-
-    pub fn consume_expr(
+impl<'a> Parser<'a> {
+    pub fn compile_expr(
         &mut self,
         program: &mut Program,
         on_expr: &mut dyn FnMut(&LExpr),
     ) -> CResult<bool> {
-        let Some(mut expr) = self.parser.parse_stmt()? else {
+        let Some(mut expr) = self.parse_stmt()? else {
             return Ok(false);
         };
         expand_macros_recursive(&mut expr, program)?;

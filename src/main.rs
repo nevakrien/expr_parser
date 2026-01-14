@@ -1,6 +1,6 @@
 use expr_parser::error_reporting::ErrorReporter;
-use expr_parser::parsing::{Expr, LExpr, Token};
-use expr_parser::program::{Program, ProgramParser};
+use expr_parser::parsing::{Expr,Parser, LExpr, Token};
+use expr_parser::program::Program;
 use std::io::{self, Write};
 
 fn pretty_print_token(token: &Token) -> String {
@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 reporter.add_source(0, input.to_string());
-                let mut parser = ProgramParser::new(input, 0);
+                let mut parser = Parser::new(input, 0);
                 let mut expr_count = 0;
 
                 while !parser.is_empty() {
@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("{}", pretty_print_expr(expr, 0));
                         expr_count += 1;
                     };
-                    match parser.consume_expr(&mut program, &mut handler) {
+                    match parser.compile_expr(&mut program, &mut handler) {
                         Ok(_) => {}
                         Err(err) => {
                             if let expr_parser::program::CompileError::Parse(parse_err) = &err {

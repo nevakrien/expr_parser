@@ -6,4 +6,4 @@ pub mod program;
 
 pub use error_reporting::ErrorReporter;
 pub use parsing::{Expr, LExpr, Parser, Token};
-pub use program::{CompileError, Program, ProgramParser};
+pub use program::{CompileError, Program};

@@ -84,7 +84,7 @@ impl fmt::Display for Token {
 
 // Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
-    "let", "const", "type", "struct", "union", "enum", "fn", "cfn", "macro", "if", "else", "while",
+    "let","var" , "const", "mut", "type", "struct", "union", "enum", "fn", "cfn", "macro", "if", "else", "while",
     "for", "match", "return", "break", "continue", "as",
 ];
 
@@ -131,7 +131,9 @@ pub enum FixedToken {
     // Keywords
     // ====================
     Let = u64::from_ne_bytes(pack8("let").0),
+    Var = u64::from_ne_bytes(pack8("var").0),
     Const = u64::from_ne_bytes(pack8("const").0),
+    Mut = u64::from_ne_bytes(pack8("mut").0),
     Type = u64::from_ne_bytes(pack8("type").0),
     Struct = u64::from_ne_bytes(pack8("struct").0),
     Union = u64::from_ne_bytes(pack8("union").0),
@@ -241,7 +243,9 @@ impl FixedToken {
     pub const fn as_str(self) -> &'static str {
         match self {
             FixedToken::Let => "let",
+            FixedToken::Var => "var",
             FixedToken::Const => "const",
+            FixedToken::Mut => "mut",
             FixedToken::Type => "type",
             FixedToken::Struct => "struct",
             FixedToken::Union => "union",
@@ -422,7 +426,9 @@ const fn match_operator(input: &str) -> Option<FixedToken> {
 #[inline(always)]
 const fn match_keyword(input: &str) -> Option<FixedToken> {
     const K_LET: Pack8 = pack8("let");
+    const K_VAR: Pack8 = pack8("var");
     const K_CONST: Pack8 = pack8("const");
+    const K_MUT: Pack8 = pack8("mut");
     const K_TYPE: Pack8 = pack8("type");
     const K_STRUCT: Pack8 = pack8("struct");
     const K_UNION: Pack8 = pack8("union");
@@ -444,6 +450,7 @@ const fn match_keyword(input: &str) -> Option<FixedToken> {
 
     match k {
         K_LET => Some(FixedToken::Let),
+        K_VAR => Some(FixedToken::Var),
         K_IF => Some(FixedToken::If),
         K_ELSE => Some(FixedToken::Else),
         K_WHILE => Some(FixedToken::While),
@@ -454,6 +461,7 @@ const fn match_keyword(input: &str) -> Option<FixedToken> {
         K_BREAK => Some(FixedToken::Break),
         K_CONTINUE => Some(FixedToken::Continue),
         K_CONST => Some(FixedToken::Const),
+        K_MUT => Some(FixedToken::Mut),
         K_TYPE => Some(FixedToken::Type),
         K_STRUCT => Some(FixedToken::Struct),
         K_UNION => Some(FixedToken::Union),
@@ -501,7 +509,7 @@ const BP_PREFIX: u32 = 900;
 #[inline]
 fn prefix_bp(op: FixedToken) -> Option<u32> {
     Some(match op.as_str() {
-        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" => BP_PREFIX,
+        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
     })
 }
@@ -564,6 +572,7 @@ pub struct Parser<'a> {
     peeked: Option<LTok>,
 }
 
+//more than one impl in other file
 impl<'a> Parser<'a> {
     pub fn new(src: &'a str, file: usize) -> Self {
         Self {
@@ -1266,7 +1275,7 @@ impl<'a> Parser<'a> {
                     return self.parse_after_struct(start, op_s).map(Some);
                 }
 
-                if op_str == "let" {
+                if op_str == "let" || op_str == "var" {
                     self.next_token()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
                 }

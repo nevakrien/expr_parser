@@ -1,4 +1,5 @@
-use expr_parser::program::{Program, ProgramParser};
+use expr_parser::parsing::Parser;
+use expr_parser::program::Program;
 use std::time::Instant;
 
 const ITERATIONS: usize = 60000;
@@ -47,10 +48,10 @@ fn main() {
 
     for _ in 0..ITERATIONS {
         let mut program = Program::new();
-        let mut parser = ProgramParser::new(SOURCE, 0);
+        let mut parser = Parser::new(SOURCE, 0);
 
         while !parser.is_empty() {
-            match parser.consume_expr(&mut program, &mut |_| {}) {
+            match parser.compile_expr(&mut program, &mut |_| {}) {
                 Ok(consumed) => {
                     if consumed {
                         parsed_count += 1;

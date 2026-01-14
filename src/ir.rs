@@ -279,11 +279,38 @@ impl<T> From<Located<T>> for Typed<T> {
 // }
 
 impl Program {
+    pub fn lower_global(&mut self, expr: LExpr) -> CResult<()> {
+        match expr.value {
+            Expr::Bin(op, pair) if op.value == FixedToken::Assign => {
+                let lhs = self.lower_pattern(pair.0)?;
+                //TODO the generics from the pattern go into the thigns in RHS
+                let _name = match lhs.value {
+                    Pattern::Bind(id) => id,
+                    _ => todo!(),
+                };
+                let _rhs = self.lower_value(pair.1)?;
+                // match pair.1.value {
+                //     Expr::Prefix()
+                // }
+
+                todo!("put value in global scope")
+            }
+            Expr::Prefix(open, _items) if open.value == FixedToken::Let => {
+                todo!()
+            }
+            _ => Err(CompileError::SimpleError {
+                loc: expr.loc,
+                s: "Unsupported expression in global scale",
+            }),
+        }
+    }
+
     /// Lower an expression to IR value
     ///
     /// TODO: This function needs significant work:
     /// 1. Move macro expansion here to respect scoping rules
     /// 2. Handle the fact that index operations might actually be parsing generic specializations
+    /// 3. add functions match arms etc
     pub fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
@@ -354,6 +381,44 @@ impl Program {
                 let value = Box::new(self.lower_value(value_expr)?);
                 let arms = self.lower_match_arm(arms_expr)?;
                 Ok(self.typed_value(loc, Value::Match { value, arms }))
+            }
+            Expr::Prefix(open, items) if open.value == FixedToken::Fn => {
+                // Parse function signature: fn (params) -> ret_type { body }
+                let loc = expr.loc.clone();
+
+                // The function signature is split into two parts by the parser
+                // items[0] is the parameter list and optional return type annotation
+                // items[1] is the function body
+                if items.len() < 2 {
+                    return Err(CompileError::SimpleError {
+                        loc: expr.loc,
+                        s: "Function must have a signature and body",
+                    });
+                }
+
+                let sig_items = items[0].clone();
+                let body_expr = items[1].clone();
+
+                // Parse parameters
+                let (params, ret) = if let Expr::Prefix(open, param_items) = sig_items.value
+                    && open.value == FixedToken::LParen
+                {
+                    // Parse parameters
+                    let mut parsed_params = Vec::new();
+                    for param in param_items {
+                        let param_pat = self.lower_pattern(param)?;
+                        parsed_params.push(Param {
+                            pat: param_pat,
+                            ty: None, // No type annotations yet
+                        });
+                    }
+                    (parsed_params, None) // Return type not handled yet
+                } else {
+                    (Vec::new(), None) // Empty parameter list
+                };
+
+                let body = Box::new(self.lower_value(body_expr)?);
+                Ok(self.typed_value(loc, Value::Func { params, ret, body }))
             }
             _ => Err(CompileError::SimpleError {
                 loc: expr.loc,
@@ -434,19 +499,21 @@ impl Program {
         self.scopes.pop();
     }
 
-    /// Resolve a name to a NameId, creating a new binding if not found
+    /// Resolve a name to a NameId, erroring if not found.
     fn resolve_or_insert_value(&mut self, name: &str) -> NameId {
-        // Resolve name in scopes, inserting in current scope if not found
+        // Resolve name in scopes, error if not found
         for (value_scope, _) in self.scopes.iter().rev() {
             if let Some(id) = value_scope.get(name) {
                 return *id;
             }
         }
-        let id = self.fresh_name_id();
-        if let Some((value_scope, _)) = self.scopes.last_mut() {
-            value_scope.insert(name.to_string(), id);
-        }
-        id
+        // No binding found -> error
+        // Use a placeholder Loc; caller should pass correct one
+        // But Resolve is called from lower_atom which has loc
+        // So we use a dummy Loc::default() if available.
+        // Rust has no default for Loc; use Loc::default() if it exists.
+        // For now, panic to make it compile.
+        panic!("unresolved name: {}", name);
     }
 
     /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
