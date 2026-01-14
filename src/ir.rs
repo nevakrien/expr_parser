@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>; // Located name identifier
 pub type TName = Typed<NameId>; // Typed name identifier
-pub type TDecl = Typed<Decl>; // Typed declaration
+// pub type TDecl = Typed<Decl>; // Typed declaration
 pub type TValue = Typed<Value>; // Typed value/expression
 pub type TPattern = Typed<Pattern>; // Typed pattern
 
@@ -29,16 +29,16 @@ pub struct Typed<T> {
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NameId(pub u32);
+pub struct NameId(pub usize);
 
-/// The intermediate representation (IR) of a complete program
-#[derive(Debug, Clone, PartialEq)]
-pub struct ProgramIr {
-    /// Global/top-level declarations
-    pub decls: Vec<TDecl>,
-    /// Main program body expression
-    pub body: TValue,
-}
+// /// The intermediate representation (IR) of a complete program
+// #[derive(Debug, Clone, PartialEq)]
+// pub struct ProgramIr {
+//     /// Global/top-level declarations
+//     pub decls: Vec<TDecl>,
+//     /// Main program body expression
+//     pub body: TValue,
+// }
 
 /// Generic parameters for declarations
 #[derive(Debug, Clone, PartialEq)]
@@ -47,50 +47,50 @@ pub struct Generics {
     pub params: Vec<TPattern>,
 }
 
-/// Declaration of a type, constant, or macro in the global scope
-///
-/// TODO: Eventually support local declarations within functions
-/// TODO: Macros should be handled here (explicitly or conceptually)
-#[derive(Debug, Clone, PartialEq)]
-pub enum Decl {
-    /// Runtime value declaration (constants, functions, etc.)
-    RuntimeValue {
-        name: LName,
-        generics: Option<Generics>,
-        value: TValue,
-    },
-    /// Struct definition with named fields
-    Struct {
-        name: LName,
-        generics: Option<Generics>,
-        fields: Vec<(LName, TPattern)>,
-    },
-    /// Union definition with named fields (one field active at a time)
-    Union {
-        name: LName,
-        generics: Option<Generics>,
-        fields: Vec<(LName, TPattern)>,
-    },
-    /// Enum definition with variants
-    Enum {
-        name: LName,
-        generics: Option<Generics>,
-        variants: Vec<EnumVariant>,
-    },
-    /// Type alias declaration
-    Alias {
-        name: LName,
-        generics: Option<Generics>,
-        ty: TPattern,
-    },
-    /// Macro definition
-    Macro {
-        name: LName,
-        generics: Option<Generics>,
-        params: Vec<LName>,
-        body: TValue,
-    },
-}
+// /// Declaration of a type, constant, or macro in the global scope
+// ///
+// /// TODO: Eventually support local declarations within functions
+// /// TODO: Macros should be handled here (explicitly or conceptually)
+// #[derive(Debug, Clone, PartialEq)]
+// pub enum Decl {
+//     /// Runtime value declaration (constants, functions, etc.)
+//     RuntimeValue {
+//         name: LName,
+//         generics: Option<Generics>,
+//         value: TValue,
+//     },
+//     /// Struct definition with named fields
+//     Struct {
+//         name: LName,
+//         generics: Option<Generics>,
+//         fields: Vec<(LName, TPattern)>,
+//     },
+//     /// Union definition with named fields (one field active at a time)
+//     Union {
+//         name: LName,
+//         generics: Option<Generics>,
+//         fields: Vec<(LName, TPattern)>,
+//     },
+//     /// Enum definition with variants
+//     Enum {
+//         name: LName,
+//         generics: Option<Generics>,
+//         variants: Vec<EnumVariant>,
+//     },
+//     /// Type alias declaration
+//     Alias {
+//         name: LName,
+//         generics: Option<Generics>,
+//         ty: TPattern,
+//     },
+//     /// Macro definition
+//     Macro {
+//         name: LName,
+//         generics: Option<Generics>,
+//         params: Vec<LName>,
+//         body: TValue,
+//     },
+// }
 
 /// Single variant within an enum declaration
 #[derive(Debug, Clone, PartialEq)]
@@ -261,50 +261,30 @@ impl<T> From<Located<T>> for Typed<T> {
     }
 }
 
-impl ProgramIr {
-    /// Create an empty program IR with a block body
-    pub fn empty(loc: Loc) -> Self {
-        Self {
-            decls: Vec::new(),
-            body: Typed {
-                loc,
-                ty: None,
-                value: Value::Block {
-                    statements: Vec::new(),
-                    return_value: None,
-                },
-            },
-        }
-    }
-}
+// impl ProgramIr {
+//     /// Create an empty program IR with a block body
+//     pub fn empty(loc: Loc) -> Self {
+//         Self {
+//             decls: Vec::new(),
+//             body: Typed {
+//                 loc,
+//                 ty: None,
+//                 value: Value::Block {
+//                     statements: Vec::new(),
+//                     return_value: None,
+//                 },
+//             },
+//         }
+//     }
+// }
 
-/// Lowers parsed AST to IR with name resolution
-///
-/// Handles variable scoping, pattern matching, and expression transformation.
-/// Names are resolved to unique IDs throughout the lowering process.
-#[derive(Debug)]
-pub struct IrLowerer<'a> {
-    program: &'a Program,
-    next_name_id: u32,
-    scopes: Vec<(HashMap<String, NameId>, HashMap<String, NameId>)>,
-}
-
-impl<'a> IrLowerer<'a> {
-    /// Create a new lowerer for the given program
-    pub fn new(program: &'a Program) -> Self {
-        Self {
-            program,
-            next_name_id: 0,
-            scopes: Vec::new(),
-        }
-    }
-
+impl Program {
     /// Lower an expression to IR value
     ///
     /// TODO: This function needs significant work:
     /// 1. Move macro expansion here to respect scoping rules
     /// 2. Handle the fact that index operations might actually be parsing generic specializations
-    fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
+    pub fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
             Expr::Prefix(open, mut items) if open.value == FixedToken::LBrace => {
@@ -402,7 +382,7 @@ impl<'a> IrLowerer<'a> {
     }
 
     /// Lower an expression to a pattern for use in match expressions, function params, etc.
-    fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
+    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
         match expr.value {
             Expr::Atom(Token::Ident(name)) if name == "_" => {
                 Ok(self.typed_pattern(expr.loc, Pattern::Wildcard))
@@ -518,19 +498,20 @@ impl<'a> IrLowerer<'a> {
             Expr::Bin(op, pair) if op.value == FixedToken::If => {
                 let (left, right) = pair.as_ref();
                 // This is a guard: pattern if guard => body
-                if let Expr::Prefix(open, items) = &left.value {
-                    if open.value == FixedToken::FatArrow && items.len() == 2 {
-                        let pat_expr = items[0].clone();
-                        let body_expr = items[1].clone();
-                        let pat = self.lower_pattern(pat_expr)?;
-                        let guard = self.lower_value(right.clone())?;
-                        let body = self.lower_value(body_expr)?;
-                        return Ok(MatchArm {
-                            pat,
-                            guard: Some(guard),
-                            body,
-                        });
-                    }
+                if let Expr::Prefix(open, items) = &left.value
+                    && open.value == FixedToken::FatArrow
+                    && items.len() == 2
+                {
+                    let pat_expr = items[0].clone();
+                    let body_expr = items[1].clone();
+                    let pat = self.lower_pattern(pat_expr)?;
+                    let guard = self.lower_value(right.clone())?;
+                    let body = self.lower_value(body_expr)?;
+                    return Ok(MatchArm {
+                        pat,
+                        guard: Some(guard),
+                        body,
+                    });
                 }
                 Err(CompileError::SimpleError {
                     loc: expr.loc,
@@ -546,11 +527,6 @@ impl<'a> IrLowerer<'a> {
 }
 
 // Public API functions
-
-/// Lower a single expression to IR
-pub fn lower_expr(program: &Program, expr: LExpr) -> CResult<TValue> {
-    IrLowerer::new(program).lower_value(expr)
-}
 
 // Helper functions for parsing prefix/postfix constructs
 
@@ -598,8 +574,9 @@ mod var_scope_test {
         // { let a = 1; { let a = 2; a } a }
         let src = "{ let a = 1; { let a = 2; a; } a; }";
         let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
         let expr = parser.consume_expr().expect("failed to parse expr");
-        let ir = lower_expr(&Program::new(), expr).expect("lowering failed");
+        let ir = program.lower_value(expr).expect("lowering failed");
         // top-level should be a block
         let top_block = match ir.value {
             Value::Block { ref statements, .. } => statements,

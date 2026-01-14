@@ -1,3 +1,4 @@
+use crate::ir::NameId;
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
@@ -29,6 +30,9 @@ pub struct Program {
     pub structs: Vec<LExpr>,
     pub enums: Vec<LExpr>,
     pub unions: Vec<LExpr>,
+
+    pub next_name_id: usize,
+    pub scopes: Vec<(HashMap<String, NameId>, HashMap<String, NameId>)>,
 }
 
 impl Program {
