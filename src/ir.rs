@@ -1,4 +1,4 @@
-use crate::parsing::{Expr, FixedToken, LExpr, Loc, Located, Token};
+use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
 use std::collections::HashMap;
 
@@ -281,7 +281,7 @@ impl<T> From<Located<T>> for Typed<T> {
 impl Program {
     pub fn lower_global(&mut self, expr: LExpr) -> CResult<()> {
         match expr.value {
-            Expr::Bin(op, pair) if op.value == FixedToken::Assign => {
+            Expr::Bin(op, pair) if op.value == "=" => {
                 let lhs = self.lower_pattern(pair.0)?;
                 //TODO the generics from the pattern go into the thigns in RHS
                 let _name = match lhs.value {
@@ -295,7 +295,7 @@ impl Program {
 
                 todo!("put value in global scope")
             }
-            Expr::Prefix(open, _items) if open.value == FixedToken::Let => {
+            Expr::Prefix(open, _items) if open.value == "let" => {
                 todo!()
             }
             _ => Err(CompileError::SimpleError {
@@ -314,7 +314,7 @@ impl Program {
     pub fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
-            Expr::Prefix(open, mut items) if open.value == FixedToken::LBrace => {
+            Expr::Prefix(open, mut items) if open.value == "{" => {
                 self.push_scope();
                 let mut statements = Vec::new();
                 let mut return_value = None;
@@ -324,7 +324,7 @@ impl Program {
                         statements.push(self.lower_value(item)?);
                     }
 
-                    if matches!(last.value, Expr::Atom(Token::Operator(FixedToken::Semi))) {
+                    if matches!(last.value, Expr::Atom(Token::Operator(";"))) {
                         return_value = None;
                     } else {
                         return_value = Some(Box::new(self.lower_value(last)?));
@@ -340,14 +340,14 @@ impl Program {
                     },
                 ))
             }
-            Expr::Prefix(open, items) if open.value == FixedToken::Let => {
+            Expr::Prefix(open, items) if open.value == "let" => {
                 let loc = expr.loc.clone();
                 let (pat_expr, value_expr) = split_prefix(loc.clone(), "let", items)?;
                 let pat = self.lower_pattern(pat_expr)?;
                 let value = Box::new(self.lower_value(value_expr)?);
                 Ok(self.typed_value(loc, Value::Let { pat, value }))
             }
-            Expr::Postfix(open, items) if open.value == FixedToken::LParen => {
+            Expr::Postfix(open, items) if open.value == "(" => {
                 let loc = expr.loc.clone();
                 let (callee_expr, args_exprs) = split_postfix(loc.clone(), "call", items)?;
                 let callee = Box::new(self.lower_value(callee_expr)?);
@@ -357,7 +357,7 @@ impl Program {
                 }
                 Ok(self.typed_value(loc, Value::Call { callee, args }))
             }
-            Expr::Postfix(open, items) if open.value == FixedToken::LBracket => {
+            Expr::Postfix(open, items) if open.value == "[" => {
                 let loc = expr.loc.clone();
                 // TODO: This is wrong - we might be parsing a generic specialization, not an index
                 let (base_expr, args_exprs) = split_postfix(loc.clone(), "index", items)?;
@@ -369,20 +369,21 @@ impl Program {
                 Ok(self.typed_value(loc, Value::Index { base, args }))
             }
             //TODO fix the LHS of this to check for paterns maybe
-            Expr::Bin(op, pair) if op.value == FixedToken::Assign => {
+            Expr::Bin(op, pair) if op.value == "=" => {
                 let (lhs, rhs) = pair.as_ref();
                 let target = Box::new(self.lower_value(lhs.clone())?);
                 let value = Box::new(self.lower_value(rhs.clone())?);
                 Ok(self.typed_value(expr.loc, Value::Assign { target, value }))
             }
-            Expr::Prefix(open, items) if open.value == FixedToken::Match => {
-                let loc = expr.loc.clone();
-                let (value_expr, arms_expr) = split_prefix(loc.clone(), "match", items)?;
-                let value = Box::new(self.lower_value(value_expr)?);
-                let arms = self.lower_match_arm(arms_expr)?;
-                Ok(self.typed_value(loc, Value::Match { value, arms }))
-            }
-            Expr::Prefix(open, items) if open.value == FixedToken::Fn => {
+            // Expr::Prefix(open, items) if open.value == "match" => {
+            //     let loc = expr.loc.clone();
+            // TODO this is wrong we have ["match"] [value,arm1,arm2...]
+            //     let (value_expr, arms_expr) = split_prefix(loc.clone(), "match", items)?;
+            //     let value = Box::new(self.lower_value(value_expr)?);
+            //     let arms = self.lower_match_arm(arms_expr)?;
+            //     Ok(self.typed_value(loc, Value::Match { value, arms }))
+            // }
+            Expr::Prefix(open, items) if open.value == "fn" => {
                 // Parse function signature: fn (params) -> ret_type { body }
                 let loc = expr.loc.clone();
 
@@ -401,7 +402,7 @@ impl Program {
 
                 // Parse parameters
                 let (params, ret) = if let Expr::Prefix(open, param_items) = sig_items.value
-                    && open.value == FixedToken::LParen
+                    && open.value == "("
                 {
                     // Parse parameters
                     let mut parsed_params = Vec::new();
@@ -457,7 +458,7 @@ impl Program {
                 let id = self.insert_value_in_current_scope(&name);
                 Ok(self.typed_pattern(expr.loc, Pattern::Bind(id)))
             }
-            Expr::Prefix(open, items) if open.value == FixedToken::LParen => {
+            Expr::Prefix(open, items) if open.value == "(" => {
                 let mut parts = Vec::new();
                 for item in items {
                     parts.push(self.lower_pattern(item)?);
@@ -532,27 +533,10 @@ impl Program {
         id
     }
 
-    /// Lower match arms from a block expression or single arm
-    fn lower_match_arm(&mut self, expr: LExpr) -> CResult<Vec<MatchArm>> {
-        match expr.value {
-            Expr::Prefix(open, items) if open.value == FixedToken::LBrace => {
-                let mut arms = Vec::new();
-                for arm_expr in items {
-                    arms.push(self.lower_single_match_arm(arm_expr)?);
-                }
-                Ok(arms)
-            }
-            _ => {
-                // Single arm without braces
-                Ok(vec![self.lower_single_match_arm(expr)?])
-            }
-        }
-    }
-
     /// Lower a single match arm (pattern => body or pattern if guard => body)
-    fn lower_single_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
+    fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
         match expr.value {
-            Expr::Prefix(open, items) if open.value == FixedToken::FatArrow => {
+            Expr::Prefix(open, items) if open.value == "=>" => {
                 let (pat_expr, body_expr) = split_prefix(expr.loc, "=>", items)?;
                 let pat = self.lower_pattern(pat_expr)?;
                 let body = self.lower_value(body_expr)?;
@@ -562,11 +546,11 @@ impl Program {
                     body,
                 })
             }
-            Expr::Bin(op, pair) if op.value == FixedToken::If => {
+            Expr::Bin(op, pair) if op.value == "if" => {
                 let (left, right) = pair.as_ref();
                 // This is a guard: pattern if guard => body
                 if let Expr::Prefix(open, items) = &left.value
-                    && open.value == FixedToken::FatArrow
+                    && open.value == "=>"
                     && items.len() == 2
                 {
                     let pat_expr = items[0].clone();

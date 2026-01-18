@@ -23,7 +23,7 @@ impl Macro {
         let body_expr = args.next().expect("checked length");
 
         let params = match &params_expr.value {
-            Expr::Prefix(open, param_exprs) if open.value.as_str() == "(" => {
+            Expr::Prefix(open, param_exprs) if open.value == "(" => {
                 let mut param_names = Vec::new();
                 for param_expr in param_exprs {
                     match &param_expr.value {
@@ -128,7 +128,7 @@ impl Macro {
 pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<()> {
     loop {
         let expansion = match &expr.value {
-            Expr::Postfix(open, args) if open.value.as_str() == "(" => {
+            Expr::Postfix(open, args) if open.value == "(" => {
                 if let Some((callee, rest)) = args.split_first() {
                     if let Expr::Atom(Token::Ident(name)) = &callee.value {
                         program
@@ -171,10 +171,10 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::Parser;
-use super::*;
     use crate::parsing::Expr;
-    use crate::program::{CompileError, Program,};
+    use crate::program::{CompileError, Program};
 
     #[test]
     fn expands_recursive_and_nested_macros() {
@@ -213,7 +213,7 @@ use super::*;
         let expr = last_expr.expect("expected expanded expression");
         match expr.value {
             Expr::Prefix(open, items) => {
-                assert_eq!(open.as_str(), "{");
+                assert_eq!(open.value, "{");
                 assert_eq!(items.len(), 1);
                 assert_double_blocked_ff_call(&items[0]);
             }
@@ -242,7 +242,7 @@ use super::*;
     fn assert_double_blocked_ff_call(expr: &LExpr) {
         match &expr.value {
             Expr::Postfix(open, args) => {
-                assert_eq!(open.as_str(), "(");
+                assert_eq!(open.value, "(");
                 assert_eq!(args.len(), 2);
                 for arg in args {
                     assert_blocked_ff_call(arg);
@@ -255,7 +255,7 @@ use super::*;
     fn assert_blocked_ff_call(expr: &LExpr) {
         match &expr.value {
             Expr::Prefix(open, items) => {
-                assert_eq!(open.as_str(), "{");
+                assert_eq!(open.value, "{");
                 assert_eq!(items.len(), 1);
                 assert_ff_call(&items[0]);
             }
@@ -266,7 +266,7 @@ use super::*;
     fn assert_ff_call(expr: &LExpr) {
         match &expr.value {
             Expr::Postfix(open, args) => {
-                assert_eq!(open.as_str(), "(");
+                assert_eq!(open.value, "(");
                 assert_eq!(args.len(), 2);
                 assert!(matches!(&args[0].value, Expr::Atom(Token::Ident(name)) if name == "f"));
                 assert!(matches!(&args[1].value, Expr::Atom(Token::Ident(name)) if name == "f"));

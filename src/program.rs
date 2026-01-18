@@ -68,16 +68,16 @@ impl<'a> Parser<'a> {
     fn handle_definition(&mut self, expr: LExpr, program: &mut Program) -> CResult<()> {
         let Located { loc: _, value } = expr;
         match value {
-            Expr::Postfix(op, mut items) if op.value.as_str() == ";" => {
+            Expr::Postfix(op, mut items) if op.value == ";" => {
                 self.handle_definition(items.pop().expect("bad structure"), program)
             }
-            Expr::Prefix(open, items) if open.value.as_str() == "{" => {
+            Expr::Prefix(open, items) if open.value == "{" => {
                 for item in items {
                     self.handle_definition(item, program)?;
                 }
                 Ok(())
             }
-            Expr::Bin(eq, box_pair) if eq.value.as_str() == "=" => {
+            Expr::Bin(eq, box_pair) if eq.value == "=" => {
                 let (lhs, rhs) = *box_pair;
                 self.handle_assignment(lhs, rhs, program)?;
                 Ok(())
@@ -93,36 +93,34 @@ impl<'a> Parser<'a> {
         } = rhs;
 
         match rhs_value {
-            Expr::Prefix(macro_kw, args) if macro_kw.value.as_str() == "macro" => {
+            Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
                 let name = get_single_ident(lhs)?;
                 let macro_def = Macro::new(args, rhs_loc)?;
                 program.add_macro(name, macro_def);
                 Ok(())
             }
-            Expr::Prefix(fn_kw, args)
-                if fn_kw.value.as_str() == "fn" || fn_kw.value.as_str() == "cfn" =>
-            {
+            Expr::Prefix(fn_kw, args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
                 program.functions.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(fn_kw, args),
                 });
                 Ok(())
             }
-            Expr::Prefix(struct_kw, args) if struct_kw.value.as_str() == "struct" => {
+            Expr::Prefix(struct_kw, args) if struct_kw.value == "struct" => {
                 program.structs.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(struct_kw, args),
                 });
                 Ok(())
             }
-            Expr::Prefix(enum_kw, args) if enum_kw.value.as_str() == "enum" => {
+            Expr::Prefix(enum_kw, args) if enum_kw.value == "enum" => {
                 program.enums.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(enum_kw, args),
                 });
                 Ok(())
             }
-            Expr::Prefix(union_kw, args) if union_kw.value.as_str() == "union" => {
+            Expr::Prefix(union_kw, args) if union_kw.value == "union" => {
                 program.unions.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(union_kw, args),
