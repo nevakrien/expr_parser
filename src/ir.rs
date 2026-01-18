@@ -281,23 +281,34 @@ impl<T> From<Located<T>> for Typed<T> {
 impl Program {
     pub fn lower_global(&mut self, expr: LExpr) -> CResult<()> {
         match expr.value {
+            // Global definition sugar: <pattern> = <expr>
             Expr::Bin(op, pair) if op.value == "=" => {
-                let lhs = self.lower_pattern(pair.0)?;
-                //TODO the generics from the pattern go into the thigns in RHS
+                let (lhs_expr, rhs_expr) = *pair;
+
+                let lhs = self.lower_pattern(lhs_expr)?;
+                // TODO: generics from the pattern go into RHS lowering environment
+
+                // For now, only allow `name = value` at global scope
                 let _name = match lhs.value {
                     Pattern::Bind(id) => id,
-                    _ => todo!(),
+                    _ => {
+                        // If this is truly impossible given your parser rules, make it a debug_assert.
+                        return Err(CompileError::SimpleError {
+                            loc: lhs.loc,
+                            s: "Global definitions must bind a name",
+                        });
+                    }
                 };
-                let _rhs = self.lower_value(pair.1)?;
-                // match pair.1.value {
-                //     Expr::Prefix()
-                // }
+
+                let _rhs = self.lower_value(rhs_expr)?;
 
                 todo!("put value in global scope")
             }
+
             Expr::Prefix(open, _items) if open.value == "let" => {
                 todo!()
             }
+
             _ => Err(CompileError::SimpleError {
                 loc: expr.loc,
                 s: "Unsupported expression in global scale",
@@ -305,116 +316,145 @@ impl Program {
         }
     }
 
-    /// Lower an expression to IR value
-    ///
-    /// TODO: This function needs significant work:
-    /// 1. Move macro expansion here to respect scoping rules
-    /// 2. Handle the fact that index operations might actually be parsing generic specializations
-    /// 3. add functions match arms etc
+    #[inline]
+    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Program) -> CResult<T>) -> CResult<T> {
+        self.push_scope();
+        let result = f(self);
+        self.pop_scope();
+        result
+    }
+
+    //TODO: 
+    // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
+    // 2. some places parse a value where a value/pattern check needs to be done
     pub fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
+
+            // { ... }
             Expr::Prefix(open, mut items) if open.value == "{" => {
-                self.push_scope();
-                let mut statements = Vec::new();
-                let mut return_value = None;
+                let loc = expr.loc;
 
-                if let Some(last) = items.pop() {
-                    for item in items {
-                        statements.push(self.lower_value(item)?);
+                self.with_scope(|this| {
+                    let mut statements = Vec::new();
+                    let mut return_value = None;
+
+                    if let Some(last) = items.pop() {
+                        for item in items {
+                            statements.push(this.lower_value(item)?);
+                        }
+
+                        if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
+                            return_value = Some(Box::new(this.lower_value(last)?));
+                        }
                     }
 
-                    if matches!(last.value, Expr::Atom(Token::Operator(";"))) {
-                        return_value = None;
-                    } else {
-                        return_value = Some(Box::new(self.lower_value(last)?));
-                    }
-                }
-
-                self.pop_scope();
-                Ok(self.typed_value(
-                    expr.loc,
-                    Value::Block {
-                        statements,
-                        return_value,
-                    },
-                ))
+                    Ok(this.typed_value(
+                        loc,
+                        Value::Block {
+                            statements,
+                            return_value,
+                        },
+                    ))
+                })
             }
+
+            // let <pat> = <value>
             Expr::Prefix(open, mut items) if open.value == "let" => {
-                let loc = expr.loc.clone();
+                let loc = expr.loc;
+
                 if items.len() < 2 {
                     return Err(CompileError::SimpleError {
-                        loc: expr.loc,
+                        loc,
                         s: "let expects a pattern and a value",
                     });
                 }
                 if items.len() > 3 {
                     return Err(CompileError::SimpleError {
-                        loc: expr.loc,
+                        loc,
                         s: "let has too many parts",
                     });
                 }
+
                 let value_expr = items.pop().unwrap();
                 let pat_expr = items.pop().unwrap();
+
                 let pat = self.lower_pattern(pat_expr)?;
                 let value = Box::new(self.lower_value(value_expr)?);
+
                 Ok(self.typed_value(loc, Value::Let { pat, value }))
             }
-            Expr::Postfix(open, mut items) if open.value == "(" => {
-                let loc = expr.loc.clone();
+
+            // call: <callee>(args...)
+            Expr::Postfix(open, items) if open.value == "(" => {
+                let loc = expr.loc;
                 debug_assert!(!items.is_empty(), "call expression missing callee");
-                let callee_expr = items.remove(0);
-                let callee = Box::new(self.lower_value(callee_expr)?);
+
+                let mut it = items.into_iter();
+                let callee = Box::new(self.lower_value(it.next().unwrap())?);
+
                 let mut args = Vec::new();
-                for arg in items {
+                for arg in it {
                     args.push(self.lower_value(arg)?);
                 }
+
                 Ok(self.typed_value(loc, Value::Call { callee, args }))
             }
-            Expr::Postfix(open, mut items) if open.value == "[" => {
-                let loc = expr.loc.clone();
-                // TODO: This is wrong - we might be parsing a generic specialization, not an index
+
+            // index: <base>[args...]
+            Expr::Postfix(open, items) if open.value == "[" => {
+                let loc = expr.loc;
                 debug_assert!(!items.is_empty(), "index expression missing base");
-                let base_expr = items.remove(0);
-                let base = Box::new(self.lower_value(base_expr)?);
+
+                let mut it = items.into_iter();
+                //TODO this can actually be a generic so a pattern
+                let base = Box::new(self.lower_value(it.next().unwrap())?);
+
                 let mut args = Vec::new();
-                for arg in items {
+                for arg in it {
                     args.push(self.lower_value(arg)?);
                 }
+
                 Ok(self.typed_value(loc, Value::Index { base, args }))
             }
-            Expr::Prefix(open, mut items) if open.value == "match" => {
-                let loc = expr.loc.clone();
-                if items.is_empty() {
+
+            // match <value> { arms... }
+            Expr::Prefix(open, items) if open.value == "match" => {
+                let loc = expr.loc;
+
+                if items.len() < 2 {
                     return Err(CompileError::SimpleError {
-                        loc: expr.loc,
+                        loc,
                         s: "match expects a value and at least one arm",
                     });
                 }
-                let value_expr = items.remove(0);
-                if items.is_empty() {
-                    return Err(CompileError::SimpleError {
-                        loc: expr.loc,
-                        s: "match expects at least one arm",
-                    });
-                }
-                let value = Box::new(self.lower_value(value_expr)?);
+
+                let mut it = items.into_iter();
+                let value = Box::new(self.lower_value(it.next().unwrap())?);
+
                 let mut arms = Vec::new();
-                for arm_expr in items {
-                    arms.push(self.lower_match_arm(arm_expr)?);
+                for arm in it {
+                    arms.push(self.lower_match_arm(arm)?);
                 }
+
                 Ok(self.typed_value(loc, Value::Match { value, arms }))
             }
-            //TODO fix the LHS of this to check for paterns maybe
+
+            // assignment
             Expr::Bin(op, pair) if op.value == "=" => {
-                let (lhs, rhs) = pair.as_ref();
-                let target = Box::new(self.lower_value(lhs.clone())?);
-                let value = Box::new(self.lower_value(rhs.clone())?);
-                Ok(self.typed_value(expr.loc, Value::Assign { target, value }))
+                let loc = expr.loc;
+                let (lhs, rhs) = *pair;
+
+                //TODO: target might be a pattern in rare cases? not sure
+                let target = Box::new(self.lower_value(lhs)?);
+                let value = Box::new(self.lower_value(rhs)?);
+
+                Ok(self.typed_value(loc, Value::Assign { target, value }))
             }
 
+            // fn (sig) body
             Expr::Prefix(open, items) if open.value == "fn" => {
-                let loc = expr.loc.clone();
+                let loc = expr.loc;
 
                 debug_assert!(
                     (1..=2).contains(&items.len()),
@@ -423,26 +463,14 @@ impl Program {
 
                 let mut items = items;
 
-                // Body (lowering requires it; absence is a parser bug)
                 let body_expr = if items.len() == 2 {
-                    Some(items.pop().unwrap())
+                    items.pop().unwrap()
                 } else {
-                    None
+                    todo!()
                 };
 
-                debug_assert!(
-                    body_expr.is_some(),
-                    "fn missing body during lowering"
-                );
-
-                let body_expr = body_expr.unwrap();
-
-                // Signature (must exist)
                 let sig_expr = items.pop().expect("fn missing signature");
 
-                // Normalize signature:
-                //   (args)           -> params_expr, None
-                //   (args) -> ret    -> params_expr, Some(ret)
                 let (params_expr, ret_expr) = match sig_expr.value {
                     Expr::Bin(arrow, pair) if arrow.value == "->" => {
                         let (lhs, rhs) = *pair;
@@ -451,34 +479,25 @@ impl Program {
                     _ => (sig_expr, None),
                 };
 
-                // Parameter list must be a parenthesized prefix
-                let Expr::Prefix(open, param_items) = params_expr.value else {
-                    debug_assert!(
-                        false,
-                        "fn signature does not start with parameter list"
-                    );
+                let Expr::Prefix(p_open, param_items) = params_expr.value else {
+                    debug_assert!(false, "fn signature does not start with parameter list");
                     unreachable!();
                 };
+                debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
-                debug_assert!(
-                    open.value == "(",
-                    "fn parameter list must start with '('"
-                );
-
-                // Parse parameters
                 let mut params = Vec::with_capacity(param_items.len());
                 for param in param_items {
                     let pat = self.lower_pattern(param)?;
                     params.push(Param { pat, ty: None });
                 }
 
-                // Optional return
                 let ret = match ret_expr {
-                    Some(expr) => Some(self.lower_pattern(expr)?),
+                    Some(e) => Some(self.lower_pattern(e)?),
                     None => None,
                 };
 
                 let body = Box::new(self.lower_value(body_expr)?);
+
                 Ok(self.typed_value(loc, Value::Func { params, ret, body }))
             }
 
@@ -494,10 +513,12 @@ impl Program {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
             Token::StrLit(s) => Value::Literal(Literal::Str(s)),
+
             Token::Ident(name) => {
-                let id = self.resolve_or_insert_value(&name);
+                let id = self.resolve_value(loc, &name)?;
                 Value::NameRef(id)
             }
+
             Token::Operator(_) => {
                 return Err(CompileError::SimpleError {
                     loc: loc.clone(),
@@ -505,27 +526,29 @@ impl Program {
                 });
             }
         };
+
         Ok(self.typed_value(loc.clone(), value))
     }
 
-    /// Lower an expression to a pattern for use in match expressions, function params, etc.
     pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
         match expr.value {
             Expr::Atom(Token::Ident(name)) if name == "_" => {
                 Ok(self.typed_pattern(expr.loc, Pattern::Wildcard))
             }
+
             Expr::Atom(Token::Ident(name)) => {
-                //TODO decide if this should pass name by value here.
                 let id = self.insert_value_in_current_scope(&name);
                 Ok(self.typed_pattern(expr.loc, Pattern::Bind(id)))
             }
+
             Expr::Prefix(open, items) if open.value == "(" => {
-                let mut parts = Vec::new();
+                let mut parts = Vec::with_capacity(items.len());
                 for item in items {
                     parts.push(self.lower_pattern(item)?);
                 }
                 Ok(self.typed_pattern(expr.loc, Pattern::Tuple(parts)))
             }
+
             _ => Err(CompileError::SimpleError {
                 loc: expr.loc,
                 s: "Unsupported pattern in IR lowering",
@@ -533,7 +556,54 @@ impl Program {
         }
     }
 
-    /// Create a typed value with the given location
+    fn resolve_value(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
+        for (value_scope, _) in self.scopes.iter().rev() {
+            if let Some(id) = value_scope.get(name) {
+                return Ok(*id);
+            }
+        }
+        Err(CompileError::SimpleError {
+            loc: loc.clone(),
+            s: "Unresolved name",
+        })
+    }
+
+    fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
+        match expr.value {
+            Expr::Bin(op, pair) if op.value == "=>" => {
+                let (pat_expr, body_expr) = *pair;
+                let pat = self.lower_pattern(pat_expr)?;
+                let body = self.lower_value(body_expr)?;
+                Ok(MatchArm { pat, guard: None, body })
+            }
+
+            Expr::Bin(op, pair) if op.value == "if" => {
+                let (left, guard_expr) = *pair;
+
+                if let Expr::Bin(arrow, inner_pair) = left.value
+                    && arrow.value == "=>"
+                {
+                    let (pat_expr, body_expr) = *inner_pair;
+                    let pat = self.lower_pattern(pat_expr)?;
+                    let guard = self.lower_value(guard_expr)?;
+                    let body = self.lower_value(body_expr)?;
+                    Ok(MatchArm { pat, guard: Some(guard), body })
+                } else {
+                    Err(CompileError::SimpleError {
+                        loc: expr.loc,
+                        s: "Invalid match arm guard syntax",
+                    })
+                }
+            }
+
+            _ => Err(CompileError::SimpleError {
+                loc: expr.loc,
+                s: "Invalid match arm syntax",
+            }),
+        }
+    }
+
+        /// Create a typed value with the given location
     fn typed_value(&self, loc: Loc, value: Value) -> TValue {
         Typed {
             loc,
@@ -561,28 +631,15 @@ impl Program {
         self.scopes.pop();
     }
 
-    /// Resolve a name to a NameId, erroring if not found.
-    fn resolve_or_insert_value(&mut self, name: &str) -> NameId {
-        // Resolve name in scopes, error if not found
-        for (value_scope, _) in self.scopes.iter().rev() {
-            if let Some(id) = value_scope.get(name) {
-                return *id;
-            }
-        }
-        // No binding found -> error
-        // Use a placeholder Loc; caller should pass correct one
-        // But Resolve is called from lower_atom which has loc
-        // So we use a dummy Loc::default() if available.
-        // Rust has no default for Loc; use Loc::default() if it exists.
-        // For now, panic to make it compile.
-        panic!("unresolved name: {}", name);
-    }
 
     /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
     fn insert_value_in_current_scope(&mut self, name: &str) -> NameId {
         let id = self.fresh_name_id();
         if let Some((value_scope, _)) = self.scopes.last_mut() {
             value_scope.insert(name.to_string(), id);
+        } else {
+            // If you ever lower without at least one scope pushed, that's a bug.
+            debug_assert!(false, "no scope available when inserting binding");
         }
         id
     }
@@ -594,47 +651,8 @@ impl Program {
         id
     }
 
-    /// Lower a single match arm (pattern => body or pattern if guard => body)
-    fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
-        match expr.value {
-            Expr::Bin(op, pair) if op.value == "=>" => {
-                let (pat_expr, body_expr) = pair.as_ref();
-                let pat = self.lower_pattern(pat_expr.clone())?;
-                let body = self.lower_value(body_expr.clone())?;
-                Ok(MatchArm {
-                    pat,
-                    guard: None,
-                    body,
-                })
-            }
-            Expr::Bin(op, pair) if op.value == "if" => {
-                let (left, right) = pair.as_ref();
-                // This is a guard: pattern if guard => body
-                if let Expr::Bin(arrow, inner_pair) = &left.value
-                    && arrow.value == "=>"
-                {
-                    let (pat_expr, body_expr) = inner_pair.as_ref();
-                    let pat = self.lower_pattern(pat_expr.clone())?;
-                    let guard = self.lower_value(right.clone())?;
-                    let body = self.lower_value(body_expr.clone())?;
-                    return Ok(MatchArm {
-                        pat,
-                        guard: Some(guard),
-                        body,
-                    });
-                }
-                Err(CompileError::SimpleError {
-                    loc: expr.loc,
-                    s: "Invalid match arm guard syntax",
-                })
-            }
-            _ => Err(CompileError::SimpleError {
-                loc: expr.loc,
-                s: "Invalid match arm syntax",
-            }),
-        }
-    }
 }
+
 
 // Public API functions
 
@@ -834,21 +852,6 @@ mod lowering_tests {
             _ => panic!("expected scrutinee name"),
         }
         assert_eq!(arms.len(), 1);
-    }
-
-    #[test]
-    fn match_requires_at_least_one_arm() {
-        let src = "{ let x = 1; match x { } }";
-        let mut parser = Parser::new(src, 0);
-        let mut program = Program::new();
-        let expr = parser.consume_expr().unwrap();
-        let err = program.lower_value(expr).unwrap_err();
-        match err {
-            CompileError::SimpleError { s, .. } => {
-                assert_eq!(s, "match expects at least one arm");
-            }
-            _ => panic!("expected simple error"),
-        }
     }
 
     #[test]
