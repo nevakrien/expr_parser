@@ -279,43 +279,6 @@ impl<T> From<Located<T>> for Typed<T> {
 // }
 
 impl Program {
-    pub fn lower_global(&mut self, expr: LExpr) -> CResult<()> {
-        match expr.value {
-            // Global definition sugar: <pattern> = <expr>
-            Expr::Bin(op, pair) if op.value == "=" => {
-                let (lhs_expr, rhs_expr) = *pair;
-
-                let lhs = self.lower_pattern(lhs_expr)?;
-                // TODO: generics from the pattern go into RHS lowering environment
-
-                // For now, only allow `name = value` at global scope
-                let _name = match lhs.value {
-                    Pattern::Bind(id) => id,
-                    _ => {
-                        // If this is truly impossible given your parser rules, make it a debug_assert.
-                        return Err(CompileError::SimpleError {
-                            loc: lhs.loc,
-                            s: "Global definitions must bind a name",
-                        });
-                    }
-                };
-
-                let _rhs = self.lower_value(rhs_expr)?;
-
-                todo!("put value in global scope")
-            }
-
-            Expr::Prefix(open, _items) if open.value == "let" => {
-                todo!()
-            }
-
-            _ => Err(CompileError::SimpleError {
-                loc: expr.loc,
-                s: "Unsupported expression in global scale",
-            }),
-        }
-    }
-
     #[inline]
     fn with_scope<T>(&mut self, f: impl FnOnce(&mut Program) -> CResult<T>) -> CResult<T> {
         self.push_scope();
@@ -485,20 +448,23 @@ impl Program {
                 };
                 debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
-                let mut params = Vec::with_capacity(param_items.len());
-                for param in param_items {
-                    let pat = self.lower_pattern(param)?;
-                    params.push(Param { pat, ty: None });
-                }
+                self.with_scope(|p|{
+                    let mut params = Vec::with_capacity(param_items.len());
+                    for param in param_items {
+                        let pat = p.lower_pattern(param)?;
+                        params.push(Param { pat, ty: None });
+                    }
 
-                let ret = match ret_expr {
-                    Some(e) => Some(self.lower_pattern(e)?),
-                    None => None,
-                };
+                    let ret = match ret_expr {
+                        Some(e) => Some(p.lower_pattern(e)?),
+                        None => None,
+                    };
 
-                let body = Box::new(self.lower_value(body_expr)?);
+                    let body = Box::new(p.lower_value(body_expr)?);
 
-                Ok(self.typed_value(loc, Value::Func { params, ret, body }))
+                    Ok(p.typed_value(loc, Value::Func { params, ret, body }))
+                })
+                
             }
 
             _ => Err(CompileError::SimpleError {

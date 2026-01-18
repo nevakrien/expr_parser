@@ -1,3 +1,4 @@
+use crate::ir::TValue;
 use crate::ir::NameId;
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
@@ -26,7 +27,7 @@ pub enum CompileError {
 #[derive(Debug, Default)]
 pub struct Program {
     pub macros: HashMap<String, Macro>,
-    pub functions: Vec<LExpr>,
+    pub functions: Vec<TValue>,
     pub structs: Vec<LExpr>,
     pub enums: Vec<LExpr>,
     pub unions: Vec<LExpr>,
@@ -99,11 +100,12 @@ impl<'a> Parser<'a> {
                 program.add_macro(name, macro_def);
                 Ok(())
             }
-            Expr::Prefix(fn_kw, args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
-                program.functions.push(Located {
-                    loc: rhs_loc,
-                    value: Expr::Prefix(fn_kw, args),
-                });
+            Expr::Prefix(ref fn_kw, ref _args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
+                let v = program.lower_value(Located{
+                    loc:rhs_loc,
+                    value:rhs_value,
+                })?;
+                program.functions.push(v);
                 Ok(())
             }
             Expr::Prefix(struct_kw, args) if struct_kw.value == "struct" => {
