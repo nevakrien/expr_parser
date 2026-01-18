@@ -920,7 +920,7 @@ impl<'a> Parser<'a> {
             return Ok(false);
         };
 
-        let Some((l_bp, r_bp)) = infix_bp(*op) else {
+        let Some((l_bp, r_bp)) = infix_bp(op) else {
             return Ok(false);
         };
 
@@ -952,7 +952,7 @@ impl<'a> Parser<'a> {
         let Token::Operator(op) = &peek.value else {
             return Ok(false);
         };
-        let Some(bp) = postfix_bp(*op) else {
+        let Some(bp) = postfix_bp(op) else {
             return Ok(false);
         };
 
@@ -1109,7 +1109,7 @@ impl<'a> Parser<'a> {
         while self.try_operator("}")?.is_none() {
             match self.try_expr()? {
                 Some(s) => items.push(s),
-                None => return Err(self.err_open_delim(open, ("}"))),
+                None => return Err(self.err_open_delim(open, "}")),
             }
 
             semi = self.try_operator(";")?;
@@ -1162,7 +1162,7 @@ impl<'a> Parser<'a> {
         while self.try_operator("}")?.is_none() {
             let arm_start = self.expr_start();
             let Some(pat) = self.try_expr_bp(BP_PATTERN)? else {
-                return Err(self.err_open_delim(open.clone(), ("}")));
+                return Err(self.err_open_delim(open.clone(), "}"));
             };
             let arrow = self.expect_operator("=>")?;
             let body = self.consume_expr()?;

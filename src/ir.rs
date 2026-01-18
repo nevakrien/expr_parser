@@ -412,14 +412,7 @@ impl Program {
                 let value = Box::new(self.lower_value(rhs.clone())?);
                 Ok(self.typed_value(expr.loc, Value::Assign { target, value }))
             }
-            // Expr::Prefix(open, items) if open.value == "match" => {
-            //     let loc = expr.loc.clone();
-            // TODO this is wrong we have ["match"] [value,arm1,arm2...]
-            //     let (value_expr, arms_expr) = split_prefix(loc.clone(), "match", items)?;
-            //     let value = Box::new(self.lower_value(value_expr)?);
-            //     let arms = self.lower_match_arm(arms_expr)?;
-            //     Ok(self.typed_value(loc, Value::Match { value, arms }))
-            // }
+
             Expr::Prefix(open, items) if open.value == "fn" => {
                 // Parse function signature: fn (params) -> ret_type { body }
                 let loc = expr.loc.clone();
@@ -699,27 +692,6 @@ mod lowering_tests {
         }
     }
 
-    fn dummy_loc() -> Loc {
-        Loc {
-            range: 0..0,
-            file: 0,
-        }
-    }
-
-    fn fixed(value: &'static str) -> Located<&'static str> {
-        Located {
-            loc: dummy_loc(),
-            value,
-        }
-    }
-
-    fn expr(value: Expr) -> LExpr {
-        Located {
-            loc: dummy_loc(),
-            value,
-        }
-    }
-
     #[test]
     fn lowers_call_and_index_with_bound_names() {
         let src = "{ let f = 1; let a = 2; f(a, 3)[a, 4]; }";
@@ -771,28 +743,18 @@ mod lowering_tests {
 
     #[test]
     fn lowers_match_with_wildcard_arm() {
-        let mut program = Program::new();
-        program.push_scope();
-        let x_id = program.insert_value_in_current_scope("x");
+        let src = "{ let x = 1; match x { _ => x; }; }";
+        let ir = lower_block(src);
 
-        let match_expr = expr(Expr::Prefix(
-            fixed("match"),
-            vec![
-                expr(Expr::Atom(Token::Ident("x".to_string()))),
-                expr(Expr::Bin(
-                    fixed("=>"),
-                    Box::new((
-                        expr(Expr::Atom(Token::Ident("_".to_string()))),
-                        expr(Expr::Atom(Token::Ident("x".to_string()))),
-                    )),
-                )),
-            ],
-        ));
+        let statements = match ir.value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 2);
 
-        let ir = program.lower_value(match_expr).unwrap();
-        program.pop_scope();
+        let x_id = bound_id(&statements[0]);
 
-        let (scrutinee, arms) = match ir.value {
+        let (scrutinee, arms) = match &statements[1].value {
             Value::Match { value, arms } => (value, arms),
             _ => panic!("expected match"),
         };
@@ -814,58 +776,42 @@ mod lowering_tests {
     }
 
     #[test]
-    fn lowers_match_with_guard_arm() {
-        let mut program = Program::new();
-        program.push_scope();
-        let x_id = program.insert_value_in_current_scope("x");
+    fn lowers_match_as_block_return_value() {
+        let src = "{ let x = 1; match x { _ => x; } }";
+        let ir = lower_block(src);
 
-        let match_expr = expr(Expr::Prefix(
-            fixed("match"),
-            vec![
-                expr(Expr::Atom(Token::Ident("x".to_string()))),
-                expr(Expr::Bin(
-                    fixed("if"),
-                    Box::new((
-                        expr(Expr::Bin(
-                            fixed("=>"),
-                            Box::new((
-                                expr(Expr::Atom(Token::Ident("_".to_string()))),
-                                expr(Expr::Atom(Token::Ident("x".to_string()))),
-                            )),
-                        )),
-                        expr(Expr::Atom(Token::Ident("x".to_string()))),
-                    )),
-                )),
-            ],
-        ));
+        let (statements, return_value) = match ir.value {
+            Value::Block {
+                statements,
+                return_value,
+            } => (statements, return_value),
+            _ => panic!("expected block"),
+        };
 
-        let ir = program.lower_value(match_expr).unwrap();
-        program.pop_scope();
+        assert_eq!(statements.len(), 1);
+        assert!(return_value.is_some());
 
-        let arms = match ir.value {
-            Value::Match { arms, .. } => arms,
+        let x_id = bound_id(&statements[0]);
+        let match_expr = return_value.unwrap();
+        let (scrutinee, arms) = match match_expr.value {
+            Value::Match { value, arms } => (value, arms),
             _ => panic!("expected match"),
         };
 
-        assert_eq!(arms.len(), 1);
-        assert!(arms[0].guard.is_some());
-        match arms[0].guard.as_ref().unwrap().value {
+        match scrutinee.value {
             Value::NameRef(id) => assert_eq!(id, x_id),
-            _ => panic!("expected guard to reference x"),
+            _ => panic!("expected scrutinee name"),
         }
+        assert_eq!(arms.len(), 1);
     }
 
     #[test]
     fn match_requires_at_least_one_arm() {
+        let src = "{ let x = 1; match x { } }";
+        let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.push_scope();
-        let match_expr = expr(Expr::Prefix(
-            fixed("match"),
-            vec![expr(Expr::Atom(Token::Ident("x".to_string())))],
-        ));
-        let err = program.lower_value(match_expr).unwrap_err();
-        program.pop_scope();
-
+        let expr = parser.consume_expr().unwrap();
+        let err = program.lower_value(expr).unwrap_err();
         match err {
             CompileError::SimpleError { s, .. } => {
                 assert_eq!(s, "match expects at least one arm");
@@ -875,25 +821,15 @@ mod lowering_tests {
     }
 
     #[test]
-    fn invalid_match_arm_syntax_reports_error() {
+    fn unsupported_expression_reports_error() {
+        let src = "if 1 2";
+        let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.push_scope();
-        program.insert_value_in_current_scope("x");
-
-        let match_expr = expr(Expr::Prefix(
-            fixed("match"),
-            vec![
-                expr(Expr::Atom(Token::Ident("x".to_string()))),
-                expr(Expr::Atom(Token::Ident("x".to_string()))),
-            ],
-        ));
-
-        let err = program.lower_value(match_expr).unwrap_err();
-        program.pop_scope();
-
+        let expr = parser.consume_expr().unwrap();
+        let err = program.lower_value(expr).unwrap_err();
         match err {
             CompileError::SimpleError { s, .. } => {
-                assert_eq!(s, "Invalid match arm syntax");
+                assert_eq!(s, "Unsupported expression in IR lowering");
             }
             _ => panic!("expected simple error"),
         }
