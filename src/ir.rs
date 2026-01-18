@@ -149,8 +149,20 @@ pub enum UnOp {
     AddrOf, // &x
 }
 
+#[derive(Debug, Clone, PartialEq, Copy)]
+pub enum Dir {
+    Inc,
+    Dec,
+}
+
 /// Assignment operator, where `None` means plain `=`.
-pub type AssignOp = Option<BinOp>;
+#[derive(Debug, Clone, PartialEq)]
+pub enum AssignOp {
+    Nothing(Box<TValue>),
+    Bin(BinOp, Box<TValue>),
+    Pre(Dir),
+    Post(Dir),
+}
 
 /// Short-circuiting logical operations.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -217,7 +229,6 @@ pub enum Value {
     Assign {
         op: AssignOp,
         target: Box<TValue>,
-        value: Box<TValue>,
     },
 
     /// Short-circuiting logical operations.
@@ -404,195 +415,41 @@ impl Program {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
 
             // { ... }
-            Expr::Prefix(open, mut items) if open.value == "{" => {
-                let loc = expr.loc;
-
-                self.with_scope(|this| {
-                    let mut statements = Vec::new();
-                    let mut return_value = None;
-
-                    if let Some(last) = items.pop() {
-                        for item in items {
-                            statements.push(this.lower_value(item)?);
-                        }
-
-                        if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
-                            return_value = Some(Box::new(this.lower_value(last)?));
-                        }
-                    }
-
-                    Ok(this.typed_value(
-                        loc,
-                        Value::Block {
-                            statements,
-                            return_value,
-                        },
-                    ))
-                })
+            Expr::Prefix(open, items) if open.value == "{" => {
+                self.lower_block_expr(expr.loc, items)
             }
 
             // let <pat> = <value>
-            Expr::Prefix(open, mut items) if open.value == "let" => {
-                let loc = expr.loc;
-
-                if items.len() < 2 {
-                    return Err(CompileError::SimpleError {
-                        loc,
-                        s: "let expects a pattern and a value",
-                    });
-                }
-                if items.len() > 3 {
-                    return Err(CompileError::SimpleError {
-                        loc,
-                        s: "let has too many parts",
-                    });
-                }
-
-                let value_expr = items.pop().unwrap();
-                let pat_expr = items.pop().unwrap();
-
-                let pat = self.lower_pattern(pat_expr)?;
-                let value = Box::new(self.lower_value(value_expr)?);
-
-                Ok(self.typed_value(loc, Value::Let { pat, value }))
+            Expr::Prefix(open, items) if open.value == "let" => {
+                self.lower_let_expr(expr.loc, items)
             }
 
             // call: <callee>(args...)
             Expr::Postfix(open, items) if open.value == "(" => {
-                let loc = expr.loc;
-                debug_assert!(!items.is_empty(), "call expression missing callee");
-
-                let mut it = items.into_iter();
-                let callee = Box::new(self.lower_value(it.next().unwrap())?);
-
-                let mut args = Vec::new();
-                for arg in it {
-                    args.push(self.lower_value(arg)?);
-                }
-
-                Ok(self.typed_value(loc, Value::Call { callee, args }))
+                self.lower_call_expr(expr.loc, items)
             }
 
             // index: <base>[args...]
             Expr::Postfix(open, items) if open.value == "[" => {
-                let loc = expr.loc;
-                debug_assert!(!items.is_empty(), "index expression missing base");
-
-                let mut it = items.into_iter();
-                //TODO this can actually be a generic so a pattern
-                let base = Box::new(self.lower_value(it.next().unwrap())?);
-
-                let mut args = Vec::new();
-                for arg in it {
-                    args.push(self.lower_value(arg)?);
-                }
-
-                Ok(self.typed_value(loc, Value::Index { base, args }))
+                self.lower_index_expr(expr.loc, items)
             }
 
             // match <value> { arms... }
             Expr::Prefix(open, items) if open.value == "match" => {
-                let loc = expr.loc;
-
-                if items.len() < 2 {
-                    return Err(CompileError::SimpleError {
-                        loc,
-                        s: "match expects a value and at least one arm",
-                    });
-                }
-
-                let mut it = items.into_iter();
-                let value = Box::new(self.lower_value(it.next().unwrap())?);
-
-                let mut arms = Vec::new();
-                for arm in it {
-                    arms.push(self.lower_match_arm(arm)?);
-                }
-
-                Ok(self.typed_value(loc, Value::Match { value, arms }))
+                self.lower_match_expr(expr.loc, items)
             }
 
             // assignment
-            Expr::Bin(op, pair) if op.value == "=" => {
-                let loc = expr.loc;
-                let (lhs, rhs) = *pair;
-
-                //TODO: target might be a pattern in rare cases? not sure
-                let target = Box::new(self.lower_value(lhs)?);
-                let value = Box::new(self.lower_value(rhs)?);
-
-                Ok(self.typed_value(
-                    loc,
-                    Value::Assign {
-                        op: None,
-                        target,
-                        value,
-                    },
-                ))
-            }
+            Expr::Bin(op, pair) if op.value == "=" => self.lower_assign_expr(expr.loc, *pair),
 
             // fn (sig) body
-            Expr::Prefix(open, items) if open.value == "fn" => {
-                let loc = expr.loc;
+            Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
 
-                debug_assert!(
-                    (1..=2).contains(&items.len()),
-                    "fn expects signature and optional body"
-                );
+            Expr::Bin(op, pair) if op.value == "as" => self.lower_cast_expr(expr.loc, *pair),
 
-                let mut items = items;
-
-                let body_expr = if items.len() == 2 {
-                    items.pop().unwrap()
-                } else {
-                    todo!()
-                };
-
-                let sig_expr = items.pop().expect("fn missing signature");
-
-                let (params_expr, ret_expr) = match sig_expr.value {
-                    Expr::Bin(arrow, pair) if arrow.value == "->" => {
-                        let (lhs, rhs) = *pair;
-                        (lhs, Some(rhs))
-                    }
-                    _ => (sig_expr, None),
-                };
-
-                let Expr::Prefix(p_open, param_items) = params_expr.value else {
-                    debug_assert!(false, "fn signature does not start with parameter list");
-                    unreachable!();
-                };
-                debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
-
-                self.with_scope(|p| {
-                    let mut params = Vec::with_capacity(param_items.len());
-                    for param in param_items {
-                        let pat = p.lower_pattern(param)?;
-                        params.push(Param { pat, ty: None });
-                    }
-
-                    let ret = match ret_expr {
-                        Some(e) => Some(p.lower_pattern(e)?),
-                        None => None,
-                    };
-
-                    let body = Box::new(p.lower_value(body_expr)?);
-
-                    Ok(p.typed_value(loc, Value::Func { params, ret, body }))
-                })
-            }
-
+            //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
-
             Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
-
-            Expr::Bin(op, pair) if op.value == "as" => {
-                let (value_expr, ty_expr) = *pair;
-                let value = Box::new(self.lower_value(value_expr)?);
-                let ty = self.lower_pattern(ty_expr)?;
-                Ok(self.typed_value(expr.loc, Value::Cast { value, ty }))
-            }
-
             Expr::Bin(op, pair) => {
                 let (lhs, rhs) = *pair;
                 self.lower_binary_op(expr.loc, op.value, lhs, rhs)
@@ -620,6 +477,173 @@ impl Program {
         };
 
         Ok(self.typed_value(loc.clone(), value))
+    }
+
+    fn lower_block_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<TValue> {
+        self.with_scope(|this| {
+            let mut statements = Vec::new();
+            let mut return_value = None;
+
+            if let Some(last) = items.pop() {
+                for item in items {
+                    statements.push(this.lower_value(item)?);
+                }
+
+                if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
+                    return_value = Some(Box::new(this.lower_value(last)?));
+                }
+            }
+
+            Ok(this.typed_value(
+                loc,
+                Value::Block {
+                    statements,
+                    return_value,
+                },
+            ))
+        })
+    }
+
+    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<TValue> {
+        if items.len() < 2 {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "let expects a pattern and a value",
+            });
+        }
+        if items.len() > 3 {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "let has too many parts",
+            });
+        }
+
+        let value_expr = items.pop().unwrap();
+        let pat_expr = items.pop().unwrap();
+
+        let pat = self.lower_pattern(pat_expr)?;
+        let value = Box::new(self.lower_value(value_expr)?);
+
+        Ok(self.typed_value(loc, Value::Let { pat, value }))
+    }
+
+    fn lower_call_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+        debug_assert!(!items.is_empty(), "call expression missing callee");
+
+        let mut it = items.into_iter();
+        let callee = Box::new(self.lower_value(it.next().unwrap())?);
+
+        let mut args = Vec::new();
+        for arg in it {
+            args.push(self.lower_value(arg)?);
+        }
+
+        Ok(self.typed_value(loc, Value::Call { callee, args }))
+    }
+
+    fn lower_index_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+        debug_assert!(!items.is_empty(), "index expression missing base");
+
+        let mut it = items.into_iter();
+        //TODO this can actually be a generic so a pattern
+        let base = Box::new(self.lower_value(it.next().unwrap())?);
+
+        let mut args = Vec::new();
+        for arg in it {
+            args.push(self.lower_value(arg)?);
+        }
+
+        Ok(self.typed_value(loc, Value::Index { base, args }))
+    }
+
+    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+        if items.len() < 2 {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "match expects a value and at least one arm",
+            });
+        }
+
+        let mut it = items.into_iter();
+        let value = Box::new(self.lower_value(it.next().unwrap())?);
+
+        let mut arms = Vec::new();
+        for arm in it {
+            arms.push(self.lower_match_arm(arm)?);
+        }
+
+        Ok(self.typed_value(loc, Value::Match { value, arms }))
+    }
+
+    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<TValue> {
+        let (lhs, rhs) = pair;
+
+        //TODO: target might be a pattern in rare cases? not sure
+        let target = Box::new(self.lower_value(lhs)?);
+        let value = Box::new(self.lower_value(rhs)?);
+
+        Ok(self.typed_value(
+            loc,
+            Value::Assign {
+                op: AssignOp::Nothing(value),
+                target,
+            },
+        ))
+    }
+
+    fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+        debug_assert!(
+            (1..=2).contains(&items.len()),
+            "fn expects signature and optional body"
+        );
+
+        let mut items = items;
+
+        let body_expr = if items.len() == 2 {
+            items.pop().unwrap()
+        } else {
+            todo!()
+        };
+
+        let sig_expr = items.pop().expect("fn missing signature");
+
+        let (params_expr, ret_expr) = match sig_expr.value {
+            Expr::Bin(arrow, pair) if arrow.value == "->" => {
+                let (lhs, rhs) = *pair;
+                (lhs, Some(rhs))
+            }
+            _ => (sig_expr, None),
+        };
+
+        let Expr::Prefix(p_open, param_items) = params_expr.value else {
+            debug_assert!(false, "fn signature does not start with parameter list");
+            unreachable!();
+        };
+        debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
+
+        self.with_scope(|p| {
+            let mut params = Vec::with_capacity(param_items.len());
+            for param in param_items {
+                let pat = p.lower_pattern(param)?;
+                params.push(Param { pat, ty: None });
+            }
+
+            let ret = match ret_expr {
+                Some(e) => Some(p.lower_pattern(e)?),
+                None => None,
+            };
+
+            let body = Box::new(p.lower_value(body_expr)?);
+
+            Ok(p.typed_value(loc, Value::Func { params, ret, body }))
+        })
+    }
+
+    fn lower_cast_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<TValue> {
+        let (value_expr, ty_expr) = pair;
+        let value = Box::new(self.lower_value(value_expr)?);
+        let ty = self.lower_pattern(ty_expr)?;
+        Ok(self.typed_value(loc, Value::Cast { value, ty }))
     }
 
     pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
@@ -720,8 +744,8 @@ impl Program {
             "*" => UnOp::Deref,
             "&" => UnOp::AddrOf,
 
-            "++" => return self.lower_inc_dec_prefix(op.map(|_| BinOp::Add), items),
-            "--" => return self.lower_inc_dec_prefix(op.map(|_| BinOp::Sub), items),
+            "++" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Inc), items),
+            "--" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Dec), items),
 
             _ => {
                 return Err(CompileError::SimpleError {
@@ -756,8 +780,8 @@ impl Program {
             // these are handled earlier and must never reach here
             "(" | "[" => unreachable!("call/index should be handled before postfix ops"),
 
-            "++" => self.lower_inc_dec_postfix(op.map(|_| BinOp::Add), items),
-            "--" => self.lower_inc_dec_postfix(op.map(|_| BinOp::Sub), items),
+            "++" => self.lower_inc_dec_postfix(op.map(|_| Dir::Inc), items),
+            "--" => self.lower_inc_dec_postfix(op.map(|_| Dir::Dec), items),
 
             _ => {
                 return Err(CompileError::SimpleError {
@@ -768,11 +792,7 @@ impl Program {
         }
     }
 
-    fn lower_inc_dec_prefix(
-        &mut self,
-        op: Located<BinOp>,
-        mut items: Vec<LExpr>,
-    ) -> CResult<TValue> {
+    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<TValue> {
         if items.len() != 1 {
             panic!("prefix operator with {} operands", items.len());
         }
@@ -780,18 +800,17 @@ impl Program {
         let target = Box::new(self.lower_value(items.pop().unwrap())?);
 
         Ok(self.typed_value(
-            op.loc.clone(),
+            op.loc,
             Value::Assign {
-                op: Some(op.value),
+                op: AssignOp::Pre(op.value),
                 target,
-                value: Box::new(self.typed_value(op.loc, Value::Literal(Literal::Num(1)))),
             },
         ))
     }
 
     fn lower_inc_dec_postfix(
         &mut self,
-        op: Located<BinOp>,
+        op: Located<Dir>,
         mut items: Vec<LExpr>,
     ) -> CResult<TValue> {
         if items.len() != 1 {
@@ -803,9 +822,8 @@ impl Program {
         Ok(self.typed_value(
             op.loc.clone(),
             Value::Assign {
-                op: Some(op.value),
+                op: AssignOp::Post(op.value),
                 target,
-                value: Box::new(self.typed_value(op.loc, Value::Literal(Literal::Num(1)))),
             },
         ))
     }
@@ -827,12 +845,16 @@ impl Program {
         } {
             let target = Box::new(self.lower_value(lhs)?);
             let value = Box::new(self.lower_value(rhs)?);
+
             return Ok(self.typed_value(
                 loc,
                 Value::Assign {
-                    op: assign_op,
                     target,
-                    value,
+                    op: if let Some(o) = assign_op {
+                        AssignOp::Bin(o, value)
+                    } else {
+                        AssignOp::Nothing(value)
+                    },
                 },
             ));
         }
@@ -1157,35 +1179,45 @@ mod lowering_tests {
         let a_id = bound_id(&statements[0]);
 
         match &statements[1].value {
-            Value::Assign { op, target, value } => {
-                assert_eq!(*op, Some(BinOp::Add));
+            Value::Assign { op, target } => {
+                match op {
+                    AssignOp::Bin(bin_op, value) => {
+                        assert_eq!(*bin_op, BinOp::Add);
+                        match value.value {
+                            Value::Literal(Literal::Num(2)) => {}
+                            _ => panic!("expected assign literal value"),
+                        }
+                    }
+                    _ => panic!("expected compound assignment op"),
+                }
                 match target.value {
                     Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected assign target name"),
-                }
-                match value.value {
-                    Value::Literal(Literal::Num(2)) => {}
-                    _ => panic!("expected assign literal value"),
                 }
             }
             _ => panic!("expected compound assignment"),
         }
 
-        for stmt in [&statements[2], &statements[3]] {
-            match &stmt.value {
-                Value::Assign { op, target, value } => {
-                    assert_eq!(*op, Some(BinOp::Add));
-                    match target.value {
-                        Value::NameRef(id) => assert_eq!(id, a_id),
-                        _ => panic!("expected inc target name"),
-                    }
-                    match value.value {
-                        Value::Literal(Literal::Num(1)) => {}
-                        _ => panic!("expected inc literal value"),
-                    }
+        match &statements[2].value {
+            Value::Assign { op, target } => {
+                assert!(matches!(op, AssignOp::Pre(Dir::Inc)));
+                match target.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected inc target name"),
                 }
-                _ => panic!("expected inc assignment"),
             }
+            _ => panic!("expected prefix inc assignment"),
+        }
+
+        match &statements[3].value {
+            Value::Assign { op, target } => {
+                assert!(matches!(op, AssignOp::Post(Dir::Inc)));
+                match target.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected inc target name"),
+                }
+            }
+            _ => panic!("expected postfix inc assignment"),
         }
 
         match &statements[4].value {
