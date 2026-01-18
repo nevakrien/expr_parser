@@ -12,8 +12,12 @@ pub type TPattern = Typed<Pattern>; // Typed pattern
 // Core type definitions for the IR
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeInfo {
-    /// Locations where this type is used in the code
-    pub uses: Vec<Loc>,
+    // /// Locations where this type is used in the code
+    // pub uses: Vec<Loc>,
+}
+
+impl TypeInfo {
+    pub fn new_empty()->Self{TypeInfo {}}
 }
 
 /// Wrapper that adds location and type information to any value
@@ -22,7 +26,7 @@ pub struct Typed<T> {
     /// Source location of this construct
     pub loc: Loc,
     /// Type information (if available/known)
-    pub ty: Option<TypeInfo>,
+    pub ty: TypeInfo,
     /// The underlying value
     pub value: T,
 }
@@ -358,7 +362,7 @@ impl<T> From<Located<T>> for Typed<T> {
     fn from(value: Located<T>) -> Self {
         Typed {
             loc: value.loc,
-            ty: None,
+            ty: TypeInfo::new_empty(),
             value: value.value,
         }
     }
@@ -886,7 +890,7 @@ impl Program {
     fn typed_value(&self, loc: Loc, value: Value) -> TValue {
         Typed {
             loc,
-            ty: None,
+            ty: TypeInfo::new_empty(),
             value,
         }
     }
@@ -895,7 +899,7 @@ impl Program {
     fn typed_pattern(&self, loc: Loc, value: Pattern) -> TPattern {
         Typed {
             loc,
-            ty: None,
+            ty: TypeInfo::new_empty(),
             value,
         }
     }
