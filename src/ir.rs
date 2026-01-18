@@ -99,6 +99,41 @@ pub struct EnumVariant {
     pub fields: Vec<TPattern>,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BinOp {
+    // arithmetic
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+
+    // bitwise
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+
+    // comparisons
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,     // -x
+    Not,     // !x
+    BitNot, // ~x
+    Deref,  // *x
+    AddrOf, // &x
+}
+
+
 /// Runtime values including functions, closures, and control flow constructs
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -111,6 +146,17 @@ pub enum Value {
         callee: Box<TValue>,
         args: Vec<TValue>,
     },
+
+    BinOp{
+        op:BinOp,
+        values:Box<(TValue,TValue)>
+    },
+
+    UnOp{
+        op:UnOp,
+        value:Box<TValue>
+    },
+
     /// Indexing operation (may also represent generic specialization)
     Index {
         base: Box<TValue>,
@@ -467,10 +513,18 @@ impl Program {
                 
             }
 
-            _ => Err(CompileError::SimpleError {
-                loc: expr.loc,
-                s: "Unsupported expression in IR lowering",
-            }),
+            Expr::Prefix(open, items) => {
+                self.lower_prefix_op(expr.loc, open.value, items)
+            }
+
+            Expr::Postfix(open, items) => {
+                self.lower_postfix_op(expr.loc, open.value, items)
+            }
+
+            Expr::Bin(op, pair) => {
+                let (lhs, rhs) = *pair;
+                self.lower_binary_op(expr.loc, op.value, lhs, rhs)
+            }
         }
     }
 
@@ -568,6 +622,149 @@ impl Program {
             }),
         }
     }
+
+    // ===============================
+    // Operator lowering helpers
+    // ===============================
+
+    fn lower_prefix_op(
+        &mut self,
+        loc: Loc,
+        op: &str,
+        items: Vec<LExpr>,
+    ) -> CResult<TValue> {
+        let unop = match op {
+            "-" => UnOp::Neg,
+            "!" => UnOp::Not,
+            "~" => UnOp::BitNot,
+            "*" => UnOp::Deref,
+            "&" => UnOp::AddrOf,
+
+            // syntactic but not IR ops
+            "++" | "--" => {
+                return Err(CompileError::SimpleError {
+                    loc,
+                    s: "prefix increment/decrement not lowered yet",
+                });
+            }
+
+            _ => return Err(CompileError::SimpleError {
+                loc,
+                s: "Unsupported expression in IR lowering",
+            }),
+        };
+
+        if items.len() != 1 {
+            panic!("prefix operator `{}` with {} operands", op, items.len());
+        }
+
+        let rhs = Box::new(self.lower_value(items.into_iter().next().unwrap())?);
+
+        Ok(self.typed_value(
+            loc,
+            Value::UnOp {
+                op: unop,
+                value: rhs,
+            },
+        ))
+    }
+
+    fn lower_postfix_op(
+        &mut self,
+        loc: Loc,
+        op: &str,
+        items: Vec<LExpr>,
+    ) -> CResult<TValue> {
+        match op {
+            // these are handled earlier and must never reach here
+            "(" | "[" => unreachable!("call/index should be handled before postfix ops"),
+
+            "++" | "--" => Err(CompileError::SimpleError {
+                loc,
+                s: "postfix increment/decrement not lowered yet",
+            }),
+
+            _ => return Err(CompileError::SimpleError {
+                loc,
+                s: "Unsupported expression in IR lowering",
+            }),
+        }
+    }
+
+    fn lower_binary_op(
+        &mut self,
+        loc: Loc,
+        op: &str,
+        lhs: LExpr,
+        rhs: LExpr,
+    ) -> CResult<TValue> {
+        // assignment is explicit IR, not a BinOp
+        if op == "=" {
+            let target = Box::new(self.lower_value(lhs)?);
+            let value  = Box::new(self.lower_value(rhs)?);
+            return Ok(self.typed_value(loc, Value::Assign { target, value }));
+        }
+
+        // syntactic but not IR ops
+        if matches!(
+            op,
+            "+=" | "-=" | "*=" | "/=" | "%=" |
+            "&=" | "|=" | "^=" | "<<=" | ">>="
+        ) {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "compound assignment not lowered yet",
+            });
+        }
+
+        if op == "&&" || op == "||" {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "short-circuit logical operators not lowered yet",
+            });
+        }
+
+        let binop = match op {
+            "+"  => BinOp::Add,
+            "-"  => BinOp::Sub,
+            "*"  => BinOp::Mul,
+            "/"  => BinOp::Div,
+            "%"  => BinOp::Mod,
+
+            "&"  => BinOp::BitAnd,
+            "|"  => BinOp::BitOr,
+            "^"  => BinOp::BitXor,
+            "<<" => BinOp::Shl,
+            ">>" => BinOp::Shr,
+
+            "==" => BinOp::Eq,
+            "!=" => BinOp::Ne,
+            "<"  => BinOp::Lt,
+            "<=" => BinOp::Le,
+            ">"  => BinOp::Gt,
+            ">=" => BinOp::Ge,
+
+            // "~" | "!" =>
+            //     panic!("operator `{}` cannot appear as binary op (parser bug)", op),
+
+            _ => return Err(CompileError::SimpleError {
+                loc,
+                s: "Unsupported expression in IR lowering",
+            }),
+        };
+
+        let left  = self.lower_value(lhs)?;
+        let right = self.lower_value(rhs)?;
+
+        Ok(self.typed_value(
+            loc,
+            Value::BinOp {
+                op: binop,
+                values: Box::new((left, right)),
+            },
+        ))
+    }
+
 
         /// Create a typed value with the given location
     fn typed_value(&self, loc: Loc, value: Value) -> TValue {
