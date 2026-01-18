@@ -17,7 +17,9 @@ pub struct TypeInfo {
 }
 
 impl TypeInfo {
-    pub fn new_empty()->Self{TypeInfo {}}
+    pub fn new_empty() -> Self {
+        TypeInfo {}
+    }
 }
 
 /// Wrapper that adds location and type information to any value
@@ -583,6 +585,13 @@ impl Program {
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
 
             Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
+
+            Expr::Bin(op, pair) if op.value == "as" => {
+                let (value_expr, ty_expr) = *pair;
+                let value = Box::new(self.lower_value(value_expr)?);
+                let ty = self.lower_pattern(ty_expr)?;
+                Ok(self.typed_value(expr.loc, Value::Cast { value, ty }))
+            }
 
             Expr::Bin(op, pair) => {
                 let (lhs, rhs) = *pair;
@@ -1193,6 +1202,34 @@ mod lowering_tests {
                 }
             }
             _ => panic!("expected logic op"),
+        }
+    }
+
+    #[test]
+    fn lowers_cast_expression() {
+        let src = "{ let a = 1; a as b; }";
+        let ir = lower_block(src);
+
+        let statements = match ir.value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 2);
+
+        let a_id = bound_id(&statements[0]);
+        let cast_expr = &statements[1];
+        match &cast_expr.value {
+            Value::Cast { value, ty } => {
+                match value.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected cast value to be name"),
+                }
+                match ty.value {
+                    Pattern::Bind(_) => {}
+                    _ => panic!("expected cast type pattern"),
+                }
+            }
+            _ => panic!("expected cast expression"),
         }
     }
 
