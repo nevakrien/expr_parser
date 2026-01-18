@@ -98,7 +98,12 @@ pub struct EnumVariant {
     pub name: LName,
     pub fields: Vec<TPattern>,
 }
-
+/// Pure binary operations.
+///
+/// Invariant:
+/// - No control flow
+/// - No short-circuiting
+/// - Both operands are evaluated exactly once
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BinOp {
     // arithmetic
@@ -124,84 +129,136 @@ pub enum BinOp {
     Ge,
 }
 
+/// Pure unary operations.
+///
+/// Invariant:
+/// - No control flow
+/// - Operand is evaluated exactly once
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum UnOp {
-    Neg,     // -x
-    Not,     // !x
+    Neg,    // -x
+    Not,    // !x
     BitNot, // ~x
     Deref,  // *x
     AddrOf, // &x
 }
 
+/// Assignment operator, where `None` means plain `=`.
+pub type AssignOp = Option<BinOp>;
 
-/// Runtime values including functions, closures, and control flow constructs
+/// Short-circuiting logical operations.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LogicOp {
+    And,
+    Or,
+}
+
+/// Runtime IR values.
+///
+/// This IR is *expression-oriented* but *effect-explicit*:
+/// - Mutation is represented explicitly (`Assign`, `Let`)
+/// - Control flow is explicit (`If`, `While`, `Match`)
+/// - `BinOp` / `UnOp` are guaranteed to be pure
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
-    /// Reference to a named variable or function
+    /// Reference to a resolved name
     NameRef(NameId),
-    /// Literal value (number, string, etc.)
+
+    /// Literal constant
     Literal(Literal),
-    /// Function/method call
+
+    /// Function or callable invocation
     Call {
         callee: Box<TValue>,
         args: Vec<TValue>,
     },
 
-    BinOp{
-        op:BinOp,
-        values:Box<(TValue,TValue)>
+    /// Pure binary operation
+    BinOp {
+        op: BinOp,
+        values: Box<(TValue, TValue)>,
     },
 
-    UnOp{
-        op:UnOp,
-        value:Box<TValue>
+    /// Pure unary operation
+    UnOp {
+        op: UnOp,
+        value: Box<TValue>,
     },
 
-    /// Indexing operation (may also represent generic specialization)
+    /// Indexing or specialization
     Index {
         base: Box<TValue>,
         args: Vec<TValue>,
     },
-    /// Block of statements with optional return value
+
+    /// Lexical block
     Block {
         statements: Vec<TValue>,
         return_value: Option<Box<TValue>>,
     },
-    /// Variable binding declaration
-    Let { pat: TPattern, value: Box<TValue> },
-    /// Assignment operation
+
+    /// Immutable binding
+    Let {
+        pat: TPattern,
+        value: Box<TValue>,
+    },
+
+    /// Assignment with explicit sequencing.
+    ///
+    /// Not a `BinOp` because:
+    /// - LHS is evaluated first
+    /// - Mutation occurs
     Assign {
+        op: AssignOp,
         target: Box<TValue>,
         value: Box<TValue>,
     },
+
+    /// Short-circuiting logical operations.
+    LogicOp {
+        op: LogicOp,
+        values: Box<(TValue, TValue)>,
+    },
+
     /// Conditional expression
     If {
         cond: Box<TValue>,
         then: Box<TValue>,
         els: Option<Box<TValue>>,
     },
-    /// While loop
+
+    /// Loop
     While {
         cond: Box<TValue>,
         body: Box<TValue>,
     },
-    /// Function literal/anonymous function
+
+    /// Function literal
     Func {
         params: Vec<Param>,
         ret: Option<TPattern>,
         body: Box<TValue>,
     },
-    /// Return from function (with optional value)
+
+    /// Early return
     Return(Option<Box<TValue>>),
-    /// Break from loop
+
     Break,
-    /// Continue to next loop iteration
     Continue,
+
     /// Explicit type cast
-    Cast { value: Box<TValue>, ty: TPattern },
-    /// Type annotation for expressions
-    TypeAnnotation { value: Box<TValue>, ty: TPattern },
-    /// Pattern matching expression
+    Cast {
+        value: Box<TValue>,
+        ty: TPattern,
+    },
+
+    /// Type annotation
+    TypeAnnotation {
+        value: Box<TValue>,
+        ty: TPattern,
+    },
+
+    /// Pattern match
     Match {
         value: Box<TValue>,
         arms: Vec<MatchArm>,
@@ -333,7 +390,7 @@ impl Program {
         result
     }
 
-    //TODO: 
+    //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
     pub fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
@@ -458,7 +515,14 @@ impl Program {
                 let target = Box::new(self.lower_value(lhs)?);
                 let value = Box::new(self.lower_value(rhs)?);
 
-                Ok(self.typed_value(loc, Value::Assign { target, value }))
+                Ok(self.typed_value(
+                    loc,
+                    Value::Assign {
+                        op: None,
+                        target,
+                        value,
+                    },
+                ))
             }
 
             // fn (sig) body
@@ -494,7 +558,7 @@ impl Program {
                 };
                 debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
-                self.with_scope(|p|{
+                self.with_scope(|p| {
                     let mut params = Vec::with_capacity(param_items.len());
                     for param in param_items {
                         let pat = p.lower_pattern(param)?;
@@ -510,16 +574,11 @@ impl Program {
 
                     Ok(p.typed_value(loc, Value::Func { params, ret, body }))
                 })
-                
             }
 
-            Expr::Prefix(open, items) => {
-                self.lower_prefix_op(expr.loc, open.value, items)
-            }
+            Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
 
-            Expr::Postfix(open, items) => {
-                self.lower_postfix_op(expr.loc, open.value, items)
-            }
+            Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
 
             Expr::Bin(op, pair) => {
                 let (lhs, rhs) = *pair;
@@ -594,7 +653,11 @@ impl Program {
                 let (pat_expr, body_expr) = *pair;
                 let pat = self.lower_pattern(pat_expr)?;
                 let body = self.lower_value(body_expr)?;
-                Ok(MatchArm { pat, guard: None, body })
+                Ok(MatchArm {
+                    pat,
+                    guard: None,
+                    body,
+                })
             }
 
             Expr::Bin(op, pair) if op.value == "if" => {
@@ -607,7 +670,11 @@ impl Program {
                     let pat = self.lower_pattern(pat_expr)?;
                     let guard = self.lower_value(guard_expr)?;
                     let body = self.lower_value(body_expr)?;
-                    Ok(MatchArm { pat, guard: Some(guard), body })
+                    Ok(MatchArm {
+                        pat,
+                        guard: Some(guard),
+                        body,
+                    })
                 } else {
                     Err(CompileError::SimpleError {
                         loc: expr.loc,
@@ -630,28 +697,25 @@ impl Program {
     fn lower_prefix_op(
         &mut self,
         loc: Loc,
-        op: &str,
+        op: Located<&str>,
         items: Vec<LExpr>,
     ) -> CResult<TValue> {
-        let unop = match op {
+        let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
             "~" => UnOp::BitNot,
             "*" => UnOp::Deref,
             "&" => UnOp::AddrOf,
 
-            // syntactic but not IR ops
-            "++" | "--" => {
+            "++" => return self.lower_inc_dec_prefix(op.map(|_| BinOp::Add), items),
+            "--" => return self.lower_inc_dec_prefix(op.map(|_| BinOp::Sub), items),
+
+            _ => {
                 return Err(CompileError::SimpleError {
                     loc,
-                    s: "prefix increment/decrement not lowered yet",
+                    s: "Unsupported expression in IR lowering",
                 });
             }
-
-            _ => return Err(CompileError::SimpleError {
-                loc,
-                s: "Unsupported expression in IR lowering",
-            }),
         };
 
         if items.len() != 1 {
@@ -672,88 +736,141 @@ impl Program {
     fn lower_postfix_op(
         &mut self,
         loc: Loc,
-        op: &str,
+        op: Located<&str>,
         items: Vec<LExpr>,
     ) -> CResult<TValue> {
-        match op {
+        match op.value {
             // these are handled earlier and must never reach here
             "(" | "[" => unreachable!("call/index should be handled before postfix ops"),
 
-            "++" | "--" => Err(CompileError::SimpleError {
-                loc,
-                s: "postfix increment/decrement not lowered yet",
-            }),
+            "++" => self.lower_inc_dec_postfix(op.map(|_| BinOp::Add), items),
+            "--" => self.lower_inc_dec_postfix(op.map(|_| BinOp::Sub), items),
 
-            _ => return Err(CompileError::SimpleError {
-                loc,
-                s: "Unsupported expression in IR lowering",
-            }),
+            _ => {
+                return Err(CompileError::SimpleError {
+                    loc,
+                    s: "Unsupported expression in IR lowering",
+                });
+            }
         }
     }
 
-    fn lower_binary_op(
+    fn lower_inc_dec_prefix(
         &mut self,
-        loc: Loc,
-        op: &str,
-        lhs: LExpr,
-        rhs: LExpr,
+        op: Located<BinOp>,
+        mut items: Vec<LExpr>,
     ) -> CResult<TValue> {
-        // assignment is explicit IR, not a BinOp
-        if op == "=" {
+        if items.len() != 1 {
+            panic!("prefix operator with {} operands", items.len());
+        }
+
+        let target = Box::new(self.lower_value(items.pop().unwrap())?);
+
+        Ok(self.typed_value(
+            op.loc.clone(),
+            Value::Assign {
+                op: Some(op.value),
+                target,
+                value: Box::new(self.typed_value(op.loc, Value::Literal(Literal::Num(1)))),
+            },
+        ))
+    }
+
+    fn lower_inc_dec_postfix(
+        &mut self,
+        op: Located<BinOp>,
+        mut items: Vec<LExpr>,
+    ) -> CResult<TValue> {
+        if items.len() != 1 {
+            panic!("postfix operator with {} operands", items.len());
+        }
+
+        let target = Box::new(self.lower_value(items.remove(0))?);
+
+        Ok(self.typed_value(
+            op.loc.clone(),
+            Value::Assign {
+                op: Some(op.value),
+                target,
+                value: Box::new(self.typed_value(op.loc, Value::Literal(Literal::Num(1)))),
+            },
+        ))
+    }
+
+    fn lower_binary_op(&mut self, loc: Loc, op: &str, lhs: LExpr, rhs: LExpr) -> CResult<TValue> {
+        if let Some(assign_op) = match op {
+            "=" => Some(None),
+            "+=" => Some(Some(BinOp::Add)),
+            "-=" => Some(Some(BinOp::Sub)),
+            "*=" => Some(Some(BinOp::Mul)),
+            "/=" => Some(Some(BinOp::Div)),
+            "%=" => Some(Some(BinOp::Mod)),
+            "&=" => Some(Some(BinOp::BitAnd)),
+            "|=" => Some(Some(BinOp::BitOr)),
+            "^=" => Some(Some(BinOp::BitXor)),
+            "<<=" => Some(Some(BinOp::Shl)),
+            ">>=" => Some(Some(BinOp::Shr)),
+            _ => None,
+        } {
             let target = Box::new(self.lower_value(lhs)?);
-            let value  = Box::new(self.lower_value(rhs)?);
-            return Ok(self.typed_value(loc, Value::Assign { target, value }));
+            let value = Box::new(self.lower_value(rhs)?);
+            return Ok(self.typed_value(
+                loc,
+                Value::Assign {
+                    op: assign_op,
+                    target,
+                    value,
+                },
+            ));
         }
 
-        // syntactic but not IR ops
-        if matches!(
-            op,
-            "+=" | "-=" | "*=" | "/=" | "%=" |
-            "&=" | "|=" | "^=" | "<<=" | ">>="
-        ) {
-            return Err(CompileError::SimpleError {
+        if let Some(logic_op) = match op {
+            "&&" => Some(LogicOp::And),
+            "||" => Some(LogicOp::Or),
+            _ => None,
+        } {
+            let left = self.lower_value(lhs)?;
+            let right = self.lower_value(rhs)?;
+            return Ok(self.typed_value(
                 loc,
-                s: "compound assignment not lowered yet",
-            });
-        }
-
-        if op == "&&" || op == "||" {
-            return Err(CompileError::SimpleError {
-                loc,
-                s: "short-circuit logical operators not lowered yet",
-            });
+                Value::LogicOp {
+                    op: logic_op,
+                    values: Box::new((left, right)),
+                },
+            ));
         }
 
         let binop = match op {
-            "+"  => BinOp::Add,
-            "-"  => BinOp::Sub,
-            "*"  => BinOp::Mul,
-            "/"  => BinOp::Div,
-            "%"  => BinOp::Mod,
+            "+" => BinOp::Add,
+            "-" => BinOp::Sub,
+            "*" => BinOp::Mul,
+            "/" => BinOp::Div,
+            "%" => BinOp::Mod,
 
-            "&"  => BinOp::BitAnd,
-            "|"  => BinOp::BitOr,
-            "^"  => BinOp::BitXor,
+            "&" => BinOp::BitAnd,
+            "|" => BinOp::BitOr,
+            "^" => BinOp::BitXor,
             "<<" => BinOp::Shl,
             ">>" => BinOp::Shr,
 
             "==" => BinOp::Eq,
             "!=" => BinOp::Ne,
-            "<"  => BinOp::Lt,
+            "<" => BinOp::Lt,
             "<=" => BinOp::Le,
-            ">"  => BinOp::Gt,
+            ">" => BinOp::Gt,
             ">=" => BinOp::Ge,
 
             // "~" | "!" =>
             //     panic!("operator `{}` cannot appear as binary op (parser bug)", op),
-
-            _ => return Err(CompileError::SimpleError {
-                loc,
-                s: "Unsupported expression in IR lowering",
-            }),
+            _ => {
+                return Err(CompileError::SimpleError {
+                    loc,
+                    s: "Unsupported expression in IR lowering",
+                });
+            }
         };
 
-        let left  = self.lower_value(lhs)?;
+        let left = self.lower_value(lhs)?;
         let right = self.lower_value(rhs)?;
 
         Ok(self.typed_value(
@@ -765,8 +882,7 @@ impl Program {
         ))
     }
 
-
-        /// Create a typed value with the given location
+    /// Create a typed value with the given location
     fn typed_value(&self, loc: Loc, value: Value) -> TValue {
         Typed {
             loc,
@@ -794,7 +910,6 @@ impl Program {
         self.scopes.pop();
     }
 
-
     /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
     fn insert_value_in_current_scope(&mut self, name: &str) -> NameId {
         let id = self.fresh_name_id();
@@ -813,9 +928,7 @@ impl Program {
         self.next_name_id += 1;
         id
     }
-
 }
-
 
 // Public API functions
 
@@ -1015,6 +1128,68 @@ mod lowering_tests {
             _ => panic!("expected scrutinee name"),
         }
         assert_eq!(arms.len(), 1);
+    }
+
+    #[test]
+    fn lowers_compound_assign_inc_and_logic_ops() {
+        let src = "{ let a = 1; a += 2; ++a; a++; a && a; }";
+        let ir = lower_block(src);
+
+        let statements = match ir.value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 5);
+
+        let a_id = bound_id(&statements[0]);
+
+        match &statements[1].value {
+            Value::Assign { op, target, value } => {
+                assert_eq!(*op, Some(BinOp::Add));
+                match target.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected assign target name"),
+                }
+                match value.value {
+                    Value::Literal(Literal::Num(2)) => {}
+                    _ => panic!("expected assign literal value"),
+                }
+            }
+            _ => panic!("expected compound assignment"),
+        }
+
+        for stmt in [&statements[2], &statements[3]] {
+            match &stmt.value {
+                Value::Assign { op, target, value } => {
+                    assert_eq!(*op, Some(BinOp::Add));
+                    match target.value {
+                        Value::NameRef(id) => assert_eq!(id, a_id),
+                        _ => panic!("expected inc target name"),
+                    }
+                    match value.value {
+                        Value::Literal(Literal::Num(1)) => {}
+                        _ => panic!("expected inc literal value"),
+                    }
+                }
+                _ => panic!("expected inc assignment"),
+            }
+        }
+
+        match &statements[4].value {
+            Value::LogicOp { op, values } => {
+                assert_eq!(*op, LogicOp::And);
+                let (left, right) = &**values;
+                match left.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected logic left name"),
+                }
+                match right.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected logic right name"),
+                }
+            }
+            _ => panic!("expected logic op"),
+        }
     }
 
     #[test]

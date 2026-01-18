@@ -1,5 +1,5 @@
-use crate::ir::TValue;
 use crate::ir::NameId;
+use crate::ir::TValue;
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
@@ -101,9 +101,9 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             Expr::Prefix(ref fn_kw, ref _args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
-                let v = program.lower_value(Located{
-                    loc:rhs_loc,
-                    value:rhs_value,
+                let v = program.lower_value(Located {
+                    loc: rhs_loc,
+                    value: rhs_value,
                 })?;
                 program.functions.push(v);
                 Ok(())
