@@ -414,43 +414,74 @@ impl Program {
             }
 
             Expr::Prefix(open, items) if open.value == "fn" => {
-                // Parse function signature: fn (params) -> ret_type { body }
                 let loc = expr.loc.clone();
 
-                // The function signature is split into two parts by the parser
-                // items[0] is the parameter list and optional return type annotation
-                // items[1] is the function body
-                if items.len() < 2 {
-                    return Err(CompileError::SimpleError {
-                        loc: expr.loc,
-                        s: "Function must have a signature and body",
-                    });
-                }
+                debug_assert!(
+                    (1..=2).contains(&items.len()),
+                    "fn expects signature and optional body"
+                );
 
-                let sig_items = items[0].clone();
-                let body_expr = items[1].clone();
+                let mut items = items;
+
+                // Body (lowering requires it; absence is a parser bug)
+                let body_expr = if items.len() == 2 {
+                    Some(items.pop().unwrap())
+                } else {
+                    None
+                };
+
+                debug_assert!(
+                    body_expr.is_some(),
+                    "fn missing body during lowering"
+                );
+
+                let body_expr = body_expr.unwrap();
+
+                // Signature (must exist)
+                let sig_expr = items.pop().expect("fn missing signature");
+
+                // Normalize signature:
+                //   (args)           -> params_expr, None
+                //   (args) -> ret    -> params_expr, Some(ret)
+                let (params_expr, ret_expr) = match sig_expr.value {
+                    Expr::Bin(arrow, pair) if arrow.value == "->" => {
+                        let (lhs, rhs) = *pair;
+                        (lhs, Some(rhs))
+                    }
+                    _ => (sig_expr, None),
+                };
+
+                // Parameter list must be a parenthesized prefix
+                let Expr::Prefix(open, param_items) = params_expr.value else {
+                    debug_assert!(
+                        false,
+                        "fn signature does not start with parameter list"
+                    );
+                    unreachable!();
+                };
+
+                debug_assert!(
+                    open.value == "(",
+                    "fn parameter list must start with '('"
+                );
 
                 // Parse parameters
-                let (params, ret) = if let Expr::Prefix(open, param_items) = sig_items.value
-                    && open.value == "("
-                {
-                    // Parse parameters
-                    let mut parsed_params = Vec::new();
-                    for param in param_items {
-                        let param_pat = self.lower_pattern(param)?;
-                        parsed_params.push(Param {
-                            pat: param_pat,
-                            ty: None, // No type annotations yet
-                        });
-                    }
-                    (parsed_params, None) // Return type not handled yet
-                } else {
-                    (Vec::new(), None) // Empty parameter list
+                let mut params = Vec::with_capacity(param_items.len());
+                for param in param_items {
+                    let pat = self.lower_pattern(param)?;
+                    params.push(Param { pat, ty: None });
+                }
+
+                // Optional return
+                let ret = match ret_expr {
+                    Some(expr) => Some(self.lower_pattern(expr)?),
+                    None => None,
                 };
 
                 let body = Box::new(self.lower_value(body_expr)?);
                 Ok(self.typed_value(loc, Value::Func { params, ret, body }))
             }
+
             _ => Err(CompileError::SimpleError {
                 loc: expr.loc,
                 s: "Unsupported expression in IR lowering",
