@@ -340,33 +340,70 @@ impl Program {
                     },
                 ))
             }
-            Expr::Prefix(open, items) if open.value == "let" => {
+            Expr::Prefix(open, mut items) if open.value == "let" => {
                 let loc = expr.loc.clone();
-                let (pat_expr, value_expr) = split_prefix(loc.clone(), "let", items)?;
+                if items.len() < 2 {
+                    return Err(CompileError::SimpleError {
+                        loc: expr.loc,
+                        s: "let expects a pattern and a value",
+                    });
+                }
+                if items.len() > 3 {
+                    return Err(CompileError::SimpleError {
+                        loc: expr.loc,
+                        s: "let has too many parts",
+                    });
+                }
+                let value_expr = items.pop().unwrap();
+                let pat_expr = items.pop().unwrap();
                 let pat = self.lower_pattern(pat_expr)?;
                 let value = Box::new(self.lower_value(value_expr)?);
                 Ok(self.typed_value(loc, Value::Let { pat, value }))
             }
-            Expr::Postfix(open, items) if open.value == "(" => {
+            Expr::Postfix(open, mut items) if open.value == "(" => {
                 let loc = expr.loc.clone();
-                let (callee_expr, args_exprs) = split_postfix(loc.clone(), "call", items)?;
+                debug_assert!(!items.is_empty(), "call expression missing callee");
+                let callee_expr = items.remove(0);
                 let callee = Box::new(self.lower_value(callee_expr)?);
                 let mut args = Vec::new();
-                for arg in args_exprs {
+                for arg in items {
                     args.push(self.lower_value(arg)?);
                 }
                 Ok(self.typed_value(loc, Value::Call { callee, args }))
             }
-            Expr::Postfix(open, items) if open.value == "[" => {
+            Expr::Postfix(open, mut items) if open.value == "[" => {
                 let loc = expr.loc.clone();
                 // TODO: This is wrong - we might be parsing a generic specialization, not an index
-                let (base_expr, args_exprs) = split_postfix(loc.clone(), "index", items)?;
+                debug_assert!(!items.is_empty(), "index expression missing base");
+                let base_expr = items.remove(0);
                 let base = Box::new(self.lower_value(base_expr)?);
                 let mut args = Vec::new();
-                for arg in args_exprs {
+                for arg in items {
                     args.push(self.lower_value(arg)?);
                 }
                 Ok(self.typed_value(loc, Value::Index { base, args }))
+            }
+            Expr::Prefix(open, mut items) if open.value == "match" => {
+                let loc = expr.loc.clone();
+                if items.is_empty() {
+                    return Err(CompileError::SimpleError {
+                        loc: expr.loc,
+                        s: "match expects a value and at least one arm",
+                    });
+                }
+                let value_expr = items.remove(0);
+                if items.is_empty() {
+                    return Err(CompileError::SimpleError {
+                        loc: expr.loc,
+                        s: "match expects at least one arm",
+                    });
+                }
+                let value = Box::new(self.lower_value(value_expr)?);
+                let mut arms = Vec::new();
+                for arm_expr in items {
+                    arms.push(self.lower_match_arm(arm_expr)?);
+                }
+                Ok(self.typed_value(loc, Value::Match { value, arms }))
             }
             //TODO fix the LHS of this to check for paterns maybe
             Expr::Bin(op, pair) if op.value == "=" => {
@@ -536,10 +573,10 @@ impl Program {
     /// Lower a single match arm (pattern => body or pattern if guard => body)
     fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
         match expr.value {
-            Expr::Prefix(open, items) if open.value == "=>" => {
-                let (pat_expr, body_expr) = split_prefix(expr.loc, "=>", items)?;
-                let pat = self.lower_pattern(pat_expr)?;
-                let body = self.lower_value(body_expr)?;
+            Expr::Bin(op, pair) if op.value == "=>" => {
+                let (pat_expr, body_expr) = pair.as_ref();
+                let pat = self.lower_pattern(pat_expr.clone())?;
+                let body = self.lower_value(body_expr.clone())?;
                 Ok(MatchArm {
                     pat,
                     guard: None,
@@ -549,15 +586,13 @@ impl Program {
             Expr::Bin(op, pair) if op.value == "if" => {
                 let (left, right) = pair.as_ref();
                 // This is a guard: pattern if guard => body
-                if let Expr::Prefix(open, items) = &left.value
-                    && open.value == "=>"
-                    && items.len() == 2
+                if let Expr::Bin(arrow, inner_pair) = &left.value
+                    && arrow.value == "=>"
                 {
-                    let pat_expr = items[0].clone();
-                    let body_expr = items[1].clone();
-                    let pat = self.lower_pattern(pat_expr)?;
+                    let (pat_expr, body_expr) = inner_pair.as_ref();
+                    let pat = self.lower_pattern(pat_expr.clone())?;
                     let guard = self.lower_value(right.clone())?;
-                    let body = self.lower_value(body_expr)?;
+                    let body = self.lower_value(body_expr.clone())?;
                     return Ok(MatchArm {
                         pat,
                         guard: Some(guard),
@@ -578,42 +613,6 @@ impl Program {
 }
 
 // Public API functions
-
-// Helper functions for parsing prefix/postfix constructs
-
-/// Split a prefix expression into its two required arguments
-fn split_prefix(loc: Loc, name: &'static str, items: Vec<LExpr>) -> CResult<(LExpr, LExpr)> {
-    if items.len() != 2 {
-        return Err(CompileError::Arity {
-            loc,
-            call_name: name,
-            expected: 2,
-            got: items.len(),
-        });
-    }
-    let mut iter = items.into_iter();
-    Ok((iter.next().unwrap(), iter.next().unwrap()))
-}
-
-/// Split a postfix expression into the target and arguments
-fn split_postfix(
-    loc: Loc,
-    name: &'static str,
-    mut items: Vec<LExpr>,
-) -> CResult<(LExpr, Vec<LExpr>)> {
-    if let Some(first) = items.pop() {
-        Ok((first, items))
-    } else {
-        //TODO this is likely the wrong error message.
-        //arity should only aplly to calls
-        Err(CompileError::Arity {
-            loc,
-            call_name: name,
-            expected: 1,
-            got: 0,
-        })
-    }
-}
 
 #[cfg(test)]
 mod var_scope_test {
@@ -674,5 +673,229 @@ mod var_scope_test {
             outer_id, inner_id,
             "inner and outer bindings must not collide"
         );
+    }
+}
+
+#[cfg(test)]
+mod lowering_tests {
+    use super::*;
+    use crate::parsing::Parser;
+    use crate::program::{CompileError, Program};
+
+    fn lower_block(src: &str) -> TValue {
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let expr = parser.consume_expr().unwrap();
+        program.lower_value(expr).unwrap()
+    }
+
+    fn bound_id(stmt: &TValue) -> NameId {
+        match &stmt.value {
+            Value::Let { pat, .. } => match pat.value {
+                Pattern::Bind(id) => id,
+                _ => panic!("expected bind pattern"),
+            },
+            _ => panic!("expected let statement"),
+        }
+    }
+
+    fn dummy_loc() -> Loc {
+        Loc {
+            range: 0..0,
+            file: 0,
+        }
+    }
+
+    fn fixed(value: &'static str) -> Located<&'static str> {
+        Located {
+            loc: dummy_loc(),
+            value,
+        }
+    }
+
+    fn expr(value: Expr) -> LExpr {
+        Located {
+            loc: dummy_loc(),
+            value,
+        }
+    }
+
+    #[test]
+    fn lowers_call_and_index_with_bound_names() {
+        let src = "{ let f = 1; let a = 2; f(a, 3)[a, 4]; }";
+        let ir = lower_block(src);
+
+        let statements = match ir.value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 3);
+
+        let f_id = bound_id(&statements[0]);
+        let a_id = bound_id(&statements[1]);
+
+        let (base, index_args) = match &statements[2].value {
+            Value::Index { base, args } => (base, args),
+            _ => panic!("expected index expression"),
+        };
+
+        let (callee, call_args) = match &base.value {
+            Value::Call { callee, args } => (callee, args),
+            _ => panic!("expected call base"),
+        };
+
+        match callee.value {
+            Value::NameRef(id) => assert_eq!(id, f_id),
+            _ => panic!("expected callee to be name"),
+        }
+        assert_eq!(call_args.len(), 2);
+        match call_args[0].value {
+            Value::NameRef(id) => assert_eq!(id, a_id),
+            _ => panic!("expected first call arg to be name"),
+        }
+        match call_args[1].value {
+            Value::Literal(Literal::Num(3)) => {}
+            _ => panic!("expected literal call arg"),
+        }
+
+        assert_eq!(index_args.len(), 2);
+        match index_args[0].value {
+            Value::NameRef(id) => assert_eq!(id, a_id),
+            _ => panic!("expected first index arg to be name"),
+        }
+        match index_args[1].value {
+            Value::Literal(Literal::Num(4)) => {}
+            _ => panic!("expected literal index arg"),
+        }
+    }
+
+    #[test]
+    fn lowers_match_with_wildcard_arm() {
+        let mut program = Program::new();
+        program.push_scope();
+        let x_id = program.insert_value_in_current_scope("x");
+
+        let match_expr = expr(Expr::Prefix(
+            fixed("match"),
+            vec![
+                expr(Expr::Atom(Token::Ident("x".to_string()))),
+                expr(Expr::Bin(
+                    fixed("=>"),
+                    Box::new((
+                        expr(Expr::Atom(Token::Ident("_".to_string()))),
+                        expr(Expr::Atom(Token::Ident("x".to_string()))),
+                    )),
+                )),
+            ],
+        ));
+
+        let ir = program.lower_value(match_expr).unwrap();
+        program.pop_scope();
+
+        let (scrutinee, arms) = match ir.value {
+            Value::Match { value, arms } => (value, arms),
+            _ => panic!("expected match"),
+        };
+
+        match scrutinee.value {
+            Value::NameRef(id) => assert_eq!(id, x_id),
+            _ => panic!("expected scrutinee name"),
+        }
+
+        assert_eq!(arms.len(), 1);
+        match arms[0].pat.value {
+            Pattern::Wildcard => {}
+            _ => panic!("expected wildcard pattern"),
+        }
+        match arms[0].body.value {
+            Value::NameRef(id) => assert_eq!(id, x_id),
+            _ => panic!("expected arm body to reference x"),
+        }
+    }
+
+    #[test]
+    fn lowers_match_with_guard_arm() {
+        let mut program = Program::new();
+        program.push_scope();
+        let x_id = program.insert_value_in_current_scope("x");
+
+        let match_expr = expr(Expr::Prefix(
+            fixed("match"),
+            vec![
+                expr(Expr::Atom(Token::Ident("x".to_string()))),
+                expr(Expr::Bin(
+                    fixed("if"),
+                    Box::new((
+                        expr(Expr::Bin(
+                            fixed("=>"),
+                            Box::new((
+                                expr(Expr::Atom(Token::Ident("_".to_string()))),
+                                expr(Expr::Atom(Token::Ident("x".to_string()))),
+                            )),
+                        )),
+                        expr(Expr::Atom(Token::Ident("x".to_string()))),
+                    )),
+                )),
+            ],
+        ));
+
+        let ir = program.lower_value(match_expr).unwrap();
+        program.pop_scope();
+
+        let arms = match ir.value {
+            Value::Match { arms, .. } => arms,
+            _ => panic!("expected match"),
+        };
+
+        assert_eq!(arms.len(), 1);
+        assert!(arms[0].guard.is_some());
+        match arms[0].guard.as_ref().unwrap().value {
+            Value::NameRef(id) => assert_eq!(id, x_id),
+            _ => panic!("expected guard to reference x"),
+        }
+    }
+
+    #[test]
+    fn match_requires_at_least_one_arm() {
+        let mut program = Program::new();
+        program.push_scope();
+        let match_expr = expr(Expr::Prefix(
+            fixed("match"),
+            vec![expr(Expr::Atom(Token::Ident("x".to_string())))],
+        ));
+        let err = program.lower_value(match_expr).unwrap_err();
+        program.pop_scope();
+
+        match err {
+            CompileError::SimpleError { s, .. } => {
+                assert_eq!(s, "match expects at least one arm");
+            }
+            _ => panic!("expected simple error"),
+        }
+    }
+
+    #[test]
+    fn invalid_match_arm_syntax_reports_error() {
+        let mut program = Program::new();
+        program.push_scope();
+        program.insert_value_in_current_scope("x");
+
+        let match_expr = expr(Expr::Prefix(
+            fixed("match"),
+            vec![
+                expr(Expr::Atom(Token::Ident("x".to_string()))),
+                expr(Expr::Atom(Token::Ident("x".to_string()))),
+            ],
+        ));
+
+        let err = program.lower_value(match_expr).unwrap_err();
+        program.pop_scope();
+
+        match err {
+            CompileError::SimpleError { s, .. } => {
+                assert_eq!(s, "Invalid match arm syntax");
+            }
+            _ => panic!("expected simple error"),
+        }
     }
 }
