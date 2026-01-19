@@ -11,6 +11,7 @@ pub type LName = Located<NameId>; // Located name identifier
 pub type TName = Typed<NameId>; // Typed name identifier
 // pub type TDecl = Typed<Decl>; // Typed declaration
 pub type TValue = Typed<Value>; // Typed value/expression
+pub type LValue = Located<Value>; // Typed value/expression
 pub type TPattern = Typed<Pattern>; // Typed pattern
 
 // Core type definitions for the IR
@@ -22,18 +23,24 @@ pub struct TypeInfo {
 
 impl TypeInfo {
     pub fn new_empty() -> Self {
-        Self {uses:Vec::new()}
+        Self { uses: Vec::new() }
     }
 }
 
-#[derive(Debug,Copy, Clone, PartialEq)]
-pub struct TypeId(usize);
+// #[derive(Debug,Copy, Clone, PartialEq)]
+// pub struct TypeId(usize);
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum InferId {
+    Concrete(usize),
+    Infered(usize),
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeUse {
-    FuncOutputs(TypeId),
-    FuncInputs(Box<[TypeId]>),
-    Tuple(Box<[TypeId]>),
+    FuncOutputs(InferId),
+    FuncInputs(Box<[InferId]>),
+    Tuple(Box<[InferId]>),
     Basic(NameId),
 }
 
@@ -43,7 +50,7 @@ pub struct Typed<T> {
     /// Source location of this construct
     pub loc: Loc,
     /// Type information (if available/known)
-    pub ty: TypeInfo,
+    pub ty: InferId,
     /// The underlying value
     pub value: T,
 }
@@ -358,7 +365,7 @@ impl<T> Typed<T> {
     pub fn with<U>(&self, value: U) -> Typed<U> {
         Typed {
             loc: self.loc.clone(),
-            ty: self.ty.clone(),
+            ty: self.ty,
             value,
         }
     }
@@ -381,15 +388,15 @@ impl<T> Typed<T> {
     }
 }
 
-impl<T> From<Located<T>> for Typed<T> {
-    fn from(value: Located<T>) -> Self {
-        Typed {
-            loc: value.loc,
-            ty: TypeInfo::new_empty(),
-            value: value.value,
-        }
-    }
-}
+// impl<T> From<Located<T>> for Typed<T> {
+//     fn from(value: Located<T>) -> Self {
+//         Typed {
+//             loc: value.loc,
+//             ty: TypeInfo::new_empty(),
+//             value: value.value,
+//         }
+//     }
+// }
 
 // impl ProgramIr {
 //     /// Create an empty program IR with a block body
@@ -532,7 +539,6 @@ impl Program {
 
         let value = Box::new(self.lower_value(value_expr)?);
         let pat = self.lower_pattern(pat_expr)?;
-        
 
         let else_part = if let Some(exp) = else_exp {
             let v = self.with_scope(|prog| prog.lower_value(exp))?;
@@ -819,7 +825,6 @@ impl Program {
         op: Located<&'static str>,
         items: Vec<LExpr>,
     ) -> CResult<TValue> {
-        let op_loc = op.loc.clone();
         let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
@@ -1015,21 +1020,27 @@ impl Program {
     }
 
     /// Create a typed value with the given location
-    fn typed_value(&self, loc: Loc, value: Value) -> TValue {
+    fn typed_value(&mut self, loc: Loc, value: Value) -> TValue {
         Typed {
             loc,
-            ty: TypeInfo::new_empty(),
+            ty: self.new_infer_id(),
             value,
         }
     }
 
     /// Create a typed pattern with the given location
-    fn typed_pattern(&self, loc: Loc, value: Pattern) -> TPattern {
+    fn typed_pattern(&mut self, loc: Loc, value: Pattern) -> TPattern {
         Typed {
             loc,
-            ty: TypeInfo::new_empty(),
+            ty: self.new_infer_id(),
             value,
         }
+    }
+
+    fn new_infer_id(&mut self) -> InferId {
+        let id = self.current_infrence.len();
+        self.current_infrence.push(TypeInfo::new_empty());
+        InferId::Infered(id)
     }
 }
 

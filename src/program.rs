@@ -1,6 +1,8 @@
 use crate::error_messages::{ERR_EXPECTED_MACRO_NAME, ERR_UNSUPPORTED_DEFINITION};
+use crate::ir::LValue;
 use crate::ir::NameId;
 use crate::ir::TValue;
+use crate::ir::TypeInfo;
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
@@ -41,6 +43,9 @@ pub struct Program {
     pub enums: Vec<LExpr>,
     pub unions: Vec<LExpr>,
 
+    pub types: Vec<LValue>,
+    pub current_infrence: Vec<TypeInfo>,
+
     pub next_name_id: usize,
     pub scopes: Vec<HashMap<String, NameId>>,
 }
@@ -59,6 +64,10 @@ impl Program {
             structs: Vec::new(),
             enums: Vec::new(),
             unions: Vec::new(),
+
+            types: Vec::new(),
+            current_infrence: Vec::new(),
+
             next_name_id: 0,
             scopes: vec![HashMap::new()],
         };

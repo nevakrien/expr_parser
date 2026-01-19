@@ -1,0 +1,19 @@
+so i started sketching how type info would look like in ir.rs i need you to: 
+
+1. give a lot of thought to how this should go untill your sure you have a good understanding of the way types work in the project. 
+
+2. think what facileties need to be added to Program and potentially to how we represent functions to support this type infestructure. 
+
+3. consider memory model of how recursive types work (Rc for instance cant really work for those... ids with something like slab or a plain vec may be better. or maybe an arena?) 
+
+4. implement the setup you thought of. 
+
+5. go in ir.rs and add the type anotations in all the places where it makes sense (currently most of it is set to None even when obviously known). 
+
+6. add tests to see that things behave as needed
+
+7. fix any obvious errors issues etc
+
+8. remove any uneeded clones or calls to ineffishent methods like remove(0) 
+
+9. double check the work
