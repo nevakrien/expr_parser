@@ -1,6 +1,5 @@
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
-use std::collections::HashMap;
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>; // Located name identifier
@@ -52,7 +51,6 @@ pub struct Param {
     pub pat: TPattern,
     pub ty: Option<TValue>,
 }
-
 
 // /// Declaration of a type, constant, or macro in the global scope
 // ///
@@ -203,8 +201,7 @@ pub enum Value {
         value: Box<TValue>,
     },
 
-//===== TYPES ===== 
-
+    //===== TYPES =====
     /// Explicit type cast
     Cast {
         value: Box<TValue>,
@@ -217,10 +214,7 @@ pub enum Value {
         ty: Box<TValue>,
     },
 
-
-    
-//==== MUTATION GATES =====
-
+    //==== MUTATION GATES =====
     /// Function or callable invocation
     Call {
         callee: Box<TValue>,
@@ -243,8 +237,7 @@ pub enum Value {
         args: Vec<TValue>,
     },
 
-// ===== SCOPE =====
-
+    // ===== SCOPE =====
     /// Immutable binding
     Let {
         pat: TPattern,
@@ -257,11 +250,7 @@ pub enum Value {
         return_value: Option<Box<TValue>>,
     },
 
-
-
-//==== CONTROL FLOW ===== 
-
-
+    //==== CONTROL FLOW =====
     /// Short-circuiting logical operations.
     LogicOp {
         op: LogicOp,
@@ -300,7 +289,6 @@ pub enum Value {
         arms: Vec<MatchArm>,
     },
 }
-
 
 /// Patterns used for:
 /// - Pattern matching (match expressions, function parameters)
@@ -450,7 +438,9 @@ impl Program {
             // fn (sig) body
             Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
 
-            Expr::Bin(op, pair) if (op.value == "as" || op.value== ":") => self.lower_cast_expr(expr.loc,&op, *pair),
+            Expr::Bin(op, pair) if (op.value == "as" || op.value == ":") => {
+                self.lower_cast_expr(expr.loc, &op, *pair)
+            }
 
             //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
@@ -468,7 +458,7 @@ impl Program {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
             Token::StrLit(s) => Value::Literal(Literal::Str(s)),
-            Token::Operator("(")=>Value::Literal(Literal::Void),
+            Token::Operator("(") => Value::Literal(Literal::Void),
 
             Token::Ident(name) => {
                 let id = self.resolve_value(loc, &name)?;
@@ -655,14 +645,14 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_cast_expr(&mut self, loc: Loc,op:&str, pair: (LExpr, LExpr)) -> CResult<TValue> {
+    fn lower_cast_expr(&mut self, loc: Loc, op: &str, pair: (LExpr, LExpr)) -> CResult<TValue> {
         let (value_expr, ty_expr) = pair;
         let value = Box::new(self.lower_value(value_expr)?);
         let ty = Box::new(self.lower_value(ty_expr)?);
         let v = match op {
-            "as"=>Value::Cast { value, ty },
-            ":"=>Value::TypeAnnotation { value, ty },
-            &_ => unreachable!()
+            "as" => Value::Cast { value, ty },
+            ":" => Value::TypeAnnotation { value, ty },
+            &_ => unreachable!(),
         };
         Ok(self.typed_value(loc, v))
     }
@@ -674,7 +664,7 @@ impl Program {
             }
 
             Expr::Atom(Token::Ident(name)) => {
-                let id = self.insert_value_in_current_scope(&name);
+                let id = self.insert_value_in_current_scope(name);
                 Ok(self.typed_pattern(expr.loc, Pattern::Bind(id)))
             }
 
@@ -694,7 +684,7 @@ impl Program {
     }
 
     fn resolve_value(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
-        for (value_scope, _) in self.scopes.iter().rev() {
+        for value_scope in self.scopes.iter().rev() {
             if let Some(id) = value_scope.get(name) {
                 return Ok(*id);
             }
@@ -962,34 +952,9 @@ impl Program {
         }
     }
 
-    /// Push a new variable scope onto the stack
-    fn push_scope(&mut self) {
-        self.scopes.push((HashMap::new(), HashMap::new()));
-    }
+    
 
-    /// Pop the current variable scope
-    fn pop_scope(&mut self) {
-        self.scopes.pop();
-    }
 
-    /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
-    fn insert_value_in_current_scope(&mut self, name: &str) -> NameId {
-        let id = self.fresh_name_id();
-        if let Some((value_scope, _)) = self.scopes.last_mut() {
-            value_scope.insert(name.to_string(), id);
-        } else {
-            // If you ever lower without at least one scope pushed, that's a bug.
-            debug_assert!(false, "no scope available when inserting binding");
-        }
-        id
-    }
-
-    /// Generate a fresh unique name ID
-    fn fresh_name_id(&mut self) -> NameId {
-        let id = NameId(self.next_name_id);
-        self.next_name_id += 1;
-        id
-    }
 }
 
 // Public API functions
@@ -1262,24 +1227,21 @@ mod lowering_tests {
             }
             _ => panic!("expected logic op"),
         }
-    }  
+    }
 
-
-    //TODO add to this so we can have buildin types like int
     #[test]
     fn lowers_cast_expression() {
-        let src = "{ let a = 1; let b = 1; a as b; }";
+        let src = "{ let a = 1; a as int; }";
         let ir = lower_block(src);
 
         let statements = match ir.value {
             Value::Block { statements, .. } => statements,
             _ => panic!("expected block"),
         };
-        assert_eq!(statements.len(), 3);
+        assert_eq!(statements.len(), 2);
 
         let a_id = bound_id(&statements[0]);
-        let b_id = bound_id(&statements[1]);
-        let cast_expr = &statements[2];
+        let cast_expr = &statements[1];
         match &cast_expr.value {
             Value::Cast { value, ty } => {
                 match value.value {
@@ -1287,7 +1249,7 @@ mod lowering_tests {
                     _ => panic!("expected cast value to be name"),
                 }
                 match ty.value {
-                    Value::NameRef(id) => assert_eq!(id, b_id),
+                    Value::NameRef(id) => assert_ne!(id, a_id),
                     _ => panic!("expected cast type pattern"),
                 }
             }

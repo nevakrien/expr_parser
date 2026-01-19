@@ -24,7 +24,7 @@ pub enum CompileError {
     Parse(#[from] crate::parsing::ParseError),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Program {
     pub macros: HashMap<String, Macro>,
     pub functions: Vec<TValue>,
@@ -33,12 +33,57 @@ pub struct Program {
     pub unions: Vec<LExpr>,
 
     pub next_name_id: usize,
-    pub scopes: Vec<(HashMap<String, NameId>, HashMap<String, NameId>)>,
+    pub scopes: Vec<HashMap<String, NameId>>,
 }
 
 impl Program {
     pub fn new() -> Self {
-        Self::default()
+        let mut program = Self {
+            macros: HashMap::new(),
+            functions: Vec::new(),
+            structs: Vec::new(),
+            enums: Vec::new(),
+            unions: Vec::new(),
+            next_name_id: 0,
+            scopes: vec![HashMap::new()],
+        };
+        program.insert_builtin_types();
+        program
+    }
+
+    fn insert_builtin_types(&mut self) {
+        for name in ["int", "float", "bool", "str", "void"] {
+           self.insert_value_in_current_scope(name.to_string());
+        }
+    }
+
+    /// Push a new variable scope onto the stack
+    pub fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    /// Pop the current variable scope
+    pub fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
+    pub fn insert_value_in_current_scope(&mut self, name: String) -> NameId {
+        let id = self.fresh_name_id();
+        if let Some(value_scope) = self.scopes.last_mut() {
+            value_scope.insert(name, id);
+        } else {
+            // If you ever lower without at least one scope pushed, that's a bug.
+            debug_assert!(false, "no scope available when inserting binding");
+        }
+        id
+    }
+
+        /// Generate a fresh unique name ID
+    fn fresh_name_id(&mut self) -> NameId {
+        let id = NameId(self.next_name_id);
+        self.next_name_id += 1;
+        id
     }
 
     pub fn add_macro(&mut self, name: String, macro_def: Macro) {

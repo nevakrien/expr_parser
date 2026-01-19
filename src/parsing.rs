@@ -1097,7 +1097,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        if parts.is_empty(){
+        if parts.is_empty() {
             return Ok(Located {
                 loc,
                 value: Expr::Atom(Token::Operator("(")),
