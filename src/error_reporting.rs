@@ -1,4 +1,3 @@
-use yansi::Paint;
 use crate::parsing::{OTok, ParseError};
 use crate::program::CompileError;
 use ariadne::{Color, Label, Report, ReportKind, Source};
@@ -135,20 +134,18 @@ impl ErrorReporter {
                             .with_color(Color::Red)
                             .with_message(
                                 op.map(|op| format!("operator `{}`", op))
-                                  .unwrap_or_default(),
+                                    .unwrap_or_default(),
                             ),
                     );
 
                 if let Some(op_loc) = op_loc {
                     // SECONDARY: operator token itself, cyan, no message
                     report = report.with_label(
-                        Label::new((op_loc.file, op_loc.range.clone()))
-                            .with_color(Color::Magenta),
+                        Label::new((op_loc.file, op_loc.range.clone())).with_color(Color::Magenta),
                     );
                 }
 
                 report.finish().print((loc.file, source))
-
             }
             CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
         }
