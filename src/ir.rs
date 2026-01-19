@@ -530,8 +530,9 @@ impl Program {
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
 
-        let pat = self.lower_pattern(pat_expr)?;
         let value = Box::new(self.lower_value(value_expr)?);
+        let pat = self.lower_pattern(pat_expr)?;
+        
 
         let else_part = if let Some(exp) = else_exp {
             let v = self.with_scope(|prog| prog.lower_value(exp))?;
