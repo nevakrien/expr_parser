@@ -17,13 +17,24 @@ pub type TPattern = Typed<Pattern>; // Typed pattern
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeInfo {
     // /// Locations where this type is used in the code
-    // pub uses: Vec<Loc>,
+    pub uses: Vec<Located<TypeUse>>,
 }
 
 impl TypeInfo {
     pub fn new_empty() -> Self {
-        Self {}
+        Self {uses:Vec::new()}
     }
+}
+
+#[derive(Debug,Copy, Clone, PartialEq)]
+pub struct TypeId(usize);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeUse {
+    FuncOutputs(TypeId),
+    FuncInputs(Box<[TypeId]>),
+    Tuple(Box<[TypeId]>),
+    Basic(NameId),
 }
 
 /// Wrapper that adds location and type information to any value
