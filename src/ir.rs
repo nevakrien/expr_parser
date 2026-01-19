@@ -242,6 +242,7 @@ pub enum Value {
     Let {
         pat: TPattern,
         value: Box<TValue>,
+        else_part:Option<Box<TValue>>,
     },
 
     /// Lexical block
@@ -468,7 +469,7 @@ impl Program {
             Token::Operator(_) => {
                 return Err(CompileError::SimpleError {
                     loc: loc.clone(),
-                    s: "Unexpected operator atom in IR lowering",
+                    s: "Unexpected operator in expression",
                 });
             }
         };
@@ -504,18 +505,13 @@ impl Program {
 
     #[inline(always)]
     fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<TValue> {
-        if items.len() < 2 {
-            return Err(CompileError::SimpleError {
-                loc,
-                s: "let expects a pattern and a value",
-            });
-        }
-        if items.len() > 3 {
-            return Err(CompileError::SimpleError {
-                loc,
-                s: "let has too many parts",
-            });
-        }
+        debug_assert!(2<=items.len() && items.len()<=3);
+
+        let else_exp = if items.len()==3 {
+             items.pop()
+        }else{
+            None
+        };
 
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
@@ -523,7 +519,19 @@ impl Program {
         let pat = self.lower_pattern(pat_expr)?;
         let value = Box::new(self.lower_value(value_expr)?);
 
-        Ok(self.typed_value(loc, Value::Let { pat, value }))
+        let else_part = 
+            if let Some(exp) = else_exp{
+                let v = self.with_scope(|prog|{
+                    prog.lower_value(exp)
+                })?;
+                Some(Box::new(v))
+            }
+            else{
+                None
+            }
+        ;
+
+        Ok(self.typed_value(loc, Value::Let { pat, value,else_part }))
     }
 
     #[inline(always)]
