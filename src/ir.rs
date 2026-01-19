@@ -17,7 +17,7 @@ pub struct TypeInfo {
 
 impl TypeInfo {
     pub fn new_empty() -> Self {
-        TypeInfo {}
+        Self {}
     }
 }
 
@@ -530,13 +530,11 @@ impl Program {
     fn lower_call_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
         debug_assert!(!items.is_empty(), "call expression missing callee");
 
-        let mut it = items.into_iter();
-        let callee = Box::new(self.lower_value(it.next().unwrap())?);
+        let mut items = items;
+        let callee = Box::new(self.lower_value(items.remove(0))?);
 
-        let mut args = Vec::new();
-        for arg in it {
-            args.push(self.lower_value(arg)?);
-        }
+        let args: Result<Vec<_>, _> = items.into_iter().map(|arg| self.lower_value(arg)).collect();
+        let args = args?;
 
         Ok(self.typed_value(loc, Value::Call { callee, args }))
     }
@@ -545,14 +543,12 @@ impl Program {
     fn lower_index_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
         debug_assert!(!items.is_empty(), "index expression missing base");
 
-        let mut it = items.into_iter();
+        let mut items = items;
         //TODO this can actually be a generic so a pattern
-        let base = Box::new(self.lower_value(it.next().unwrap())?);
+        let base = Box::new(self.lower_value(items.remove(0))?);
 
-        let mut args = Vec::new();
-        for arg in it {
-            args.push(self.lower_value(arg)?);
-        }
+        let args: Result<Vec<_>, _> = items.into_iter().map(|arg| self.lower_value(arg)).collect();
+        let args = args?;
 
         Ok(self.typed_value(loc, Value::Index { base, args }))
     }
@@ -566,13 +562,14 @@ impl Program {
             });
         }
 
-        let mut it = items.into_iter();
-        let value = Box::new(self.lower_value(it.next().unwrap())?);
+        let mut items = items;
+        let value = Box::new(self.lower_value(items.remove(0))?);
 
-        let mut arms = Vec::new();
-        for arm in it {
-            arms.push(self.lower_match_arm(arm)?);
-        }
+        let arms: Result<Vec<_>, _> = items
+            .into_iter()
+            .map(|arm| self.lower_match_arm(arm))
+            .collect();
+        let arms = arms?;
 
         Ok(self.typed_value(loc, Value::Match { value, arms }))
     }
@@ -797,12 +794,10 @@ impl Program {
             "++" => self.lower_inc_dec_postfix(op.map(|_| Dir::Inc), items),
             "--" => self.lower_inc_dec_postfix(op.map(|_| Dir::Dec), items),
 
-            _ => {
-                return Err(CompileError::SimpleError {
-                    loc,
-                    s: "Unsupported expression in IR lowering",
-                });
-            }
+            _ => Err(CompileError::SimpleError {
+                loc,
+                s: "Unsupported expression in IR lowering",
+            }),
         }
     }
 
@@ -951,10 +946,6 @@ impl Program {
             value,
         }
     }
-
-    
-
-
 }
 
 // Public API functions

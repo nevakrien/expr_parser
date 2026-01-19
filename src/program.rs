@@ -36,6 +36,12 @@ pub struct Program {
     pub scopes: Vec<HashMap<String, NameId>>,
 }
 
+impl Default for Program {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Program {
     pub fn new() -> Self {
         let mut program = Self {
@@ -53,7 +59,7 @@ impl Program {
 
     fn insert_builtin_types(&mut self) {
         for name in ["int", "float", "bool", "str", "void"] {
-           self.insert_value_in_current_scope(name.to_string());
+            self.insert_value_in_current_scope(name.to_string());
         }
     }
 
@@ -79,7 +85,7 @@ impl Program {
         id
     }
 
-        /// Generate a fresh unique name ID
+    /// Generate a fresh unique name ID
     fn fresh_name_id(&mut self) -> NameId {
         let id = NameId(self.next_name_id);
         self.next_name_id += 1;
