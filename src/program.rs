@@ -1,3 +1,4 @@
+use crate::error_messages::{ERR_EXPECTED_MACRO_NAME, ERR_UNSUPPORTED_DEFINITION};
 use crate::ir::NameId;
 use crate::ir::TValue;
 use crate::macros::{Macro, expand_macros_recursive};
@@ -18,6 +19,14 @@ pub enum CompileError {
         call_name: &'static str,
         expected: usize,
         got: usize,
+    },
+
+    #[error("{message}")]
+    UnsupportedForm {
+        loc: Loc,
+        op_loc: Option<Loc>,
+        op: Option<&'static str>,
+        message: &'static str,
     },
 
     #[error(transparent)]
@@ -182,7 +191,7 @@ impl<'a> Parser<'a> {
             }
             _ => Err(CompileError::SimpleError {
                 loc: lhs.loc,
-                s: "Unsupported definition",
+                s: ERR_UNSUPPORTED_DEFINITION,
             }),
         }
     }
@@ -193,7 +202,7 @@ pub fn get_single_ident(expr: LExpr) -> CResult<String> {
         Expr::Atom(Token::Ident(name)) => Ok(name),
         _ => Err(CompileError::SimpleError {
             loc: expr.loc,
-            s: "Expected single identifier for macro name",
+            s: ERR_EXPECTED_MACRO_NAME,
         }),
     }
 }

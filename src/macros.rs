@@ -1,5 +1,6 @@
 use crate::Expr;
 use crate::Token;
+use crate::error_messages::{ERR_MACRO_NEEDS_BODY, ERR_MACRO_PARAM_IDENT, ERR_MACRO_SIGNATURE};
 use crate::parsing::{LExpr, Loc, Located};
 use crate::program::{CResult, CompileError, Program};
 
@@ -14,7 +15,7 @@ impl Macro {
         if args.len() < 2 {
             return Err(CompileError::SimpleError {
                 loc,
-                s: "Macro definition requires a body",
+                s: ERR_MACRO_NEEDS_BODY,
             });
         }
 
@@ -31,7 +32,7 @@ impl Macro {
                         _ => {
                             return Err(CompileError::SimpleError {
                                 loc: param_expr.loc.clone(),
-                                s: "Macro parameters must be identifiers",
+                                s: ERR_MACRO_PARAM_IDENT,
                             });
                         }
                     }
@@ -41,7 +42,7 @@ impl Macro {
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: params_expr.loc.clone(),
-                    s: "Macro signature must be in parentheses",
+                    s: ERR_MACRO_SIGNATURE,
                 });
             }
         };
@@ -173,6 +174,7 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<(
 mod tests {
     use super::*;
     use crate::Parser;
+    use crate::error_messages::ERR_MACRO_NEEDS_BODY;
     use crate::parsing::Expr;
     use crate::program::{CompileError, Program};
 
@@ -233,7 +235,7 @@ mod tests {
         assert!(matches!(
             err,
             CompileError::SimpleError {
-                s: "Macro definition requires a body",
+                s: ERR_MACRO_NEEDS_BODY,
                 ..
             }
         ));

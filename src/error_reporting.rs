@@ -1,6 +1,7 @@
+use yansi::Paint;
 use crate::parsing::{OTok, ParseError};
 use crate::program::CompileError;
-use ariadne::{Label, Report, ReportKind, Source};
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
 
@@ -115,6 +116,39 @@ impl ErrorReporter {
                     .with_label(Label::new((loc.file, loc.range.clone())).with_message("here"));
 
                 report.finish().print((loc.file, source))
+            }
+            CompileError::UnsupportedForm {
+                loc,
+                op_loc,
+                op,
+                message,
+            } => {
+                let Some(source) = self.source(loc.file) else {
+                    return Ok(());
+                };
+
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(*message)
+                    .with_label(
+                        // PRIMARY: whole expression, red, with operator message
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_color(Color::Red)
+                            .with_message(
+                                op.map(|op| format!("operator `{}`", op))
+                                  .unwrap_or_default(),
+                            ),
+                    );
+
+                if let Some(op_loc) = op_loc {
+                    // SECONDARY: operator token itself, cyan, no message
+                    report = report.with_label(
+                        Label::new((op_loc.file, op_loc.range.clone()))
+                            .with_color(Color::Magenta),
+                    );
+                }
+
+                report.finish().print((loc.file, source))
+
             }
             CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
         }

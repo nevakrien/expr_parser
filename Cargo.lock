@@ -19,6 +19,7 @@ dependencies = [
  "ariadne",
  "libc",
  "thiserror",
+ "yansi",
 ]
 
 [[package]]

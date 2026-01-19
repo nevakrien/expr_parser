@@ -1,3 +1,8 @@
+use crate::error_messages::{
+    ERR_INVALID_MATCH_ARM, ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE,
+    ERR_UNRESOLVED_NAME, ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM,
+    ERR_UNSUPPORTED_PATTERN,
+};
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
 
@@ -242,7 +247,7 @@ pub enum Value {
     Let {
         pat: TPattern,
         value: Box<TValue>,
-        else_part:Option<Box<TValue>>,
+        else_part: Option<Box<TValue>>,
     },
 
     /// Lexical block
@@ -440,7 +445,7 @@ impl Program {
             Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
 
             Expr::Bin(op, pair) if (op.value == "as" || op.value == ":") => {
-                self.lower_cast_expr(expr.loc, &op, *pair)
+                self.lower_cast_expr(expr.loc, op, *pair)
             }
 
             //fallbacks
@@ -448,7 +453,7 @@ impl Program {
             Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
             Expr::Bin(op, pair) => {
                 let (lhs, rhs) = *pair;
-                self.lower_binary_op(expr.loc, op.value, lhs, rhs)
+                self.lower_binary_op(expr.loc, op, lhs, rhs)
             }
         }
     }
@@ -466,10 +471,12 @@ impl Program {
                 Value::NameRef(id)
             }
 
-            Token::Operator(_) => {
-                return Err(CompileError::SimpleError {
+            Token::Operator(op) => {
+                return Err(CompileError::UnsupportedForm {
                     loc: loc.clone(),
-                    s: "Unexpected operator in expression",
+                    op_loc: Some(loc.clone()),
+                    op: Some(op),
+                    message: ERR_UNSUPPORTED_EXPRESSION_ATOM,
                 });
             }
         };
@@ -505,13 +512,9 @@ impl Program {
 
     #[inline(always)]
     fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<TValue> {
-        debug_assert!(2<=items.len() && items.len()<=3);
+        debug_assert!(2 <= items.len() && items.len() <= 3);
 
-        let else_exp = if items.len()==3 {
-             items.pop()
-        }else{
-            None
-        };
+        let else_exp = if items.len() == 3 { items.pop() } else { None };
 
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
@@ -519,19 +522,21 @@ impl Program {
         let pat = self.lower_pattern(pat_expr)?;
         let value = Box::new(self.lower_value(value_expr)?);
 
-        let else_part = 
-            if let Some(exp) = else_exp{
-                let v = self.with_scope(|prog|{
-                    prog.lower_value(exp)
-                })?;
-                Some(Box::new(v))
-            }
-            else{
-                None
-            }
-        ;
+        let else_part = if let Some(exp) = else_exp {
+            let v = self.with_scope(|prog| prog.lower_value(exp))?;
+            Some(Box::new(v))
+        } else {
+            None
+        };
 
-        Ok(self.typed_value(loc, Value::Let { pat, value,else_part }))
+        Ok(self.typed_value(
+            loc,
+            Value::Let {
+                pat,
+                value,
+                else_part,
+            },
+        ))
     }
 
     #[inline(always)]
@@ -566,7 +571,7 @@ impl Program {
         if items.len() < 2 {
             return Err(CompileError::SimpleError {
                 loc,
-                s: "match expects a value and at least one arm",
+                s: ERR_MATCH_ARM_NEEDS_VALUE,
             });
         }
 
@@ -650,27 +655,40 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_cast_expr(&mut self, loc: Loc, op: &str, pair: (LExpr, LExpr)) -> CResult<TValue> {
+    fn lower_cast_expr(
+        &mut self,
+        loc: Loc,
+        op: Located<&'static str>,
+        pair: (LExpr, LExpr),
+    ) -> CResult<TValue> {
         let (value_expr, ty_expr) = pair;
         let value = Box::new(self.lower_value(value_expr)?);
         let ty = Box::new(self.lower_value(ty_expr)?);
-        let v = match op {
+        let v = match op.value {
             "as" => Value::Cast { value, ty },
             ":" => Value::TypeAnnotation { value, ty },
-            &_ => unreachable!(),
+            _ => {
+                return Err(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: ERR_UNSUPPORTED_EXPRESSION,
+                });
+            }
         };
         Ok(self.typed_value(loc, v))
     }
 
     pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
+        let loc = expr.loc;
         match expr.value {
             Expr::Atom(Token::Ident(name)) if name == "_" => {
-                Ok(self.typed_pattern(expr.loc, Pattern::Wildcard))
+                Ok(self.typed_pattern(loc, Pattern::Wildcard))
             }
 
             Expr::Atom(Token::Ident(name)) => {
                 let id = self.insert_value_in_current_scope(name);
-                Ok(self.typed_pattern(expr.loc, Pattern::Bind(id)))
+                Ok(self.typed_pattern(loc, Pattern::Bind(id)))
             }
 
             Expr::Prefix(open, items) if open.value == "(" => {
@@ -678,12 +696,28 @@ impl Program {
                 for item in items {
                     parts.push(self.lower_pattern(item)?);
                 }
-                Ok(self.typed_pattern(expr.loc, Pattern::Tuple(parts)))
+                Ok(self.typed_pattern(loc, Pattern::Tuple(parts)))
             }
 
-            _ => Err(CompileError::SimpleError {
-                loc: expr.loc,
-                s: "Unsupported pattern in IR lowering",
+            Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_PATTERN,
+            }),
+
+            Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_PATTERN,
+            }),
+
+            _ => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: None,
+                op: None,
+                message: ERR_UNSUPPORTED_PATTERN,
             }),
         }
     }
@@ -696,7 +730,7 @@ impl Program {
         }
         Err(CompileError::SimpleError {
             loc: loc.clone(),
-            s: "Unresolved name",
+            s: ERR_UNRESOLVED_NAME,
         })
     }
 
@@ -730,16 +764,34 @@ impl Program {
                         body,
                     })
                 } else {
-                    Err(CompileError::SimpleError {
+                    Err(CompileError::UnsupportedForm {
                         loc: expr.loc,
-                        s: "Invalid match arm guard syntax",
+                        op_loc: Some(op.loc),
+                        op: Some(op.value),
+                        message: ERR_INVALID_MATCH_ARM_GUARD,
                     })
                 }
             }
 
-            _ => Err(CompileError::SimpleError {
+            Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
                 loc: expr.loc,
-                s: "Invalid match arm syntax",
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_INVALID_MATCH_ARM,
+            }),
+
+            Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
+                loc: expr.loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_INVALID_MATCH_ARM,
+            }),
+
+            _ => Err(CompileError::UnsupportedForm {
+                loc: expr.loc,
+                op_loc: None,
+                op: None,
+                message: ERR_INVALID_MATCH_ARM,
             }),
         }
     }
@@ -752,9 +804,10 @@ impl Program {
     fn lower_prefix_op(
         &mut self,
         loc: Loc,
-        op: Located<&str>,
+        op: Located<&'static str>,
         items: Vec<LExpr>,
     ) -> CResult<TValue> {
+        let op_loc = op.loc.clone();
         let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
@@ -766,9 +819,11 @@ impl Program {
             "--" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Dec), items),
 
             _ => {
-                return Err(CompileError::SimpleError {
+                return Err(CompileError::UnsupportedForm {
                     loc,
-                    s: "Unsupported expression in IR lowering",
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: ERR_UNSUPPORTED_EXPRESSION,
                 });
             }
         };
@@ -792,7 +847,7 @@ impl Program {
     fn lower_postfix_op(
         &mut self,
         loc: Loc,
-        op: Located<&str>,
+        op: Located<&'static str>,
         items: Vec<LExpr>,
     ) -> CResult<TValue> {
         match op.value {
@@ -802,9 +857,11 @@ impl Program {
             "++" => self.lower_inc_dec_postfix(op.map(|_| Dir::Inc), items),
             "--" => self.lower_inc_dec_postfix(op.map(|_| Dir::Dec), items),
 
-            _ => Err(CompileError::SimpleError {
+            _ => Err(CompileError::UnsupportedForm {
                 loc,
-                s: "Unsupported expression in IR lowering",
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_EXPRESSION,
             }),
         }
     }
@@ -848,8 +905,14 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_binary_op(&mut self, loc: Loc, op: &str, lhs: LExpr, rhs: LExpr) -> CResult<TValue> {
-        if let Some(assign_op) = match op {
+    fn lower_binary_op(
+        &mut self,
+        loc: Loc,
+        op: Located<&'static str>,
+        lhs: LExpr,
+        rhs: LExpr,
+    ) -> CResult<TValue> {
+        if let Some(assign_op) = match op.value {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
             "-=" => Some(Some(BinOp::Sub)),
@@ -879,7 +942,7 @@ impl Program {
             ));
         }
 
-        if let Some(logic_op) = match op {
+        if let Some(logic_op) = match op.value {
             "&&" => Some(LogicOp::And),
             "||" => Some(LogicOp::Or),
             _ => None,
@@ -895,7 +958,7 @@ impl Program {
             ));
         }
 
-        let binop = match op {
+        let binop = match op.value {
             "+" => BinOp::Add,
             "-" => BinOp::Sub,
             "*" => BinOp::Mul,
@@ -918,9 +981,11 @@ impl Program {
             // "~" | "!" =>
             //     panic!("operator `{}` cannot appear as binary op (parser bug)", op),
             _ => {
-                return Err(CompileError::SimpleError {
+                return Err(CompileError::UnsupportedForm {
                     loc,
-                    s: "Unsupported expression in IR lowering",
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: ERR_UNSUPPORTED_EXPRESSION,
                 });
             }
         };
@@ -1023,6 +1088,7 @@ mod var_scope_test {
 #[cfg(test)]
 mod lowering_tests {
     use super::*;
+    use crate::error_messages::ERR_UNSUPPORTED_EXPRESSION;
     use crate::parsing::Parser;
     use crate::program::{CompileError, Program};
 
@@ -1264,8 +1330,8 @@ mod lowering_tests {
         let expr = parser.consume_expr().unwrap();
         let err = program.lower_value(expr).unwrap_err();
         match err {
-            CompileError::SimpleError { s, .. } => {
-                assert_eq!(s, "Unsupported expression in IR lowering");
+            CompileError::UnsupportedForm { message, .. } => {
+                assert_eq!(message, ERR_UNSUPPORTED_EXPRESSION);
             }
             _ => panic!("expected simple error"),
         }
