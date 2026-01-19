@@ -1096,6 +1096,14 @@ impl<'a> Parser<'a> {
                 value: parts.pop().unwrap().value,
             });
         }
+
+        if parts.is_empty(){
+            return Ok(Located {
+                loc,
+                value: Expr::Atom(Token::Operator("(")),
+            });
+        }
+
         Ok(Located {
             loc,
             value: Expr::Prefix(open, parts),
