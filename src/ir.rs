@@ -1,7 +1,7 @@
 use crate::error_messages::{
-    ERR_INVALID_MATCH_ARM, ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE,
-    ERR_UNRESOLVED_NAME, ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM,
-    ERR_UNSUPPORTED_PATTERN,
+    ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_INVALID_MATCH_ARM_GUARD,
+    ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNRESOLVED_NAME, ERR_UNSUPPORTED_EXPRESSION,
+    ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
@@ -66,6 +66,18 @@ pub enum Literal {
     Float(f64),
     Str(String),
     Void,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AccessKind {
+    Dot,
+    Type,
+    Ptr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessName {
+    pub name: String,
 }
 
 /// Function parameter declaration
@@ -258,6 +270,13 @@ pub enum Value {
     Index {
         base: Box<TValue>,
         args: Vec<TValue>,
+    },
+
+    /// Field/type access with deferred name resolution
+    Access {
+        base: Box<TValue>,
+        name: AccessName,
+        kind: AccessKind,
     },
 
     // ===== SCOPE =====
@@ -464,6 +483,11 @@ impl Program {
 
             Expr::Bin(op, pair) if (op.value == "as" || op.value == ":") => {
                 self.lower_cast_expr(expr.loc, op, *pair)
+            }
+
+            Expr::Bin(op, pair) if matches!(op.value, "." | "::" | "->") => {
+                let (lhs, rhs) = *pair;
+                self.lower_access_expr(expr.loc, op, lhs, rhs)
             }
 
             //fallbacks
@@ -685,16 +709,38 @@ impl Program {
         let v = match op.value {
             "as" => Value::Cast { value, ty },
             ":" => Value::TypeAnnotation { value, ty },
+            _ => panic!("unsupported cast operator `{}`", op.value),
+        };
+        Ok(self.typed_value(loc, v))
+    }
+
+    #[inline(always)]
+    fn lower_access_expr(
+        &mut self,
+        loc: Loc,
+        op: Located<&'static str>,
+        lhs: LExpr,
+        rhs: LExpr,
+    ) -> CResult<TValue> {
+        let base = Box::new(self.lower_value(lhs)?);
+        let name = match rhs.value {
+            Expr::Atom(Token::Ident(name)) => AccessName { name },
             _ => {
-                return Err(CompileError::UnsupportedForm {
-                    loc,
-                    op_loc: Some(op.loc),
-                    op: Some(op.value),
-                    message: ERR_UNSUPPORTED_EXPRESSION,
+                return Err(CompileError::SimpleError {
+                    loc: rhs.loc,
+                    s: ERR_ACCESS_EXPECTS_NAME,
                 });
             }
         };
-        Ok(self.typed_value(loc, v))
+
+        let kind = match op.value {
+            "." => AccessKind::Dot,
+            "::" => AccessKind::Type,
+            "->" => AccessKind::Ptr,
+            _ => panic!("unsupported access operator `{}`", op.value),
+        };
+
+        Ok(self.typed_value(loc, Value::Access { base, name, kind }))
     }
 
     pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
@@ -863,7 +909,7 @@ impl Program {
     #[inline(always)]
     fn lower_postfix_op(
         &mut self,
-        loc: Loc,
+        _loc: Loc,
         op: Located<&'static str>,
         items: Vec<LExpr>,
     ) -> CResult<TValue> {
@@ -875,7 +921,7 @@ impl Program {
             "--" => self.lower_inc_dec_postfix(op.map(|_| Dir::Dec), items),
 
             _ => Err(CompileError::UnsupportedForm {
-                loc,
+                loc: _loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
                 message: ERR_UNSUPPORTED_EXPRESSION,
@@ -995,8 +1041,6 @@ impl Program {
             ">" => BinOp::Gt,
             ">=" => BinOp::Ge,
 
-            // "~" | "!" =>
-            //     panic!("operator `{}` cannot appear as binary op (parser bug)", op),
             _ => {
                 return Err(CompileError::UnsupportedForm {
                     loc,
@@ -1111,7 +1155,7 @@ mod var_scope_test {
 #[cfg(test)]
 mod lowering_tests {
     use super::*;
-    use crate::error_messages::ERR_UNSUPPORTED_EXPRESSION;
+    use crate::error_messages::{ERR_ACCESS_EXPECTS_NAME, ERR_UNSUPPORTED_EXPRESSION};
     use crate::parsing::Parser;
     use crate::program::{CompileError, Program};
 
@@ -1243,6 +1287,60 @@ mod lowering_tests {
             _ => panic!("expected scrutinee name"),
         }
         assert_eq!(arms.len(), 1);
+    }
+
+    #[test]
+    fn lowers_access_for_dot_and_paths() {
+        let src = "{ let a = 1; let t = 2; a.b; t::c; }";
+        let ir = lower_block(src);
+
+        let statements = match ir.value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 4);
+
+        let a_id = bound_id(&statements[0]);
+        let t_id = bound_id(&statements[1]);
+
+        match &statements[2].value {
+            Value::Access { base, name, kind } => {
+                assert_eq!(*kind, AccessKind::Dot);
+                match base.value {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
+                    _ => panic!("expected dot base name"),
+                }
+                assert_eq!(name.name, "b");
+            }
+            _ => panic!("expected dot access"),
+        }
+
+        match &statements[3].value {
+            Value::Access { base, name, kind } => {
+                assert_eq!(*kind, AccessKind::Type);
+                match base.value {
+                    Value::NameRef(id) => assert_eq!(id, t_id),
+                    _ => panic!("expected type base name"),
+                }
+                assert_eq!(name.name, "c");
+            }
+            _ => panic!("expected type access"),
+        }
+    }
+
+    #[test]
+    fn access_requires_identifier_rhs() {
+        let src = "{ let a = 1; a->++a; }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let expr = parser.consume_expr().unwrap();
+        let err = program.lower_value(expr).unwrap_err();
+        match err {
+            CompileError::SimpleError { s, .. } => {
+                assert_eq!(s, ERR_ACCESS_EXPECTS_NAME);
+            }
+            _ => panic!("expected simple error"),
+        }
     }
 
     #[test]
