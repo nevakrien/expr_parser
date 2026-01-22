@@ -21,7 +21,7 @@
 - Use `perf stat` or `perf record` on the example binaries (for example `target/release/examples/no_macros_benchmark`).
 
 ## Tests
-- `cargo test` should be used routinely to verify new changes.
+- `cargo test` should be used by agents after every change that can be tested.
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info

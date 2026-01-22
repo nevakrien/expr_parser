@@ -348,18 +348,22 @@ pub enum Pattern {
     Wildcard,
     /// Tuple pattern with multiple sub-patterns
     Tuple(Vec<TPattern>),
-    /// Struct/enum destructoring pattern
-    Destructure {
-        ctor: LName,
-        fields: Vec<PatternField>,
-    },
-    /// Generic type specialization (e.g., Foo[T, U])
-    GenericSpecialization {
-        base: Box<TPattern>,
-        args: Vec<TPattern>,
-    },
     /// Literal value pattern
     Literal(Literal),
+
+
+//==== TODOS: ========
+
+    // /// Struct/enum destructoring pattern
+    // Destructure {
+    //     ctor: LName,
+    //     fields: Vec<PatternField>,
+    // },
+    // /// Generic type specialization (e.g., Foo[T, U])
+    // GenericSpecialization {
+    //     base: Box<TPattern>,
+    //     args: Vec<TPattern>,
+    // },
 }
 
 /// Named field in a destructoring pattern

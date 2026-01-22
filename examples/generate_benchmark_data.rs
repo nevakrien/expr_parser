@@ -137,7 +137,7 @@ fn main() {
     let mut rejected = 0usize;
 
     while written < expr_count {
-        let depth = 2 + (rng.range(3) as u32);
+        let depth = 2 + rng.range(3);
         let candidate = format!("{};", gen_expr(&mut rng, depth));
         if !is_valid_line(&candidate) {
             rejected += 1;

@@ -15,11 +15,8 @@ fn build_input(tokens: &[&str], repeat: usize, separator: &str) -> String {
 fn run_next_only(label: &str, input: &str) -> usize {
     let mut lexer = Parser::new(input, 0);
     let mut token_count = 0;
-    loop {
-        match lexer.next_token().expect("lexing failed") {
-            Some(_) => token_count += 1,
-            None => break,
-        }
+    while lexer.next_token().expect("lexing failed").is_some() {
+        token_count += 1;
     }
     println!("{label}: next-only -> {token_count} tokens");
     token_count
