@@ -190,7 +190,8 @@ mod tests {
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
         while !parser.is_empty() {
-            let _ = parser.compile_expr(&mut program, &mut |_| {}).unwrap();
+            let exp = parser.parse_with_macros(&program).unwrap().unwrap();
+            program.handle_definition(exp).unwrap();
         }
 
         assert!(program.get_macro("m").is_some());
@@ -206,10 +207,9 @@ mod tests {
         let mut last_expr = None;
 
         while !parser.is_empty() {
-            let mut handler = |expr: &LExpr| {
-                last_expr = Some(expr.clone());
-            };
-            let _ = parser.compile_expr(&mut program, &mut handler).unwrap();
+            let expr = parser.parse_with_macros(&program).unwrap().unwrap();
+            last_expr = Some(expr.clone());
+            program.handle_definition(expr).unwrap();
         }
 
         let expr = last_expr.expect("expected expanded expression");
@@ -228,9 +228,14 @@ mod tests {
         let src = "m = macro(x)";
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
-        let err = parser
-            .compile_expr(&mut program, &mut |_| {})
-            .expect_err("expected missing body error");
+        let err = (|| {
+            if let Some(exp) = parser.parse_with_macros(&program)? {
+                program.handle_definition(exp)?;
+            }
+
+            Ok(())
+        })()
+        .expect_err("expected missing body error");
 
         assert!(matches!(
             err,

@@ -51,14 +51,22 @@ fn main() {
         let mut parser = Parser::new(SOURCE, 0);
 
         while !parser.is_empty() {
-            match parser.compile_expr(&mut program, &mut |_| {}) {
-                Ok(consumed) => {
-                    if consumed {
+            match parser.parse_with_macros(&program) {
+                Ok(Some(expr)) => match program.handle_definition(expr) {
+                    Ok(()) => {
                         parsed_count += 1;
-                    } else {
+                    }
+                    Err(_) => {
+                        error_count += 1;
                         break;
                     }
+                },
+
+                Ok(None) => {
+                    // nothing consumed → stop expanding
+                    break;
                 }
+
                 Err(_) => {
                     error_count += 1;
                     break;

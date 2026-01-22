@@ -350,9 +350,7 @@ pub enum Pattern {
     Tuple(Vec<TPattern>),
     /// Literal value pattern
     Literal(Literal),
-
-
-//==== TODOS: ========
+    //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
     // Destructure {

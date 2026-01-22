@@ -120,43 +120,53 @@ impl Program {
 }
 
 impl<'a> Parser<'a> {
-    pub fn compile_expr(
-        &mut self,
-        program: &mut Program,
-        on_expr: &mut dyn FnMut(&LExpr),
-    ) -> CResult<bool> {
+    // pub fn compile_expr(
+    //     &mut self,
+    //     program: &mut Program,
+    //     on_expr: &mut dyn FnMut(&LExpr),
+    // ) -> CResult<bool> {
+    //     let Some(mut expr) = self.parse_stmt()? else {
+    //         return Ok(false);
+    //     };
+    //     expand_macros_recursive(&mut expr, program)?;
+    //     on_expr(&expr);
+
+    //     program.handle_definition(expr)?;
+    //     Ok(true)
+    // }
+
+    pub fn parse_with_macros(&mut self, program: &Program) -> CResult<Option<LExpr>> {
         let Some(mut expr) = self.parse_stmt()? else {
-            return Ok(false);
+            return Ok(None);
         };
         expand_macros_recursive(&mut expr, program)?;
-        on_expr(&expr);
-
-        self.handle_definition(expr, program)?;
-        Ok(true)
+        Ok(Some(expr))
     }
+}
 
-    fn handle_definition(&mut self, expr: LExpr, program: &mut Program) -> CResult<()> {
+impl Program {
+    pub fn handle_definition(&mut self, expr: LExpr) -> CResult<()> {
         let Located { loc: _, value } = expr;
         match value {
             Expr::Postfix(op, mut items) if op.value == ";" => {
-                self.handle_definition(items.pop().expect("bad structure"), program)
+                self.handle_definition(items.pop().expect("bad structure"))
             }
             Expr::Prefix(open, items) if open.value == "{" => {
                 for item in items {
-                    self.handle_definition(item, program)?;
+                    self.handle_definition(item)?;
                 }
                 Ok(())
             }
             Expr::Bin(eq, box_pair) if eq.value == "=" => {
                 let (lhs, rhs) = *box_pair;
-                self.handle_assignment(lhs, rhs, program)?;
+                self.handle_assignment(lhs, rhs)?;
                 Ok(())
             }
             _ => Ok(()),
         }
     }
 
-    fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr, program: &mut Program) -> CResult<()> {
+    fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) -> CResult<()> {
         let Located {
             loc: rhs_loc,
             value: rhs_value,
@@ -166,33 +176,33 @@ impl<'a> Parser<'a> {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
                 let name = get_single_ident(lhs)?;
                 let macro_def = Macro::new(args, rhs_loc)?;
-                program.add_macro(name, macro_def);
+                self.add_macro(name, macro_def);
                 Ok(())
             }
             Expr::Prefix(ref fn_kw, ref _args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
-                let v = program.lower_value(Located {
+                let v = self.lower_value(Located {
                     loc: rhs_loc,
                     value: rhs_value,
                 })?;
-                program.functions.push(v);
+                self.functions.push(v);
                 Ok(())
             }
             Expr::Prefix(struct_kw, args) if struct_kw.value == "struct" => {
-                program.structs.push(Located {
+                self.structs.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(struct_kw, args),
                 });
                 Ok(())
             }
             Expr::Prefix(enum_kw, args) if enum_kw.value == "enum" => {
-                program.enums.push(Located {
+                self.enums.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(enum_kw, args),
                 });
                 Ok(())
             }
             Expr::Prefix(union_kw, args) if union_kw.value == "union" => {
-                program.unions.push(Located {
+                self.unions.push(Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(union_kw, args),
                 });
