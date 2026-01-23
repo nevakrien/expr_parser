@@ -1,4 +1,4 @@
-use crate::error_messages::{ERR_EXPECTED_MACRO_NAME, ERR_UNSUPPORTED_DEFINITION};
+use crate::error_messages::{ERR_EXPECTED_MACRO_NAME,ERR_EXPECTED_GEN_NAME, ERR_UNSUPPORTED_DEFINITION};
 use crate::ir::LValue;
 use crate::ir::NameId;
 use crate::ir::TValue;
@@ -36,14 +36,16 @@ pub enum CompileError {
 }
 
 #[derive(Debug)]
-pub struct Program {
-    pub macros: HashMap<String, Macro>,
-    pub functions: Vec<TValue>,
-    pub structs: Vec<LExpr>,
-    pub enums: Vec<LExpr>,
-    pub unions: Vec<LExpr>,
+pub enum Defined {
+    Raw(LExpr),
+    Value(TValue),
+    Type(LValue),
+    Macro(Macro),
+}
 
-    pub types: Vec<LValue>,
+#[derive(Debug)]
+pub struct Program {
+    pub definitions:HashMap<NameId,Defined>,
     pub current_infrence: Vec<TypeInfo>,
 
     pub next_name_id: usize,
@@ -59,13 +61,7 @@ impl Default for Program {
 impl Program {
     pub fn new() -> Self {
         let mut program = Self {
-            macros: HashMap::new(),
-            functions: Vec::new(),
-            structs: Vec::new(),
-            enums: Vec::new(),
-            unions: Vec::new(),
-
-            types: Vec::new(),
+            definitions:HashMap::new(),
             current_infrence: Vec::new(),
 
             next_name_id: 0,
@@ -110,31 +106,32 @@ impl Program {
         id
     }
 
-    pub fn add_macro(&mut self, name: String, macro_def: Macro) {
-        self.macros.insert(name, macro_def);
+    pub fn add_definition(&mut self,name:String,def:Defined)->NameId{
+        let id = self.fresh_name_id();
+        self.scopes.last_mut().unwrap().insert(name,id);
+        self.definitions.insert(id,def);
+        id
     }
 
+    // pub fn add_macro(&mut self, name: String, macro_def: Macro) {
+    //     // self.macros.insert(name, macro_def);
+
+    //     //TODO think if we wana do scopes
+    //     self.add_definition(name,Defined::Macro(macro_def));
+    // }
+
     pub fn get_macro(&self, name: &str) -> Option<&Macro> {
-        self.macros.get(name)
+        //TODO think if we wana do scopes
+        let id = self.scopes[0].get(name)?;
+        if let Some(Defined::Macro(ans)) = self.definitions.get(id){
+            Some(ans)
+        }else{
+            None
+        }
     }
 }
 
 impl<'a> Parser<'a> {
-    // pub fn compile_expr(
-    //     &mut self,
-    //     program: &mut Program,
-    //     on_expr: &mut dyn FnMut(&LExpr),
-    // ) -> CResult<bool> {
-    //     let Some(mut expr) = self.parse_stmt()? else {
-    //         return Ok(false);
-    //     };
-    //     expand_macros_recursive(&mut expr, program)?;
-    //     on_expr(&expr);
-
-    //     program.handle_definition(expr)?;
-    //     Ok(true)
-    // }
-
     pub fn parse_with_macros(&mut self, program: &Program) -> CResult<Option<LExpr>> {
         let Some(mut expr) = self.parse_stmt()? else {
             return Ok(None);
@@ -172,56 +169,80 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        match rhs_value {
+        let (name,generics) = match lhs.value {
+            Expr::Atom(Token::Ident(name)) => (name,vec![]),
+            Expr::Postfix(Located{value:"[", .. },parts)=>{
+                let mut name_iter= parts
+                .into_iter()
+                .map(|t|{
+                    match t.value {
+                        Expr::Atom(Token::Ident(name))=>Ok(name),
+                        _=>Err(CompileError::SimpleError {
+                            loc: t.loc,
+                            s: ERR_EXPECTED_GEN_NAME,
+                        })
+                    }
+                });
+
+                let name = name_iter.next().unwrap()?;
+                let gens= name_iter.collect::<Result<_, _>>()?;
+                (name,gens)
+            }
+            _ => todo!(),
+        };
+
+
+        let def :Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
-                let name = get_single_ident(lhs)?;
                 let macro_def = Macro::new(args, rhs_loc)?;
-                self.add_macro(name, macro_def);
-                Ok(())
+                // self.add_macro(name, macro_def);
+                if !generics.is_empty(){
+                    return Err(CompileError::SimpleError {
+                        loc: lhs.loc,
+                        s: ERR_EXPECTED_MACRO_NAME,
+                    })
+                }
+                Defined::Macro(macro_def)
             }
             Expr::Prefix(ref fn_kw, ref _args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
                 let v = self.lower_value(Located {
                     loc: rhs_loc,
                     value: rhs_value,
                 })?;
-                self.functions.push(v);
-                Ok(())
+                Defined::Value(v)
             }
             Expr::Prefix(struct_kw, args) if struct_kw.value == "struct" => {
-                self.structs.push(Located {
+                let r = Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(struct_kw, args),
-                });
-                Ok(())
+                };
+                
+                Defined::Raw(r)
             }
             Expr::Prefix(enum_kw, args) if enum_kw.value == "enum" => {
-                self.enums.push(Located {
+                let r = Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(enum_kw, args),
-                });
-                Ok(())
+                };
+
+                Defined::Raw(r)
+
             }
             Expr::Prefix(union_kw, args) if union_kw.value == "union" => {
-                self.unions.push(Located {
+                let r = Located {
                     loc: rhs_loc,
                     value: Expr::Prefix(union_kw, args),
-                });
-                Ok(())
+                };
+                Defined::Raw(r)
             }
-            _ => Err(CompileError::SimpleError {
+            _ => return Err(CompileError::SimpleError {
                 loc: lhs.loc,
                 s: ERR_UNSUPPORTED_DEFINITION,
             }),
-        }
-    }
-}
+        };
 
-pub fn get_single_ident(expr: LExpr) -> CResult<String> {
-    match expr.value {
-        Expr::Atom(Token::Ident(name)) => Ok(name),
-        _ => Err(CompileError::SimpleError {
-            loc: expr.loc,
-            s: ERR_EXPECTED_MACRO_NAME,
-        }),
+        self.add_definition(name,def);
+
+        Ok(())
     }
 }
