@@ -1,4 +1,6 @@
-use crate::error_messages::{ERR_EXPECTED_MACRO_NAME,ERR_EXPECTED_GEN_NAME, ERR_UNSUPPORTED_DEFINITION};
+use crate::error_messages::{
+    ERR_EXPECTED_GEN_NAME, ERR_EXPECTED_MACRO_NAME, ERR_UNSUPPORTED_DEFINITION,
+};
 use crate::ir::LValue;
 use crate::ir::NameId;
 use crate::ir::TValue;
@@ -45,7 +47,7 @@ pub enum Defined {
 
 #[derive(Debug)]
 pub struct Program {
-    pub definitions:HashMap<NameId,Defined>,
+    pub definitions: HashMap<NameId, Defined>,
     pub current_infrence: Vec<TypeInfo>,
 
     pub next_name_id: usize,
@@ -61,7 +63,7 @@ impl Default for Program {
 impl Program {
     pub fn new() -> Self {
         let mut program = Self {
-            definitions:HashMap::new(),
+            definitions: HashMap::new(),
             current_infrence: Vec::new(),
 
             next_name_id: 0,
@@ -106,10 +108,10 @@ impl Program {
         id
     }
 
-    pub fn add_definition(&mut self,name:String,def:Defined)->NameId{
+    pub fn add_definition(&mut self, name: String, def: Defined) -> NameId {
         let id = self.fresh_name_id();
-        self.scopes.last_mut().unwrap().insert(name,id);
-        self.definitions.insert(id,def);
+        self.scopes.last_mut().unwrap().insert(name, id);
+        self.definitions.insert(id, def);
         id
     }
 
@@ -123,9 +125,9 @@ impl Program {
     pub fn get_macro(&self, name: &str) -> Option<&Macro> {
         //TODO think if we wana do scopes
         let id = self.scopes[0].get(name)?;
-        if let Some(Defined::Macro(ans)) = self.definitions.get(id){
+        if let Some(Defined::Macro(ans)) = self.definitions.get(id) {
             Some(ans)
-        }else{
+        } else {
             None
         }
     }
@@ -169,38 +171,33 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        let (name,generics) = match lhs.value {
-            Expr::Atom(Token::Ident(name)) => (name,vec![]),
-            Expr::Postfix(Located{value:"[", .. },parts)=>{
-                let mut name_iter= parts
-                .into_iter()
-                .map(|t|{
-                    match t.value {
-                        Expr::Atom(Token::Ident(name))=>Ok(name),
-                        _=>Err(CompileError::SimpleError {
-                            loc: t.loc,
-                            s: ERR_EXPECTED_GEN_NAME,
-                        })
-                    }
+        let (name, generics) = match lhs.value {
+            Expr::Atom(Token::Ident(name)) => (name, vec![]),
+            Expr::Postfix(Located { value: "[", .. }, parts) => {
+                let mut name_iter = parts.into_iter().map(|t| match t.value {
+                    Expr::Atom(Token::Ident(name)) => Ok(name),
+                    _ => Err(CompileError::SimpleError {
+                        loc: t.loc,
+                        s: ERR_EXPECTED_GEN_NAME,
+                    }),
                 });
 
                 let name = name_iter.next().unwrap()?;
-                let gens= name_iter.collect::<Result<_, _>>()?;
-                (name,gens)
+                let gens = name_iter.collect::<Result<_, _>>()?;
+                (name, gens)
             }
             _ => todo!(),
         };
 
-
-        let def :Defined = match rhs_value {
+        let def: Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
                 let macro_def = Macro::new(args, rhs_loc)?;
                 // self.add_macro(name, macro_def);
-                if !generics.is_empty(){
+                if !generics.is_empty() {
                     return Err(CompileError::SimpleError {
                         loc: lhs.loc,
                         s: ERR_EXPECTED_MACRO_NAME,
-                    })
+                    });
                 }
                 Defined::Macro(macro_def)
             }
@@ -216,7 +213,7 @@ impl Program {
                     loc: rhs_loc,
                     value: Expr::Prefix(struct_kw, args),
                 };
-                
+
                 Defined::Raw(r)
             }
             Expr::Prefix(enum_kw, args) if enum_kw.value == "enum" => {
@@ -226,7 +223,6 @@ impl Program {
                 };
 
                 Defined::Raw(r)
-
             }
             Expr::Prefix(union_kw, args) if union_kw.value == "union" => {
                 let r = Located {
@@ -235,13 +231,15 @@ impl Program {
                 };
                 Defined::Raw(r)
             }
-            _ => return Err(CompileError::SimpleError {
-                loc: lhs.loc,
-                s: ERR_UNSUPPORTED_DEFINITION,
-            }),
+            _ => {
+                return Err(CompileError::SimpleError {
+                    loc: lhs.loc,
+                    s: ERR_UNSUPPORTED_DEFINITION,
+                });
+            }
         };
 
-        self.add_definition(name,def);
+        self.add_definition(name, def);
 
         Ok(())
     }

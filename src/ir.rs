@@ -350,6 +350,8 @@ pub enum Pattern {
     Tuple(Vec<TPattern>),
     /// Literal value pattern
     Literal(Literal),
+    /// Type annotation pattern (x:T)
+    TypeAnnotation { pat: Box<TPattern>, ty: Box<TValue> },
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -763,6 +765,22 @@ impl Program {
                     parts.push(self.lower_pattern(item)?);
                 }
                 Ok(self.typed_pattern(loc, Pattern::Tuple(parts)))
+            }
+
+            // Pattern with type annotation: x:T
+            Expr::Bin(op, pair) if op.value == ":" => {
+                let (pat_expr, ty_expr) = *pair;
+                let pat = self.lower_pattern(pat_expr)?;
+                let ty = self.lower_value(ty_expr)?;
+
+                // Create a type annotation pattern
+                Ok(self.typed_pattern(
+                    loc,
+                    Pattern::TypeAnnotation {
+                        pat: Box::new(pat),
+                        ty: Box::new(ty),
+                    },
+                ))
             }
 
             Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
@@ -1457,6 +1475,51 @@ mod lowering_tests {
                 assert_eq!(message, ERR_UNSUPPORTED_EXPRESSION);
             }
             _ => panic!("expected simple error"),
+        }
+    }
+
+    #[test]
+    fn lowers_pattern_with_type_annotation() {
+        let src = "{ let x:int = 1; }";
+        let ir = lower_block(src);
+
+        let statements = match ir.value {
+            Value::Block { statements, .. } => statements,
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 1);
+
+        let let_stmt = &statements[0];
+        match &let_stmt.value {
+            Value::Let {
+                pat,
+                value,
+                else_part,
+            } => {
+                assert!(else_part.is_none(), "expected no else part");
+                match &pat.value {
+                    Pattern::TypeAnnotation { pat: inner_pat, ty } => {
+                        // The inner pattern should bind a new name 'x'
+                        match &inner_pat.value {
+                            Pattern::Bind(_x_id) => {
+                                // Verify the value is the expected literal
+                                match &value.value {
+                                    Value::Literal(Literal::Num(1)) => {}
+                                    _ => panic!("expected literal value"),
+                                }
+                            }
+                            _ => panic!("expected bind pattern for variable name"),
+                        }
+                        // The type should resolve to the predefined 'int' name
+                        match &ty.value {
+                            Value::NameRef(_int_id) => {} // Type should be a name reference to 'int'
+                            _ => panic!("expected type to be name reference to predefined type"),
+                        }
+                    }
+                    _ => panic!("expected type annotation pattern"),
+                }
+            }
+            _ => panic!("expected let statement"),
         }
     }
 }
