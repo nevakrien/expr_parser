@@ -106,6 +106,11 @@ recent profiling notes (file-based benchmark on a ~1M expression input):
 - parser hot spots (`Parser::try_expr_bp`, `Lexer::lex_token`) show measurable misses but far below the utf-8 scan.
 - branch miss rate remains low (<=~2% on cpu_core in both modes).
 
+follow-up cache-miss breakdown using the `include_str!` variant (no runtime utf8 validation):
+- cpu_core misses: 58.44% in libc free/allocator paths (drop teardown), 40.97% in binary drop paths for IR/Program data.
+- cpu_atom misses: 100% in newline scanning (`lines()` -> `memchr` family).
+- take-away: even after removing the dominant utf8 validation, almost none of the cache misses land in the main parse/lower logic; they are almost entirely in unavoidable cold input scanning and in drops/allocator teardown of the IR.
+
 ### macros
 we started benchmarking macros before the rest of the compilation was made.
 this lets us see how they compare to regular parsing and what cache behivior they show.
