@@ -128,6 +128,14 @@ impl<'a> Parser<'a> {
 }
 
 impl Program {
+    #[inline]
+    pub fn with_scope<T>(&mut self, f: impl FnOnce(&mut Program) -> CResult<T>) -> CResult<T> {
+        self.push_scope();
+        let result = f(self);
+        self.pop_scope();
+        result
+    }
+
     pub fn handle_definition(&mut self, expr: LExpr) -> CResult<()> {
         let Located { loc, value } = expr;
         match value {
@@ -165,14 +173,14 @@ impl Program {
             }
         };
 
-        let def: Defined = match rhs_value {
+        let def: Defined = self.with_scope(|prog|Ok(match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
                 let macro_def = Macro::new(args, rhs_loc)?;
                 // self.add_macro(name, macro_def);
                 Defined::Macro(macro_def)
             }
             Expr::Prefix(ref fn_kw, ref _args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
-                let v = self.lower_value(Located {
+                let v = prog.lower_value(Located {
                     loc: rhs_loc,
                     value: rhs_value,
                 })?;
@@ -207,7 +215,7 @@ impl Program {
                     s: ERR_EXPECTED_DEFINITION_VALUE,
                 });
             }
-        };
+        }))?;
 
         self.definitions.insert(name, def);
 

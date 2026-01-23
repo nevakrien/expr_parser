@@ -440,13 +440,7 @@ impl<T> Typed<T> {
 // }
 
 impl Program {
-    #[inline]
-    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Program) -> CResult<T>) -> CResult<T> {
-        self.push_scope();
-        let result = f(self);
-        self.pop_scope();
-        result
-    }
+
 
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
