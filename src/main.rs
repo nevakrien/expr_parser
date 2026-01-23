@@ -82,8 +82,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut parser = Parser::new(input, 0);
                 let mut expr_count = 0;
                 let mut compile_error = None;
-                let mut pending = Vec::new();
-
                 while !parser.is_empty() {
                     match parser.parse_with_macros(&program) {
                         Ok(None) => break,
@@ -97,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             println!("{}", pretty_print_expr(&expr, 0));
                             expr_count += 1;
 
-                            if let Err(err) = program.gather_definition(expr, &mut pending) {
+                            if let Err(err) = program.gather_definition(expr) {
                                 compile_error = Some(err);
                                 break;
                             }
@@ -110,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 if compile_error.is_none() {
-                    if let Err(err) = program.compile_pending_definitions(pending) {
+                    if let Err(err) = program.check_pending_names() {
                         compile_error = Some(err);
                     }
                 }

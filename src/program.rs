@@ -1,9 +1,11 @@
-use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
+use crate::error_messages::{
+    ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME, ERR_UNRESOLVED_NAME,
+};
 use crate::ir::LValue;
 use crate::ir::NameId;
 use crate::ir::TValue;
 use crate::ir::TypeInfo;
-use crate::macros::{expand_macros_recursive, Macro};
+use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -37,7 +39,7 @@ pub enum CompileError {
 
 #[derive(Debug)]
 pub enum Defined {
-    Placeholder,
+    ToBeDefined,
     Raw(LExpr),
     Value(TValue),
     Type(LValue),
@@ -51,6 +53,7 @@ pub struct Program {
 
     pub next_name_id: usize,
     pub scopes: Vec<HashMap<String, NameId>>,
+    pub pending_names: HashMap<NameId, Loc>,
 }
 
 impl Default for Program {
@@ -67,6 +70,7 @@ impl Program {
 
             next_name_id: 0,
             scopes: vec![HashMap::new()],
+            pending_names: HashMap::new(),
         };
         program.insert_builtin_types();
         program
@@ -95,6 +99,17 @@ impl Program {
             value_scope.insert(name, id);
         } else {
             // If you ever lower without at least one scope pushed, that's a bug.
+            debug_assert!(false, "no scope available when inserting binding");
+        }
+        id
+    }
+
+    /// Insert a new binding into the global scope, always creating a fresh ID.
+    pub fn insert_value_in_global_scope(&mut self, name: String) -> NameId {
+        let id = self.fresh_name_id();
+        if let Some(value_scope) = self.scopes.first_mut() {
+            value_scope.insert(name, id);
+        } else {
             debug_assert!(false, "no scope available when inserting binding");
         }
         id
@@ -137,24 +152,21 @@ impl Program {
         result
     }
 
-    pub fn gather_definition(&mut self, expr: LExpr, pending: &mut Vec<NameId>) -> CResult<()> {
+    pub fn gather_definition(&mut self, expr: LExpr) -> CResult<()> {
         let Located { loc, value } = expr;
         match value {
             Expr::Postfix(op, mut items) if op.value == ";" => {
-                self.gather_definition(items.pop().expect("bad structure"), pending)
+                self.gather_definition(items.pop().expect("bad structure"))
             }
             Expr::Prefix(open, items) if open.value == "{" => {
                 for item in items {
-                    self.gather_definition(item, pending)?;
+                    self.gather_definition(item)?;
                 }
                 Ok(())
             }
             Expr::Bin(eq, box_pair) if eq.value == "=" => {
                 let (lhs, rhs) = *box_pair;
-                if let Some(id) = self.handle_assignment(lhs, rhs)? {
-                    pending.push(id);
-                }
-                Ok(())
+                self.handle_assignment(lhs, rhs)
             }
             _ => {
                 self.lower_value(Located { loc, value })?;
@@ -164,56 +176,54 @@ impl Program {
     }
 
     pub fn compile_all(&mut self, parser: &mut Parser<'_>) -> CResult<()> {
-        let mut pending = Vec::new();
         while !parser.is_empty() {
             match parser.parse_with_macros(self)? {
-                Some(expr) => self.gather_definition(expr, &mut pending)?,
+                Some(expr) => self.gather_definition(expr)?,
                 None => break,
             }
         }
 
-        self.compile_pending_definitions(pending)
+        self.check_pending_names()
     }
 
-    pub fn compile_pending_definitions(
-        &mut self,
-        pending_ids: Vec<NameId>,
-    ) -> CResult<()> {
-        for id in pending_ids.into_iter().rev() {
-            let raw = match self.definitions.entry(id) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    if matches!(entry.get(), Defined::Raw(_)) {
-                        match std::mem::replace(entry.get_mut(), Defined::Placeholder) {
-                            Defined::Raw(expr) => expr,
-                            _ => continue,
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-                std::collections::hash_map::Entry::Vacant(_) => continue,
-            };
+    pub fn check_pending_names(&self) -> CResult<()> {
+        if self.pending_names.is_empty() {
+            return Ok(());
+        }
 
-            let Located { loc, value } = raw;
-            let compiled = self.with_scope(|prog| {
-                let v = prog.lower_value(Located { loc, value })?;
-                Ok(Defined::Value(v))
-            })?;
-
-            self.definitions.insert(id, compiled);
+        if let Some((_, loc)) = self.pending_names.iter().next() {
+            return Err(CompileError::SimpleError {
+                loc: loc.clone(),
+                s: ERR_UNRESOLVED_NAME,
+            });
         }
 
         Ok(())
     }
 
-    fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) -> CResult<Option<NameId>> {
+    fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) -> CResult<()> {
         let Located {
             loc: rhs_loc,
             value: rhs_value,
         } = rhs;
 
         let name = match lhs.value {
-            Expr::Atom(Token::Ident(name)) => self.insert_value_in_current_scope(name),
+            Expr::Atom(Token::Ident(name)) => {
+                if let Some(id) = self
+                    .scopes
+                    .last()
+                    .and_then(|scope| scope.get(&name))
+                    .copied()
+                {
+                    if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
+                        id
+                    } else {
+                        self.insert_value_in_current_scope(name)
+                    }
+                } else {
+                    self.insert_value_in_current_scope(name)
+                }
+            }
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: lhs.loc,
@@ -222,17 +232,24 @@ impl Program {
             }
         };
 
+        self.pending_names.remove(&name);
+
         let def: Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
                 let macro_def = Macro::new(args, rhs_loc)?;
                 Defined::Macro(macro_def)
             }
+            Expr::Prefix(ref fn_kw, _) if fn_kw.value == "fn" || fn_kw.value == "cfn" => self
+                .with_scope(|prog| {
+                    let v = prog.lower_value(Located {
+                        loc: rhs_loc,
+                        value: rhs_value,
+                    })?;
+                    Ok(Defined::Value(v))
+                })?,
+
             Expr::Prefix(ref fn_kw, _)
-                if fn_kw.value == "fn"
-                    || fn_kw.value == "cfn"
-                    || fn_kw.value == "struct"
-                    || fn_kw.value == "enum"
-                    || fn_kw.value == "union" =>
+                if fn_kw.value == "struct" || fn_kw.value == "enum" || fn_kw.value == "union" =>
             {
                 Defined::Raw(Located {
                     loc: rhs_loc,
@@ -247,9 +264,8 @@ impl Program {
             }
         };
 
-        let is_raw = matches!(def, Defined::Raw(_));
         self.definitions.insert(name, def);
 
-        Ok(is_raw.then_some(name))
+        Ok(())
     }
 }

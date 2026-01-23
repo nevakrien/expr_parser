@@ -1,8 +1,8 @@
+use crate::Expr;
+use crate::Token;
 use crate::error_messages::{ERR_MACRO_NEEDS_BODY, ERR_MACRO_PARAM_IDENT, ERR_MACRO_SIGNATURE};
 use crate::parsing::{LExpr, Loc, Located};
 use crate::program::{CResult, CompileError, Program};
-use crate::Expr;
-use crate::Token;
 
 #[derive(Debug)]
 pub struct Macro {
@@ -173,10 +173,10 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Parser;
     use crate::error_messages::ERR_MACRO_NEEDS_BODY;
     use crate::parsing::Expr;
     use crate::program::{CompileError, Program};
-    use crate::Parser;
 
     #[test]
     fn expands_recursive_and_nested_macros() {
@@ -203,16 +203,13 @@ mod tests {
         let mut parser = Parser::new(src, 0);
         let mut last_expr = None;
 
-        let mut pending = Vec::new();
         while !parser.is_empty() {
             let expr = parser.parse_with_macros(&program).unwrap().unwrap();
             last_expr = Some(expr.clone());
-            program.gather_definition(expr, &mut pending).unwrap();
+            program.gather_definition(expr).unwrap();
         }
 
-        program
-            .compile_pending_definitions(pending)
-            .unwrap();
+        program.check_pending_names().unwrap();
 
         let expr = last_expr.expect("expected expanded expression");
         match expr.value {
@@ -232,8 +229,7 @@ mod tests {
         let mut parser = Parser::new(src, 0);
         let err = (|| {
             if let Some(exp) = parser.parse_with_macros(&program)? {
-                let mut pending = Vec::new();
-                program.gather_definition(exp, &mut pending)?;
+                program.gather_definition(exp)?;
             }
 
             Ok(())

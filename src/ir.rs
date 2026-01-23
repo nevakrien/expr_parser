@@ -1,10 +1,10 @@
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,
-    ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNRESOLVED_NAME,
-    ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
+    ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNSUPPORTED_EXPRESSION,
+    ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
-use crate::program::{CResult, CompileError, Program};
+use crate::program::{CResult, CompileError, Defined, Program};
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>; // Located name identifier
@@ -440,8 +440,6 @@ impl<T> Typed<T> {
 // }
 
 impl Program {
-
-
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
@@ -848,10 +846,10 @@ impl Program {
                 return Ok(*id);
             }
         }
-        Err(CompileError::SimpleError {
-            loc: loc.clone(),
-            s: ERR_UNRESOLVED_NAME,
-        })
+        let id = self.insert_value_in_global_scope(name.to_string());
+        self.definitions.insert(id, Defined::ToBeDefined);
+        self.pending_names.entry(id).or_insert_with(|| loc.clone());
+        Ok(id)
     }
 
     #[inline(always)]
@@ -1425,8 +1423,14 @@ mod lowering_tests {
             .and_then(|scope| scope.get("g"))
             .expect("missing g binding");
 
-        let f_def = program.definitions.get(&f_id).expect("missing f definition");
-        let g_def = program.definitions.get(&g_id).expect("missing g definition");
+        let f_def = program
+            .definitions
+            .get(&f_id)
+            .expect("missing f definition");
+        let g_def = program
+            .definitions
+            .get(&g_id)
+            .expect("missing g definition");
 
         let f_body = match f_def {
             Defined::Value(value) => match &value.value {
