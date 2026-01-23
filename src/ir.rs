@@ -1389,8 +1389,7 @@ mod lowering_tests {
         let src = "f = fn[T](x:T){ let y:T = x; y }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        let expr = parser.consume_stmt().unwrap();
-        program.handle_definition(expr).unwrap();
+        program.compile_all(&mut parser).unwrap();
 
         let f_id = *program
             .scopes
@@ -1405,6 +1404,76 @@ mod lowering_tests {
                 _ => panic!("expected function value"),
             },
             _ => panic!("expected value definition"),
+        }
+    }
+
+    #[test]
+    fn lowers_mutual_function_references() {
+        let src = "f = fn(){ g() } g = fn(){ f() }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.compile_all(&mut parser).unwrap();
+
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get("f"))
+            .expect("missing f binding");
+        let g_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get("g"))
+            .expect("missing g binding");
+
+        let f_def = program.definitions.get(&f_id).expect("missing f definition");
+        let g_def = program.definitions.get(&g_id).expect("missing g definition");
+
+        let f_body = match f_def {
+            Defined::Value(value) => match &value.value {
+                Value::Func { body, .. } => body,
+                _ => panic!("expected f to be a function"),
+            },
+            _ => panic!("expected f to lower to a value"),
+        };
+
+        let g_body = match g_def {
+            Defined::Value(value) => match &value.value {
+                Value::Func { body, .. } => body,
+                _ => panic!("expected g to be a function"),
+            },
+            _ => panic!("expected g to lower to a value"),
+        };
+
+        let f_call = match &f_body.value {
+            Value::Call { callee, .. } => callee,
+            Value::Block { return_value, .. } => return_value
+                .as_deref()
+                .map(|value| match &value.value {
+                    Value::Call { callee, .. } => callee,
+                    _ => panic!("expected f return to be a call"),
+                })
+                .expect("expected f to return a call"),
+            _ => panic!("expected f body to be a call or block"),
+        };
+        let g_call = match &g_body.value {
+            Value::Call { callee, .. } => callee,
+            Value::Block { return_value, .. } => return_value
+                .as_deref()
+                .map(|value| match &value.value {
+                    Value::Call { callee, .. } => callee,
+                    _ => panic!("expected g return to be a call"),
+                })
+                .expect("expected g to return a call"),
+            _ => panic!("expected g body to be a call or block"),
+        };
+
+        match f_call.value {
+            Value::NameRef(id) => assert_eq!(id, g_id),
+            _ => panic!("expected f to call g"),
+        }
+        match g_call.value {
+            Value::NameRef(id) => assert_eq!(id, f_id),
+            _ => panic!("expected g to call f"),
         }
     }
 

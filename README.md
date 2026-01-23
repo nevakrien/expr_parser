@@ -140,3 +140,17 @@ comparing macros to no macro cases we see this (on perf 6.8.12 on 13th Gen Intel
   - control-flow:  no-macros ~11.0%, macros ~3.7% (`ProgramParser::consume_expr` + `Parser::parse_stmt` + `Parser::parse_after_fn`)
   - clone/vec:     no-macros ~0%,    macros ~22.2% (`map::try_fold` + `Vec::from_iter` + `try_process`)
   - hash/lookup:   no-macros ~0%,    macros ~1.6% (`BuildHasher::hash_one` + `HashMap::insert`)
+
+## adding preparsing of names
+adding parsing of names before we try and lower, allowing compiling things like
+```
+f = fn(){
+	g()
+}
+
+g = fn () {
+	f()
+}
+```
+
+compltly wrecked the preformance of our benchmarks, what used to basically take the same amount of time as just runing macros is now taking 2x or 5x longer.

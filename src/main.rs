@@ -81,40 +81,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reporter.add_source(0, input.to_string());
                 let mut parser = Parser::new(input, 0);
                 let mut expr_count = 0;
+                let mut compile_error = None;
+                let mut pending = Vec::new();
 
                 while !parser.is_empty() {
                     match parser.parse_with_macros(&program) {
-                        Ok(None) => {}
+                        Ok(None) => break,
                         Ok(Some(expr)) => {
-                            expr_count += 1;
-
-                            println!(
-                                "Expr {}: [{}..{}]",
-                                expr_count + 1,
-                                expr.loc.range.start,
-                                expr.loc.range.end
-                            );
-                            println!("{}", pretty_print_expr(&expr, 0));
-                            if let Err(err) = program.handle_definition(expr) {
-                                reporter.report_compile_error(&err)?;
-                            };
-
-                            break;
-                        }
-                        Err(err) => {
-                            reporter.report_compile_error(&err)?;
-                            break;
-                        }
-                    }
-                }
-
-                /*
-                // Legacy AST-only REPL (kept for reference)
-                let mut parser = Parser::new(input, 0);
-                let mut expr_count = 0;
-                while !parser.is_empty() {
-                    match parser.consume_stmt() {
-                        Ok(expr) => {
                             println!(
                                 "Expr {}: [{}..{}]",
                                 expr_count + 1,
@@ -123,14 +96,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             println!("{}", pretty_print_expr(&expr, 0));
                             expr_count += 1;
+
+                            if let Err(err) = program.gather_definition(expr, &mut pending) {
+                                compile_error = Some(err);
+                                break;
+                            }
                         }
                         Err(err) => {
-                            reporter.report_parse_error(&err)?;
+                            compile_error = Some(err);
                             break;
                         }
                     }
                 }
-                */
+
+                if compile_error.is_none() {
+                    if let Err(err) = program.compile_pending_definitions(pending) {
+                        compile_error = Some(err);
+                    }
+                }
+
+                if let Some(err) = compile_error {
+                    reporter.report_compile_error(&err)?;
+                }
             }
             Err(err) => {
                 eprintln!("Error reading input: {}", err);

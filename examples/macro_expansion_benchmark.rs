@@ -64,28 +64,9 @@ fn main() {
         let mut program = Program::new();
         let mut parser = Parser::new(SOURCE, 0);
 
-        while !parser.is_empty() {
-            match parser.parse_with_macros(&program) {
-                Ok(Some(expr)) => match program.handle_definition(expr) {
-                    Ok(()) => {
-                        expanded_count += 1;
-                    }
-                    Err(_) => {
-                        error_count += 1;
-                        break;
-                    }
-                },
-
-                Ok(None) => {
-                    // nothing consumed → stop expanding
-                    break;
-                }
-
-                Err(_) => {
-                    error_count += 1;
-                    break;
-                }
-            }
+        match program.compile_all(&mut parser) {
+            Ok(()) => expanded_count += 1,
+            Err(_) => error_count += 1,
         }
     }
 
