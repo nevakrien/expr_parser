@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn expands_macros_inside_arguments() {
-        let src = "m = macro(x) { x(x) } m(m(f))";
+        let src = "m = macro(x) { x(x) } let f = 2; m(m(f))";
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
         let mut last_expr = None;

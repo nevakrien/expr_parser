@@ -129,7 +129,7 @@ impl<'a> Parser<'a> {
 
 impl Program {
     pub fn handle_definition(&mut self, expr: LExpr) -> CResult<()> {
-        let Located { loc: _, value } = expr;
+        let Located { loc, value } = expr;
         match value {
             Expr::Postfix(op, mut items) if op.value == ";" => {
                 self.handle_definition(items.pop().expect("bad structure"))
@@ -145,7 +145,7 @@ impl Program {
                 self.handle_assignment(lhs, rhs)?;
                 Ok(())
             }
-            _ => Ok(()),
+            _ => Ok({self.lower_value(Located { loc, value })?;}),
         }
     }
 
