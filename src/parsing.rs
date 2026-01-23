@@ -1110,6 +1110,23 @@ impl<'a> Parser<'a> {
         })
     }
 
+    fn parse_bracket_list(&mut self, start: usize, open: LFixed) -> PResult<LExpr> {
+        let mut items = Vec::new();
+
+        while self.try_operator("]")?.is_none() {
+            let Some(exp) = self.try_expr()? else {
+                return Err(self.err_open_delim(open.clone(), "]"));
+            };
+            items.push(exp);
+            self.try_operator(",")?;
+        }
+
+        Ok(Located {
+            loc: self.produce_loc(start),
+            value: Expr::Prefix(open, items),
+        })
+    }
+
     fn parse_after_lbrace(&mut self, start: usize, open: LFixed) -> PResult<LExpr> {
         let mut items = Vec::new();
         let mut semi = None;
@@ -1194,6 +1211,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_after_fn(&mut self, start: usize, fn_tok: LFixed) -> PResult<LExpr> {
+        let mut v = Vec::new();
+
+        if let Some(open) = self.try_operator("[")? {
+            let bracket_start = open.loc.range.start;
+            let generics = self.parse_bracket_list(bracket_start, open)?;
+            v.push(generics);
+        }
+
         let paren_start = self.expr_start();
         let open = self.expect_operator("(")?;
         let mut params: Vec<LExpr> = Vec::new();
@@ -1218,7 +1243,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let mut v = vec![sig];
+        v.push(sig);
         if let Some(body) = self.try_expr()? {
             v.push(body)
         }
@@ -1247,10 +1272,16 @@ impl<'a> Parser<'a> {
     fn parse_after_struct(&mut self, start: usize, def_tok: LFixed) -> PResult<LExpr> {
         let mut fields = Vec::new();
 
+        if let Some(open) = self.try_operator("[")? {
+            let bracket_start = open.loc.range.start;
+            let generics = self.parse_bracket_list(bracket_start, open)?;
+            fields.push(generics);
+        }
+
         let open = self.expect_operator("{")?;
         while self.try_operator("}")?.is_none() {
             let Some(exp) = self.try_expr()? else {
-                return Err(self.err_open_delim(open.clone(), ")"));
+                return Err(self.err_open_delim(open.clone(), "}"));
             };
             fields.push(exp);
 
@@ -1731,6 +1762,55 @@ mod parse_tests {
     }
 
     #[test]
+    fn fn_with_generics_parses() {
+        let src = "fn[T, Some(x)](y) y";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Prefix(fn_kw, args) => {
+                assert_eq!(fn_kw.value, "fn");
+                assert_eq!(args.len(), 3);
+
+                match &args[0].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "[");
+                        assert_eq!(items.len(), 2);
+                        match &items[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "T"),
+                            _ => panic!("expected generic T"),
+                        }
+                        match &items[1].value {
+                            Expr::Postfix(open, parts) => {
+                                assert_eq!(open.value, "(");
+                                assert_eq!(parts.len(), 2);
+                            }
+                            _ => panic!("expected Some(x)"),
+                        }
+                    }
+                    _ => panic!("expected generic list"),
+                }
+
+                match &args[1].value {
+                    Expr::Prefix(open, params) => {
+                        assert_eq!(open.value, "(");
+                        assert_eq!(params.len(), 1);
+                    }
+                    _ => panic!("expected parameter list"),
+                }
+
+                match &args[2].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "y"),
+                    _ => panic!("expected body"),
+                }
+            }
+            _ => panic!("expected fn"),
+        }
+
+        assert!(p.is_empty());
+    }
+
+    #[test]
     fn let_with_pointer_type() {
         let src = "let x: *char = c";
         let mut p = Parser::new(src, 0);
@@ -1974,6 +2054,51 @@ mod parse_tests {
         }
 
         // ---- no trailing input ----
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn struct_union_with_generics_parses() {
+        let src = "struct[T, U] { x y }";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Prefix(struct_kw, fields) => {
+                assert_eq!(struct_kw.value, "struct");
+                assert_eq!(fields.len(), 3);
+
+                match &fields[0].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "[");
+                        assert_eq!(items.len(), 2);
+                    }
+                    _ => panic!("expected generic list"),
+                }
+            }
+            _ => panic!("expected struct"),
+        }
+
+        let src = "union[T] { x }";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Prefix(union_kw, fields) => {
+                assert_eq!(union_kw.value, "union");
+                assert_eq!(fields.len(), 2);
+
+                match &fields[0].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "[");
+                        assert_eq!(items.len(), 1);
+                    }
+                    _ => panic!("expected generic list"),
+                }
+            }
+            _ => panic!("expected union"),
+        }
+
         assert!(p.is_empty());
     }
 

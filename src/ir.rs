@@ -1,7 +1,7 @@
 use crate::error_messages::{
-    ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_INVALID_MATCH_ARM_GUARD,
-    ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNRESOLVED_NAME, ERR_UNSUPPORTED_EXPRESSION,
-    ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
+    ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,
+    ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNRESOLVED_NAME,
+    ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
@@ -315,6 +315,7 @@ pub enum Value {
 
     /// Function literal
     Func {
+        generics: Vec<NameId>,
         params: Vec<Param>,
         ret: Option<TPattern>,
         body: Box<TValue>,
@@ -653,16 +654,21 @@ impl Program {
     #[inline(always)]
     fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
         debug_assert!(
-            (1..=2).contains(&items.len()),
-            "fn expects signature and optional body"
+            (1..=3).contains(&items.len()),
+            "fn expects optional generics, signature, and optional body"
         );
 
         let mut items = items;
 
-        let body_expr = if items.len() == 2 {
-            items.pop().unwrap()
+        let mut generics_expr = None;
+        if matches!(&items[0].value, Expr::Prefix(open, _) if open.value == "[") {
+            generics_expr = Some(items.remove(0));
+        }
+
+        let body_expr = if items.len() >= 2 {
+            Some(items.pop().unwrap())
         } else {
-            todo!()
+            None
         };
 
         let sig_expr = items.pop().expect("fn missing signature");
@@ -682,6 +688,30 @@ impl Program {
         debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
         self.with_scope(|p| {
+            let mut generics = Vec::new();
+            if let Some(gen_expr) = generics_expr {
+                let Expr::Prefix(open, items) = gen_expr.value else {
+                    debug_assert!(false, "fn generics must use brackets");
+                    unreachable!();
+                };
+                debug_assert!(open.value == "[", "fn generics must use brackets");
+
+                for item in items {
+                    match item.value {
+                        Expr::Atom(Token::Ident(name)) => {
+                            let id = p.insert_value_in_current_scope(name);
+                            generics.push(id);
+                        }
+                        _ => {
+                            return Err(CompileError::SimpleError {
+                                loc: item.loc,
+                                s: ERR_EXPECTED_GEN_NAME,
+                            });
+                        }
+                    }
+                }
+            }
+
             let mut params = Vec::with_capacity(param_items.len());
             for param in param_items {
                 //TODO support type anotation
@@ -694,9 +724,21 @@ impl Program {
                 None => None,
             };
 
+            let body_expr = match body_expr {
+                Some(expr) => expr,
+                None => todo!(),
+            };
             let body = Box::new(p.lower_value(body_expr)?);
 
-            Ok(p.typed_value(loc, Value::Func { params, ret, body }))
+            Ok(p.typed_value(
+                loc,
+                Value::Func {
+                    generics,
+                    params,
+                    ret,
+                    body,
+                },
+            ))
         })
     }
 
@@ -1177,7 +1219,7 @@ mod lowering_tests {
     use super::*;
     use crate::error_messages::{ERR_ACCESS_EXPECTS_NAME, ERR_UNSUPPORTED_EXPRESSION};
     use crate::parsing::Parser;
-    use crate::program::{CompileError, Program};
+    use crate::program::{CompileError, Defined, Program};
 
     fn lower_block(src: &str) -> TValue {
         let mut parser = Parser::new(src, 0);
@@ -1345,6 +1387,30 @@ mod lowering_tests {
                 assert_eq!(name.name, "c");
             }
             _ => panic!("expected type access"),
+        }
+    }
+
+    #[test]
+    fn lowers_fn_generics_in_scope() {
+        let src = "f = fn[T](x:T){ let y:T = x; y }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let expr = parser.consume_stmt().unwrap();
+        program.handle_definition(expr).unwrap();
+
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get("f"))
+            .expect("missing f binding");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
+
+        match defined {
+            Defined::Value(value) => match &value.value {
+                Value::Func { generics, .. } => assert_eq!(generics.len(), 1),
+                _ => panic!("expected function value"),
+            },
+            _ => panic!("expected value definition"),
         }
     }
 

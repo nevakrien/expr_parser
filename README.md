@@ -53,7 +53,7 @@ defining functions is fairly straight forward. they are a value like any other v
 they are also allowed to be declared globaly like so.
 
 ```
-f[T] = fn (x:T)->T {
+f = fn[T] (x:T)->T {
 	return x
 }
 ```
@@ -64,9 +64,9 @@ similar to functions structs enums and unions are just type values to be assigne
 they all share the exact same syntax for construction
 
 ```
-Point[f] = struct {x:f,b:f};
-Point[f] = struct {x:f,b};
-Point[f] = struct {x:f b};
+Point = struct[f] {x:f,b:f};
+Point = struct[f] {x:f,b};
+Point = struct[f] {x:f b};
 ```
 
 construction of a struct/union can be done like so
@@ -140,4 +140,3 @@ comparing macros to no macro cases we see this (on perf 6.8.12 on 13th Gen Intel
   - control-flow:  no-macros ~11.0%, macros ~3.7% (`ProgramParser::consume_expr` + `Parser::parse_stmt` + `Parser::parse_after_fn`)
   - clone/vec:     no-macros ~0%,    macros ~22.2% (`map::try_fold` + `Vec::from_iter` + `try_process`)
   - hash/lookup:   no-macros ~0%,    macros ~1.6% (`BuildHasher::hash_one` + `HashMap::insert`)
-

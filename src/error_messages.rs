@@ -9,7 +9,8 @@ pub const ERR_UNRESOLVED_NAME: &str = "Unresolved name";
 pub const ERR_MACRO_NEEDS_BODY: &str = "Macro definition requires a body";
 pub const ERR_MACRO_PARAM_IDENT: &str = "Macro parameters must be identifiers";
 pub const ERR_MACRO_SIGNATURE: &str = "Macro signature must be in parentheses";
-pub const ERR_UNSUPPORTED_DEFINITION: &str = "Unsupported definition";
-pub const ERR_EXPECTED_MACRO_NAME: &str = "Expected single identifier for macro name";
+pub const ERR_EXPECTED_SIMPLE_NAME: &str = "Expected simple name on left-hand side";
+pub const ERR_EXPECTED_DEFINITION_VALUE: &str =
+    "Expected function, macro, struct, enum, or union definition";
 pub const ERR_EXPECTED_GEN_NAME: &str = "Expected single identifier for generic name";
 pub const ERR_ACCESS_EXPECTS_NAME: &str = "Access expects a name";

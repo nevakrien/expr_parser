@@ -1,11 +1,9 @@
-use crate::error_messages::{
-    ERR_EXPECTED_GEN_NAME, ERR_EXPECTED_MACRO_NAME, ERR_UNSUPPORTED_DEFINITION,
-};
+use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::ir::LValue;
 use crate::ir::NameId;
 use crate::ir::TValue;
 use crate::ir::TypeInfo;
-use crate::macros::{Macro, expand_macros_recursive};
+use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -108,20 +106,6 @@ impl Program {
         id
     }
 
-    pub fn add_definition(&mut self, name: String, def: Defined) -> NameId {
-        let id = self.fresh_name_id();
-        self.scopes.last_mut().unwrap().insert(name, id);
-        self.definitions.insert(id, def);
-        id
-    }
-
-    // pub fn add_macro(&mut self, name: String, macro_def: Macro) {
-    //     // self.macros.insert(name, macro_def);
-
-    //     //TODO think if we wana do scopes
-    //     self.add_definition(name,Defined::Macro(macro_def));
-    // }
-
     pub fn get_macro(&self, name: &str) -> Option<&Macro> {
         //TODO think if we wana do scopes
         let id = self.scopes[0].get(name)?;
@@ -171,34 +155,20 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        let (name, generics) = match lhs.value {
-            Expr::Atom(Token::Ident(name)) => (name, vec![]),
-            Expr::Postfix(Located { value: "[", .. }, parts) => {
-                let mut name_iter = parts.into_iter().map(|t| match t.value {
-                    Expr::Atom(Token::Ident(name)) => Ok(name),
-                    _ => Err(CompileError::SimpleError {
-                        loc: t.loc,
-                        s: ERR_EXPECTED_GEN_NAME,
-                    }),
+        let name = match lhs.value {
+            Expr::Atom(Token::Ident(name)) => self.insert_value_in_current_scope(name),
+            _ => {
+                return Err(CompileError::SimpleError {
+                    loc: lhs.loc,
+                    s: ERR_EXPECTED_SIMPLE_NAME,
                 });
-
-                let name = name_iter.next().unwrap()?;
-                let gens = name_iter.collect::<Result<_, _>>()?;
-                (name, gens)
             }
-            _ => todo!(),
         };
 
         let def: Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
                 let macro_def = Macro::new(args, rhs_loc)?;
                 // self.add_macro(name, macro_def);
-                if !generics.is_empty() {
-                    return Err(CompileError::SimpleError {
-                        loc: lhs.loc,
-                        s: ERR_EXPECTED_MACRO_NAME,
-                    });
-                }
                 Defined::Macro(macro_def)
             }
             Expr::Prefix(ref fn_kw, ref _args) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
@@ -233,13 +203,13 @@ impl Program {
             }
             _ => {
                 return Err(CompileError::SimpleError {
-                    loc: lhs.loc,
-                    s: ERR_UNSUPPORTED_DEFINITION,
+                    loc: rhs_loc,
+                    s: ERR_EXPECTED_DEFINITION_VALUE,
                 });
             }
         };
 
-        self.add_definition(name, def);
+        self.definitions.insert(name, def);
 
         Ok(())
     }
