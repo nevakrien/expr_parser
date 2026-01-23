@@ -154,3 +154,19 @@ g = fn () {
 ```
 
 compltly wrecked the preformance of our benchmarks, what used to basically take the same amount of time as just runing macros is now taking 2x or 5x longer.
+
+### compilation algorithm improvement
+after the name gathering feature was added, we made an algorithmic improvement to the compilation process that improved performance significantly.
+
+benchmark results (10 iterations, ~100K statements):
+- **old algorithm**: 1.555s ± 0.020s, 64,306 ± 811 stmts/sec
+- **new algorithm**: 1.479s ± 0.007s, 67,605 ± 335 stmts/sec  
+- **improvement**: 4.89% faster, 5.13% more throughput
+
+key metrics:
+- **5.09% fewer instructions** executed (17.60B → 16.71B)
+- **8.5% fewer CPU cycles** (11.40B → 10.43B)
+- **cache miss rate improved** from 74.26% to 72.88%
+- **branch miss rate slightly worsened** from 1.47% to 1.55%
+
+the improvements are statistically significant with much tighter variance on the new algorithm.

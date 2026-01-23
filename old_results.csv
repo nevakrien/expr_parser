@@ -1,0 +1,6 @@
+Running benchmark on old algorithm (10 times)...
+Iteration,Time_s,Statements_per_sec,Microseconds_per_statement,Cache_miss_rate,Branch_miss_rate,Instructions,B,Cycles
+1,1.546853049,64649.97,15.47,
+2,1.547204628,64635.28,15.47,
+3,1.543346468,64796.86,15.43,
+4,
