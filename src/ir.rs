@@ -4,7 +4,7 @@ use crate::error_messages::{
     ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
-use crate::program::{CResult, CompileError, Defined, Program};
+use crate::program::{CResult, CompileError, Program};
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>; // Located name identifier
@@ -506,7 +506,7 @@ impl Program {
             Token::Operator("(") => Value::Literal(Literal::Void),
 
             Token::Ident(name) => {
-                let id = self.resolve_value(loc, &name)?;
+                let id = self.resolve_name(loc, name)?;
                 Value::NameRef(id)
             }
 
@@ -840,17 +840,6 @@ impl Program {
         }
     }
 
-    fn resolve_value(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
-        for value_scope in self.scopes.iter().rev() {
-            if let Some(id) = value_scope.get(name) {
-                return Ok(*id);
-            }
-        }
-        let id = self.insert_value_in_global_scope(name.to_string());
-        self.definitions.insert(id, Defined::ToBeDefined);
-        self.pending_names.entry(id).or_insert_with(|| loc.clone());
-        Ok(id)
-    }
 
     #[inline(always)]
     fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {

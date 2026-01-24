@@ -144,6 +144,19 @@ impl<'a> Parser<'a> {
 }
 
 impl Program {
+    pub(crate) fn resolve_name(&mut self, loc: &Loc, name: String) -> CResult<NameId> {
+        for value_scope in self.scopes.iter().rev() {
+            if let Some(id) = value_scope.get(&name) {
+                return Ok(*id);
+            }
+        }
+        let id = self.insert_value_in_global_scope(name.to_string());
+        self.definitions.insert(id, Defined::ToBeDefined);
+        self.pending_names.entry(id).or_insert_with(|| loc.clone());
+        Ok(id)
+    }
+
+
     #[inline]
     pub fn with_scope<T>(&mut self, f: impl FnOnce(&mut Program) -> CResult<T>) -> CResult<T> {
         self.push_scope();
