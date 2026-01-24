@@ -1,8 +1,8 @@
+use crate::type_inference::TypeId;
+use crate::type_inference::TypeStore;
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
-use crate::ir::LValue;
 use crate::ir::NameId;
 use crate::ir::TValue;
-use crate::ir::TypeInfo;
 use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ pub enum CompileError {
     SimpleError { loc: Loc, s: &'static str },
 
     #[error("Unresolved name")]
-    UnresolvedNames {name:String, locs: Vec<Loc> },
+    UnresolvedNames { name: String, locs: Vec<Loc> },
 
     #[error("{call_name} expected {expected} arguments, got {got}")]
     Arity {
@@ -43,14 +43,16 @@ pub enum Defined {
     ToBeDefined,
     Raw(LExpr),
     Value(TValue),
-    Type(LValue),
+    // Type(LValue),
+    TypeRef(TypeId),
     Macro(Macro),
 }
 
 #[derive(Debug)]
 pub struct Program {
-    pub definitions: HashMap<NameId, (String,Defined)>,
-    pub current_infrence: Vec<TypeInfo>,
+    pub definitions: HashMap<NameId, (String, Defined)>,
+    // pub current_infrence: Vec<TypeInfo>,
+    pub type_store: TypeStore,
 
     pub next_name_id: usize,
     pub scopes: Vec<HashMap<String, NameId>>,
@@ -67,7 +69,8 @@ impl Program {
     pub fn new() -> Self {
         let mut program = Self {
             definitions: HashMap::new(),
-            current_infrence: Vec::new(),
+            // current_infrence: Vec::new(),
+            type_store: TypeStore::new(),
 
             next_name_id: 0,
             scopes: vec![HashMap::new()],
@@ -77,11 +80,8 @@ impl Program {
         program
     }
 
-    fn insert_builtin_types(&mut self) {
-        for name in ["int", "float", "bool", "str", "void"] {
-            self.insert_value_in_current_scope(name.to_string());
-        }
-    }
+    
+
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {
@@ -126,7 +126,7 @@ impl Program {
     pub fn get_macro(&self, name: &str) -> Option<&Macro> {
         //TODO think if we wana do scopes
         let id = self.scopes[0].get(name)?;
-        if let Some((_,Defined::Macro(ans))) = self.definitions.get(id) {
+        if let Some((_, Defined::Macro(ans))) = self.definitions.get(id) {
             Some(ans)
         } else {
             None
@@ -145,7 +145,6 @@ impl<'a> Parser<'a> {
 }
 
 impl Program {
-
     //this takes a String because a name is mentioned once as String and gets resolved here
     //it actually has a much nicer cache behvior becaused the String usually gets freed and is giving something else room
     //instead of a &str which would bring cache line to some random parse data
@@ -157,8 +156,8 @@ impl Program {
         }
 
         if let Some(id) = self.scopes[0].get(&name) {
-            //might still be empty. 
-            if let Some(spot) = self.pending_names.get_mut(id){
+            //might still be empty.
+            if let Some(spot) = self.pending_names.get_mut(id) {
                 spot.push(loc.clone())
             }
             return Ok(*id);
@@ -166,7 +165,7 @@ impl Program {
 
         //errors get reported later it can be there is just a late mention so we dont know yet
         let id = self.insert_value_in_global_scope(name.clone());
-        self.definitions.insert(id,(name,Defined::ToBeDefined));
+        self.definitions.insert(id, (name, Defined::ToBeDefined));
         self.pending_names.entry(id).or_default().push(loc.clone());
         Ok(id)
     }
@@ -220,27 +219,27 @@ impl Program {
             return Ok(());
         }
 
-        for (id,locs_ref) in self.pending_names.iter_mut(){
+        for (id, locs_ref) in self.pending_names.iter_mut() {
             let name = match self.definitions.entry(*id) {
-                 std::collections::hash_map::Entry::Occupied(o)=>{
-                    if !matches!(o.get().1,Defined::ToBeDefined){
+                std::collections::hash_map::Entry::Occupied(o) => {
+                    if !matches!(o.get().1, Defined::ToBeDefined) {
                         continue;
                     }
 
                     // o.remove().0
-                    o.get().0.clone()//needed for the repl
-                 }
-                _=>continue,
+                    o.get().0.clone() //needed for the repl
+                }
+                _ => continue,
             };
 
             //take locs out so we dont double report them
             let mut locs = Vec::new();
-            std::mem::swap(locs_ref,&mut locs);
+            std::mem::swap(locs_ref, &mut locs);
 
             //TODO return a multi error here when we add them
-            return Err(CompileError::UnresolvedNames {name, locs })   
+            return Err(CompileError::UnresolvedNames { name, locs });
         }
-        Ok(())//should never get here
+        Ok(()) //should never get here
     }
 
     fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) -> CResult<()> {
@@ -249,7 +248,7 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        let (name_str,name) = match lhs.value {
+        let (name_str, name) = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 if let Some(id) = self
                     .scopes
@@ -257,13 +256,13 @@ impl Program {
                     .and_then(|scope| scope.get(&name))
                     .copied()
                 {
-                    if matches!(self.definitions.get(&id), Some((_,Defined::ToBeDefined))) {
-                        (name,id)
+                    if matches!(self.definitions.get(&id), Some((_, Defined::ToBeDefined))) {
+                        (name, id)
                     } else {
-                        (name.clone(),self.insert_value_in_current_scope(name))
+                        (name.clone(), self.insert_value_in_current_scope(name))
                     }
                 } else {
-                    (name.clone(),self.insert_value_in_current_scope(name))
+                    (name.clone(), self.insert_value_in_current_scope(name))
                 }
             }
             _ => {
@@ -306,7 +305,7 @@ impl Program {
             }
         };
 
-        self.definitions.insert(name, (name_str,def));
+        self.definitions.insert(name, (name_str, def));
 
         Ok(())
     }

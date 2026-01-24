@@ -1,3 +1,4 @@
+use crate::type_inference::Typed;
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,
     ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNSUPPORTED_EXPRESSION,
@@ -14,46 +15,6 @@ pub type TValue = Typed<Value>; // Typed value/expression
 pub type LValue = Located<Value>; // Typed value/expression
 pub type TPattern = Typed<Pattern>; // Typed pattern
 
-// Core type definitions for the IR
-#[derive(Debug, Clone, PartialEq)]
-pub struct TypeInfo {
-    // /// Locations where this type is used in the code
-    pub uses: Vec<Located<TypeUse>>,
-}
-
-impl TypeInfo {
-    pub fn new_empty() -> Self {
-        Self { uses: Vec::new() }
-    }
-}
-
-// #[derive(Debug,Copy, Clone, PartialEq)]
-// pub struct TypeId(usize);
-
-#[derive(Debug, Copy, Clone, PartialEq)]
-pub enum InferId {
-    Concrete(usize),
-    Infered(usize),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TypeUse {
-    FuncOutputs(InferId),
-    FuncInputs(Box<[InferId]>),
-    Tuple(Box<[InferId]>),
-    Basic(NameId),
-}
-
-/// Wrapper that adds location and type information to any value
-#[derive(Debug, Clone, PartialEq)]
-pub struct Typed<T> {
-    /// Source location of this construct
-    pub loc: Loc,
-    /// Type information (if available/known)
-    pub ty: InferId,
-    /// The underlying value
-    pub value: T,
-}
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -86,51 +47,6 @@ pub struct Param {
     pub pat: TPattern,
     pub ty: Option<TValue>,
 }
-
-// /// Declaration of a type, constant, or macro in the global scope
-// ///
-// /// TODO: Eventually support local declarations within functions
-// /// TODO: Macros should be handled here (explicitly or conceptually)
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum Decl {
-//     /// Runtime value declaration (constants, functions, etc.)
-//     RuntimeValue {
-//         name: LName,
-//         generics: Option<Generics>,
-//         value: TValue,
-//     },
-//     /// Struct definition with named fields
-//     Struct {
-//         name: LName,
-//         generics: Option<Generics>,
-//         fields: Vec<(LName, TPattern)>,
-//     },
-//     /// Union definition with named fields (one field active at a time)
-//     Union {
-//         name: LName,
-//         generics: Option<Generics>,
-//         fields: Vec<(LName, TPattern)>,
-//     },
-//     /// Enum definition with variants
-//     Enum {
-//         name: LName,
-//         generics: Option<Generics>,
-//         variants: Vec<EnumVariant>,
-//     },
-//     /// Type alias declaration
-//     Alias {
-//         name: LName,
-//         generics: Option<Generics>,
-//         ty: TPattern,
-//     },
-//     /// Macro definition
-//     Macro {
-//         name: LName,
-//         generics: Option<Generics>,
-//         params: Vec<LName>,
-//         body: TValue,
-//     },
-// }
 
 /// Single variant within an enum declaration
 #[derive(Debug, Clone, PartialEq)]
@@ -1106,29 +1022,7 @@ impl Program {
         ))
     }
 
-    /// Create a typed value with the given location
-    fn typed_value(&mut self, loc: Loc, value: Value) -> TValue {
-        Typed {
-            loc,
-            ty: self.new_infer_id(),
-            value,
-        }
-    }
-
-    /// Create a typed pattern with the given location
-    fn typed_pattern(&mut self, loc: Loc, value: Pattern) -> TPattern {
-        Typed {
-            loc,
-            ty: self.new_infer_id(),
-            value,
-        }
-    }
-
-    fn new_infer_id(&mut self) -> InferId {
-        let id = self.current_infrence.len();
-        self.current_infrence.push(TypeInfo::new_empty());
-        InferId::Infered(id)
-    }
+    
 }
 
 // Public API functions

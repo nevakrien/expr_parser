@@ -26,3 +26,6 @@
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
 
+## Tasks
+1. adding basic type infrence (types are represented as values)
+2. adding a multi error for reporting things that go wrong independently.
