@@ -4,6 +4,8 @@ use ariadne::{Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
 
+const MAX_UNRESOLVED_NAME_LABELS: usize = 5;
+
 pub struct ErrorReporter {
     sources: HashMap<usize, String>,
 }
@@ -105,6 +107,37 @@ impl ErrorReporter {
 
     pub fn report_compile_error(&self, error: &CompileError) -> io::Result<()> {
         match error {
+            CompileError::UnresolvedNames { locs, name } => {
+                let Some(primary) = locs.first() else {
+                    return Ok(());
+                };
+                let Some(source) = self.source(primary.file) else {
+                    return Ok(());
+                };
+
+                let mut report =
+                    Report::build(ReportKind::Error, primary.file, primary.range.start)
+                        .with_message(
+                            if locs.len()<MAX_UNRESOLVED_NAME_LABELS{
+                                format!("Unresolved name '{name}'")
+                            }else{
+                                format!("Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",locs.len())
+
+                            }
+                        );
+
+                for loc in locs
+                    .iter()
+                    .take(MAX_UNRESOLVED_NAME_LABELS)
+                {
+                    report = report.with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("used here"),
+                    );
+                }
+
+                report.finish().print((primary.file, source))
+            }
             CompileError::SimpleError { loc, .. } | CompileError::Arity { loc, .. } => {
                 let Some(source) = self.source(loc.file) else {
                     return Ok(());

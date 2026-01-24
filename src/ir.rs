@@ -1383,7 +1383,7 @@ mod lowering_tests {
             .first()
             .and_then(|scope| scope.get("f"))
             .expect("missing f binding");
-        let defined = program.definitions.get(&f_id).expect("missing definition");
+        let (_,defined) = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
             Defined::Value(value) => match &value.value {
@@ -1412,14 +1412,21 @@ mod lowering_tests {
             .and_then(|scope| scope.get("g"))
             .expect("missing g binding");
 
-        let f_def = program
+        let (fname,f_def) = program
             .definitions
             .get(&f_id)
             .expect("missing f definition");
-        let g_def = program
+
+        assert_eq!(fname,"f");
+
+
+        let (gname,g_def) = program
             .definitions
             .get(&g_id)
             .expect("missing g definition");
+
+        assert_eq!(gname,"g");
+
 
         let f_body = match f_def {
             Defined::Value(value) => match &value.value {
