@@ -58,10 +58,7 @@ pub struct Program {
     // pub current_infrence: Vec<TypeInfo>,
     pub type_store: TypeStore,
 
-    // pub next_name_id: usize,
 
-    //todo: find a way where we dont need to store 2 strings here
-    //
     names_strs:Vec<StrId>,
     pub str_intern:StringInterner,
 

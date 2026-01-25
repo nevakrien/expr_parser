@@ -56,7 +56,7 @@ impl StringInterner {
 
     /// Intern a string slice.
     /// If an equal string was interned before, returns the same StrId.
-    #[inline]
+    #[inline(always)]
     pub fn intern(&mut self, s: &str) -> StrId {
         let bytes = s.as_bytes();
         let h = scrub_hash(hash_bytes(bytes));
@@ -68,14 +68,14 @@ impl StringInterner {
 
         self.insert_slow_path(idx, h, bytes)
     }
-
-    #[inline]
+    
+    #[inline(always)]
     pub fn resolve(&self, id: StrId) -> &str {
         let (off, len) = self.spans[id.0];
         unsafe { std::str::from_utf8_unchecked(&self.bytes[off..off + len]) }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.spans.len()
     }
@@ -85,6 +85,7 @@ impl StringInterner {
         hash as usize & (self.table.len() - 1)
     }
 
+    #[inline(always)]
     fn maybe_grow(&mut self) {
         if self.table.len() == 0 {
             return;
@@ -93,7 +94,12 @@ impl StringInterner {
         if self.spans.len() * MAX_LOAD_DENOMINATOR <= self.table.len() * MAX_LOAD_NUMERATOR {
             return;
         }
+        self.grow();
+    }
 
+    #[cold]
+    #[inline(always)]
+    fn grow(&mut self){
         let new_bucket_count = self.table.len() * 4;
         let old_table = std::mem::replace(
             &mut self.table,
@@ -113,6 +119,7 @@ impl StringInterner {
         }
     }
 
+    #[inline(always)]
     fn insert_slow_path(&mut self, idx: usize, hash: u64, bytes: &[u8]) -> StrId {
         let id = StrId(self.spans.len());
         let off = self.bytes.len();
@@ -128,7 +135,7 @@ impl StringInterner {
         id
     }
 
-    #[inline]
+    #[inline(always)]
     fn ensure_bytes_capacity(&mut self, additional: usize) {
         let needed = self.bytes.len() + additional;
         if needed <= self.bytes.capacity() {
@@ -142,7 +149,7 @@ impl StringInterner {
         self.bytes.reserve_exact(new_cap - self.bytes.capacity());
     }
 
-    #[inline]
+    #[inline(always)]
     fn ensure_spans_capacity(&mut self, additional: usize) {
         let needed = self.spans.len() + additional;
         if needed <= self.spans.capacity() {
@@ -156,7 +163,7 @@ impl StringInterner {
         self.spans.reserve_exact(new_cap - self.spans.capacity());
     }
 
-    #[inline]
+    #[inline(always)]
     fn find_slot(&self, hash: u64, bytes: &[u8]) -> (usize, bool) {
         let mut idx = self.bucket_index(hash);
         let mask = self.table.len() - 1;
@@ -176,7 +183,7 @@ impl StringInterner {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn insert_entry(&mut self, hash: u64, id: StrId) {
         let mut idx = self.bucket_index(hash);
         let mask = self.table.len() - 1;
