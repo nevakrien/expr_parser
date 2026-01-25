@@ -1,3 +1,14 @@
+/**
+ * TODO: Convert IR from tree-shaped to flat list with ids.
+ *    all in the outer level function.
+ *
+ * This will:
+ * - Simplify type inference
+ * - Avoid solver needing to rediscover operands
+ * - Allow linear passes over IR
+ */
+
+
 use crate::type_inference::Typed;
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,

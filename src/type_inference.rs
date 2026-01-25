@@ -388,6 +388,7 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             collect_value(program, ctx, l);
             collect_value(program, ctx, r);
 
+            // This expression is produced by a binary operator
             ctx.set_producer(
                 this,
                 v.loc.clone(),
@@ -395,6 +396,7 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             );
 
             match op {
+                // Bitwise ops: operands must be integer-like
                 BinOp::BitAnd
                 | BinOp::BitOr
                 | BinOp::BitXor
@@ -405,20 +407,20 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
                     ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::IntNumeric);
                 }
 
+                // Arithmetic ops: operands must be numeric
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
                     ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::Numeric);
                     ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::Numeric);
                 }
 
+                // Comparisons: operands numeric, result handled by producer later
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::Numeric);
                     ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::Numeric);
-
-                    let bool_ty = builtin(program, BuiltinType::Bool);
-                    ctx.add_consume(this, v.loc.clone(), ConsumedAs::Explicit(bool_ty));
                 }
             }
         }
+
 
         Value::UnOp { op, value } => {
             collect_value(program, ctx, value);
@@ -433,18 +435,22 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
                 UnOp::BitNot => {
                     ctx.add_consume(value.ty, v.loc.clone(), ConsumedAs::IntNumeric);
                 }
+
                 UnOp::Neg => {
                     ctx.add_consume(value.ty, v.loc.clone(), ConsumedAs::Numeric);
                 }
+
                 UnOp::Not => {
-                    let bool_ty = builtin(program, BuiltinType::Bool);
-                    ctx.add_consume(this, v.loc.clone(), ConsumedAs::Explicit(bool_ty));
+                    // operand is bool-like, result decided by producer
+                    // (you *could* add ConsumedAs::Explicit(bool) on operand later)
                 }
+
                 UnOp::Deref | UnOp::AddrOf => {
                     ctx.add_consume(this, v.loc.clone(), ConsumedAs::Other("ptr op (todo)"));
                 }
             }
         }
+
 
         Value::Let { pat, value, .. } => {
             collect_pattern(program, ctx, pat);
@@ -711,6 +717,29 @@ impl InferState {
  * BASIC SOLVER (FIXED-POINT, LOOP-SAFE)
  * ================================================================ */
 
+fn numeric_kind(ty: BuiltinType) -> Option<NumericKind> {
+    match ty {
+        BuiltinType::Int
+        | BuiltinType::I8 | BuiltinType::I16 | BuiltinType::I32
+        | BuiltinType::I64 | BuiltinType::I128 | BuiltinType::Isize
+        | BuiltinType::U8 | BuiltinType::U16 | BuiltinType::U32
+        | BuiltinType::U64 | BuiltinType::U128 | BuiltinType::Usize
+            => Some(NumericKind::Int),
+
+        BuiltinType::F32 | BuiltinType::F64
+            => Some(NumericKind::Float),
+
+        _ => None,
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum NumericKind {
+    Int,
+    Float,
+}
+
+
 fn seed_from_producers(
     program: &mut Program,
     infer: &mut InferState,
@@ -754,12 +783,173 @@ fn seed_from_producers(
                 }
             }
 
+            ProducedBy::BinOp { op } => {
+                match op {
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        let bool_ty = builtin(program, BuiltinType::Bool);
+
+                        changed |= infer
+                            .unify(id, bool_ty)
+                            .map_err(|(e, f)| TypeError::SimpleMismatch {
+                                required_loc: c.produced_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "comparison operator result is always bool",
+                            })?;
+                    }
+
+                    _ => {}
+                }
+            }
+
+
+
+
             _ => {}
         }
     }
 
     Ok(changed)
 }
+
+fn apply_equivalence_constraints(
+    infer: &mut InferState,
+    constraints: &HashMap<InferId, TypeConstraints>,
+) -> Result<bool, TypeError> {
+    let mut changed = false;
+
+    for (&id, c) in constraints.iter() {
+        for (use_loc, cons) in &c.consumed {
+            match *cons {
+                ConsumedAs::SameAs(other) | ConsumedAs::Explicit(other) => {
+                    changed |= infer
+                        .unify(id, other)
+                        .map_err(|(e, f)| TypeError::SimpleMismatch {
+                            required_loc: use_loc.clone(),
+                            produced_loc: c.produced_loc.clone(),
+                            expected: e,
+                            found: f,
+                            note: "equivalence constraint failed",
+                        })?;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(changed)
+}
+
+
+fn apply_operator_semantics(
+    program: &mut Program,
+    infer: &mut InferState,
+    constraints: &HashMap<InferId, TypeConstraints>,
+) -> Result<bool, TypeError> {
+    let mut changed = false;
+
+    for (&id, c) in constraints.iter() {
+        let ProducedBy::BinOp { op } = c.produced else { continue };
+
+        // Collect operand InferIds from constraints
+        let mut operands = Vec::new();
+        for (_, cons) in &c.consumed {
+            match *cons {
+                ConsumedAs::Numeric | ConsumedAs::IntNumeric => {
+                    operands.push(id);
+                }
+                _ => {}
+            }
+        }
+
+        if operands.len() != 2 {
+            continue;
+        }
+
+        let lhs = operands[0];
+        let rhs = operands[1];
+
+        let Some(lt) = infer.get_concrete(lhs) else { continue };
+        let Some(rt) = infer.get_concrete(rhs) else { continue };
+
+        let TypeValue::Builtin(lb) = program.type_store.get(lt) else { continue };
+        let TypeValue::Builtin(rb) = program.type_store.get(rt) else { continue };
+
+        let lk = numeric_kind(*lb);
+        let rk = numeric_kind(*rb);
+
+        match op {
+            // ---------- arithmetic ----------
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                match (lk, rk) {
+                    (Some(NumericKind::Float), Some(NumericKind::Float)) => {
+                        changed |= infer.unify(id, builtin(program, BuiltinType::F64))
+                            .map_err(|(e,f)| TypeError::SimpleMismatch {
+                                required_loc: c.produced_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "float arithmetic",
+                            })?;
+                    }
+
+                    (Some(NumericKind::Int), Some(NumericKind::Int)) => {
+                        changed |= infer.unify(id, builtin(program, BuiltinType::Int))
+                            .map_err(|(e,f)| TypeError::SimpleMismatch {
+                                required_loc: c.produced_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "integer arithmetic",
+                            })?;
+                    }
+
+                    _ => {
+                        return Err(TypeError::SimpleMismatch {
+                            required_loc: c.produced_loc.clone(),
+                            produced_loc: c.produced_loc.clone(),
+                            expected: lt,
+                            found: rt,
+                            note: "invalid arithmetic operands",
+                        });
+                    }
+                }
+            }
+
+            // ---------- bitwise ----------
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr | BinOp::Mod => {
+                match (lk, rk) {
+                    (Some(NumericKind::Int), Some(NumericKind::Int)) => {
+                        changed |= infer.unify(id, builtin(program, BuiltinType::Int))
+                            .map_err(|(e,f)| TypeError::SimpleMismatch {
+                                required_loc: c.produced_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "bitwise op result",
+                            })?;
+                    }
+
+                    _ => {
+                        return Err(TypeError::SimpleMismatch {
+                            required_loc: c.produced_loc.clone(),
+                            produced_loc: c.produced_loc.clone(),
+                            expected: lt,
+                            found: rt,
+                            note: "bitwise ops require integer operands",
+                        });
+                    }
+                }
+            }
+
+            _ => {}
+        }
+    }
+
+    Ok(changed)
+}
+
 
 fn solve_basic(
     program: &mut Program,
@@ -770,26 +960,8 @@ fn solve_basic(
         let mut changed = false;
 
         changed |= seed_from_producers(program, infer, constraints)?;
-
-        for (&id, c) in constraints.iter() {
-            for (use_loc, cons) in &c.consumed {
-                match *cons {
-                    ConsumedAs::SameAs(other) | ConsumedAs::Explicit(other) => {
-                        changed |= infer
-                            .unify(id, other)
-                            .map_err(|(e, f)| TypeError::SimpleMismatch {
-                                required_loc: use_loc.clone(),
-                                produced_loc: c.produced_loc.clone(),
-                                expected: e,
-                                found: f,
-                                note: "basic unify failed",
-                            })?;
-                    }
-
-                    _ => {}
-                }
-            }
-        }
+        changed |= apply_equivalence_constraints(infer, constraints)?;
+        changed |= apply_operator_semantics(program, infer, constraints)?;
 
         if !changed {
             break;
@@ -798,6 +970,8 @@ fn solve_basic(
 
     Ok(())
 }
+
+
 
 /* ================================================================
  * Finalization (ROOT ONLY, NO GLOBAL CHECKS)
@@ -955,11 +1129,17 @@ mod type_infer_tests {
         assert_fn_type!("f = fn(){ { let x = 1; x } }", BuiltinType::Int);
     }
 
-    
+
     #[test]
     fn cast_allows_type_change() {
         assert_fn_type!("f = fn(){ let x:int = 1; x as bool }", BuiltinType::Bool);
     }
+
+    // #[test]
+    // fn arithmetic_on_float_is_allowed() {
+    //     assert_fn_type!("f = fn(){ 1.0 + 2.0 }", BuiltinType::F64);
+    // }
+
 
     /* ------------------------------------------------------------
      * Error cases
@@ -974,5 +1154,21 @@ mod type_infer_tests {
         }
     }
 
+/*    #[test]
+    fn bitwise_on_float_errors() {
+        let err = infer_fn("f = fn(){ 1.0 & 2 }").unwrap_err();
+        match err {
+            TypeError::SimpleMismatch { .. } => {}
+            other => panic!("expected SimpleMismatch, got {:?}", other),
+        }
+    }
 
+    #[test]
+    fn annotated_float_bitwise_errors() {
+        let err = infer_fn("f = fn(){ let x: f64 = 1; x & 3 }").unwrap_err();
+        match err {
+            TypeError::SimpleMismatch { .. } => {}
+            other => panic!("expected SimpleMismatch, got {:?}", other),
+        }
+    }*/
 }
