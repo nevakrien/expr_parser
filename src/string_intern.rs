@@ -1,8 +1,19 @@
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct StrId(usize);
 
-const DEFAULT_BUCKETS: usize = 1024;
-const MAX_LOAD_PER_BUCKET: usize = 4;
+const DEFAULT_BUCKETS: usize = 2048;
+const MAX_LOAD_NUMERATOR: usize = 7;
+const MAX_LOAD_DENOMINATOR: usize = 10;
+const DEFAULT_BYTES_CAPACITY: usize = 16 * 1024;
+const DEFAULT_SPANS_CAPACITY: usize = 1024;
+const BYTES_GROWTH_FACTOR: usize = 4;
+const SPANS_GROWTH_FACTOR: usize = 4;
+
+#[derive(Debug, Copy, Clone)]
+struct Entry {
+    hash: u64,
+    id: StrId,
+}
 
 #[derive(Debug)]
 pub struct StringInterner {
@@ -12,8 +23,8 @@ pub struct StringInterner {
     /// StrId -> (offset, len)
     spans: Vec<(usize, usize)>,
 
-    /// bucket -> [(StrId, hash)]
-    buckets: Vec<Vec<(StrId, u64)>>,
+    /// hash table of (hash, StrId) with linear probing; hash == 0 means empty
+    table: Vec<Entry>,
 }
 
 impl Default for StringInterner {
@@ -31,9 +42,15 @@ impl StringInterner {
         assert!(bucket_count.is_power_of_two());
 
         Self {
-            bytes: Vec::new(),
-            spans: Vec::new(),
-            buckets: vec![Vec::new(); bucket_count],
+            bytes: Vec::with_capacity(DEFAULT_BYTES_CAPACITY),
+            spans: Vec::with_capacity(DEFAULT_SPANS_CAPACITY),
+            table: vec![
+                Entry {
+                    hash: 0,
+                    id: StrId(0)
+                };
+                bucket_count
+            ],
         }
     }
 
@@ -42,31 +59,14 @@ impl StringInterner {
     #[inline]
     pub fn intern(&mut self, s: &str) -> StrId {
         let bytes = s.as_bytes();
-        let h = hash_bytes(bytes);
-        let bucket = self.bucket_index(h);
+        let h = scrub_hash(hash_bytes(bytes));
 
-        for &(id, existing_h) in &self.buckets[bucket] {
-            if existing_h != h {
-                continue;
-            }
-            let (off, len) = self.spans[id.0];
-            if &self.bytes[off..off + len] == bytes {
-                return id;
-            }
+        let (idx, found) = self.find_slot(h, bytes);
+        if found {
+            return self.table[idx].id;
         }
 
-        // Insert new string
-        let id = StrId(self.spans.len());
-        let off = self.bytes.len();
-        let len = bytes.len();
-
-        self.bytes.extend_from_slice(bytes);
-        self.spans.push((off, len));
-        self.buckets[bucket].push((id, h));
-
-        self.maybe_grow();
-
-        id
+        self.insert_slow_path(idx, h, bytes)
     }
 
     #[inline]
@@ -82,26 +82,112 @@ impl StringInterner {
 
     #[inline]
     fn bucket_index(&self, hash: u64) -> usize {
-        hash as usize & (self.buckets.len() - 1)
+        hash as usize & (self.table.len() - 1)
     }
 
     fn maybe_grow(&mut self) {
-        if self.spans.len() <= self.buckets.len() * MAX_LOAD_PER_BUCKET {
+        if self.table.len() == 0 {
             return;
         }
 
-        let new_bucket_count = self.buckets.len() * 2;
-        let mut new_buckets: Vec<Vec<(StrId, u64)>> =
-            vec![Vec::new(); new_bucket_count];
-
-        for bucket in self.buckets.iter() {
-            for &(id, h) in bucket {
-                let new_index = h as usize & (new_bucket_count - 1);
-                new_buckets[new_index].push((id, h));
-            }
+        if self.spans.len() * MAX_LOAD_DENOMINATOR <= self.table.len() * MAX_LOAD_NUMERATOR {
+            return;
         }
 
-        self.buckets = new_buckets;
+        let new_bucket_count = self.table.len() * 4;
+        let old_table = std::mem::replace(
+            &mut self.table,
+            vec![
+                Entry {
+                    hash: 0,
+                    id: StrId(0)
+                };
+                new_bucket_count
+            ],
+        );
+
+        for entry in old_table {
+            if entry.hash != 0 {
+                self.insert_entry(entry.hash, entry.id);
+            }
+        }
+    }
+
+    fn insert_slow_path(&mut self, idx: usize, hash: u64, bytes: &[u8]) -> StrId {
+        let id = StrId(self.spans.len());
+        let off = self.bytes.len();
+        let len = bytes.len();
+
+        self.ensure_bytes_capacity(len);
+        self.bytes.extend_from_slice(bytes);
+        self.ensure_spans_capacity(1);
+        self.spans.push((off, len));
+        self.table[idx] = Entry { hash, id };
+        self.maybe_grow();
+
+        id
+    }
+
+    #[inline]
+    fn ensure_bytes_capacity(&mut self, additional: usize) {
+        let needed = self.bytes.len() + additional;
+        if needed <= self.bytes.capacity() {
+            return;
+        }
+
+        let mut new_cap = self.bytes.capacity().max(1);
+        while new_cap < needed {
+            new_cap = new_cap.saturating_mul(BYTES_GROWTH_FACTOR);
+        }
+        self.bytes.reserve_exact(new_cap - self.bytes.capacity());
+    }
+
+    #[inline]
+    fn ensure_spans_capacity(&mut self, additional: usize) {
+        let needed = self.spans.len() + additional;
+        if needed <= self.spans.capacity() {
+            return;
+        }
+
+        let mut new_cap = self.spans.capacity().max(1);
+        while new_cap < needed {
+            new_cap = new_cap.saturating_mul(SPANS_GROWTH_FACTOR);
+        }
+        self.spans.reserve_exact(new_cap - self.spans.capacity());
+    }
+
+    #[inline]
+    fn find_slot(&self, hash: u64, bytes: &[u8]) -> (usize, bool) {
+        let mut idx = self.bucket_index(hash);
+        let mask = self.table.len() - 1;
+
+        loop {
+            let entry = self.table[idx];
+            if entry.hash == 0 {
+                return (idx, false);
+            }
+            if entry.hash == hash {
+                let (off, len) = self.spans[entry.id.0];
+                if &self.bytes[off..off + len] == bytes {
+                    return (idx, true);
+                }
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+
+    #[inline]
+    fn insert_entry(&mut self, hash: u64, id: StrId) {
+        let mut idx = self.bucket_index(hash);
+        let mask = self.table.len() - 1;
+
+        loop {
+            if self.table[idx].hash == 0 {
+                self.table[idx] = Entry { hash, id };
+                return;
+            }
+            idx = (idx + 1) & mask;
+        }
     }
 }
 
@@ -114,6 +200,15 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+#[inline]
+fn scrub_hash(h: u64) -> u64 {
+    if h == 0 {
+        1
+    } else {
+        h
+    }
 }
 
 #[cfg(test)]
