@@ -4,26 +4,13 @@
 // DESIGN GOALS (SHOULD STAY TRUE)
 // ================================================================
 // 1) Constraints are RECORDS, not guesses.
-//    - They describe how values are PRODUCED and CONSUMED.
-//    - They are mostly immutable and only appended to.
-//
 // 2) Inference is a SEPARATE, mutable process.
-//    - It tries to assign concrete types to inference variables.
-//    - Inference variables can be merged.
-//    - Constraints are NEVER merged.
-//
 // 3) Every value has exactly ONE producer, and 0..N consumers.
-//
-// 4) Error reporting should come from constraints:
-//    - Mismatch must be able to cite:
-//      * where the expectation came from (consume site)
-//      * where the conflicting value was produced (produce site)
-//
-// This file is intentionally incomplete.
-// Anything uncertain is left as `todo!()` with a comment.
+// 4) Errors come from constraints (produce + consume sites).
 //
 // ================================================================
 
+use crate::parsing::Located;
 use std::collections::HashMap;
 
 use crate::{
@@ -39,20 +26,11 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub usize);
 
-/// Inference-time identifier for an expression's type.
-/// Stored inside `Typed<T>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InferId {
-    /// Lowering placeholder (before inference assigns a slot)
     Nothing,
-
-    /// Fully resolved global type
     Concrete(TypeId),
-
-    /// Local inference variable (slot index in an inference run)
     Infered(usize),
-
-    /// Placeholder for generics (future)
     GenericArg(usize),
 }
 
@@ -62,30 +40,10 @@ pub enum InferId {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
-    // C-like int
     Int,
-
-    // signed
-    I8,
-    I16,
-    I32,
-    I64,
-    I128,
-    Isize,
-
-    // unsigned
-    U8,
-    U16,
-    U32,
-    U64,
-    U128,
-    Usize,
-
-    // floats
-    F32,
-    F64,
-
-    // others
+    I8, I16, I32, I64, I128, Isize,
+    U8, U16, U32, U64, U128, Usize,
+    F32, F64,
     Bool,
     Str,
     Void,
@@ -107,11 +65,15 @@ pub struct TypeStore {
 }
 
 impl TypeStore {
-    pub fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            intern: HashMap::new(),
+    pub fn new()->Self{
+        Self{
+            values:Vec::new(),
+            intern:HashMap::new(),
         }
+    }
+    
+    pub fn get(&self, id: TypeId) -> &TypeValue {
+        &self.values[id.0]
     }
 
     pub fn intern(&mut self, ty: TypeValue) -> TypeId {
@@ -122,10 +84,6 @@ impl TypeStore {
         self.values.push(ty.clone());
         self.intern.insert(ty, id);
         id
-    }
-
-    pub fn get(&self, id: TypeId) -> &TypeValue {
-        &self.values[id.0]
     }
 }
 
@@ -140,9 +98,6 @@ pub struct Typed<T> {
     pub value: T,
 }
 
-/* ================================================================
- * Program helpers (STABLE)
- * ================================================================ */
 
 impl Program {
     pub(crate) fn insert_builtin_types(&mut self) {
@@ -201,20 +156,16 @@ impl Program {
 }
 
 /* ================================================================
- * Error model (IMPROVED SHAPE)
+ * Errors (STABLE SHAPE)
  * ================================================================ */
 
 #[derive(Debug)]
 pub enum TypeError {
-    /// "We couldn't determine a concrete type"
     Unresolved {
         produced_loc: Loc,
         message: &'static str,
     },
 
-    /// Concrete mismatch with BOTH sides:
-    /// - where the expectation came from (consume site)
-    /// - where the mismatching value was produced (produce site)
     SimpleMismatch {
         required_loc: Loc,
         produced_loc: Loc,
@@ -238,74 +189,34 @@ pub enum TypeError {
  * Constraint model (CORE)
  * ================================================================ */
 
-/// We need to talk about both expression-values (InferId) and name-values (NameId).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ValueKey {
-    Expr(InferId),
-    Name(NameId),
-}
-
-/// Each value has exactly one producer.
-/// (Producer does not "merge"; it is a record.)
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub enum ProducedBy {
-    /// Expression is a literal.
     Literal { lit: Literal },
-
-    /// Expression is a name reference (its type is "same as" the referenced name-value).
     NameRef { name: NameId },
-
-    /// A name-value is created by a let-binding.
-    LetBind { name: NameId },
-
-    /// Expression is a cast to a known target type.
-    Cast { target: TypeId },
-
-    /// Expression is a type annotation expression.
-    /// (Meaning: this node's type is the annotated type.)
-    TypeAnnotationExpr { ty: TypeId },
-
-    /// Expression is some operator node. (Details recorded in consumes.)
+    LetBind {
+        name: NameId,
+        annotated: Option<Located<InferId>>,
+    },
+    Cast { target: InferId },
+    TypeAnnotationExpr { ty: InferId },
     BinOp { op: BinOp },
     UnOp { op: UnOp },
-
-    /// Expression is a block.
     Block,
-
-    /// Expression is a function call.
     Call,
-
-    /// Expression is a function literal.
     Func,
-
-    /// Placeholder for more producers later.
     Other(&'static str),
 }
 
-/// A single consumption constraint placed at some location.
-/// (Constraints are appended; they are not merged.)
 #[derive(Debug, Clone, Copy)]
 pub enum ConsumedAs {
-    /// Must have the same type as another value.
-    SameAs(ValueKey),
-
-    /// Must be numeric (int-like OR float-like).
+    SameAs(InferId),
     Numeric,
-
-    /// Must be int-like numeric.
     IntNumeric,
-
-    /// Must be float-like numeric.
     FloatNumeric,
-
-    /// Must equal a concrete type.
-    Concrete(TypeId),
-
-    /// Placeholder for future structured constraints.
+    Explicit(InferId),
     Other(&'static str),
 }
 
-/// All constraints for a single value.
 #[derive(Debug)]
 pub struct TypeConstraints {
     pub produced_loc: Loc,
@@ -314,69 +225,24 @@ pub struct TypeConstraints {
 }
 
 impl TypeConstraints {
-    fn new(produced_loc: Loc, produced: ProducedBy) -> Self {
-        Self {
-            produced_loc,
-            produced,
-            consumed: Vec::new(),
-        }
-    }
-
-    fn add_consume(&mut self, loc: Loc, c: ConsumedAs) {
-        self.consumed.push((loc, c));
+    fn new(loc: Loc, produced: ProducedBy) -> Self {
+        Self { produced_loc: loc, produced, consumed: Vec::new() }
     }
 }
+
 
 /* ================================================================
- * Inference state (MUTABLE, MERGEABLE — STILL A STUB)
- * ================================================================ */
-
-#[derive(Debug)]
-struct InferState {
-    slots: Vec<InferSlot>,
-}
-
-#[derive(Debug)]
-struct InferSlot {
-    ty: Option<TypeId>,
-}
-
-impl InferState {
-    fn new() -> Self {
-        Self { slots: Vec::new() }
-    }
-
-    fn fresh(&mut self) -> InferId {
-        let id = self.slots.len();
-        self.slots.push(InferSlot { ty: None });
-        InferId::Infered(id)
-    }
-
-    fn get(&self, id: InferId) -> Option<TypeId> {
-        match id {
-            InferId::Concrete(t) => Some(t),
-            InferId::Infered(i) => self.slots.get(i)?.ty,
-            _ => None,
-        }
-    }
-
-    fn assign(&mut self, id: InferId, ty: TypeId) {
-        if let InferId::Infered(i) = id {
-            self.slots[i].ty = Some(ty);
-        }
-    }
-
-    // TODO: union-find / "merge variables"
-    // TODO: numeric-kind tracking
-}
-
-/* ================================================================
- * Constraint collection (MORE MEAT, STILL SAFE)
+ * Constraint collection
  * ================================================================ */
 
 struct CollectCtx {
     infer: InferState,
-    constraints: HashMap<ValueKey, TypeConstraints>,
+
+    /// Constraints indexed by InferId
+    constraints: HashMap<InferId, TypeConstraints>,
+
+    /// Map each NameId to its InferId
+    name_infers: HashMap<NameId, InferId>,
 }
 
 impl CollectCtx {
@@ -384,6 +250,7 @@ impl CollectCtx {
         Self {
             infer: InferState::new(),
             constraints: HashMap::new(),
+            name_infers: HashMap::new(),
         }
     }
 
@@ -394,254 +261,215 @@ impl CollectCtx {
                 v.ty = id;
                 id
             }
-            other => other,
+            id => id,
         }
     }
 
-    fn ensure_expr_entry(&mut self, key: ValueKey, produced_loc: Loc, produced: ProducedBy) {
+    fn infer_for_name(&mut self, name: NameId) -> InferId {
+        *self.name_infers.entry(name).or_insert_with(|| self.infer.fresh())
+    }
+
+    fn set_producer(&mut self, id: InferId, loc: Loc, produced: ProducedBy) {
         self.constraints
-            .entry(key)
-            .or_insert_with(|| TypeConstraints::new(produced_loc, produced));
+            .entry(id)
+            .and_modify(|c| {
+                c.produced_loc = loc.clone();
+                c.produced = produced.clone();
+            })
+            .or_insert_with(|| TypeConstraints::new(loc, produced));
     }
 
-    fn add_consume(&mut self, key: ValueKey, loc: Loc, c: ConsumedAs) {
-        // It is legal to add consumes before we’ve visited the producer
-        // (e.g., forward edges). If producer isn't known yet, insert a placeholder.
-        let entry = self.constraints.entry(key).or_insert_with(|| {
-            TypeConstraints::new(
-                loc.clone(),
-                ProducedBy::Other("producer not recorded yet"),
-            )
-        });
-        entry.add_consume(loc, c);
-    }
-
-    fn set_producer(&mut self, key: ValueKey, produced_loc: Loc, produced: ProducedBy) {
-        match self.constraints.get_mut(&key) {
-            Some(existing) => {
-                // Producer is single-assignment.
-                // If we already had a placeholder producer, overwrite it.
-                existing.produced_loc = produced_loc;
-                existing.produced = produced;
-            }
-            None => {
-                self.constraints
-                    .insert(key, TypeConstraints::new(produced_loc, produced));
-            }
-        }
+    fn add_consume(&mut self, id: InferId, loc: Loc, c: ConsumedAs) {
+        self.constraints
+            .entry(id)
+            .or_insert_with(|| {
+                TypeConstraints::new(
+                    loc.clone(),
+                    ProducedBy::Other("producer not recorded yet"),
+                )
+            })
+            .consumed.push((loc, c));
     }
 }
 
-/// Collect constraints for a value tree.
-/// This function MUTATES `value.ty` to allocate InferIds locally.
-/// It DOES NOT solve types.
+
+/* ================================================================
+ * Constraint walk
+ * ================================================================ */
+
 fn collect_constraints(program: &mut Program, value: &mut TValue) -> CollectCtx {
     let mut ctx = CollectCtx::new();
     collect_value(program, &mut ctx, value);
     ctx
 }
-
 fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
-    let id = ctx.ensure_expr_id(v);
-    let key = ValueKey::Expr(id);
+    let this = ctx.ensure_expr_id(v);
+
+    //we assume no operator overloads so that we can do NumericInt on things like a&b regardless of their types.
 
     match &mut v.value {
         Value::Literal(lit) => {
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Literal { lit: lit.clone() });
-            // Note: literal polymorphism is handled in inference, not constraints,
-            // so we do not force "int" here.
-        }
-
-        Value::NameRef(name) => {
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::NameRef { name: *name });
-
-            // The type of this expression must equal the type of the name-value.
-            ctx.add_consume(key, v.loc.clone(), ConsumedAs::SameAs(ValueKey::Name(*name)));
-
-            // Record that the name-value is consumed by this use site (useful for errors later).
-            ctx.add_consume(
-                ValueKey::Name(*name),
+            ctx.set_producer(
+                this,
                 v.loc.clone(),
-                ConsumedAs::SameAs(key),
+                ProducedBy::Literal { lit: lit.clone() },
             );
         }
 
-        Value::Cast { value: inner, ty } => {
-            // Collect children first (so they have IDs).
-            collect_value(program, ctx, inner);
-            collect_value(program, ctx, ty);
+        Value::NameRef(name) => {
+            let nid = ctx.infer_for_name(*name);
 
-            let target = match resolve_type_expr(program, ty) {
-                Ok(t) => t,
-                Err(_) => {
-                    // Don't invent types here; record producer but leave inference to report.
-                    ctx.set_producer(key, v.loc.clone(), ProducedBy::Other("cast (unresolved type expr)"));
-                    return;
-                }
-            };
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::NameRef { name: *name },
+            );
 
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Cast { target });
-
-            // The cast expression itself is known to be `target`.
-            // Still, we keep it as a consume constraint, not "solved".
-            ctx.add_consume(key, v.loc.clone(), ConsumedAs::Concrete(target));
-
-            // The inner value is consumed as "numeric" only if target is numeric, etc.
-            // That policy is inference-time, so: TODO later.
+            // expression <-> name-value equivalence
+            ctx.add_consume(this, v.loc.clone(), ConsumedAs::SameAs(nid));
+            ctx.add_consume(nid, v.loc.clone(), ConsumedAs::SameAs(this));
         }
 
-        Value::TypeAnnotation { value: inner, ty } => {
-            collect_value(program, ctx, inner);
+        Value::Cast { value, ty } => {
+            collect_value(program, ctx, value);
             collect_value(program, ctx, ty);
 
-            let ann = match resolve_type_expr(program, ty) {
-                Ok(t) => t,
-                Err(_) => {
-                    ctx.set_producer(
-                        key,
-                        v.loc.clone(),
-                        ProducedBy::Other("type annotation (unresolved type expr)"),
-                    );
-                    return;
-                }
-            };
+            let target = resolve_type_expr(program, ty).unwrap_or(InferId::Nothing);
 
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::TypeAnnotationExpr { ty: ann });
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::Cast { target },
+            );
 
-            // This expression node itself is "ann".
-            ctx.add_consume(key, v.loc.clone(), ConsumedAs::Concrete(ann));
+            // Cast is an explicit requirement
+            if target != InferId::Nothing {
+                ctx.add_consume(this, v.loc.clone(), ConsumedAs::Explicit(target));
+            }
+        }
 
-            // The inner expression must match the annotation.
-            ctx.add_consume(ValueKey::Expr(inner.ty), inner.loc.clone(), ConsumedAs::Concrete(ann));
+        Value::TypeAnnotation { value, ty } => {
+            collect_value(program, ctx, value);
+            collect_value(program, ctx, ty);
+
+            let ann = resolve_type_expr(program, ty).unwrap_or(InferId::Nothing);
+
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::TypeAnnotationExpr { ty: ann },
+            );
+
+            // RHS must satisfy the annotation
+            if ann != InferId::Nothing {
+                ctx.add_consume(value.ty, value.loc.clone(), ConsumedAs::Explicit(ann));
+            }
         }
 
         Value::BinOp { op, values } => {
-            let (lhs, rhs) = values.as_mut();
-            collect_value(program, ctx, lhs);
-            collect_value(program, ctx, rhs);
+            let (l, r) = values.as_mut();
+            collect_value(program, ctx, l);
+            collect_value(program, ctx, r);
 
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::BinOp { op: *op });
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::BinOp { op: *op },
+            );
 
-            // Record operand constraints.
-            // We do NOT decide the result type here; inference does that.
             match op {
-                // bitwise/shifts/mod are int-only
-                BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr | BinOp::Mod => {
-                    ctx.add_consume(ValueKey::Expr(lhs.ty), v.loc.clone(), ConsumedAs::IntNumeric);
-                    ctx.add_consume(ValueKey::Expr(rhs.ty), v.loc.clone(), ConsumedAs::IntNumeric);
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::IntNumeric);
+                BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr
+                | BinOp::Mod => {
+                    ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::IntNumeric);
+                    ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::IntNumeric);
                 }
 
-                // arithmetic: number
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                    ctx.add_consume(ValueKey::Expr(lhs.ty), v.loc.clone(), ConsumedAs::Numeric);
-                    ctx.add_consume(ValueKey::Expr(rhs.ty), v.loc.clone(), ConsumedAs::Numeric);
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::Numeric);
                 }
 
-                // comparisons produce bool, and operands are numeric for now
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    ctx.add_consume(ValueKey::Expr(lhs.ty), v.loc.clone(), ConsumedAs::Numeric);
-                    ctx.add_consume(ValueKey::Expr(rhs.ty), v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::Numeric);
 
                     let bool_ty = builtin(program, BuiltinType::Bool);
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::Concrete(bool_ty));
+                    ctx.add_consume(this, v.loc.clone(), ConsumedAs::Explicit(bool_ty));
                 }
             }
         }
 
-        Value::UnOp { op, value: inner } => {
-            collect_value(program, ctx, inner);
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::UnOp { op: *op });
+        Value::UnOp { op, value } => {
+            collect_value(program, ctx, value);
+
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::UnOp { op: *op },
+            );
 
             match op {
                 UnOp::BitNot => {
-                    ctx.add_consume(ValueKey::Expr(inner.ty), v.loc.clone(), ConsumedAs::IntNumeric);
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::IntNumeric);
+                    ctx.add_consume(value.ty, v.loc.clone(), ConsumedAs::IntNumeric);
                 }
                 UnOp::Neg => {
-                    ctx.add_consume(ValueKey::Expr(inner.ty), v.loc.clone(), ConsumedAs::Numeric);
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(value.ty, v.loc.clone(), ConsumedAs::Numeric);
                 }
                 UnOp::Not => {
-                    // TODO: constrain inner to bool later
                     let bool_ty = builtin(program, BuiltinType::Bool);
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::Concrete(bool_ty));
+                    ctx.add_consume(this, v.loc.clone(), ConsumedAs::Explicit(bool_ty));
                 }
-
                 UnOp::Deref | UnOp::AddrOf => {
-                    // Leave as record only; inference later.
-                    ctx.add_consume(key, v.loc.clone(), ConsumedAs::Other("ptr op (todo)"));
+                    ctx.add_consume(this, v.loc.clone(), ConsumedAs::Other("ptr op (todo)"));
                 }
             }
         }
 
-        Value::Let { pat, value: rhs, else_part } => {
+        Value::Let { pat, value, .. } => {
             collect_pattern(program, ctx, pat);
-            collect_value(program, ctx, rhs);
-            if let Some(e) = else_part {
-                collect_value(program, ctx, e);
-            }
+            collect_value(program, ctx, value);
 
-            // Producer for the let expression itself.
-            // We do NOT commit to what "let expression returns" here.
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Other("let (todo: return semantics)"));
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::Other("let expression"),
+            );
 
-            // If pattern is Bind(name) or TypeAnnotation{pat:Bind(name), ty:...},
-            // we record a name-value producer and link it to RHS.
-            record_let_bind_link(program, ctx, pat, rhs, &v.loc);
+            record_let_bind_link(program, ctx, pat, value, &v.loc);
         }
 
-        Value::Block { statements, return_value } => {
-            for s in statements.iter_mut() {
-                collect_value(program, ctx, s);
-            }
-            if let Some(ret) = return_value.as_mut() {
-                collect_value(program, ctx, ret);
-
-                // Record: block type == return expression type (if present).
-                ctx.add_consume(key, v.loc.clone(), ConsumedAs::SameAs(ValueKey::Expr(ret.ty)));
-                ctx.add_consume(ValueKey::Expr(ret.ty), ret.loc.clone(), ConsumedAs::SameAs(key));
-            }
-
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Block);
-        }
-
-        Value::Call { callee, args } => {
-            collect_value(program, ctx, callee);
-            for a in args.iter_mut() {
-                collect_value(program, ctx, a);
-            }
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Call);
-
-            // TODO: add "callee must be callable" and arg constraints later.
-            ctx.add_consume(key, v.loc.clone(), ConsumedAs::Other("call typing (todo)"));
-        }
-
-        Value::Func { .. } => {
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Func);
-            // TODO: collect body, params, ret patterns, generics
-            ctx.add_consume(key, v.loc.clone(), ConsumedAs::Other("func typing (todo)"));
-        }
-
-        // Everything else: record producer but don’t invent constraints yet.
         _ => {
-            ctx.set_producer(key, v.loc.clone(), ProducedBy::Other("producer not modeled yet"));
+            ctx.set_producer(
+                this,
+                v.loc.clone(),
+                ProducedBy::Other("unmodeled"),
+            );
         }
     }
 }
 
 fn collect_pattern(program: &mut Program, ctx: &mut CollectCtx, p: &mut TPattern) {
-    // NOTE: patterns also have InferId, but we’re not using it yet.
-    // We'll still recurse to find binds + type annotations.
+    // Patterns may contain:
+    // - bindings (handled later by record_let_bind_link)
+    // - type annotations
+    // - nested patterns
+
     match &mut p.value {
-        Pattern::Bind(name) => {
-            // no-op here; let-binding logic records producer
-            let _ = name;
+        Pattern::Bind(_) => {
+            // Do nothing here.
+            // The binding is handled by record_let_bind_link so that
+            // the RHS is available.
         }
 
         Pattern::TypeAnnotation { pat, ty } => {
+            // Recurse into the inner pattern
             collect_pattern(program, ctx, pat);
+
+            // Collect the *type expression* so it gets an InferId
             collect_value(program, ctx, ty);
         }
 
@@ -651,106 +479,537 @@ fn collect_pattern(program: &mut Program, ctx: &mut CollectCtx, p: &mut TPattern
             }
         }
 
+        Pattern::Literal(_) | Pattern::Wildcard => {
+            // No bindings, no annotations
+        }
+    }
+}
+
+
+fn record_let_bind_link(
+    program: &mut Program,
+    ctx: &mut CollectCtx,
+    pat: &mut TPattern,
+    rhs: &mut TValue,
+    loc: &Loc,
+) {
+    match &mut pat.value {
+        Pattern::Bind(name) => {
+            let nid = ctx.infer_for_name(*name);
+
+            ctx.set_producer(
+                nid,
+                loc.clone(),
+                ProducedBy::LetBind {
+                    name: *name,
+                    annotated: None,
+                },
+            );
+
+            ctx.add_consume(nid, loc.clone(), ConsumedAs::SameAs(rhs.ty));
+            ctx.add_consume(rhs.ty, rhs.loc.clone(), ConsumedAs::SameAs(nid));
+        }
+
+        Pattern::TypeAnnotation { pat: inner, ty } => {
+            collect_value(program, ctx, ty);
+
+            record_let_bind_link(program, ctx, inner, rhs, loc);
+
+            if let Pattern::Bind(name) = inner.value {
+                let nid = ctx.infer_for_name(name);
+
+                let ann = Located {
+                    loc: ty.loc.clone(),
+                    value: ty.ty,
+                };
+
+                ctx.set_producer(
+                    nid,
+                    loc.clone(),
+                    ProducedBy::LetBind {
+                        name,
+                        annotated: Some(ann),
+                    },
+                );
+
+                ctx.add_consume(nid, pat.loc.clone(), ConsumedAs::Explicit(ty.ty));
+                ctx.add_consume(rhs.ty, rhs.loc.clone(), ConsumedAs::Explicit(ty.ty));
+            }
+        }
+
+        Pattern::Tuple(items) => {
+            for it in items.iter_mut() {
+                record_let_bind_link(program, ctx, it, rhs, loc);
+            }
+        }
+
         Pattern::Literal(_) | Pattern::Wildcard => {}
     }
 }
 
-/// If `pat` binds a name, create a `ValueKey::Name(name)` producer entry and link it to RHS.
-/// Also apply pattern type annotation constraint if present.
-fn record_let_bind_link(
-    program: &Program,
-    ctx: &mut CollectCtx,
-    pat: &mut TPattern,
-    rhs: &mut TValue,
-    let_loc: &Loc,
-) {
-    match &mut pat.value {
-        Pattern::Bind(name) => {
-            let nk = ValueKey::Name(*name);
-            ctx.set_producer(nk, let_loc.clone(), ProducedBy::LetBind { name: *name });
 
-            // The name-value must match RHS type.
-            ctx.add_consume(nk, let_loc.clone(), ConsumedAs::SameAs(ValueKey::Expr(rhs.ty)));
-            ctx.add_consume(ValueKey::Expr(rhs.ty), rhs.loc.clone(), ConsumedAs::SameAs(nk));
+/* ================================================================
+ * Type expressions
+ * ================================================================ */
+
+fn resolve_type_expr(program: &Program, v: &TValue) -> Result<InferId, TypeError> {
+    match &v.value {
+        Value::NameRef(name) => match program.definitions.get(name) {
+            Some((_, Defined::TypeRef(t))) => Ok(InferId::Concrete(*t)),
+            _ => Err(TypeError::ExpectedType { loc: v.loc.clone(), message: "expected type" }),
+        },
+        _ => Err(TypeError::ExpectedType { loc: v.loc.clone(), message: "unsupported type expr" }),
+    }
+}
+
+fn builtin(program: &mut Program, b: BuiltinType) -> InferId {
+    let ty = program.type_store.intern(TypeValue::Builtin(b));
+    InferId::Concrete(ty)
+}
+
+
+/* ================================================================
+ * Inference state (BASIC SOLVER: UNION-FIND + TYPE ASSIGNMENT)
+ * ================================================================ */
+
+#[derive(Debug)]
+struct InferState {
+    // union-find parent for Infered(i)
+    parent: Vec<usize>,
+    // optional concrete assignment for the root
+    concrete: Vec<Option<TypeId>>,
+}
+
+impl InferState {
+    fn new() -> Self {
+        Self {
+            parent: Vec::new(),
+            concrete: Vec::new(),
+        }
+    }
+
+    fn fresh(&mut self) -> InferId {
+        let id = self.parent.len();
+        self.parent.push(id);
+        self.concrete.push(None);
+        InferId::Infered(id)
+    }
+
+    fn is_slot(&self, id: InferId) -> bool {
+        matches!(id, InferId::Infered(_))
+    }
+
+    fn find_slot(&mut self, i: usize) -> usize {
+        // path compression
+        let p = self.parent[i];
+        if p == i {
+            i
+        } else {
+            let r = self.find_slot(p);
+            self.parent[i] = r;
+            r
+        }
+    }
+
+    fn find(&mut self, id: InferId) -> InferId {
+        match id {
+            InferId::Infered(i) => InferId::Infered(self.find_slot(i)),
+            other => other,
+        }
+    }
+
+    fn get_concrete(&mut self, id: InferId) -> Option<TypeId> {
+        match self.find(id) {
+            InferId::Concrete(t) => Some(t),
+            InferId::Infered(i) => self.concrete[i],
+            _ => None,
+        }
+    }
+
+    fn assign_concrete(&mut self, id: InferId, ty: TypeId) {
+        match self.find(id) {
+            InferId::Infered(i) => self.concrete[i] = Some(ty),
+            InferId::Concrete(_) => {
+                // nothing to do
+            }
+            _ => {}
+        }
+    }
+
+    /// Merge two InferIds. If both sides already have concrete types, they must match.
+    fn unify(
+        &mut self,
+        a: InferId,
+        b: InferId,
+    ) -> Result<(), (TypeId, TypeId)> {
+        let a = self.find(a);
+        let b = self.find(b);
+
+        // If either side is Nothing/GenericArg we don't do anything in the basic solver.
+        if matches!(a, InferId::Nothing | InferId::GenericArg(_))
+            || matches!(b, InferId::Nothing | InferId::GenericArg(_))
+        {
+            return Ok(());
         }
 
-        Pattern::TypeAnnotation { pat: inner, ty } => {
-            // First ensure we link binding.
-            record_let_bind_link(program, ctx, inner, rhs, let_loc);
-
-            // Then apply annotation: the bound name must be that type.
-            let ann_ty = match resolve_type_expr(program, ty) {
-                Ok(t) => t,
-                Err(_) => return, // don't guess
-            };
-
-            // Apply to the *binding* if it exists and is a bind.
-            if let Pattern::Bind(name) = inner.value {
-                let nk = ValueKey::Name(name);
-                ctx.add_consume(nk, pat.loc.clone(), ConsumedAs::Concrete(ann_ty));
-
-                // Also constrain RHS to match (so mismatch can cite both sites later).
-                ctx.add_consume(ValueKey::Expr(rhs.ty), rhs.loc.clone(), ConsumedAs::Concrete(ann_ty));
+        // concrete vs concrete
+        if let (InferId::Concrete(ta), InferId::Concrete(tb)) = (a, b) {
+            if ta == tb {
+                return Ok(());
+            } else {
+                return Err((ta, tb));
             }
         }
 
-        _ => {}
+        // concrete vs slot
+        if let (InferId::Concrete(t), InferId::Infered(_)) = (a, b) {
+            return self.unify_slot_with_concrete(b, t);
+        }
+        if let (InferId::Infered(_), InferId::Concrete(t)) = (a, b) {
+            return self.unify_slot_with_concrete(a, t);
+        }
+
+        // slot vs slot
+        if let (InferId::Infered(ai), InferId::Infered(bi)) = (a, b) {
+            if ai == bi {
+                return Ok(());
+            }
+
+            // union by "prefer the one that already has a concrete assigned" (very simple heuristic)
+            let ac = self.concrete[ai];
+            let bc = self.concrete[bi];
+
+            match (ac, bc) {
+                (Some(ta), Some(tb)) => {
+                    if ta != tb {
+                        return Err((ta, tb));
+                    }
+                    // same type; merge arbitrarily
+                    self.parent[bi] = ai;
+                    return Ok(());
+                }
+                (Some(_), None) => {
+                    self.parent[bi] = ai;
+                    return Ok(());
+                }
+                (None, Some(_)) => {
+                    self.parent[ai] = bi;
+                    return Ok(());
+                }
+                (None, None) => {
+                    self.parent[bi] = ai;
+                    return Ok(());
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn unify_slot_with_concrete(
+        &mut self,
+        slot: InferId,
+        t: TypeId,
+    ) -> Result<(), (TypeId, TypeId)> {
+        let slot = self.find(slot);
+        match slot {
+            InferId::Infered(i) => match self.concrete[i] {
+                None => {
+                    self.concrete[i] = Some(t);
+                    Ok(())
+                }
+                Some(existing) => {
+                    if existing == t {
+                        Ok(())
+                    } else {
+                        Err((existing, t))
+                    }
+                }
+            },
+            InferId::Concrete(tc) => {
+                if tc == t { Ok(()) } else { Err((tc, t)) }
+            }
+            _ => Ok(()),
+        }
     }
 }
 
 /* ================================================================
- * Type expression resolution (SAFE SUBSET)
+ * Solver (BASIC: SAME-AS + EXPLICIT ONLY)
  * ================================================================ */
 
-fn resolve_type_expr(program: &Program, v: &TValue) -> Result<TypeId, TypeError> {
-    match &v.value {
-        Value::NameRef(name) => match program.definitions.get(name) {
-            Some((_, Defined::TypeRef(ty))) => Ok(*ty),
-            _ => Err(TypeError::ExpectedType {
-                loc: v.loc.clone(),
-                message: "expected a type name (Defined::TypeRef)",
-            }),
-        },
+fn produced_loc_of(
+    constraints: &HashMap<InferId, TypeConstraints>,
+    id: InferId,
+) -> Loc {
+    constraints
+        .get(&id)
+        .expect("internal error: InferId has no producer recorded")
+        .produced_loc
+        .clone()
+}
 
-        // TODO: generic type application, qualified access, tuples-as-types etc.
-        _ => Err(TypeError::ExpectedType {
-            loc: v.loc.clone(),
-            message: "type expression form not supported in sketch yet",
+/// Runs a tiny fixed-point loop applying only the obvious constraints:
+/// - SameAs(a,b)
+/// - Explicit(a == b)   (where b is typically Concrete(type) or other resolved InferId)
+///
+/// Everything else is ignored for now.
+fn solve_basic(
+    infer: &mut InferState,
+    constraints: &HashMap<InferId, TypeConstraints>,
+) -> Result<(), TypeError> {
+    let mut changed = true;
+
+    while changed {
+        changed = false;
+
+        for (&id, c) in constraints.iter() {
+            // NOTE: producer does not drive anything yet in this basic solver.
+            // We only react to consumes.
+            for (use_loc, cons) in c.consumed.iter() {
+                match *cons {
+                    ConsumedAs::SameAs(other) => {
+                        let before_a = infer.find(id);
+                        let before_b = infer.find(other);
+
+                        match infer.unify(id, other) {
+                            Ok(()) => {
+                                let after_a = infer.find(id);
+                                let after_b = infer.find(other);
+                                if after_a != before_a || after_b != before_b {
+                                    changed = true;
+                                }
+                            }
+                            Err((expected, found)) => {
+                                // Here: "required_loc" is the consume site,
+                                // and "produced_loc" should point to the produced value that conflicts.
+                                // We choose `id` as "the thing being constrained".
+                                return Err(TypeError::SimpleMismatch {
+                                    required_loc: use_loc.clone(),
+                                    produced_loc: c.produced_loc.clone(),
+                                    expected,
+                                    found,
+                                    note: "basic unify failed (SameAs)",
+                                });
+                            }
+                        }
+                    }
+
+                    ConsumedAs::Explicit(expected_id) => {
+                        let before = infer.find(id);
+
+                        match infer.unify(id, expected_id) {
+                            Ok(()) => {
+                                let after = infer.find(id);
+                                if after != before {
+                                    changed = true;
+                                }
+                            }
+                            Err((expected, found)) => {
+                                // For Explicit, it's especially important that required_loc points
+                                // at the explicit annotation/cast site.
+                                return Err(TypeError::SimpleMismatch {
+                                    required_loc: use_loc.clone(),
+                                    produced_loc: c.produced_loc.clone(),
+                                    expected,
+                                    found,
+                                    note: "basic unify failed (Explicit)",
+                                });
+                            }
+                        }
+                    }
+
+                    // Ignored in the basic solver:
+                    ConsumedAs::Numeric
+                    | ConsumedAs::IntNumeric
+                    | ConsumedAs::FloatNumeric
+                    | ConsumedAs::Other(_) => {}
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/* ================================================================
+ * Finalization (VERIFY EVERYTHING IS CONCRETE)
+ * ================================================================ */
+
+fn finalize_infer_id(
+    infer: &mut InferState,
+    constraints: &HashMap<InferId, TypeConstraints>,
+    id: InferId,
+) -> Result<TypeId, TypeError> {
+    match infer.find(id) {
+        InferId::Concrete(t) => Ok(t),
+        InferId::Infered(i) => {
+            if let Some(t) = infer.concrete[i] {
+                Ok(t)
+            } else {
+                Err(TypeError::Unresolved {
+                    produced_loc: produced_loc_of(constraints, id),
+                    message: "could not infer a concrete type (try adding an explicit annotation)",
+                })
+            }
+        }
+        InferId::Nothing => Err(TypeError::Unresolved {
+            produced_loc: produced_loc_of(constraints, id),
+            message: "expression never received an InferId slot (bug: expected ensure_expr_id)",
+        }),
+        InferId::GenericArg(_) => Err(TypeError::Unsupported {
+            loc: produced_loc_of(constraints, id),
+            message: "generic args not supported in basic solver",
         }),
     }
 }
 
-fn builtin(program: &mut Program, b: BuiltinType) -> TypeId {
-    // We intentionally use the interned TypeStore.
-    // This is stable and doesn't guess.
-    program
-        .type_store
-        .intern(TypeValue::Builtin(b))
+/// TODO make this possible to use as a public api, 
+/// it should use just external signatures
+/// (Optional but useful) verify that *all* tracked InferIds ended up concrete.
+/// You can call this later once you start caring about full-program completeness.
+fn finalize_all(
+    infer: &mut InferState,
+    constraints: &HashMap<InferId, TypeConstraints>,
+) -> Result<(), TypeError> {
+    for (&id, _) in constraints.iter() {
+        let _ = finalize_infer_id(infer, constraints, id)?;
+    }
+    Ok(())
 }
 
 /* ================================================================
- * Inference driver (STILL A STUB — but with real inputs)
+ * Entry point (NOW WIRED TO BASIC SOLVER)
  * ================================================================ */
 
-/// Runs:
-/// 1) constraint collection (mutates `value.ty` to allocate local InferIds)
-/// 2) inference solve (TODO)
 pub fn infer_value(program: &mut Program, value: &mut TValue) -> Result<TypeId, TypeError> {
-    let collected = collect_constraints(program, value);
+    let mut collected = collect_constraints(program, value);
 
-    // At this point we have:
-    // - collected.constraints: records of produced/consumed relationships
-    // - collected.infer: a slot arena whose indices match InferId::Infered(_)
-    //
-    // Next step is solving those constraints:
-    // - seed from ProducedBy (where possible)
-    // - apply consumes, merging inference vars
-    // - detect contradictions and report with required_loc + produced_loc
-    //
-    // That solver is intentionally not written yet.
+    // Basic solving pass: SameAs + Explicit only.
+    solve_basic(&mut collected.infer, &collected.constraints)?;
 
-    let _constraints = collected.constraints;
-    let _infer = collected.infer;
+    // If you want: enforce global completeness later.
+    // finalize_all(&mut collected.infer, &collected.constraints)?;
 
-    todo!("solver not implemented yet (constraints are collected and ready)");
+    // Return the type of the root expression.
+    finalize_infer_id(&mut collected.infer, &collected.constraints, value.ty)
+}
+
+#[cfg(test)]
+mod type_infer_tests {
+    use super::*;
+    use crate::parsing::Parser;
+
+    /// Parse + lower + gather definitions,
+    /// but DO NOT run type inference.
+    fn gather_program(src: &str) -> Program {
+        let mut program = Program::new();
+        program.insert_builtin_types();
+
+        let mut parser = Parser::new(src, 0);
+
+        while !parser.is_empty() {
+            match parser.parse_with_macros(&program) {
+                Ok(Some(expr)) => {
+                    program
+                        .gather_definition(expr)
+                        .expect("gather_definition failed");
+                }
+                Ok(None) => break,
+                Err(e) => panic!("parse error: {:?}", e),
+            }
+        }
+
+        program
+            .check_pending_names()
+            .expect("pending name resolution failed");
+
+        program
+    }
+
+    /// Extract the body of the *single* function in the program.
+    fn extract_single_fn_body(program: &Program) -> TValue {
+        let def = program
+            .definitions
+            .iter()
+            .find_map(|(_, (_name, def))| match def {
+                Defined::Value(v) => Some(v),
+                _ => None,
+            })
+            .expect("expected a function definition");
+
+        match &def.value {
+            Value::Func { body, .. } => (**body).clone(),
+            _ => panic!("expected function value"),
+        }
+    }
+
+    /// Run inference on a single function body.
+    fn infer_fn(src: &str) -> Result<(Program, TypeId), TypeError> {
+        let mut program = gather_program(src);
+        let mut body = extract_single_fn_body(&program);
+        let ty = infer_value(&mut program, &mut body)?;
+        Ok((program, ty))
+    }
+
+    macro_rules! assert_fn_type {
+        ($src:expr, $builtin:expr) => {{
+            let (program, ty) = infer_fn($src).expect("inference failed");
+            match program.type_store.get(ty) {
+                TypeValue::Builtin(b) => assert_eq!(*b, $builtin),
+                other => panic!("expected builtin type, got {:?}", other),
+            }
+        }};
+    }
+
+    /* ------------------------------------------------------------
+     * Positive cases
+     * ------------------------------------------------------------ */
+
+    #[test]
+    fn infer_literal() {
+        assert_fn_type!("f = fn(){ 1 }", BuiltinType::Int);
+    }
+
+    #[test]
+    fn infer_cast() {
+        assert_fn_type!("f = fn(){ 1 as int }", BuiltinType::Int);
+    }
+
+    #[test]
+    fn infer_let_binding() {
+        assert_fn_type!("f = fn(){ let x = 1; x }", BuiltinType::Int);
+    }
+
+    #[test]
+    fn infer_let_with_annotation() {
+        assert_fn_type!("f = fn(){ let x:int = 1; x }", BuiltinType::Int);
+    }
+
+    #[test]
+    fn infer_block_return() {
+        assert_fn_type!("f = fn(){ { let x = 1; x } }", BuiltinType::Int);
+    }
+
+    /* ------------------------------------------------------------
+     * Error cases
+     * ------------------------------------------------------------ */
+
+    #[test]
+    fn unresolved_variable_errors() {
+        let err = infer_fn("f = fn(){ let x = y; x }").unwrap_err();
+        match err {
+            TypeError::Unresolved { .. } => {}
+            other => panic!("expected Unresolved, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn conflicting_annotation_errors() {
+        let err = infer_fn("f = fn(){ let x:int = 1; x as bool }").unwrap_err();
+        match err {
+            TypeError::SimpleMismatch { .. } => {}
+            other => panic!("expected SimpleMismatch, got {:?}", other),
+        }
+    }
 }
