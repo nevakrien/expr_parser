@@ -5,6 +5,7 @@ pub mod macros;
 pub mod parsing;
 pub mod program;
 pub mod type_inference;
+pub mod string_intern;
 
 pub use error_reporting::ErrorReporter;
 pub use parsing::{Expr, LExpr, Parser, Token};

@@ -1,3 +1,5 @@
+use crate::string_intern::StrId;
+use crate::string_intern::StringInterner;
 use crate::type_inference::TypeId;
 use crate::type_inference::TypeStore;
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
@@ -38,6 +40,7 @@ pub enum CompileError {
     Parse(#[from] crate::parsing::ParseError),
 }
 
+
 #[derive(Debug)]
 pub enum Defined {
     ToBeDefined,
@@ -48,14 +51,21 @@ pub enum Defined {
     Macro(Macro),
 }
 
+
 #[derive(Debug)]
 pub struct Program {
-    pub definitions: HashMap<NameId, (String, Defined)>,
+    pub definitions: HashMap<NameId, Defined>,
     // pub current_infrence: Vec<TypeInfo>,
     pub type_store: TypeStore,
 
-    pub next_name_id: usize,
-    pub scopes: Vec<HashMap<String, NameId>>,
+    // pub next_name_id: usize,
+
+    //todo: find a way where we dont need to store 2 strings here
+    //
+    names_strs:Vec<StrId>,
+    pub str_intern:StringInterner,
+
+    pub scopes: Vec<HashMap<StrId, NameId>>,
     pub pending_names: HashMap<NameId, Vec<Loc>>,
 }
 
@@ -72,14 +82,16 @@ impl Program {
             // current_infrence: Vec::new(),
             type_store: TypeStore::new(),
 
-            next_name_id: 0,
+            // next_name_id: 0,
+            names_strs:Vec::new(),
+            str_intern:StringInterner::new(),
+
             scopes: vec![HashMap::new()],
             pending_names: HashMap::new(),
         };
         program.insert_builtin_types();
         program
     }
-
     
 
 
@@ -94,20 +106,16 @@ impl Program {
     }
 
     /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
-    pub fn insert_value_in_current_scope(&mut self, name: String) -> NameId {
-        let id = self.fresh_name_id();
-        if let Some(value_scope) = self.scopes.last_mut() {
-            value_scope.insert(name, id);
-        } else {
-            // If you ever lower without at least one scope pushed, that's a bug.
-            debug_assert!(false, "no scope available when inserting binding");
-        }
+    pub fn insert_value_in_current_scope(&mut self, name: StrId) -> NameId {
+        let id = self.fresh_name_id(name);
+        let value_scope = self.scopes.last_mut().expect("no scope available when inserting binding"); 
+        value_scope.insert(name, id);
         id
     }
 
     /// Insert a new binding into the global scope, always creating a fresh ID.
-    pub fn insert_value_in_global_scope(&mut self, name: String) -> NameId {
-        let id = self.fresh_name_id();
+    pub fn insert_value_in_global_scope(&mut self, name: StrId) -> NameId {
+        let id = self.fresh_name_id(name);
         if let Some(value_scope) = self.scopes.first_mut() {
             value_scope.insert(name, id);
         } else {
@@ -117,16 +125,17 @@ impl Program {
     }
 
     /// Generate a fresh unique name ID
-    fn fresh_name_id(&mut self) -> NameId {
-        let id = NameId(self.next_name_id);
-        self.next_name_id += 1;
+    fn fresh_name_id(&mut self,s:StrId) -> NameId {
+        let id = NameId(self.names_strs.len());
+        self.names_strs.push(s);
         id
     }
 
-    pub fn get_macro(&self, name: &str) -> Option<&Macro> {
+    pub fn get_macro(&mut self, name: &str) -> Option<&Macro> {
         //TODO think if we wana do scopes
-        let id = self.scopes[0].get(name)?;
-        if let Some((_, Defined::Macro(ans))) = self.definitions.get(id) {
+        let name = self.str_intern.intern(name);
+        let id = self.scopes[0].get(&name)?;
+        if let Some(Defined::Macro(ans)) = self.definitions.get(id) {
             Some(ans)
         } else {
             None
@@ -135,7 +144,7 @@ impl Program {
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse_with_macros(&mut self, program: &Program) -> CResult<Option<LExpr>> {
+    pub fn parse_with_macros(&mut self, program: &mut Program) -> CResult<Option<LExpr>> {
         let Some(mut expr) = self.parse_stmt()? else {
             return Ok(None);
         };
@@ -148,7 +157,8 @@ impl Program {
     //this takes a String because a name is mentioned once as String and gets resolved here
     //it actually has a much nicer cache behvior becaused the String usually gets freed and is giving something else room
     //instead of a &str which would bring cache line to some random parse data
-    pub(crate) fn resolve_name(&mut self, loc: &Loc, name: String) -> CResult<NameId> {
+    pub(crate) fn resolve_name(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
+        let name = self.str_intern.intern(&name);
         for value_scope in self.scopes.iter().skip(1).rev() {
             if let Some(id) = value_scope.get(&name) {
                 return Ok(*id);
@@ -165,7 +175,7 @@ impl Program {
 
         //errors get reported later it can be there is just a late mention so we dont know yet
         let id = self.insert_value_in_global_scope(name.clone());
-        self.definitions.insert(id, (name, Defined::ToBeDefined));
+        self.definitions.insert(id, Defined::ToBeDefined);
         self.pending_names.entry(id).or_default().push(loc.clone());
         Ok(id)
     }
@@ -220,17 +230,18 @@ impl Program {
         }
 
         for (id, locs_ref) in self.pending_names.iter_mut() {
-            let name = match self.definitions.entry(*id) {
+            match self.definitions.entry(*id) {
                 std::collections::hash_map::Entry::Occupied(o) => {
-                    if !matches!(o.get().1, Defined::ToBeDefined) {
+                    if !matches!(o.get(), Defined::ToBeDefined) {
                         continue;
                     }
 
                     // o.remove().0
-                    o.get().0.clone() //needed for the repl
+                    // o.get().clone() //needed for the repl
                 }
                 _ => continue,
             };
+            let name = self.str_intern.resolve(self.names_strs[id.0]).to_string();
 
             //take locs out so we dont double report them
             let mut locs = Vec::new();
@@ -248,15 +259,16 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        let (name_str, name) = match lhs.value {
+        let (_, name) = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
+                let name = self.str_intern.intern(&name);
                 if let Some(id) = self
                     .scopes
                     .last()
                     .and_then(|scope| scope.get(&name))
                     .copied()
                 {
-                    if matches!(self.definitions.get(&id), Some((_, Defined::ToBeDefined))) {
+                    if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
                         (name, id)
                     } else {
                         (name.clone(), self.insert_value_in_current_scope(name))
@@ -305,7 +317,7 @@ impl Program {
             }
         };
 
-        self.definitions.insert(name, (name_str, def));
+        self.definitions.insert(name,def);
 
         Ok(())
     }

@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut expr_count = 0;
                 let mut compile_error = None;
                 while !parser.is_empty() {
-                    match parser.parse_with_macros(&program) {
+                    match parser.parse_with_macros(&mut program) {
                         Ok(None) => break,
                         Ok(Some(expr)) => {
                             println!(

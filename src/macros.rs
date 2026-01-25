@@ -126,7 +126,7 @@ impl Macro {
     }
 }
 
-pub fn expand_macros_recursive(expr: &mut LExpr, program: &Program) -> CResult<()> {
+pub fn expand_macros_recursive(expr: &mut LExpr, program: &mut Program) -> CResult<()> {
     loop {
         let expansion = match &expr.value {
             Expr::Postfix(open, args) if open.value == "(" => {
@@ -204,7 +204,7 @@ mod tests {
         let mut last_expr = None;
 
         while !parser.is_empty() {
-            let expr = parser.parse_with_macros(&program).unwrap().unwrap();
+            let expr = parser.parse_with_macros(&mut program).unwrap().unwrap();
             last_expr = Some(expr.clone());
             program.gather_definition(expr).unwrap();
         }
@@ -228,7 +228,7 @@ mod tests {
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
         let err = (|| {
-            if let Some(exp) = parser.parse_with_macros(&program)? {
+            if let Some(exp) = parser.parse_with_macros(&mut program)? {
                 program.gather_definition(exp)?;
             }
 

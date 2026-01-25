@@ -433,7 +433,7 @@ impl Program {
             Token::Operator("(") => Value::Literal(Literal::Void),
 
             Token::Ident(name) => {
-                let id = self.resolve_name(loc, name)?;
+                let id = self.resolve_name(loc, &name)?;
                 Value::NameRef(id)
             }
 
@@ -618,6 +618,7 @@ impl Program {
                 for item in items {
                     match item.value {
                         Expr::Atom(Token::Ident(name)) => {
+                            let name = p.str_intern.intern(&name);
                             let id = p.insert_value_in_current_scope(name);
                             generics.push(id);
                         }
@@ -716,6 +717,7 @@ impl Program {
             }
 
             Expr::Atom(Token::Ident(name)) => {
+                let name = self.str_intern.intern(&name);
                 let id = self.insert_value_in_current_scope(name);
                 Ok(self.typed_pattern(loc, Pattern::Bind(id)))
             }
@@ -1283,12 +1285,13 @@ mod lowering_tests {
         let mut program = Program::new();
         program.compile_all(&mut parser).unwrap();
 
+        let f_name = program.str_intern.intern("f");
         let f_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get("f"))
+            .and_then(|scope| scope.get(&f_name))
             .expect("missing f binding");
-        let (_,defined) = program.definitions.get(&f_id).expect("missing definition");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
             Defined::Value(value) => match &value.value {
@@ -1306,31 +1309,29 @@ mod lowering_tests {
         let mut program = Program::new();
         program.compile_all(&mut parser).unwrap();
 
+        let f_name = program.str_intern.intern("f");
         let f_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get("f"))
+            .and_then(|scope| scope.get(&f_name))
             .expect("missing f binding");
+        let g_name = program.str_intern.intern("g");
         let g_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get("g"))
+            .and_then(|scope| scope.get(&g_name))
             .expect("missing g binding");
 
-        let (fname,f_def) = program
+        let f_def = program
             .definitions
             .get(&f_id)
             .expect("missing f definition");
 
-        assert_eq!(fname,"f");
 
-
-        let (gname,g_def) = program
+        let g_def = program
             .definitions
             .get(&g_id)
             .expect("missing g definition");
-
-        assert_eq!(gname,"g");
 
 
         let f_body = match f_def {

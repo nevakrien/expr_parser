@@ -41,9 +41,20 @@ pub enum InferId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
     Int,
-    I8, I16, I32, I64, I128, Isize,
-    U8, U16, U32, U64, U128, Usize,
-    F32, F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+    F32,
+    F64,
     Bool,
     Str,
     Void,
@@ -65,13 +76,13 @@ pub struct TypeStore {
 }
 
 impl TypeStore {
-    pub fn new()->Self{
-        Self{
-            values:Vec::new(),
-            intern:HashMap::new(),
+    pub fn new() -> Self {
+        Self {
+            values: Vec::new(),
+            intern: HashMap::new(),
         }
     }
-    
+
     pub fn get(&self, id: TypeId) -> &TypeValue {
         &self.values[id.0]
     }
@@ -97,7 +108,6 @@ pub struct Typed<T> {
     pub ty: InferId,
     pub value: T,
 }
-
 
 impl Program {
     pub(crate) fn insert_builtin_types(&mut self) {
@@ -130,9 +140,9 @@ impl Program {
 
         for &(name, builtin) in BUILTINS {
             let ty = self.type_store.intern(TypeValue::Builtin(builtin));
-            let id = self.insert_value_in_current_scope(name.to_string());
-            self.definitions
-                .insert(id, (name.to_string(), Defined::TypeRef(ty)));
+            let name = self.str_intern.intern(name);
+            let id = self.insert_value_in_current_scope(name);
+            self.definitions.insert(id, Defined::TypeRef(ty));
         }
     }
 
@@ -189,18 +199,30 @@ pub enum TypeError {
  * Constraint model (CORE)
  * ================================================================ */
 
-#[derive(Debug,Clone)]
+#[derive(Debug, Clone)]
 pub enum ProducedBy {
-    Literal { lit: Literal },
-    NameRef { name: NameId },
+    Literal {
+        lit: Literal,
+    },
+    NameRef {
+        name: NameId,
+    },
     LetBind {
         name: NameId,
         annotated: Option<Located<InferId>>,
     },
-    Cast { target: InferId },
-    TypeAnnotationExpr { ty: InferId },
-    BinOp { op: BinOp },
-    UnOp { op: UnOp },
+    Cast {
+        target: InferId,
+    },
+    TypeAnnotationExpr {
+        ty: InferId,
+    },
+    BinOp {
+        op: BinOp,
+    },
+    UnOp {
+        op: UnOp,
+    },
     Block,
     Call,
     Func,
@@ -226,10 +248,13 @@ pub struct TypeConstraints {
 
 impl TypeConstraints {
     fn new(loc: Loc, produced: ProducedBy) -> Self {
-        Self { produced_loc: loc, produced, consumed: Vec::new() }
+        Self {
+            produced_loc: loc,
+            produced,
+            consumed: Vec::new(),
+        }
     }
 }
-
 
 /* ================================================================
  * Constraint collection
@@ -266,7 +291,10 @@ impl CollectCtx {
     }
 
     fn infer_for_name(&mut self, name: NameId) -> InferId {
-        *self.name_infers.entry(name).or_insert_with(|| self.infer.fresh())
+        *self
+            .name_infers
+            .entry(name)
+            .or_insert_with(|| self.infer.fresh())
     }
 
     fn set_producer(&mut self, id: InferId, loc: Loc, produced: ProducedBy) {
@@ -283,15 +311,12 @@ impl CollectCtx {
         self.constraints
             .entry(id)
             .or_insert_with(|| {
-                TypeConstraints::new(
-                    loc.clone(),
-                    ProducedBy::Other("producer not recorded yet"),
-                )
+                TypeConstraints::new(loc.clone(), ProducedBy::Other("producer not recorded yet"))
             })
-            .consumed.push((loc, c));
+            .consumed
+            .push((loc, c));
     }
 }
-
 
 /* ================================================================
  * Constraint walk
@@ -316,7 +341,10 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             );
         }
 
-        Value::Block { statements, return_value } => {
+        Value::Block {
+            statements,
+            return_value,
+        } => {
             for s in statements.iter_mut() {
                 collect_value(program, ctx, s);
             }
@@ -332,15 +360,10 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             ctx.set_producer(this, v.loc.clone(), ProducedBy::Block);
         }
 
-
         Value::NameRef(name) => {
             let nid = ctx.infer_for_name(*name);
 
-            ctx.set_producer(
-                this,
-                v.loc.clone(),
-                ProducedBy::NameRef { name: *name },
-            );
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::NameRef { name: *name });
 
             // expression <-> name-value equivalence
             ctx.add_consume(this, v.loc.clone(), ConsumedAs::SameAs(nid));
@@ -353,11 +376,7 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
 
             let target = resolve_type_expr(program, ty).unwrap_or(InferId::Nothing);
 
-            ctx.set_producer(
-                this,
-                v.loc.clone(),
-                ProducedBy::Cast { target },
-            );
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::Cast { target });
 
             // Cast is an explicit requirement
             if target != InferId::Nothing {
@@ -389,11 +408,7 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             collect_value(program, ctx, r);
 
             // This expression is produced by a binary operator
-            ctx.set_producer(
-                this,
-                v.loc.clone(),
-                ProducedBy::BinOp { op: *op },
-            );
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::BinOp { op: *op });
 
             match op {
                 // Bitwise ops: operands must be integer-like
@@ -421,15 +436,10 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             }
         }
 
-
         Value::UnOp { op, value } => {
             collect_value(program, ctx, value);
 
-            ctx.set_producer(
-                this,
-                v.loc.clone(),
-                ProducedBy::UnOp { op: *op },
-            );
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::UnOp { op: *op });
 
             match op {
                 UnOp::BitNot => {
@@ -451,26 +461,17 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             }
         }
 
-
         Value::Let { pat, value, .. } => {
             collect_pattern(program, ctx, pat);
             collect_value(program, ctx, value);
 
-            ctx.set_producer(
-                this,
-                v.loc.clone(),
-                ProducedBy::Other("let expression"),
-            );
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::Other("let expression"));
 
             record_let_bind_link(program, ctx, pat, value, &v.loc);
         }
 
         _ => {
-            ctx.set_producer(
-                this,
-                v.loc.clone(),
-                ProducedBy::Other("unmodeled"),
-            );
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::Other("unmodeled"));
         }
     }
 }
@@ -507,7 +508,6 @@ fn collect_pattern(program: &mut Program, ctx: &mut CollectCtx, p: &mut TPattern
         }
     }
 }
-
 
 fn record_let_bind_link(
     program: &mut Program,
@@ -570,7 +570,6 @@ fn record_let_bind_link(
     }
 }
 
-
 /* ================================================================
  * Type expressions
  * ================================================================ */
@@ -578,10 +577,16 @@ fn record_let_bind_link(
 fn resolve_type_expr(program: &Program, v: &TValue) -> Result<InferId, TypeError> {
     match &v.value {
         Value::NameRef(name) => match program.definitions.get(name) {
-            Some((_, Defined::TypeRef(t))) => Ok(InferId::Concrete(*t)),
-            _ => Err(TypeError::ExpectedType { loc: v.loc.clone(), message: "expected type" }),
+            Some(Defined::TypeRef(t)) => Ok(InferId::Concrete(*t)),
+            _ => Err(TypeError::ExpectedType {
+                loc: v.loc.clone(),
+                message: "expected type",
+            }),
         },
-        _ => Err(TypeError::ExpectedType { loc: v.loc.clone(), message: "unsupported type expr" }),
+        _ => Err(TypeError::ExpectedType {
+            loc: v.loc.clone(),
+            message: "unsupported type expr",
+        }),
     }
 }
 
@@ -590,15 +595,14 @@ fn builtin(program: &mut Program, b: BuiltinType) -> InferId {
     InferId::Concrete(ty)
 }
 
-
 /* ================================================================
  * InferState (UNION-FIND + CONCRETE ASSIGNMENT)
  * ================================================================ */
 
 #[derive(Debug)]
 struct InferState {
-    parent: Vec<usize>,              // union-find parent
-    concrete: Vec<Option<TypeId>>,    // concrete type per root
+    parent: Vec<usize>,            // union-find parent
+    concrete: Vec<Option<TypeId>>, // concrete type per root
 }
 
 impl InferState {
@@ -720,14 +724,20 @@ impl InferState {
 fn numeric_kind(ty: BuiltinType) -> Option<NumericKind> {
     match ty {
         BuiltinType::Int
-        | BuiltinType::I8 | BuiltinType::I16 | BuiltinType::I32
-        | BuiltinType::I64 | BuiltinType::I128 | BuiltinType::Isize
-        | BuiltinType::U8 | BuiltinType::U16 | BuiltinType::U32
-        | BuiltinType::U64 | BuiltinType::U128 | BuiltinType::Usize
-            => Some(NumericKind::Int),
+        | BuiltinType::I8
+        | BuiltinType::I16
+        | BuiltinType::I32
+        | BuiltinType::I64
+        | BuiltinType::I128
+        | BuiltinType::Isize
+        | BuiltinType::U8
+        | BuiltinType::U16
+        | BuiltinType::U32
+        | BuiltinType::U64
+        | BuiltinType::U128
+        | BuiltinType::Usize => Some(NumericKind::Int),
 
-        BuiltinType::F32 | BuiltinType::F64
-            => Some(NumericKind::Float),
+        BuiltinType::F32 | BuiltinType::F64 => Some(NumericKind::Float),
 
         _ => None,
     }
@@ -738,7 +748,6 @@ enum NumericKind {
     Int,
     Float,
 }
-
 
 fn seed_from_producers(
     program: &mut Program,
@@ -768,27 +777,27 @@ fn seed_from_producers(
                     })?;
             }
 
-            ProducedBy::Cast { target }
-            | ProducedBy::TypeAnnotationExpr { ty: target } => {
+            ProducedBy::Cast { target } | ProducedBy::TypeAnnotationExpr { ty: target } => {
                 if *target != InferId::Nothing {
-                    changed |= infer
-                        .unify(id, *target)
-                        .map_err(|(e, f)| TypeError::SimpleMismatch {
-                            required_loc: c.produced_loc.clone(),
-                            produced_loc: c.produced_loc.clone(),
-                            expected: e,
-                            found: f,
-                            note: "explicit type contradicts existing constraints",
-                        })?;
+                    changed |=
+                        infer
+                            .unify(id, *target)
+                            .map_err(|(e, f)| TypeError::SimpleMismatch {
+                                required_loc: c.produced_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "explicit type contradicts existing constraints",
+                            })?;
                 }
             }
 
-            ProducedBy::BinOp { op } => {
-                match op {
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                        let bool_ty = builtin(program, BuiltinType::Bool);
+            ProducedBy::BinOp { op } => match op {
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    let bool_ty = builtin(program, BuiltinType::Bool);
 
-                        changed |= infer
+                    changed |=
+                        infer
                             .unify(id, bool_ty)
                             .map_err(|(e, f)| TypeError::SimpleMismatch {
                                 required_loc: c.produced_loc.clone(),
@@ -797,14 +806,10 @@ fn seed_from_producers(
                                 found: f,
                                 note: "comparison operator result is always bool",
                             })?;
-                    }
-
-                    _ => {}
                 }
-            }
 
-
-
+                _ => {}
+            },
 
             _ => {}
         }
@@ -823,15 +828,16 @@ fn apply_equivalence_constraints(
         for (use_loc, cons) in &c.consumed {
             match *cons {
                 ConsumedAs::SameAs(other) | ConsumedAs::Explicit(other) => {
-                    changed |= infer
-                        .unify(id, other)
-                        .map_err(|(e, f)| TypeError::SimpleMismatch {
-                            required_loc: use_loc.clone(),
-                            produced_loc: c.produced_loc.clone(),
-                            expected: e,
-                            found: f,
-                            note: "equivalence constraint failed",
-                        })?;
+                    changed |=
+                        infer
+                            .unify(id, other)
+                            .map_err(|(e, f)| TypeError::SimpleMismatch {
+                                required_loc: use_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "equivalence constraint failed",
+                            })?;
                 }
                 _ => {}
             }
@@ -841,7 +847,6 @@ fn apply_equivalence_constraints(
     Ok(changed)
 }
 
-
 fn apply_operator_semantics(
     program: &mut Program,
     infer: &mut InferState,
@@ -850,7 +855,9 @@ fn apply_operator_semantics(
     let mut changed = false;
 
     for (&id, c) in constraints.iter() {
-        let ProducedBy::BinOp { op } = c.produced else { continue };
+        let ProducedBy::BinOp { op } = c.produced else {
+            continue;
+        };
 
         // Collect operand InferIds from constraints
         let mut operands = Vec::new();
@@ -870,59 +877,68 @@ fn apply_operator_semantics(
         let lhs = operands[0];
         let rhs = operands[1];
 
-        let Some(lt) = infer.get_concrete(lhs) else { continue };
-        let Some(rt) = infer.get_concrete(rhs) else { continue };
+        let Some(lt) = infer.get_concrete(lhs) else {
+            continue;
+        };
+        let Some(rt) = infer.get_concrete(rhs) else {
+            continue;
+        };
 
-        let TypeValue::Builtin(lb) = program.type_store.get(lt) else { continue };
-        let TypeValue::Builtin(rb) = program.type_store.get(rt) else { continue };
+        let TypeValue::Builtin(lb) = program.type_store.get(lt) else {
+            continue;
+        };
+        let TypeValue::Builtin(rb) = program.type_store.get(rt) else {
+            continue;
+        };
 
         let lk = numeric_kind(*lb);
         let rk = numeric_kind(*rb);
 
         match op {
             // ---------- arithmetic ----------
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                match (lk, rk) {
-                    (Some(NumericKind::Float), Some(NumericKind::Float)) => {
-                        changed |= infer.unify(id, builtin(program, BuiltinType::F64))
-                            .map_err(|(e,f)| TypeError::SimpleMismatch {
-                                required_loc: c.produced_loc.clone(),
-                                produced_loc: c.produced_loc.clone(),
-                                expected: e,
-                                found: f,
-                                note: "float arithmetic",
-                            })?;
-                    }
-
-                    (Some(NumericKind::Int), Some(NumericKind::Int)) => {
-                        changed |= infer.unify(id, builtin(program, BuiltinType::Int))
-                            .map_err(|(e,f)| TypeError::SimpleMismatch {
-                                required_loc: c.produced_loc.clone(),
-                                produced_loc: c.produced_loc.clone(),
-                                expected: e,
-                                found: f,
-                                note: "integer arithmetic",
-                            })?;
-                    }
-
-                    _ => {
-                        return Err(TypeError::SimpleMismatch {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => match (lk, rk) {
+                (Some(NumericKind::Float), Some(NumericKind::Float)) => {
+                    changed |= infer
+                        .unify(id, builtin(program, BuiltinType::F64))
+                        .map_err(|(e, f)| TypeError::SimpleMismatch {
                             required_loc: c.produced_loc.clone(),
                             produced_loc: c.produced_loc.clone(),
-                            expected: lt,
-                            found: rt,
-                            note: "invalid arithmetic operands",
-                        });
-                    }
+                            expected: e,
+                            found: f,
+                            note: "float arithmetic",
+                        })?;
                 }
-            }
+
+                (Some(NumericKind::Int), Some(NumericKind::Int)) => {
+                    changed |= infer
+                        .unify(id, builtin(program, BuiltinType::Int))
+                        .map_err(|(e, f)| TypeError::SimpleMismatch {
+                            required_loc: c.produced_loc.clone(),
+                            produced_loc: c.produced_loc.clone(),
+                            expected: e,
+                            found: f,
+                            note: "integer arithmetic",
+                        })?;
+                }
+
+                _ => {
+                    return Err(TypeError::SimpleMismatch {
+                        required_loc: c.produced_loc.clone(),
+                        produced_loc: c.produced_loc.clone(),
+                        expected: lt,
+                        found: rt,
+                        note: "invalid arithmetic operands",
+                    });
+                }
+            },
 
             // ---------- bitwise ----------
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr | BinOp::Mod => {
                 match (lk, rk) {
                     (Some(NumericKind::Int), Some(NumericKind::Int)) => {
-                        changed |= infer.unify(id, builtin(program, BuiltinType::Int))
-                            .map_err(|(e,f)| TypeError::SimpleMismatch {
+                        changed |= infer
+                            .unify(id, builtin(program, BuiltinType::Int))
+                            .map_err(|(e, f)| TypeError::SimpleMismatch {
                                 required_loc: c.produced_loc.clone(),
                                 produced_loc: c.produced_loc.clone(),
                                 expected: e,
@@ -950,7 +966,6 @@ fn apply_operator_semantics(
     Ok(changed)
 }
 
-
 fn solve_basic(
     program: &mut Program,
     infer: &mut InferState,
@@ -970,8 +985,6 @@ fn solve_basic(
 
     Ok(())
 }
-
-
 
 /* ================================================================
  * Finalization (ROOT ONLY, NO GLOBAL CHECKS)
@@ -1019,10 +1032,7 @@ fn finalize_root(
  * Entry point
  * ================================================================ */
 
-pub fn infer_value(
-    program: &mut Program,
-    value: &mut TValue,
-) -> Result<TypeId, TypeError> {
+pub fn infer_value(program: &mut Program, value: &mut TValue) -> Result<TypeId, TypeError> {
     let mut collected = collect_constraints(program, value);
 
     // Phase 1: constraint propagation (no guessing)
@@ -1031,7 +1041,6 @@ pub fn infer_value(
     // Phase 2: resolve ONLY the root expression
     finalize_root(value, &mut collected.infer, &collected.constraints)
 }
-
 
 #[cfg(test)]
 mod type_infer_tests {
@@ -1047,7 +1056,7 @@ mod type_infer_tests {
         let mut parser = Parser::new(src, 0);
 
         while !parser.is_empty() {
-            match parser.parse_with_macros(&program) {
+            match parser.parse_with_macros(&mut program) {
                 Ok(Some(expr)) => {
                     program
                         .gather_definition(expr)
@@ -1070,7 +1079,7 @@ mod type_infer_tests {
         let def = program
             .definitions
             .iter()
-            .find_map(|(_, (_name, def))| match def {
+            .find_map(|(_, def)| match def {
                 Defined::Value(v) => Some(v),
                 _ => None,
             })
@@ -1129,7 +1138,6 @@ mod type_infer_tests {
         assert_fn_type!("f = fn(){ { let x = 1; x } }", BuiltinType::Int);
     }
 
-
     #[test]
     fn cast_allows_type_change() {
         assert_fn_type!("f = fn(){ let x:int = 1; x as bool }", BuiltinType::Bool);
@@ -1139,7 +1147,6 @@ mod type_infer_tests {
     // fn arithmetic_on_float_is_allowed() {
     //     assert_fn_type!("f = fn(){ 1.0 + 2.0 }", BuiltinType::F64);
     // }
-
 
     /* ------------------------------------------------------------
      * Error cases
@@ -1154,7 +1161,7 @@ mod type_infer_tests {
         }
     }
 
-/*    #[test]
+    /*    #[test]
     fn bitwise_on_float_errors() {
         let err = infer_fn("f = fn(){ 1.0 & 2 }").unwrap_err();
         match err {
