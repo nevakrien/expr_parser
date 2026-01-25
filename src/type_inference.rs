@@ -10,14 +10,47 @@
 //
 // ================================================================
 
+use crate::ir::NameId;
 use crate::parsing::Located;
 use std::collections::HashMap;
 
 use crate::{
-    ir::{BinOp, Literal, NameId, Pattern, TPattern, TValue, UnOp, Value},
+    ir::{BinOp, Literal, Pattern, IPattern, IValue, UnOp, Value,},
     parsing::Loc,
-    program::{Defined, Program},
+    program::{Defined, Program,ValId},
 };
+
+
+/* ================================================================
+ * Errors (STABLE SHAPE)
+ * ================================================================ */
+
+#[derive(Debug)]
+pub enum TypeError {
+    Unresolved {
+        produced_loc: Loc,
+        message: &'static str,
+    },
+
+    SimpleMismatch {
+        required_loc: Loc,
+        produced_loc: Loc,
+        expected: TypeId,
+        found: TypeId,
+        note: &'static str,
+    },
+
+    Unsupported {
+        loc: Loc,
+        message: &'static str,
+    },
+
+    ExpectedType {
+        loc: Loc,
+        message: &'static str,
+    },
+}
+
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -34,9 +67,7 @@ pub enum InferId {
     GenericArg(usize),
 }
 
-/* ================================================================
- * Types & TypeStore (STABLE)
- * ================================================================ */
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
@@ -67,52 +98,6 @@ pub enum TypeValue {
     Tuple(Vec<TypeId>),
     Func { params: Vec<TypeId>, ret: TypeId },
     Ptr(TypeId),
-}
-
-#[derive(Debug)]
-pub struct TypeStore {
-    values: Vec<TypeValue>,
-    intern: HashMap<TypeValue, TypeId>,
-}
-
-impl Default for TypeStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TypeStore {
-    pub fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            intern: HashMap::new(),
-        }
-    }
-
-    pub fn get(&self, id: TypeId) -> &TypeValue {
-        &self.values[id.0]
-    }
-
-    pub fn intern(&mut self, ty: TypeValue) -> TypeId {
-        if let Some(&id) = self.intern.get(&ty) {
-            return id;
-        }
-        let id = TypeId(self.values.len());
-        self.values.push(ty.clone());
-        self.intern.insert(ty, id);
-        id
-    }
-}
-
-/* ================================================================
- * Typed wrapper (STABLE)
- * ================================================================ */
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Typed<T> {
-    pub loc: Loc,
-    pub ty: InferId,
-    pub value: T,
 }
 
 impl Program {
@@ -151,54 +136,41 @@ impl Program {
             self.definitions.insert(id, Defined::TypeRef(ty));
         }
     }
+}
 
-    /// Lowering helper: create a typed value (no inference slot allocation here).
-    pub(crate) fn typed_value(&mut self, loc: Loc, value: Value) -> TValue {
-        Typed {
-            loc,
-            ty: InferId::Nothing,
-            value,
-        }
-    }
+#[derive(Debug)]
+pub struct TypeStore {
+    values: Vec<TypeValue>,
+    intern: HashMap<TypeValue, TypeId>,
+}
 
-    /// Lowering helper: create a typed pattern.
-    pub(crate) fn typed_pattern(&mut self, loc: Loc, value: Pattern) -> TPattern {
-        Typed {
-            loc,
-            ty: InferId::Nothing,
-            value,
-        }
+impl Default for TypeStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/* ================================================================
- * Errors (STABLE SHAPE)
- * ================================================================ */
+impl TypeStore {
+    pub fn new() -> Self {
+        Self {
+            values: Vec::new(),
+            intern: HashMap::new(),
+        }
+    }
 
-#[derive(Debug)]
-pub enum TypeError {
-    Unresolved {
-        produced_loc: Loc,
-        message: &'static str,
-    },
+    pub fn get(&self, id: TypeId) -> &TypeValue {
+        &self.values[id.0]
+    }
 
-    SimpleMismatch {
-        required_loc: Loc,
-        produced_loc: Loc,
-        expected: TypeId,
-        found: TypeId,
-        note: &'static str,
-    },
-
-    Unsupported {
-        loc: Loc,
-        message: &'static str,
-    },
-
-    ExpectedType {
-        loc: Loc,
-        message: &'static str,
-    },
+    pub fn intern(&mut self, ty: TypeValue) -> TypeId {
+        if let Some(&id) = self.intern.get(&ty) {
+            return id;
+        }
+        let id = TypeId(self.values.len());
+        self.values.push(ty.clone());
+        self.intern.insert(ty, id);
+        id
+    }
 }
 
 /* ================================================================
@@ -210,13 +182,24 @@ pub enum ProducedBy {
     Literal {
         lit: Literal,
     },
+
+    /// A name reference *after* name-resolution / lowering:
+    /// refers directly to the value being referenced (its ValId).
+    ///
+    /// This removes NameId from inference: names are not type-nodes; values are.
     NameRef {
-        name: NameId,
+        target: NameId,
     },
+
+    /// A `let` binding is also expressed in terms of the value-id that represents
+    /// the bound slot (or the referenced value, depending on your lowering).
+    ///
+    /// The important part for inference is "this binding slot's type".
     LetBind {
-        name: NameId,
+        bind: NameId,
         annotated: Option<Located<InferId>>,
     },
+
     Cast {
         target: InferId,
     },
@@ -265,15 +248,17 @@ impl TypeConstraints {
 /* ================================================================
  * Constraint collection
  * ================================================================ */
-
 struct CollectCtx {
     infer: InferState,
 
-    /// Constraints indexed by InferId
+    /// Constraints indexed by InferId (unchanged for now)
     constraints: HashMap<InferId, TypeConstraints>,
 
-    /// Map each NameId to its InferId
+    /// anoyingly some names dont have values,
+    ///    for ones that do InferId points at those values
+    ///    the ones that dont have a specific conrete type
     name_infers: HashMap<NameId, InferId>,
+    value_infers: HashMap<ValId, InferId>,
 }
 
 impl CollectCtx {
@@ -281,25 +266,17 @@ impl CollectCtx {
         Self {
             infer: InferState::new(),
             constraints: HashMap::new(),
-            name_infers: HashMap::new(),
+            value_infers: HashMap::new(),
+            name_infers:HashMap::new(),
         }
     }
 
-    fn ensure_expr_id(&mut self, v: &mut TValue) -> InferId {
-        match v.ty {
-            InferId::Nothing => {
-                let id = self.infer.fresh();
-                v.ty = id;
-                id
-            }
-            id => id,
-        }
-    }
-
-    fn infer_for_name(&mut self, name: NameId) -> InferId {
+    /// Get (or create) the InferId for this value.
+    /// This replaces *all* uses of `v.ty`.
+    fn ensure_expr_id(&mut self, v: &IValue) -> InferId {
         *self
-            .name_infers
-            .entry(name)
+            .value_infers
+            .entry(v.id)
             .or_insert_with(|| self.infer.fresh())
     }
 
@@ -322,18 +299,29 @@ impl CollectCtx {
             .consumed
             .push((loc, c));
     }
+
+    /// Every name gets exactly one InferId slot.
+    /// This is temporary until bindings are lowered to values.
+    fn infer_for_name(&mut self, name: NameId) -> InferId {
+        *self
+            .name_infers
+            .entry(name)
+            .or_insert_with(|| self.infer.fresh())
+    }
 }
+
 
 /* ================================================================
  * Constraint walk
  * ================================================================ */
 
-fn collect_constraints(program: &mut Program, value: &mut TValue) -> CollectCtx {
+fn collect_constraints(program: &mut Program, value: &mut IValue) -> CollectCtx {
     let mut ctx = CollectCtx::new();
     collect_value(program, &mut ctx, value);
     ctx
 }
-fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
+
+fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut IValue) {
     let this = ctx.ensure_expr_id(v);
 
     //we assume no operator overloads so that we can do NumericInt on things like a&b regardless of their types.
@@ -342,7 +330,7 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
         Value::Literal(lit) => {
             ctx.set_producer(
                 this,
-                v.loc.clone(),
+                program.get_loc(v.id),
                 ProducedBy::Literal { lit: lit.clone() },
             );
         }
@@ -357,23 +345,28 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
 
             if let Some(ret) = return_value.as_mut() {
                 collect_value(program, ctx, ret);
+                let ret_id = ctx.ensure_expr_id(ret);
 
                 // block expr == return expr
-                ctx.add_consume(this, v.loc.clone(), ConsumedAs::SameAs(ret.ty));
-                ctx.add_consume(ret.ty, ret.loc.clone(), ConsumedAs::SameAs(this));
+                ctx.add_consume(this, program.get_loc(v.id), ConsumedAs::SameAs(ret_id));
+                ctx.add_consume(ret_id, program.get_loc(ret.id), ConsumedAs::SameAs(this));
             }
 
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::Block);
+            ctx.set_producer(this, program.get_loc(v.id), ProducedBy::Block);
         }
 
-        Value::NameRef(name) => {
-            let nid = ctx.infer_for_name(*name);
+        Value::NameRef(target) => {
+            let target_id = ctx.infer_for_name(*target);
 
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::NameRef { name: *name });
+            ctx.set_producer(
+                this,
+                program.get_loc(v.id),
+                ProducedBy::NameRef { target: *target },
+            );
 
-            // expression <-> name-value equivalence
-            ctx.add_consume(this, v.loc.clone(), ConsumedAs::SameAs(nid));
-            ctx.add_consume(nid, v.loc.clone(), ConsumedAs::SameAs(this));
+            // expression <-> referenced value equivalence
+            ctx.add_consume(this, program.get_loc(v.id), ConsumedAs::SameAs(target_id));
+            ctx.add_consume(target_id, program.get_loc(v.id), ConsumedAs::SameAs(this));
         }
 
         Value::Cast { value, ty } => {
@@ -382,11 +375,15 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
 
             let target = resolve_type_expr(program, ty).unwrap_or(InferId::Nothing);
 
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::Cast { target });
+            ctx.set_producer(
+                this,
+                program.get_loc(v.id),
+                ProducedBy::Cast { target },
+            );
 
             // Cast is an explicit requirement
             if target != InferId::Nothing {
-                ctx.add_consume(this, v.loc.clone(), ConsumedAs::Explicit(target));
+                ctx.add_consume(this, program.get_loc(v.id), ConsumedAs::Explicit(target));
             }
         }
 
@@ -394,17 +391,18 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             collect_value(program, ctx, value);
             collect_value(program, ctx, ty);
 
+            let value_id = ctx.ensure_expr_id(value);
             let ann = resolve_type_expr(program, ty).unwrap_or(InferId::Nothing);
 
             ctx.set_producer(
                 this,
-                v.loc.clone(),
+                program.get_loc(v.id),
                 ProducedBy::TypeAnnotationExpr { ty: ann },
             );
 
             // RHS must satisfy the annotation
             if ann != InferId::Nothing {
-                ctx.add_consume(value.ty, value.loc.clone(), ConsumedAs::Explicit(ann));
+                ctx.add_consume(value_id, program.get_loc(value.id), ConsumedAs::Explicit(ann));
             }
         }
 
@@ -413,8 +411,15 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             collect_value(program, ctx, l);
             collect_value(program, ctx, r);
 
+            let l_id = ctx.ensure_expr_id(l);
+            let r_id = ctx.ensure_expr_id(r);
+
             // This expression is produced by a binary operator
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::BinOp { op: *op });
+            ctx.set_producer(
+                this,
+                program.get_loc(v.id),
+                ProducedBy::BinOp { op: *op },
+            );
 
             match op {
                 // Bitwise ops: operands must be integer-like
@@ -424,36 +429,41 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
                 | BinOp::Shl
                 | BinOp::Shr
                 | BinOp::Mod => {
-                    ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::IntNumeric);
-                    ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::IntNumeric);
+                    ctx.add_consume(l_id, program.get_loc(v.id), ConsumedAs::IntNumeric);
+                    ctx.add_consume(r_id, program.get_loc(v.id), ConsumedAs::IntNumeric);
                 }
 
                 // Arithmetic ops: operands must be numeric
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
-                    ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::Numeric);
-                    ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(l_id, program.get_loc(v.id), ConsumedAs::Numeric);
+                    ctx.add_consume(r_id, program.get_loc(v.id), ConsumedAs::Numeric);
                 }
 
                 // Comparisons: operands numeric, result handled by producer later
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    ctx.add_consume(l.ty, v.loc.clone(), ConsumedAs::Numeric);
-                    ctx.add_consume(r.ty, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(l_id, program.get_loc(v.id), ConsumedAs::Numeric);
+                    ctx.add_consume(r_id, program.get_loc(v.id), ConsumedAs::Numeric);
                 }
             }
         }
 
         Value::UnOp { op, value } => {
             collect_value(program, ctx, value);
+            let value_id = ctx.ensure_expr_id(value);
 
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::UnOp { op: *op });
+            ctx.set_producer(
+                this,
+                program.get_loc(v.id),
+                ProducedBy::UnOp { op: *op },
+            );
 
             match op {
                 UnOp::BitNot => {
-                    ctx.add_consume(value.ty, v.loc.clone(), ConsumedAs::IntNumeric);
+                    ctx.add_consume(value_id, program.get_loc(v.id), ConsumedAs::IntNumeric);
                 }
 
                 UnOp::Neg => {
-                    ctx.add_consume(value.ty, v.loc.clone(), ConsumedAs::Numeric);
+                    ctx.add_consume(value_id, program.get_loc(v.id), ConsumedAs::Numeric);
                 }
 
                 UnOp::Not => {
@@ -462,7 +472,11 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
                 }
 
                 UnOp::Deref | UnOp::AddrOf => {
-                    ctx.add_consume(this, v.loc.clone(), ConsumedAs::Other("ptr op (todo)"));
+                    ctx.add_consume(
+                        this,
+                        program.get_loc(v.id),
+                        ConsumedAs::Other("ptr op (todo)"),
+                    );
                 }
             }
         }
@@ -471,18 +485,26 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             collect_pattern(program, ctx, pat);
             collect_value(program, ctx, value);
 
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::Other("let expression"));
+            ctx.set_producer(
+                this,
+                program.get_loc(v.id),
+                ProducedBy::Other("let expression"),
+            );
 
-            record_let_bind_link(program, ctx, pat, value, &v.loc);
+            record_let_bind_link(program, ctx, pat, value, &program.get_loc(v.id));
         }
 
         _ => {
-            ctx.set_producer(this, v.loc.clone(), ProducedBy::Other("unmodeled"));
+            ctx.set_producer(
+                this,
+                program.get_loc(v.id),
+                ProducedBy::Other("unmodeled"),
+            );
         }
     }
 }
 
-fn collect_pattern(program: &mut Program, ctx: &mut CollectCtx, p: &mut TPattern) {
+fn collect_pattern(program: &mut Program, ctx: &mut CollectCtx, p: &mut IPattern) {
     // Patterns may contain:
     // - bindings (handled later by record_let_bind_link)
     // - type annotations
@@ -518,51 +540,57 @@ fn collect_pattern(program: &mut Program, ctx: &mut CollectCtx, p: &mut TPattern
 fn record_let_bind_link(
     program: &mut Program,
     ctx: &mut CollectCtx,
-    pat: &mut TPattern,
-    rhs: &mut TValue,
+    pat: &mut IPattern,
+    rhs: &mut IValue,
     loc: &Loc,
 ) {
     match &mut pat.value {
         Pattern::Bind(name) => {
             let nid = ctx.infer_for_name(*name);
+            let rhs_id = ctx.ensure_expr_id(rhs);
 
             ctx.set_producer(
                 nid,
                 loc.clone(),
                 ProducedBy::LetBind {
-                    name: *name,
+                    bind: *name,
                     annotated: None,
                 },
             );
 
-            ctx.add_consume(nid, loc.clone(), ConsumedAs::SameAs(rhs.ty));
-            ctx.add_consume(rhs.ty, rhs.loc.clone(), ConsumedAs::SameAs(nid));
+            ctx.add_consume(nid, loc.clone(), ConsumedAs::SameAs(rhs_id));
+            ctx.add_consume(rhs_id, program.get_loc(rhs.id), ConsumedAs::SameAs(nid));
         }
 
         Pattern::TypeAnnotation { pat: inner, ty } => {
             collect_value(program, ctx, ty);
 
+            // Recurse so nested tuple patterns etc. still work
             record_let_bind_link(program, ctx, inner, rhs, loc);
 
+            // Only if the inner pattern is actually a binder do we attach the annotation
             if let Pattern::Bind(name) = inner.value {
                 let nid = ctx.infer_for_name(name);
+                let rhs_id = ctx.ensure_expr_id(rhs);
 
-                let ann = Located {
-                    loc: ty.loc.clone(),
-                    value: ty.ty,
-                };
+                let ann = resolve_type_expr(program, ty).unwrap_or(InferId::Nothing);
 
                 ctx.set_producer(
                     nid,
                     loc.clone(),
                     ProducedBy::LetBind {
-                        name,
-                        annotated: Some(ann),
+                        bind:name,
+                        annotated: Some(Located {
+                            loc: program.get_loc(ty.id),
+                            value: ann,
+                        }),
                     },
                 );
 
-                ctx.add_consume(nid, pat.loc.clone(), ConsumedAs::Explicit(ty.ty));
-                ctx.add_consume(rhs.ty, rhs.loc.clone(), ConsumedAs::Explicit(ty.ty));
+                if ann != InferId::Nothing {
+                    ctx.add_consume(nid, loc.clone(), ConsumedAs::Explicit(ann));
+                    ctx.add_consume(rhs_id, program.get_loc(rhs.id), ConsumedAs::Explicit(ann));
+                }
             }
         }
 
@@ -576,21 +604,22 @@ fn record_let_bind_link(
     }
 }
 
+
 /* ================================================================
  * Type expressions
  * ================================================================ */
 
-fn resolve_type_expr(program: &Program, v: &TValue) -> Result<InferId, TypeError> {
+fn resolve_type_expr(program: &Program, v: &IValue) -> Result<InferId, TypeError> {
     match &v.value {
         Value::NameRef(name) => match program.definitions.get(name) {
             Some(Defined::TypeRef(t)) => Ok(InferId::Concrete(*t)),
             _ => Err(TypeError::ExpectedType {
-                loc: v.loc.clone(),
+                loc: program.get_loc(v.id),
                 message: "expected type",
             }),
         },
         _ => Err(TypeError::ExpectedType {
-            loc: v.loc.clone(),
+            loc: program.get_loc(v.id),
             message: "unsupported type expr",
         }),
     }
@@ -600,6 +629,7 @@ fn builtin(program: &mut Program, b: BuiltinType) -> InferId {
     let ty = program.type_store.intern(TypeValue::Builtin(b));
     InferId::Concrete(ty)
 }
+
 
 /* ================================================================
  * InferState (UNION-FIND + CONCRETE ASSIGNMENT)
@@ -817,6 +847,18 @@ fn seed_from_producers(
                 _ => {}
             },
 
+            ProducedBy::NameRef { target:_ }=>{
+                // TODO(global name refs):
+                // If ProducedBy::NameRef refers to a global definition with a fully-known concrete type
+                // (e.g. non-generic const/let with known type, or monomorphized function value),
+                // we can seed `id` by unifying with that concrete type here.
+                //
+                // IMPORTANT: do NOT do this for generic defs or unresolved global values.
+                // This requires a prior "global typing" phase that resolves/monomorphizes globals
+                // and stores their concrete TypeId somewhere (e.g. in `definitions` or a side table).
+
+
+            }
             _ => {}
         }
     }
@@ -995,14 +1037,13 @@ fn solve_basic(
 /* ================================================================
  * Finalization (ROOT ONLY, NO GLOBAL CHECKS)
  * ================================================================ */
-
 fn finalize_root(
-    value: &TValue,
+    program: &Program,
+    value: &IValue,
+    root: InferId,
     infer: &mut InferState,
     constraints: &HashMap<InferId, TypeConstraints>,
 ) -> Result<TypeId, TypeError> {
-    let root = value.ty;
-
     match infer.find(root) {
         InferId::Concrete(t) => Ok(t),
 
@@ -1013,7 +1054,7 @@ fn finalize_root(
                 let produced_loc = constraints
                     .get(&root)
                     .map(|c| c.produced_loc.clone())
-                    .unwrap_or_else(|| value.loc.clone());
+                    .unwrap_or_else(|| program.get_loc(value.id));
 
                 Err(TypeError::Unresolved {
                     produced_loc,
@@ -1023,30 +1064,39 @@ fn finalize_root(
         }
 
         InferId::Nothing => Err(TypeError::Unresolved {
-            produced_loc: value.loc.clone(),
+            produced_loc: program.get_loc(value.id),
             message: "expression never received an InferId slot (internal bug)",
         }),
 
         InferId::GenericArg(_) => Err(TypeError::Unsupported {
-            loc: value.loc.clone(),
+            loc: program.get_loc(value.id),
             message: "generic arguments not supported in basic solver",
         }),
     }
 }
 
+
 /* ================================================================
  * Entry point
  * ================================================================ */
 
-pub fn infer_value(program: &mut Program, value: &mut TValue) -> Result<TypeId, TypeError> {
-    let mut collected = collect_constraints(program, value);
+pub fn infer_value(program: &mut Program, value: &mut IValue) -> Result<TypeId, TypeError> {
+    let collected = collect_constraints(program, value);
+
+    // Root InferId is now owned by CollectCtx, not stored in the AST.
+    let root = *collected
+        .value_infers
+        .get(&value.id)
+        .expect("root value did not get an InferId (internal bug)");
 
     // Phase 1: constraint propagation (no guessing)
-    solve_basic(program, &mut collected.infer, &collected.constraints)?;
+    let mut infer = collected.infer;
+    solve_basic(program, &mut infer, &collected.constraints)?;
 
     // Phase 2: resolve ONLY the root expression
-    finalize_root(value, &mut collected.infer, &collected.constraints)
+    finalize_root(program, value, root, &mut infer, &collected.constraints)
 }
+
 
 #[cfg(test)]
 mod type_infer_tests {
@@ -1081,7 +1131,7 @@ mod type_infer_tests {
     }
 
     /// Extract the body of the *single* function in the program.
-    fn extract_single_fn_body(program: &Program) -> TValue {
+    fn extract_single_fn_body(program: &Program) -> IValue {
         let def = program
             .definitions
             .iter()

@@ -8,6 +8,13 @@ pub struct Loc {
     pub file: usize,
 }
 
+impl Loc {
+    #[inline(always)]
+    pub fn with<T>(self,value:T)->Located<T>{
+        Located{value,loc:self}
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Located<T> {
     pub loc: Loc,

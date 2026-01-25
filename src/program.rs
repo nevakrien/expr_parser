@@ -4,7 +4,7 @@ use crate::type_inference::TypeId;
 use crate::type_inference::TypeStore;
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::ir::NameId;
-use crate::ir::TValue;
+use crate::ir::IValue;
 use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use std::collections::HashMap;
@@ -45,12 +45,39 @@ pub enum CompileError {
 pub enum Defined {
     ToBeDefined,
     Raw(LExpr),
-    Value(TValue),
-    // Type(LValue),
+    Value(IValue),
+    // Type(IValue),
     TypeRef(TypeId),
     Macro(Macro),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValId(pub usize);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WithId<T> {
+    pub value:T,
+    pub id:ValId,
+}
+
+impl<T> WithId<T> {
+    /// Create a new Typed value with the same location and type but different inner value
+    pub fn with<U>(&self, value: U) -> WithId<U> {
+        WithId {
+            id: self.id,
+            value,
+        }
+    }
+
+    /// Transform the inner value using a function while preserving location and type
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> WithId<U> {
+        WithId {
+            id: self.id,
+            value: f(self.value),
+        }
+    }
+
+}
 
 #[derive(Debug)]
 pub struct Program {
@@ -58,6 +85,7 @@ pub struct Program {
     // pub current_infrence: Vec<TypeInfo>,
     pub type_store: TypeStore,
 
+    val_locs:Vec<Loc>,
 
     names_strs:Vec<StrId>,
     pub str_intern:StringInterner,
@@ -76,10 +104,10 @@ impl Program {
     pub fn new() -> Self {
         let mut program = Self {
             definitions: HashMap::new(),
-            // current_infrence: Vec::new(),
             type_store: TypeStore::new(),
 
-            // next_name_id: 0,
+            val_locs:Vec::new(),
+
             names_strs:Vec::new(),
             str_intern:StringInterner::new(),
 
@@ -90,6 +118,21 @@ impl Program {
         program
     }
     
+    pub fn with_id<T>(&mut self,x:Located<T>)->WithId<T>{
+        let id = ValId(self.val_locs.len());
+        self.val_locs.push(x.loc);
+        WithId{
+            value:x.value,id
+        }
+    }
+
+    pub fn id_value<T>(&mut self,loc:Loc,value:T)->WithId<T>{
+        self.with_id(loc.clone().with(value))
+    }
+
+    pub fn get_loc(&self,v:ValId)->Loc{
+        self.val_locs[v.0].clone()
+    }
 
 
     /// Push a new variable scope onto the stack

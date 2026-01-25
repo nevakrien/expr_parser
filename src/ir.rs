@@ -1,3 +1,4 @@
+use crate::program::WithId;
 /**
  * TODO: Convert IR from tree-shaped to flat list with ids.
  *    all in the outer level function.
@@ -9,7 +10,6 @@
  */
 
 
-use crate::type_inference::Typed;
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,
     ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNSUPPORTED_EXPRESSION,
@@ -19,12 +19,9 @@ use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
 
 // Type aliases for commonly used typed/located constructs
-pub type LName = Located<NameId>; // Located name identifier
-pub type TName = Typed<NameId>; // Typed name identifier
-// pub type TDecl = Typed<Decl>; // Typed declaration
-pub type TValue = Typed<Value>; // Typed value/expression
-pub type LValue = Located<Value>; // Typed value/expression
-pub type TPattern = Typed<Pattern>; // Typed pattern
+pub type LName = Located<NameId>;
+pub type IValue = WithId<Value>;
+pub type IPattern = WithId<Pattern>;
 
 
 /// Unique identifier for names in the IR
@@ -55,15 +52,15 @@ pub struct AccessName {
 /// Function parameter declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct Param {
-    pub pat: TPattern,
-    pub ty: Option<TValue>,
+    pub pat: IPattern,
+    pub ty: Option<IValue>,
 }
 
 /// Single variant within an enum declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumVariant {
     pub name: LName,
-    pub fields: Vec<TPattern>,
+    pub fields: Vec<IPattern>,
 }
 /// Pure binary operations.
 ///
@@ -119,8 +116,8 @@ pub enum Dir {
 /// Assignment operator, where `None` means plain `=`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssignOp {
-    Nothing(Box<TValue>),
-    Bin(BinOp, Box<TValue>),
+    Nothing(Box<IValue>),
+    Bin(BinOp, Box<IValue>),
     Pre(Dir),
     Post(Dir),
 }
@@ -149,38 +146,38 @@ pub enum Value {
     /// Wildcard pattern that matches anything (_)
     Wildcard,
 
-    Tuple(Vec<TValue>),
+    Tuple(Vec<IValue>),
 
     /// Pure binary operation
     BinOp {
         op: BinOp,
-        values: Box<(TValue, TValue)>,
+        values: Box<(IValue, IValue)>,
     },
 
     /// Pure unary operation
     UnOp {
         op: UnOp,
-        value: Box<TValue>,
+        value: Box<IValue>,
     },
 
     //===== TYPES =====
     /// Explicit type cast
     Cast {
-        value: Box<TValue>,
-        ty: Box<TValue>,
+        value: Box<IValue>,
+        ty: Box<IValue>,
     },
 
     /// Type annotation
     TypeAnnotation {
-        value: Box<TValue>,
-        ty: Box<TValue>,
+        value: Box<IValue>,
+        ty: Box<IValue>,
     },
 
     //==== MUTATION GATES =====
     /// Function or callable invocation
     Call {
-        callee: Box<TValue>,
-        args: Vec<TValue>,
+        callee: Box<IValue>,
+        args: Vec<IValue>,
     },
 
     /// Assignment with explicit sequencing.
@@ -190,18 +187,18 @@ pub enum Value {
     /// - Mutation occurs
     Assign {
         op: AssignOp,
-        target: Box<TValue>,
+        target: Box<IValue>,
     },
 
     /// Indexing or specialization
     Index {
-        base: Box<TValue>,
-        args: Vec<TValue>,
+        base: Box<IValue>,
+        args: Vec<IValue>,
     },
 
     /// Field/type access with deferred name resolution
     Access {
-        base: Box<TValue>,
+        base: Box<IValue>,
         name: AccessName,
         kind: AccessKind,
     },
@@ -209,54 +206,54 @@ pub enum Value {
     // ===== SCOPE =====
     /// Immutable binding
     Let {
-        pat: TPattern,
-        value: Box<TValue>,
-        else_part: Option<Box<TValue>>,
+        pat: IPattern,
+        value: Box<IValue>,
+        else_part: Option<Box<IValue>>,
     },
 
     /// Lexical block
     Block {
-        statements: Vec<TValue>,
-        return_value: Option<Box<TValue>>,
+        statements: Vec<IValue>,
+        return_value: Option<Box<IValue>>,
     },
 
     //==== CONTROL FLOW =====
     /// Short-circuiting logical operations.
     LogicOp {
         op: LogicOp,
-        values: Box<(TValue, TValue)>,
+        values: Box<(IValue, IValue)>,
     },
 
     /// Conditional expression
     If {
-        cond: Box<TValue>,
-        then: Box<TValue>,
-        els: Option<Box<TValue>>,
+        cond: Box<IValue>,
+        then: Box<IValue>,
+        els: Option<Box<IValue>>,
     },
 
     /// Loop
     While {
-        cond: Box<TValue>,
-        body: Box<TValue>,
+        cond: Box<IValue>,
+        body: Box<IValue>,
     },
 
     /// Function literal
     Func {
         generics: Vec<NameId>,
         params: Vec<Param>,
-        ret: Option<TPattern>,
-        body: Box<TValue>,
+        ret: Option<IPattern>,
+        body: Box<IValue>,
     },
 
     /// Early return
-    Return(Option<Box<TValue>>),
+    Return(Option<Box<IValue>>),
 
     Break,
     Continue,
 
     /// Pattern match
     Match {
-        value: Box<TValue>,
+        value: Box<IValue>,
         arms: Vec<MatchArm>,
     },
 }
@@ -275,11 +272,11 @@ pub enum Pattern {
     /// Wildcard pattern that matches anything (_)
     Wildcard,
     /// Tuple pattern with multiple sub-patterns
-    Tuple(Vec<TPattern>),
+    Tuple(Vec<IPattern>),
     /// Literal value pattern
     Literal(Literal),
     /// Type annotation pattern (x:T)
-    TypeAnnotation { pat: Box<TPattern>, ty: Box<TValue> },
+    TypeAnnotation { pat: Box<IPattern>, ty: Box<IValue> },
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -289,8 +286,8 @@ pub enum Pattern {
     // },
     // /// Generic type specialization (e.g., Foo[T, U])
     // GenericSpecialization {
-    //     base: Box<TPattern>,
-    //     args: Vec<TPattern>,
+    //     base: Box<IPattern>,
+    //     args: Vec<IPattern>,
     // },
 }
 
@@ -298,79 +295,24 @@ pub enum Pattern {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternField {
     pub name: LName,
-    pub value: TPattern,
+    pub value: IPattern,
 }
 
 /// Single arm in a match expression
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
-    pub pat: TPattern,
-    pub guard: Option<TValue>,
-    pub body: TValue,
+    pub pat: IPattern,
+    pub guard: Option<IValue>,
+    pub body: IValue,
 }
 
-// Implementations for IR types
 
-impl<T> Typed<T> {
-    /// Create a new Typed value with the same location and type but different inner value
-    pub fn with<U>(&self, value: U) -> Typed<U> {
-        Typed {
-            loc: self.loc.clone(),
-            ty: self.ty,
-            value,
-        }
-    }
-
-    /// Transform the inner value using a function while preserving location and type
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Typed<U> {
-        Typed {
-            loc: self.loc,
-            ty: self.ty,
-            value: f(self.value),
-        }
-    }
-
-    /// Convert to a Located value (dropping type information)
-    pub fn into_located(self) -> Located<T> {
-        Located {
-            loc: self.loc,
-            value: self.value,
-        }
-    }
-}
-
-// impl<T> From<Located<T>> for Typed<T> {
-//     fn from(value: Located<T>) -> Self {
-//         Typed {
-//             loc: value.loc,
-//             ty: TypeInfo::new_empty(),
-//             value: value.value,
-//         }
-//     }
-// }
-
-// impl ProgramIr {
-//     /// Create an empty program IR with a block body
-//     pub fn empty(loc: Loc) -> Self {
-//         Self {
-//             decls: Vec::new(),
-//             body: Typed {
-//                 loc,
-//                 ty: None,
-//                 value: Value::Block {
-//                     statements: Vec::new(),
-//                     return_value: None,
-//                 },
-//             },
-//         }
-//     }
-// }
 
 impl Program {
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
-    pub fn lower_value(&mut self, expr: LExpr) -> CResult<TValue> {
+    pub fn lower_value(&mut self, expr: LExpr) -> CResult<IValue> {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
 
@@ -425,7 +367,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_atom(&mut self, loc: &Loc, token: Token) -> CResult<TValue> {
+    fn lower_atom(&mut self, loc: &Loc, token: Token) -> CResult<IValue> {
         let value = match token {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
@@ -447,11 +389,11 @@ impl Program {
             }
         };
 
-        Ok(self.typed_value(loc.clone(), value))
+        Ok(self.id_value(loc.clone(),value))
     }
 
     #[inline(always)]
-    fn lower_block_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_block_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<IValue> {
         self.with_scope(|this| {
             let mut statements = Vec::new();
             let mut return_value = None;
@@ -466,7 +408,7 @@ impl Program {
                 }
             }
 
-            Ok(this.typed_value(
+            Ok(this.id_value(
                 loc,
                 Value::Block {
                     statements,
@@ -477,7 +419,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<IValue> {
         debug_assert!(2 <= items.len() && items.len() <= 3);
 
         let else_exp = if items.len() == 3 { items.pop() } else { None };
@@ -495,7 +437,7 @@ impl Program {
             None
         };
 
-        Ok(self.typed_value(
+        Ok(self.id_value(
             loc,
             Value::Let {
                 pat,
@@ -506,7 +448,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_call_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_call_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
         debug_assert!(!items.is_empty(), "call expression missing callee");
 
         let mut items = items;
@@ -515,11 +457,11 @@ impl Program {
         let args: Result<Vec<_>, _> = items.into_iter().map(|arg| self.lower_value(arg)).collect();
         let args = args?;
 
-        Ok(self.typed_value(loc, Value::Call { callee, args }))
+        Ok(self.id_value(loc, Value::Call { callee, args }))
     }
 
     #[inline(always)]
-    fn lower_index_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_index_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
         debug_assert!(!items.is_empty(), "index expression missing base");
 
         let mut items = items;
@@ -529,11 +471,11 @@ impl Program {
         let args: Result<Vec<_>, _> = items.into_iter().map(|arg| self.lower_value(arg)).collect();
         let args = args?;
 
-        Ok(self.typed_value(loc, Value::Index { base, args }))
+        Ok(self.id_value(loc, Value::Index { base, args }))
     }
 
     #[inline(always)]
-    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
         if items.len() < 2 {
             return Err(CompileError::SimpleError {
                 loc,
@@ -550,18 +492,18 @@ impl Program {
             .collect();
         let arms = arms?;
 
-        Ok(self.typed_value(loc, Value::Match { value, arms }))
+        Ok(self.id_value(loc, Value::Match { value, arms }))
     }
 
     #[inline(always)]
-    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<TValue> {
+    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<IValue> {
         let (lhs, rhs) = pair;
 
         //TODO: target might be a pattern in rare cases? not sure
         let target = Box::new(self.lower_value(lhs)?);
         let value = Box::new(self.lower_value(rhs)?);
 
-        Ok(self.typed_value(
+        Ok(self.id_value(
             loc,
             Value::Assign {
                 op: AssignOp::Nothing(value),
@@ -571,7 +513,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
         debug_assert!(
             (1..=3).contains(&items.len()),
             "fn expects optional generics, signature, and optional body"
@@ -650,7 +592,7 @@ impl Program {
             };
             let body = Box::new(p.lower_value(body_expr)?);
 
-            Ok(p.typed_value(
+            Ok(p.id_value(
                 loc,
                 Value::Func {
                     generics,
@@ -668,7 +610,7 @@ impl Program {
         loc: Loc,
         op: Located<&'static str>,
         pair: (LExpr, LExpr),
-    ) -> CResult<TValue> {
+    ) -> CResult<IValue> {
         let (value_expr, ty_expr) = pair;
         let value = Box::new(self.lower_value(value_expr)?);
         let ty = Box::new(self.lower_value(ty_expr)?);
@@ -677,7 +619,7 @@ impl Program {
             ":" => Value::TypeAnnotation { value, ty },
             _ => panic!("unsupported cast operator `{}`", op.value),
         };
-        Ok(self.typed_value(loc, v))
+        Ok(self.id_value(loc, v))
     }
 
     #[inline(always)]
@@ -687,7 +629,7 @@ impl Program {
         op: Located<&'static str>,
         lhs: LExpr,
         rhs: LExpr,
-    ) -> CResult<TValue> {
+    ) -> CResult<IValue> {
         let base = Box::new(self.lower_value(lhs)?);
         let name = match rhs.value {
             Expr::Atom(Token::Ident(name)) => AccessName { name },
@@ -706,20 +648,20 @@ impl Program {
             _ => panic!("unsupported access operator `{}`", op.value),
         };
 
-        Ok(self.typed_value(loc, Value::Access { base, name, kind }))
+        Ok(self.id_value(loc, Value::Access { base, name, kind }))
     }
 
-    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<TPattern> {
+    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<IPattern> {
         let loc = expr.loc;
         match expr.value {
             Expr::Atom(Token::Ident(name)) if name == "_" => {
-                Ok(self.typed_pattern(loc, Pattern::Wildcard))
+                Ok(self.id_value(loc, Pattern::Wildcard))
             }
 
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
                 let id = self.insert_value_in_current_scope(name);
-                Ok(self.typed_pattern(loc, Pattern::Bind(id)))
+                Ok(self.id_value(loc, Pattern::Bind(id)))
             }
 
             Expr::Prefix(open, items) if open.value == "(" => {
@@ -727,7 +669,7 @@ impl Program {
                 for item in items {
                     parts.push(self.lower_pattern(item)?);
                 }
-                Ok(self.typed_pattern(loc, Pattern::Tuple(parts)))
+                Ok(self.id_value(loc, Pattern::Tuple(parts)))
             }
 
             // Pattern with type annotation: x:T
@@ -737,7 +679,7 @@ impl Program {
                 let ty = self.lower_value(ty_expr)?;
 
                 // Create a type annotation pattern
-                Ok(self.typed_pattern(
+                Ok(self.id_value(
                     loc,
                     Pattern::TypeAnnotation {
                         pat: Box::new(pat),
@@ -842,7 +784,7 @@ impl Program {
         loc: Loc,
         op: Located<&'static str>,
         items: Vec<LExpr>,
-    ) -> CResult<TValue> {
+    ) -> CResult<IValue> {
         let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
@@ -869,7 +811,7 @@ impl Program {
 
         let rhs = Box::new(self.lower_value(items.into_iter().next().unwrap())?);
 
-        Ok(self.typed_value(
+        Ok(self.id_value(
             loc,
             Value::UnOp {
                 op: unop,
@@ -884,7 +826,7 @@ impl Program {
         _loc: Loc,
         op: Located<&'static str>,
         items: Vec<LExpr>,
-    ) -> CResult<TValue> {
+    ) -> CResult<IValue> {
         match op.value {
             // these are handled earlier and must never reach here
             "(" | "[" => unreachable!("call/index should be handled before postfix ops"),
@@ -902,14 +844,14 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<TValue> {
+    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<IValue> {
         if items.len() != 1 {
             panic!("prefix operator with {} operands", items.len());
         }
 
         let target = Box::new(self.lower_value(items.pop().unwrap())?);
 
-        Ok(self.typed_value(
+        Ok(self.id_value(
             op.loc,
             Value::Assign {
                 op: AssignOp::Pre(op.value),
@@ -923,14 +865,14 @@ impl Program {
         &mut self,
         op: Located<Dir>,
         mut items: Vec<LExpr>,
-    ) -> CResult<TValue> {
+    ) -> CResult<IValue> {
         if items.len() != 1 {
             panic!("postfix operator with {} operands", items.len());
         }
 
         let target = Box::new(self.lower_value(items.remove(0))?);
 
-        Ok(self.typed_value(
+        Ok(self.id_value(
             op.loc.clone(),
             Value::Assign {
                 op: AssignOp::Post(op.value),
@@ -946,7 +888,7 @@ impl Program {
         op: Located<&'static str>,
         lhs: LExpr,
         rhs: LExpr,
-    ) -> CResult<TValue> {
+    ) -> CResult<IValue> {
         if let Some(assign_op) = match op.value {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
@@ -964,7 +906,7 @@ impl Program {
             let target = Box::new(self.lower_value(lhs)?);
             let value = Box::new(self.lower_value(rhs)?);
 
-            return Ok(self.typed_value(
+            return Ok(self.id_value(
                 loc,
                 Value::Assign {
                     target,
@@ -984,7 +926,7 @@ impl Program {
         } {
             let left = self.lower_value(lhs)?;
             let right = self.lower_value(rhs)?;
-            return Ok(self.typed_value(
+            return Ok(self.id_value(
                 loc,
                 Value::LogicOp {
                     op: logic_op,
@@ -1026,7 +968,7 @@ impl Program {
         let left = self.lower_value(lhs)?;
         let right = self.lower_value(rhs)?;
 
-        Ok(self.typed_value(
+        Ok(self.id_value(
             loc,
             Value::BinOp {
                 op: binop,
@@ -1109,14 +1051,14 @@ mod lowering_tests {
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
-    fn lower_block(src: &str) -> TValue {
+    fn lower_block(src: &str) -> IValue {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
         program.lower_value(expr).unwrap()
     }
 
-    fn bound_id(stmt: &TValue) -> NameId {
+    fn bound_id(stmt: &IValue) -> NameId {
         match &stmt.value {
             Value::Let { pat, .. } => match pat.value {
                 Pattern::Bind(id) => id,
