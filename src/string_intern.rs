@@ -16,6 +16,12 @@ pub struct StringInterner {
     buckets: Vec<Vec<(StrId, u64)>>,
 }
 
+impl Default for StringInterner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StringInterner {
     pub fn new() -> Self {
         Self::with_buckets(DEFAULT_BUCKETS)

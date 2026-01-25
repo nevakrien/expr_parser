@@ -158,7 +158,7 @@ impl Program {
     //it actually has a much nicer cache behvior becaused the String usually gets freed and is giving something else room
     //instead of a &str which would bring cache line to some random parse data
     pub(crate) fn resolve_name(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
-        let name = self.str_intern.intern(&name);
+        let name = self.str_intern.intern(name);
         for value_scope in self.scopes.iter().skip(1).rev() {
             if let Some(id) = value_scope.get(&name) {
                 return Ok(*id);
@@ -174,7 +174,7 @@ impl Program {
         }
 
         //errors get reported later it can be there is just a late mention so we dont know yet
-        let id = self.insert_value_in_global_scope(name.clone());
+        let id = self.insert_value_in_global_scope(name);
         self.definitions.insert(id, Defined::ToBeDefined);
         self.pending_names.entry(id).or_default().push(loc.clone());
         Ok(id)
@@ -271,10 +271,10 @@ impl Program {
                     if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
                         (name, id)
                     } else {
-                        (name.clone(), self.insert_value_in_current_scope(name))
+                        (name, self.insert_value_in_current_scope(name))
                     }
                 } else {
-                    (name.clone(), self.insert_value_in_current_scope(name))
+                    (name, self.insert_value_in_current_scope(name))
                 }
             }
             _ => {

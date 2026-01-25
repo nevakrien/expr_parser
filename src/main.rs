@@ -107,11 +107,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                if compile_error.is_none() {
-                    if let Err(err) = program.check_pending_names() {
+                if compile_error.is_none()
+                    && let Err(err) = program.check_pending_names() {
                         compile_error = Some(err);
                     }
-                }
 
                 if let Some(err) = compile_error {
                     reporter.report_compile_error(&err)?;

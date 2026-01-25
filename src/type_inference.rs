@@ -75,6 +75,12 @@ pub struct TypeStore {
     intern: HashMap<TypeValue, TypeId>,
 }
 
+impl Default for TypeStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeStore {
     pub fn new() -> Self {
         Self {
