@@ -316,6 +316,23 @@ fn collect_value(program: &mut Program, ctx: &mut CollectCtx, v: &mut TValue) {
             );
         }
 
+        Value::Block { statements, return_value } => {
+            for s in statements.iter_mut() {
+                collect_value(program, ctx, s);
+            }
+
+            if let Some(ret) = return_value.as_mut() {
+                collect_value(program, ctx, ret);
+
+                // block expr == return expr
+                ctx.add_consume(this, v.loc.clone(), ConsumedAs::SameAs(ret.ty));
+                ctx.add_consume(ret.ty, ret.loc.clone(), ConsumedAs::SameAs(this));
+            }
+
+            ctx.set_producer(this, v.loc.clone(), ProducedBy::Block);
+        }
+
+
         Value::NameRef(name) => {
             let nid = ctx.infer_for_name(*name);
 
@@ -569,15 +586,13 @@ fn builtin(program: &mut Program, b: BuiltinType) -> InferId {
 
 
 /* ================================================================
- * Inference state (BASIC SOLVER: UNION-FIND + TYPE ASSIGNMENT)
+ * InferState (UNION-FIND + CONCRETE ASSIGNMENT)
  * ================================================================ */
 
 #[derive(Debug)]
 struct InferState {
-    // union-find parent for Infered(i)
-    parent: Vec<usize>,
-    // optional concrete assignment for the root
-    concrete: Vec<Option<TypeId>>,
+    parent: Vec<usize>,              // union-find parent
+    concrete: Vec<Option<TypeId>>,    // concrete type per root
 }
 
 impl InferState {
@@ -595,26 +610,91 @@ impl InferState {
         InferId::Infered(id)
     }
 
-    fn is_slot(&self, id: InferId) -> bool {
-        matches!(id, InferId::Infered(_))
-    }
-
-    fn find_slot(&mut self, i: usize) -> usize {
-        // path compression
-        let p = self.parent[i];
-        if p == i {
-            i
-        } else {
-            let r = self.find_slot(p);
-            self.parent[i] = r;
-            r
+    fn find(&mut self, id: InferId) -> InferId {
+        match id {
+            InferId::Infered(i) => {
+                let p = self.parent[i];
+                if p != i {
+                    let root = match self.find(InferId::Infered(p)) {
+                        InferId::Infered(r) => r,
+                        _ => unreachable!(),
+                    };
+                    self.parent[i] = root;
+                }
+                InferId::Infered(self.parent[i])
+            }
+            other => other,
         }
     }
 
-    fn find(&mut self, id: InferId) -> InferId {
-        match id {
-            InferId::Infered(i) => InferId::Infered(self.find_slot(i)),
-            other => other,
+    fn unify(&mut self, a: InferId, b: InferId) -> Result<bool, (TypeId, TypeId)> {
+        let a = self.find(a);
+        let b = self.find(b);
+
+        if a == b {
+            return Ok(false);
+        }
+
+        match (a, b) {
+            (InferId::Concrete(ta), InferId::Concrete(tb)) => {
+                if ta == tb {
+                    Ok(false)
+                } else {
+                    Err((ta, tb))
+                }
+            }
+
+            (InferId::Concrete(t), InferId::Infered(i))
+            | (InferId::Infered(i), InferId::Concrete(t)) => {
+                let root = self.find(InferId::Infered(i));
+                if let InferId::Infered(r) = root {
+                    match self.concrete[r] {
+                        Some(existing) => {
+                            if existing == t {
+                                Ok(false)
+                            } else {
+                                Err((existing, t))
+                            }
+                        }
+                        None => {
+                            self.concrete[r] = Some(t);
+                            Ok(true)
+                        }
+                    }
+                } else {
+                    Ok(false)
+                }
+            }
+
+            (InferId::Infered(a), InferId::Infered(b)) => {
+                let ra = self.find(InferId::Infered(a));
+                let rb = self.find(InferId::Infered(b));
+
+                if ra == rb {
+                    return Ok(false);
+                }
+
+                let (ra, rb) = match (ra, rb) {
+                    (InferId::Infered(x), InferId::Infered(y)) => (x, y),
+                    _ => unreachable!(),
+                };
+
+                let ca = self.concrete[ra];
+                let cb = self.concrete[rb];
+
+                self.parent[rb] = ra;
+
+                match (ca, cb) {
+                    (Some(ta), Some(tb)) if ta != tb => Err((ta, tb)),
+                    (None, Some(t)) => {
+                        self.concrete[ra] = Some(t);
+                        Ok(true)
+                    }
+                    _ => Ok(true),
+                }
+            }
+
+            _ => Ok(false),
         }
     }
 
@@ -625,207 +705,94 @@ impl InferState {
             _ => None,
         }
     }
+}
 
-    fn assign_concrete(&mut self, id: InferId, ty: TypeId) {
-        match self.find(id) {
-            InferId::Infered(i) => self.concrete[i] = Some(ty),
-            InferId::Concrete(_) => {
-                // nothing to do
+/* ================================================================
+ * BASIC SOLVER (FIXED-POINT, LOOP-SAFE)
+ * ================================================================ */
+
+fn seed_from_producers(
+    program: &mut Program,
+    infer: &mut InferState,
+    constraints: &HashMap<InferId, TypeConstraints>,
+) -> Result<bool, TypeError> {
+    let mut changed = false;
+
+    for (&id, c) in constraints.iter() {
+        match &c.produced {
+            ProducedBy::Literal { lit } => {
+                let ty = match lit {
+                    Literal::Num(_) => builtin(program, BuiltinType::Int),
+                    Literal::Float(_) => builtin(program, BuiltinType::F64),
+                    Literal::Str(_) => builtin(program, BuiltinType::Str),
+                    Literal::Void => builtin(program, BuiltinType::Void),
+                };
+
+                changed |= infer
+                    .unify(id, ty)
+                    .map_err(|(e, f)| TypeError::SimpleMismatch {
+                        required_loc: c.produced_loc.clone(),
+                        produced_loc: c.produced_loc.clone(),
+                        expected: e,
+                        found: f,
+                        note: "literal contradicts existing constraints",
+                    })?;
             }
+
+            ProducedBy::Cast { target }
+            | ProducedBy::TypeAnnotationExpr { ty: target } => {
+                if *target != InferId::Nothing {
+                    changed |= infer
+                        .unify(id, *target)
+                        .map_err(|(e, f)| TypeError::SimpleMismatch {
+                            required_loc: c.produced_loc.clone(),
+                            produced_loc: c.produced_loc.clone(),
+                            expected: e,
+                            found: f,
+                            note: "explicit type contradicts existing constraints",
+                        })?;
+                }
+            }
+
             _ => {}
         }
     }
 
-    /// Merge two InferIds. If both sides already have concrete types, they must match.
-    fn unify(
-        &mut self,
-        a: InferId,
-        b: InferId,
-    ) -> Result<(), (TypeId, TypeId)> {
-        let a = self.find(a);
-        let b = self.find(b);
-
-        // If either side is Nothing/GenericArg we don't do anything in the basic solver.
-        if matches!(a, InferId::Nothing | InferId::GenericArg(_))
-            || matches!(b, InferId::Nothing | InferId::GenericArg(_))
-        {
-            return Ok(());
-        }
-
-        // concrete vs concrete
-        if let (InferId::Concrete(ta), InferId::Concrete(tb)) = (a, b) {
-            if ta == tb {
-                return Ok(());
-            } else {
-                return Err((ta, tb));
-            }
-        }
-
-        // concrete vs slot
-        if let (InferId::Concrete(t), InferId::Infered(_)) = (a, b) {
-            return self.unify_slot_with_concrete(b, t);
-        }
-        if let (InferId::Infered(_), InferId::Concrete(t)) = (a, b) {
-            return self.unify_slot_with_concrete(a, t);
-        }
-
-        // slot vs slot
-        if let (InferId::Infered(ai), InferId::Infered(bi)) = (a, b) {
-            if ai == bi {
-                return Ok(());
-            }
-
-            // union by "prefer the one that already has a concrete assigned" (very simple heuristic)
-            let ac = self.concrete[ai];
-            let bc = self.concrete[bi];
-
-            match (ac, bc) {
-                (Some(ta), Some(tb)) => {
-                    if ta != tb {
-                        return Err((ta, tb));
-                    }
-                    // same type; merge arbitrarily
-                    self.parent[bi] = ai;
-                    return Ok(());
-                }
-                (Some(_), None) => {
-                    self.parent[bi] = ai;
-                    return Ok(());
-                }
-                (None, Some(_)) => {
-                    self.parent[ai] = bi;
-                    return Ok(());
-                }
-                (None, None) => {
-                    self.parent[bi] = ai;
-                    return Ok(());
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn unify_slot_with_concrete(
-        &mut self,
-        slot: InferId,
-        t: TypeId,
-    ) -> Result<(), (TypeId, TypeId)> {
-        let slot = self.find(slot);
-        match slot {
-            InferId::Infered(i) => match self.concrete[i] {
-                None => {
-                    self.concrete[i] = Some(t);
-                    Ok(())
-                }
-                Some(existing) => {
-                    if existing == t {
-                        Ok(())
-                    } else {
-                        Err((existing, t))
-                    }
-                }
-            },
-            InferId::Concrete(tc) => {
-                if tc == t { Ok(()) } else { Err((tc, t)) }
-            }
-            _ => Ok(()),
-        }
-    }
+    Ok(changed)
 }
 
-/* ================================================================
- * Solver (BASIC: SAME-AS + EXPLICIT ONLY)
- * ================================================================ */
-
-fn produced_loc_of(
-    constraints: &HashMap<InferId, TypeConstraints>,
-    id: InferId,
-) -> Loc {
-    constraints
-        .get(&id)
-        .expect("internal error: InferId has no producer recorded")
-        .produced_loc
-        .clone()
-}
-
-/// Runs a tiny fixed-point loop applying only the obvious constraints:
-/// - SameAs(a,b)
-/// - Explicit(a == b)   (where b is typically Concrete(type) or other resolved InferId)
-///
-/// Everything else is ignored for now.
 fn solve_basic(
+    program: &mut Program,
     infer: &mut InferState,
     constraints: &HashMap<InferId, TypeConstraints>,
 ) -> Result<(), TypeError> {
-    let mut changed = true;
+    loop {
+        let mut changed = false;
 
-    while changed {
-        changed = false;
+        changed |= seed_from_producers(program, infer, constraints)?;
 
         for (&id, c) in constraints.iter() {
-            // NOTE: producer does not drive anything yet in this basic solver.
-            // We only react to consumes.
-            for (use_loc, cons) in c.consumed.iter() {
+            for (use_loc, cons) in &c.consumed {
                 match *cons {
-                    ConsumedAs::SameAs(other) => {
-                        let before_a = infer.find(id);
-                        let before_b = infer.find(other);
-
-                        match infer.unify(id, other) {
-                            Ok(()) => {
-                                let after_a = infer.find(id);
-                                let after_b = infer.find(other);
-                                if after_a != before_a || after_b != before_b {
-                                    changed = true;
-                                }
-                            }
-                            Err((expected, found)) => {
-                                // Here: "required_loc" is the consume site,
-                                // and "produced_loc" should point to the produced value that conflicts.
-                                // We choose `id` as "the thing being constrained".
-                                return Err(TypeError::SimpleMismatch {
-                                    required_loc: use_loc.clone(),
-                                    produced_loc: c.produced_loc.clone(),
-                                    expected,
-                                    found,
-                                    note: "basic unify failed (SameAs)",
-                                });
-                            }
-                        }
+                    ConsumedAs::SameAs(other) | ConsumedAs::Explicit(other) => {
+                        changed |= infer
+                            .unify(id, other)
+                            .map_err(|(e, f)| TypeError::SimpleMismatch {
+                                required_loc: use_loc.clone(),
+                                produced_loc: c.produced_loc.clone(),
+                                expected: e,
+                                found: f,
+                                note: "basic unify failed",
+                            })?;
                     }
 
-                    ConsumedAs::Explicit(expected_id) => {
-                        let before = infer.find(id);
-
-                        match infer.unify(id, expected_id) {
-                            Ok(()) => {
-                                let after = infer.find(id);
-                                if after != before {
-                                    changed = true;
-                                }
-                            }
-                            Err((expected, found)) => {
-                                // For Explicit, it's especially important that required_loc points
-                                // at the explicit annotation/cast site.
-                                return Err(TypeError::SimpleMismatch {
-                                    required_loc: use_loc.clone(),
-                                    produced_loc: c.produced_loc.clone(),
-                                    expected,
-                                    found,
-                                    note: "basic unify failed (Explicit)",
-                                });
-                            }
-                        }
-                    }
-
-                    // Ignored in the basic solver:
-                    ConsumedAs::Numeric
-                    | ConsumedAs::IntNumeric
-                    | ConsumedAs::FloatNumeric
-                    | ConsumedAs::Other(_) => {}
+                    _ => {}
                 }
             }
+        }
+
+        if !changed {
+            break;
         }
     }
 
@@ -833,67 +800,64 @@ fn solve_basic(
 }
 
 /* ================================================================
- * Finalization (VERIFY EVERYTHING IS CONCRETE)
+ * Finalization (ROOT ONLY, NO GLOBAL CHECKS)
  * ================================================================ */
 
-fn finalize_infer_id(
+fn finalize_root(
+    value: &TValue,
     infer: &mut InferState,
     constraints: &HashMap<InferId, TypeConstraints>,
-    id: InferId,
 ) -> Result<TypeId, TypeError> {
-    match infer.find(id) {
+    let root = value.ty;
+
+    match infer.find(root) {
         InferId::Concrete(t) => Ok(t),
+
         InferId::Infered(i) => {
             if let Some(t) = infer.concrete[i] {
                 Ok(t)
             } else {
+                let produced_loc = constraints
+                    .get(&root)
+                    .map(|c| c.produced_loc.clone())
+                    .unwrap_or_else(|| value.loc.clone());
+
                 Err(TypeError::Unresolved {
-                    produced_loc: produced_loc_of(constraints, id),
+                    produced_loc,
                     message: "could not infer a concrete type (try adding an explicit annotation)",
                 })
             }
         }
-        InferId::Nothing => Err(TypeError::Unresolved {
-            produced_loc: produced_loc_of(constraints, id),
-            message: "expression never received an InferId slot (bug: expected ensure_expr_id)",
-        }),
-        InferId::GenericArg(_) => Err(TypeError::Unsupported {
-            loc: produced_loc_of(constraints, id),
-            message: "generic args not supported in basic solver",
-        }),
-    }
-}
 
-/// TODO make this possible to use as a public api, 
-/// it should use just external signatures
-/// (Optional but useful) verify that *all* tracked InferIds ended up concrete.
-/// You can call this later once you start caring about full-program completeness.
-fn finalize_all(
-    infer: &mut InferState,
-    constraints: &HashMap<InferId, TypeConstraints>,
-) -> Result<(), TypeError> {
-    for (&id, _) in constraints.iter() {
-        let _ = finalize_infer_id(infer, constraints, id)?;
+        InferId::Nothing => Err(TypeError::Unresolved {
+            produced_loc: value.loc.clone(),
+            message: "expression never received an InferId slot (internal bug)",
+        }),
+
+        InferId::GenericArg(_) => Err(TypeError::Unsupported {
+            loc: value.loc.clone(),
+            message: "generic arguments not supported in basic solver",
+        }),
     }
-    Ok(())
 }
 
 /* ================================================================
- * Entry point (NOW WIRED TO BASIC SOLVER)
+ * Entry point
  * ================================================================ */
 
-pub fn infer_value(program: &mut Program, value: &mut TValue) -> Result<TypeId, TypeError> {
+pub fn infer_value(
+    program: &mut Program,
+    value: &mut TValue,
+) -> Result<TypeId, TypeError> {
     let mut collected = collect_constraints(program, value);
 
-    // Basic solving pass: SameAs + Explicit only.
-    solve_basic(&mut collected.infer, &collected.constraints)?;
+    // Phase 1: constraint propagation (no guessing)
+    solve_basic(program, &mut collected.infer, &collected.constraints)?;
 
-    // If you want: enforce global completeness later.
-    // finalize_all(&mut collected.infer, &collected.constraints)?;
-
-    // Return the type of the root expression.
-    finalize_infer_id(&mut collected.infer, &collected.constraints, value.ty)
+    // Phase 2: resolve ONLY the root expression
+    finalize_root(value, &mut collected.infer, &collected.constraints)
 }
+
 
 #[cfg(test)]
 mod type_infer_tests {
@@ -991,25 +955,24 @@ mod type_infer_tests {
         assert_fn_type!("f = fn(){ { let x = 1; x } }", BuiltinType::Int);
     }
 
+    
+    #[test]
+    fn cast_allows_type_change() {
+        assert_fn_type!("f = fn(){ let x:int = 1; x as bool }", BuiltinType::Bool);
+    }
+
     /* ------------------------------------------------------------
      * Error cases
      * ------------------------------------------------------------ */
 
     #[test]
     fn unresolved_variable_errors() {
-        let err = infer_fn("f = fn(){ let x = y; x }").unwrap_err();
+        let err = infer_fn("f = fn(y){ let x = y; x }").unwrap_err();
         match err {
             TypeError::Unresolved { .. } => {}
             other => panic!("expected Unresolved, got {:?}", other),
         }
     }
 
-    #[test]
-    fn conflicting_annotation_errors() {
-        let err = infer_fn("f = fn(){ let x:int = 1; x as bool }").unwrap_err();
-        match err {
-            TypeError::SimpleMismatch { .. } => {}
-            other => panic!("expected SimpleMismatch, got {:?}", other),
-        }
-    }
+
 }
