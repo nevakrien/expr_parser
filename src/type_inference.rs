@@ -226,10 +226,14 @@ pub fn infer_value_internals(
 /* ================================================================
  * Constraint model (CORE)
  * ================================================================ */
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LocalId(usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum InferId {
     Resolved(TypeId),
-    Local(ValId),
+    Local(LocalId),
     //?more
 }
 
@@ -276,7 +280,7 @@ struct InferState<'a> {
     program:&'a Program,
     ans: LocalTypes,
     names: HashMap<NameId, InferId>,
-    reqs_map:HashMap<ValId,usize>,
+    reqs_map:HashMap<ValId,LocalId>,
     ///this is a refcell because natually we want to look at 1 element and use it to modify children
     ///refcells are actually semantically meaningful here they stop recursion
     ///using a try_borrow is a more economical way to go about things than a visted set
@@ -319,9 +323,10 @@ impl<'a> InferState<'a> {
         self.register(InferId::Resolved(t),p)
     }
     
+    // fn get_local_id()    
 
     fn register(&mut self,guess:InferId,produced:Prod)->&RefReqs{
-        self.reqs_map.insert(produced.id,self.reqs.len());
+        self.reqs_map.insert(produced.id,LocalId(self.reqs.len()));
         self.reqs.push(Reqs{
             guess,
             produced,
@@ -330,6 +335,32 @@ impl<'a> InferState<'a> {
         }.into());
         self.reqs.last().unwrap()
     }
+
+    fn register_unknown(&mut self,produced:Prod)->&RefReqs{
+        let id = LocalId(self.reqs.len());
+        self.reqs_map.insert(produced.id,id);
+        self.reqs.push(Reqs{
+            guess:InferId::Local(id),
+            produced,
+            used_as:Vec::new(),
+
+        }.into());
+        self.reqs.last().unwrap()
+    }
+
+    fn register_bind(&mut self,bind:WithId<NameId>)->&RefReqs{
+        let id = LocalId(self.reqs.len());
+        self.names.insert(bind.value,InferId::Local(id));
+        self.reqs_map.insert(bind.id,id);
+        self.reqs.push(Reqs{
+            guess:InferId::Local(id),
+            produced:bind.map(ProducedBy::Bind),
+            used_as:Vec::new(),
+
+        }.into());
+        self.reqs.last().unwrap()
+    }
+
 
 }
 
@@ -412,15 +443,13 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
         }
 
         Value::Literal(Literal::Float(_))=>{
-            Ok(ctx.register(
-                InferId::Local(v.id),
+            Ok(ctx.register_unknown(
                 v.with(ProducedBy::FloatLit)
             ))
         }
 
         Value::Literal(Literal::Num(_))=>{
-            Ok(ctx.register(
-                InferId::Local(v.id),
+            Ok(ctx.register_unknown(
                 v.with(ProducedBy::IntLit)
             ))
         }
@@ -511,8 +540,7 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
 
             let b = gather_constraints(ctx,body)?;
             b.borrow_mut().add_use(v.with(TypeUse::StatedAs(output_ty)));
-            Ok(ctx.register(
-                InferId::Local(v.id),
+            Ok(ctx.register_unknown(
                 v.with(ProducedBy::Func{
                     output_ty,body:body.id,
                     inputs
@@ -538,9 +566,7 @@ fn gather_pattern_constraints<'a>(ctx: &'a mut InferState, p: &IPattern) -> Resu
         }
 
         Pattern::Bind(n)=>{
-            let guess = InferId::Local(p.id);
-            ctx.names.entry(*n).or_insert(guess);
-            Ok(ctx.register(guess,p.with(ProducedBy::Bind(*n))))
+            Ok(ctx.register_bind(p.with(*n)))
 
         }
         _ => todo!(),
