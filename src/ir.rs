@@ -1,4 +1,3 @@
-use crate::program::WithId;
 /**
  * TODO: Convert IR from tree-shaped to flat list with ids.
  *    all in the outer level function.
@@ -8,21 +7,19 @@ use crate::program::WithId;
  * - Avoid solver needing to rediscover operands
  * - Allow linear passes over IR
  */
-
-
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,
     ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNSUPPORTED_EXPRESSION,
     ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
+use crate::program::WithId;
 use crate::program::{CResult, CompileError, Program};
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>;
 pub type IValue = WithId<Value>;
 pub type IPattern = WithId<Pattern>;
-
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -241,7 +238,7 @@ pub enum Value {
     Func {
         generics: Vec<NameId>,
         params: Vec<Param>,
-        ret: Option<IPattern>,
+        output_type: Option<Box<IValue>>,
         body: Box<IValue>,
     },
 
@@ -305,8 +302,6 @@ pub struct MatchArm {
     pub guard: Option<IValue>,
     pub body: IValue,
 }
-
-
 
 impl Program {
     //TODO:
@@ -389,7 +384,7 @@ impl Program {
             }
         };
 
-        Ok(self.id_value(loc.clone(),value))
+        Ok(self.id_value(loc.clone(), value))
     }
 
     #[inline(always)]
@@ -581,8 +576,8 @@ impl Program {
                 params.push(Param { pat, ty: None });
             }
 
-            let ret = match ret_expr {
-                Some(e) => Some(p.lower_pattern(e)?),
+            let output_type = match ret_expr {
+                Some(e) => Some(Box::new(p.lower_value(e)?)),
                 None => None,
             };
 
@@ -597,7 +592,7 @@ impl Program {
                 Value::Func {
                     generics,
                     params,
-                    ret,
+                    output_type,
                     body,
                 },
             ))
@@ -710,7 +705,6 @@ impl Program {
             }),
         }
     }
-
 
     #[inline(always)]
     fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
@@ -976,8 +970,6 @@ impl Program {
             },
         ))
     }
-
-    
 }
 
 // Public API functions
@@ -1269,12 +1261,10 @@ mod lowering_tests {
             .get(&f_id)
             .expect("missing f definition");
 
-
         let g_def = program
             .definitions
             .get(&g_id)
             .expect("missing g definition");
-
 
         let f_body = match f_def {
             Defined::Value(value) => match &value.value {

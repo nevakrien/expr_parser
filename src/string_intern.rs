@@ -68,7 +68,7 @@ impl StringInterner {
 
         self.insert_slow_path(idx, h, bytes)
     }
-    
+
     #[inline(always)]
     pub fn resolve(&self, id: StrId) -> &str {
         let (off, len) = self.spans[id.0];
@@ -99,7 +99,7 @@ impl StringInterner {
 
     #[cold]
     #[inline(always)]
-    fn grow(&mut self){
+    fn grow(&mut self) {
         let new_bucket_count = self.table.len() * 4;
         let old_table = std::mem::replace(
             &mut self.table,
@@ -211,11 +211,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 #[inline]
 fn scrub_hash(h: u64) -> u64 {
-    if h == 0 {
-        1
-    } else {
-        h
-    }
+    if h == 0 { 1 } else { h }
 }
 
 #[cfg(test)]

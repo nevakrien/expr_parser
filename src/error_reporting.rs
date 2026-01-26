@@ -115,24 +115,23 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report =
-                    Report::build(ReportKind::Error, primary.file, primary.range.start)
-                        .with_message(
-                            if locs.len()<MAX_UNRESOLVED_NAME_LABELS{
-                                format!("Unresolved name '{name}'")
-                            }else{
-                                format!("Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",locs.len())
+                let mut report = Report::build(
+                    ReportKind::Error,
+                    primary.file,
+                    primary.range.start,
+                )
+                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                    format!("Unresolved name '{name}'")
+                } else {
+                    format!(
+                        "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
+                        locs.len()
+                    )
+                });
 
-                            }
-                        );
-
-                for loc in locs
-                    .iter()
-                    .take(MAX_UNRESOLVED_NAME_LABELS)
-                {
+                for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
-                        Label::new((loc.file, loc.range.clone()))
-                            .with_message("used here"),
+                        Label::new((loc.file, loc.range.clone())).with_message("used here"),
                     );
                 }
 

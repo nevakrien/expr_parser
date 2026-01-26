@@ -10,8 +10,8 @@ pub struct Loc {
 
 impl Loc {
     #[inline(always)]
-    pub fn with<T>(self,value:T)->Located<T>{
-        Located{value,loc:self}
+    pub fn with<T>(self, value: T) -> Located<T> {
+        Located { value, loc: self }
     }
 }
 

@@ -1,12 +1,12 @@
+use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
+use crate::ir::IValue;
+use crate::ir::NameId;
+use crate::macros::{Macro, expand_macros_recursive};
+use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
 use crate::type_inference::TypeId;
-use crate::type_inference::TypeStore;
-use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
-use crate::ir::NameId;
-use crate::ir::IValue;
-use crate::macros::{expand_macros_recursive, Macro};
-use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
+use crate::type_inference::TypeValue;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -40,14 +40,14 @@ pub enum CompileError {
     Parse(#[from] crate::parsing::ParseError),
 }
 
-
 #[derive(Debug)]
 pub enum Defined {
     ToBeDefined,
     Raw(LExpr),
     Value(IValue),
-    // Type(IValue),
-    TypeRef(TypeId),
+    Type{val:IValue,ty:TypeId},
+    // TypeRef(TypeId),
+    BuildinType(TypeValue),
     Macro(Macro),
 }
 
@@ -56,17 +56,14 @@ pub struct ValId(pub usize);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WithId<T> {
-    pub value:T,
-    pub id:ValId,
+    pub value: T,
+    pub id: ValId,
 }
 
 impl<T> WithId<T> {
     /// Create a new Typed value with the same location and type but different inner value
     pub fn with<U>(&self, value: U) -> WithId<U> {
-        WithId {
-            id: self.id,
-            value,
-        }
+        WithId { id: self.id, value }
     }
 
     /// Transform the inner value using a function while preserving location and type
@@ -76,19 +73,17 @@ impl<T> WithId<T> {
             value: f(self.value),
         }
     }
-
 }
 
 #[derive(Debug)]
 pub struct Program {
     pub definitions: HashMap<NameId, Defined>,
     // pub current_infrence: Vec<TypeInfo>,
-    pub type_store: TypeStore,
+    // pub type_store: TypeStore,
+    val_locs: Vec<Loc>,
 
-    val_locs:Vec<Loc>,
-
-    names_strs:Vec<StrId>,
-    pub str_intern:StringInterner,
+    names_strs: Vec<StrId>,
+    pub str_intern: StringInterner,
 
     pub scopes: Vec<HashMap<StrId, NameId>>,
     pub pending_names: HashMap<NameId, Vec<Loc>>,
@@ -104,12 +99,11 @@ impl Program {
     pub fn new() -> Self {
         let mut program = Self {
             definitions: HashMap::new(),
-            type_store: TypeStore::new(),
+            // type_store: TypeStore::new(),
+            val_locs: Vec::new(),
 
-            val_locs:Vec::new(),
-
-            names_strs:Vec::new(),
-            str_intern:StringInterner::new(),
+            names_strs: Vec::new(),
+            str_intern: StringInterner::new(),
 
             scopes: vec![HashMap::new()],
             pending_names: HashMap::new(),
@@ -117,23 +111,20 @@ impl Program {
         program.insert_builtin_types();
         program
     }
-    
-    pub fn with_id<T>(&mut self,x:Located<T>)->WithId<T>{
+
+    pub fn with_id<T>(&mut self, x: Located<T>) -> WithId<T> {
         let id = ValId(self.val_locs.len());
         self.val_locs.push(x.loc);
-        WithId{
-            value:x.value,id
-        }
+        WithId { value: x.value, id }
     }
 
-    pub fn id_value<T>(&mut self,loc:Loc,value:T)->WithId<T>{
+    pub fn id_value<T>(&mut self, loc: Loc, value: T) -> WithId<T> {
         self.with_id(loc.clone().with(value))
     }
 
-    pub fn get_loc(&self,v:ValId)->Loc{
+    pub fn get_loc(&self, v: ValId) -> Loc {
         self.val_locs[v.0].clone()
     }
-
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {
@@ -148,7 +139,10 @@ impl Program {
     /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
     pub fn insert_value_in_current_scope(&mut self, name: StrId) -> NameId {
         let id = self.fresh_name_id(name);
-        let value_scope = self.scopes.last_mut().expect("no scope available when inserting binding"); 
+        let value_scope = self
+            .scopes
+            .last_mut()
+            .expect("no scope available when inserting binding");
         value_scope.insert(name, id);
         id
     }
@@ -165,7 +159,7 @@ impl Program {
     }
 
     /// Generate a fresh unique name ID
-    fn fresh_name_id(&mut self,s:StrId) -> NameId {
+    fn fresh_name_id(&mut self, s: StrId) -> NameId {
         let id = NameId(self.names_strs.len());
         self.names_strs.push(s);
         id
@@ -357,7 +351,7 @@ impl Program {
             }
         };
 
-        self.definitions.insert(name,def);
+        self.definitions.insert(name, def);
 
         Ok(())
     }
