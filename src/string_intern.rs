@@ -87,7 +87,7 @@ impl StringInterner {
 
     #[inline(always)]
     fn maybe_grow(&mut self) {
-        if self.table.len() == 0 {
+        if self.table.is_empty() {
             return;
         }
 

@@ -13,7 +13,6 @@
 use std::cell::RefCell;
 use crate::program::WithId;
 use crate::ir::NameId;
-use crate::parsing::Located;
 use std::collections::HashMap;
 
 use crate::{
@@ -196,6 +195,12 @@ pub struct LocalTypes {
     types: HashMap<ValId, TypeId>,
 }
 
+impl Default for LocalTypes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalTypes {
     pub fn new() -> Self {
         Self {
@@ -314,7 +319,7 @@ impl<'a> InferState<'a> {
         self.ans.types.insert(id,t)
     }
 
-    fn register_solved(&mut self,id:ValId,t:TypeId) -> &RefReqs{
+    fn register_solved(&mut self,id:ValId,t:TypeId) -> &mut Reqs{
         self.solved(id,t);
         let p = WithId {
             id,
@@ -325,7 +330,7 @@ impl<'a> InferState<'a> {
     
     // fn get_local_id()    
 
-    fn register(&mut self,guess:InferId,produced:Prod)->&RefReqs{
+    fn register(&mut self,guess:InferId,produced:Prod)->&mut Reqs{
         self.reqs_map.insert(produced.id,LocalId(self.reqs.len()));
         self.reqs.push(Reqs{
             guess,
@@ -333,10 +338,10 @@ impl<'a> InferState<'a> {
             used_as:Vec::new(),
 
         }.into());
-        self.reqs.last().unwrap()
+        self.reqs.last_mut().unwrap().get_mut()
     }
 
-    fn register_unknown(&mut self,produced:Prod)->&RefReqs{
+    fn register_unknown(&mut self,produced:Prod)->&mut Reqs{
         let id = LocalId(self.reqs.len());
         self.reqs_map.insert(produced.id,id);
         self.reqs.push(Reqs{
@@ -345,10 +350,10 @@ impl<'a> InferState<'a> {
             used_as:Vec::new(),
 
         }.into());
-        self.reqs.last().unwrap()
+        self.reqs.last_mut().unwrap().get_mut()
     }
 
-    fn register_bind(&mut self,bind:WithId<NameId>)->&RefReqs{
+    fn register_bind(&mut self,bind:WithId<NameId>)->&mut Reqs{
         let id = LocalId(self.reqs.len());
         self.names.insert(bind.value,InferId::Local(id));
         self.reqs_map.insert(bind.id,id);
@@ -358,7 +363,7 @@ impl<'a> InferState<'a> {
             used_as:Vec::new(),
 
         }.into());
-        self.reqs.last().unwrap()
+        self.reqs.last_mut().unwrap().get_mut()
     }
 
 
@@ -411,12 +416,12 @@ enum ProducedBy {
 
 
 
-fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a RefReqs, TypeError> {
+fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut Reqs, TypeError> {
     match &v.value {
         Value::TypeAnnotation { value:other, ty}=>{
             let ty = compile_type_expr(ctx,ty)?;
             let other = gather_constraints(ctx,other)?;
-            other.borrow_mut().add_use(v.with(TypeUse::StatedAs(ty)));
+            other.add_use(v.with(TypeUse::StatedAs(ty)));
             Ok(ctx.register(
                 ty,
                 v.with(ProducedBy::Explicit{ty})
@@ -461,7 +466,7 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
                     guess,
                     v.with(ProducedBy::NameRef(*n))
                 );
-                ans.borrow_mut().add_use(v.with(TypeUse::TakenFrom(guess)));
+                ans.add_use(v.with(TypeUse::TakenFrom(guess)));
                 return Ok(ans)
             }
             if let Some(x) = ctx.program.definitions.get(n){
@@ -474,12 +479,12 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
 
         Value::Let { pat, value, else_part }=>{
             let rhs = gather_constraints(ctx,value)?;
-            rhs.borrow_mut().add_use(v.with(TypeUse::WrittenTo));
-            let guess = rhs.borrow_mut().guess; 
+            rhs.add_use(v.with(TypeUse::WrittenTo));
+            let guess = rhs.guess; 
 
             let else_guess =  match else_part{
                 Some(x)=>{
-                    let mut x = gather_constraints(ctx,x)?.borrow_mut();
+                    let mut x = gather_constraints(ctx,x)?;
                     x.add_use(v.with(TypeUse::WrittenTo));
                     x.add_use(v.with(TypeUse::Guessed(guess)));
                     Some(x.guess)
@@ -488,12 +493,12 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
             };
 
             let p = gather_pattern_constraints(ctx,pat)?;
-            p.borrow_mut().add_use(v.with(TypeUse::TakenFrom(guess)));
+            p.add_use(v.with(TypeUse::TakenFrom(guess)));
             if let Some(x) = else_guess {
-                p.borrow_mut().add_use(v.with(TypeUse::TakenFrom(x)));
+                p.add_use(v.with(TypeUse::TakenFrom(x)));
             }
 
-            let guess = p.borrow_mut().guess;
+            let guess = p.guess;
 
             Ok(ctx.register(guess,v.with(ProducedBy::Let { 
                 tgt: pat.id, 
@@ -515,8 +520,8 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
                 }
                 Some(x)=>{
                     let r = gather_constraints(ctx,x)?;
-                    r.borrow_mut().add_use(v.with(TypeUse::WrittenTo));
-                    let guess = r.borrow_mut().guess;
+                    r.add_use(v.with(TypeUse::WrittenTo));
+                    let guess = r.guess;
 
                     Ok(ctx.register(
                         guess,
@@ -539,7 +544,7 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
             };
 
             let b = gather_constraints(ctx,body)?;
-            b.borrow_mut().add_use(v.with(TypeUse::StatedAs(output_ty)));
+            b.add_use(v.with(TypeUse::StatedAs(output_ty)));
             Ok(ctx.register_unknown(
                 v.with(ProducedBy::Func{
                     output_ty,body:body.id,
@@ -553,12 +558,12 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a Ref
     }
 }
 
-fn gather_pattern_constraints<'a>(ctx: &'a mut InferState, p: &IPattern) -> Result<&'a RefReqs, TypeError>{
+fn gather_pattern_constraints<'a>(ctx: &'a mut InferState, p: &IPattern) -> Result<&'a mut Reqs, TypeError>{
     match &p.value {
         Pattern::TypeAnnotation { pat:other, ty } =>{
             let ty = compile_type_expr(ctx,ty)?;
             let other = gather_pattern_constraints(ctx,other)?;
-            other.borrow_mut().add_use(p.with(TypeUse::StatedAs(ty)));
+            other.add_use(p.with(TypeUse::StatedAs(ty)));
             Ok(ctx.register(
                 ty,
                 p.with(ProducedBy::Explicit{ty})
@@ -573,7 +578,7 @@ fn gather_pattern_constraints<'a>(ctx: &'a mut InferState, p: &IPattern) -> Resu
     }
 }
 
-fn compile_type_expr<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<InferId, TypeError>{
+fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<InferId, TypeError>{
     match &v.value {
         Value::NameRef(name) => match ctx.program.definitions.get(name) {
             Some(Defined::Type { val: _, ty }) => Ok(InferId::Resolved(*ty)),
