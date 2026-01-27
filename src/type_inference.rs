@@ -69,9 +69,10 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub usize);
 
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
-    Int,
+    Int=0,
     Uint,
     I8,
     I16,
@@ -90,8 +91,36 @@ pub enum BuiltinType {
     Bool,
     Str,
     Void,
-    Type,
+    Type,//keep this last as a matter of safety.
 }
+
+impl From<BuiltinType> for TypeId {
+    #[inline(always)]
+    fn from(b: BuiltinType) -> Self {
+        TypeId(b as usize)
+    }
+}
+impl TryFrom<TypeId> for BuiltinType {
+    type Error = ();
+
+    #[inline(always)]
+    fn try_from(id: TypeId) -> Result<Self, ()> {
+        let v = id.0;
+        if v <= BuiltinType::Type as usize {
+            Ok(unsafe{std::mem::transmute(id.0 as u8)})
+        } else {
+            Err(())
+        }
+    }
+}
+
+
+/*const _: () = {
+    if std::mem::size_of::<BuiltinType>() != 1 {
+        panic!("BuiltinType must be 1 byte");
+    }
+};*/
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeValue {
@@ -158,11 +187,17 @@ impl Default for TypeStore {
 
 impl TypeStore {
     pub fn new() -> Self {
-        Self {
+        let mut ans = Self {
             values: Vec::new(),
             intern: HashMap::new(),
             global_types: HashMap::new(),
+        };
+
+        for i in 0..=BuiltinType::Type as u8{
+            let x = unsafe{std::mem::transmute(i)};
+            ans.intern(TypeValue::Builtin(x));
         }
+        ans
     }
 
     #[inline(always)]
@@ -959,7 +994,8 @@ impl<'a> InferState<'a> {
     }
 
     fn builtin(&mut self, b: BuiltinType) -> TypeId {
-        self.store.intern(TypeValue::Builtin(b))
+        // self.store.intern(TypeValue::Builtin(b))
+        b.into()
     }
 }
 
