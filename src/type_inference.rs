@@ -891,15 +891,16 @@ impl<'a> InferState<'a> {
     }
 
     /// Default: values get their own cluster unless the semantics aliases them
-    fn cluster_of(&mut self, v: ValId) -> usize {
-        if let Some(&c) = self.val_cluster.get(&v) {
-            return c;
-        }
-        let c = self.new_cluster();
-        self.bind_val(v, c);
-        c
-    }
+    // fn cluster_of(&mut self, v: ValId) -> usize {
+    //     if let Some(&c) = self.val_cluster.get(&v) {
+    //         return c;
+    //     }
+    //     let c = self.new_cluster();
+    //     self.bind_val(v, c);
+    //     c
+    // }
 
+    #[inline(always)]
     fn find(&mut self, x: usize) -> usize {
         let p = self.parent[x];
         if p != x {
@@ -1109,10 +1110,19 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
         Value::BinOp { op, values } => {
             let (lhs, rhs) = &**values;
 
+            //we are assuming no overloading here.
+            //TODO: this part probably needs to be pooled into a vector of these constraints
+            // in paticular we might want to allow x+y to work for cases like x=i32 and y=u8
+            // the main argument aginst is it makes some infrence tricky to do because we cant blindly apply same_as
+            // BUT we can apply it for a few extra cases
+            // mainly by using the fact literals have 1 and only 1 relation.
+            // so its sound to do the following:
+            //    if we have {x OP int_lit} we can require the int literal is of the same type as op
+
             let lc = gather_constraints(ctx, lhs)?;
             let rc = gather_constraints(ctx, rhs)?;
 
-            //we are assuming no overloading here.
+
 
             // Result cluster:
             // - comparisons always produce bool
