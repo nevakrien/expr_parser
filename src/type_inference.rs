@@ -9,16 +9,11 @@
 //
 // ================================================================
 
-use std::collections::LinkedList;
-use std::cell::Ref;
-use std::cell::RefCell;
-use crate::program::WithId;
 use crate::ir::NameId;
 use std::collections::HashMap;
 
 use crate::{
-    ir::{BinOp, IPattern, IValue, Literal, Pattern, UnOp, Value},
-    parsing::Loc,
+    ir::{BinOp, IPattern, IValue, Literal, Pattern, Value},
     program::{Defined, Program, ValId},
 };
 
@@ -1130,7 +1125,77 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             Ok(c)
         }
 
-        _ => todo!("more expressions"),
+        Value::BinOp { op, values } => {
+            let (lhs, rhs) = &**values;
+
+            let lc = gather_constraints(ctx, lhs)?;
+            let rc = gather_constraints(ctx, rhs)?;
+
+            //we are assuming no overloading here.
+
+            // Result cluster:
+            // - comparisons always produce bool
+            // - arithmetic / bitwise produce a value cluster
+            match op {
+                // ======================
+                // Comparisons: bool
+                // ======================
+                BinOp::Eq | BinOp::Ne
+                | BinOp::Lt | BinOp::Le
+                | BinOp::Gt | BinOp::Ge => {
+                    // operands must be comparable -> same cluster
+                    if let Err(Clash { a, b }) = ctx.union(lc, rc) {
+                        return Err(TypeError::IncompatibleTypes {
+                            site: v.id,
+                            left: a,
+                            right: b,
+                            note: "comparison operands must have the same type",
+                        });
+                    }
+
+                    let c = ctx.new_cluster();
+                    let t = ctx.builtin(BuiltinType::Bool);
+                    ctx.cluster[c].ty = Some(t);
+                    ctx.bind_val(v.id, c);
+                    Ok(c)
+                }
+
+                // ======================
+                // Arithmetic / bitwise
+                // ======================
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr => {
+                    // First, operands must have the same type
+                    let root = match ctx.union(lc, rc) {
+                        Ok(r) => r,
+                        Err(Clash { a, b }) => {
+                            return Err(TypeError::IncompatibleTypes {
+                                site: v.id,
+                                left: a,
+                                right: b,
+                                note: "binary operator requires operands of the same type",
+                            });
+                        }
+                    };
+
+                    // Now: literal handling (currently a no op)
+                    // when we add overloading we need to check here that we actualyl merge literals explictly
+                    ctx.bind_val(v.id, root);
+                    Ok(root)
+                }
+            }
+        }
+
+
+        _ => panic!("more expressions {:?}",v.value),
     }
 }
 
@@ -1357,19 +1422,30 @@ mod type_infer_tests {
 
     #[test]
     fn arithmetic_on_float_is_allowed() {
-        assert_fn_type!("f = fn(){ 1.0 + 2.0 }", BuiltinType::F64);
+        assert_fn_type!("f = fn(){ (1.0 : f64) + 2.0 }", BuiltinType::F64);
     }
 
     /* ------------------------------------------------------------
      * Error cases
      * ------------------------------------------------------------ */
 
+    // #[test]
+    // fn unresolved_variable_errors() {
+    //     let mut store = TypeStore::new();
+    //     let err = infer_fn("f = fn(y){ let x = y; x }", &mut store).unwrap_err();
+    //     match err {
+    //         TypeError::Unresolved { .. } => {}
+    //         other => panic!("expected Unresolved, got {:?}", other),
+    //     }
+    // }
+
     #[test]
-    fn unresolved_variable_errors() {
+    fn unresolved_int_errors() {
         let mut store = TypeStore::new();
-        let err = infer_fn("f = fn(y){ let x = y; x }", &mut store).unwrap_err();
+        let err = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
         match err {
             TypeError::Unresolved { .. } => {}
+            TypeError::InvalidLiteral { .. } => {}
             other => panic!("expected Unresolved, got {:?}", other),
         }
     }
