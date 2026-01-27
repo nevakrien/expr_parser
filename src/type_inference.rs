@@ -10,6 +10,7 @@
 //
 // ================================================================
 
+use std::cell::Ref;
 use std::cell::RefCell;
 use crate::program::WithId;
 use crate::ir::NameId;
@@ -223,7 +224,7 @@ pub fn infer_value_internals(
 
     gather_constraints(&mut state, value)?;
     basic_propegation(&mut state)?;
-
+    finalize(&mut state)?;
     // todo!()
     Ok(state.ans)
 }
@@ -258,6 +259,7 @@ enum TypeUse {
     ///this happens when we apply union rules
     Guessed(InferId),
 }
+
 
 type Used = WithId<TypeUse>;//the id is of the expression causing the use
 
@@ -313,14 +315,14 @@ impl<'a> InferState<'a> {
         self.store.intern(t)
     }
 
-    fn solved(&mut self,id:ValId,t:TypeId) -> Option<TypeId>{
-        //TODO if we ever move to multi error
-        // this place would be weird
-        self.ans.types.insert(id,t)
-    }
+    // fn solved(&mut self,id:ValId,t:TypeId) -> Option<TypeId>{
+    //     //TODO if we ever move to multi error
+    //     // this place would be weird
+    //     self.ans.types.insert(id,t)
+    // }
 
     fn register_solved(&mut self,id:ValId,t:TypeId) -> &mut Reqs{
-        self.solved(id,t);
+        self.ans.types.insert(id,t);
         let p = WithId {
             id,
             value:ProducedBy::Known(t)
@@ -430,7 +432,7 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut
 
         Value::Cast { value:other, ty}=>{
             let ty = compile_type_expr(ctx,ty)?;
-            let other = gather_constraints(ctx,other)?;
+            let _ = gather_constraints(ctx,other)?;
             Ok(ctx.register(
                 ty,
                 v.with(ProducedBy::Explicit{ty})
@@ -469,7 +471,7 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut
                 ans.add_use(v.with(TypeUse::TakenFrom(guess)));
                 return Ok(ans)
             }
-            if let Some(x) = ctx.program.definitions.get(n){
+            if let Some(_x) = ctx.program.definitions.get(n){
                 todo!("something clever")
             };
 
@@ -484,7 +486,7 @@ fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut
 
             let else_guess =  match else_part{
                 Some(x)=>{
-                    let mut x = gather_constraints(ctx,x)?;
+                    let x = gather_constraints(ctx,x)?;
                     x.add_use(v.with(TypeUse::WrittenTo));
                     x.add_use(v.with(TypeUse::Guessed(guess)));
                     Some(x.guess)
@@ -597,8 +599,108 @@ fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<InferId, TypeEr
 }
 
 fn basic_propegation(ctx:&mut InferState)->Result<(),TypeError>{
+    let mut seen = Vec::new();//we are using refcell to mark
+    let mut changed = true;
+
+    while changed{
+        changed = false;
+        seen.clear();
+
+
+        for cell in ctx.reqs.iter(){
+            mark_one(&mut changed,ctx,cell,&mut seen)
+        }
+    }
+    
+
+
+    #[inline(always)]
+    fn mark_one<'a>(changed:&mut bool,ctx:&'a InferState<'_>,cell:&'a RefCell<Reqs>,seen:&mut Vec<Ref<'a, Reqs>>){
+        let Ok(mut r) = cell.try_borrow_mut() else {
+            return;
+        };
+
+        let Reqs { guess, produced: _, used_as } = &mut*r;
+
+        //1. find concrete if possible
+        for u in used_as.iter(){
+            let tgt = match u.value {
+                TypeUse::StatedAs(x)|TypeUse::TakenFrom(x)=>x,
+                TypeUse::InputArg(x) | TypeUse::Guessed(x) => x,
+                TypeUse::WrittenTo=>continue,
+
+            };
+
+            match (*guess,tgt) {
+                (InferId::Local(_),InferId::Resolved(_))=>{
+                    *changed=true;
+                    *guess=tgt;
+                },
+                (InferId::Resolved(a),InferId::Resolved(b))=>{
+                    if a!=b{
+                        todo!("error report here")  
+                    }
+                }
+                _=>{},
+            }
+
+        }
+
+        //we are done updating but we wana still push
+        drop(r);
+        let r = cell.borrow();
+        seen.push(cell.borrow());
+        let Reqs { guess, produced: _, used_as } = &*r;
+
+
+        //2. push value so all the cluster has our guess
+        for u in used_as.iter(){
+            let tgt = match u.value {
+                TypeUse::StatedAs(x)|TypeUse::TakenFrom(x)|
+                TypeUse::InputArg(x) | TypeUse::Guessed(x) => {
+                    match x {
+                        InferId::Local(y)=>y,
+                        _=>continue,
+                    }
+                },
+                
+                TypeUse::WrittenTo=>ctx.reqs_map[&u.id],
+
+            };
+
+            let Ok(mut other) = ctx.reqs[tgt.0].try_borrow_mut() else {
+                continue;
+            };
+            match other.guess {
+                InferId::Resolved(_) => {},
+                InferId::Local(_) => {
+                    if other.guess!=*guess{
+                        *changed=true;
+                        other.guess = *guess;
+                    }
+                },
+            }
+            mark_one(changed,ctx, &ctx.reqs[tgt.0],seen);
+
+        }
+
+        
+    }
+
     Ok(())
 }
+
+fn finalize(ctx:&mut InferState)->Result<(),TypeError>{
+    for cell in ctx.reqs.iter_mut(){
+        let r = cell.get_mut();
+        match r.guess {
+            InferId::Resolved(t)=>{ctx.ans.types.insert(r.produced.id,t);},
+            _=>{}//todo report an errpr
+        };
+    }
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod type_infer_tests {
@@ -657,10 +759,23 @@ mod type_infer_tests {
         Ok(types.type_of(body.id).unwrap())
     }
 
+    //this is a hack for just testing
+    fn infer_fn_body(src: &str, store: &mut TypeStore) -> Result<TypeId, TypeError> {
+        let program = gather_program(src);
+        let f = extract_single_fn(&program);
+        let body = match &f.value {
+            Value::Func { body, .. } => body,
+            _ => panic!("expected function value"),
+        };
+
+        let types = infer_value_internals(&program, store, body)?;
+        Ok(types.type_of(body.id).unwrap())
+    }
+
     macro_rules! assert_fn_type {
         ($src:expr, $builtin:expr) => {{
             let mut store = TypeStore::new();
-            let ty = infer_fn($src, &mut store).expect("inference failed");
+            let ty = infer_fn_body($src, &mut store).expect("inference failed");
             match store.type_value(ty) {
                 TypeValue::Builtin(b) => assert_eq!(*b, $builtin),
                 other => panic!("expected builtin type, got {:?}", other),
