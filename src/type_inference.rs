@@ -72,7 +72,7 @@ pub struct TypeId(pub usize);
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
-    Int=0,
+    Int = 0,//for now this enum MUST start at 0
     Uint,
     I8,
     I16,
@@ -91,7 +91,7 @@ pub enum BuiltinType {
     Bool,
     Str,
     Void,
-    Type,//keep this last as a matter of safety.
+    Type,
 }
 
 impl From<BuiltinType> for TypeId {
@@ -105,22 +105,37 @@ impl TryFrom<TypeId> for BuiltinType {
 
     #[inline(always)]
     fn try_from(id: TypeId) -> Result<Self, ()> {
-        let v = id.0;
-        if v <= BuiltinType::Type as usize {
-            Ok(unsafe{std::mem::transmute(id.0 as u8)})
-        } else {
-            Err(())
+        match id.0 as u8 {
+            x if x == BuiltinType::Int as u8 => Ok(BuiltinType::Int),
+            x if x == BuiltinType::Uint as u8 => Ok(BuiltinType::Uint),
+            x if x == BuiltinType::I8 as u8 => Ok(BuiltinType::I8),
+            x if x == BuiltinType::I16 as u8 => Ok(BuiltinType::I16),
+            x if x == BuiltinType::I32 as u8 => Ok(BuiltinType::I32),
+            x if x == BuiltinType::I64 as u8 => Ok(BuiltinType::I64),
+            x if x == BuiltinType::I128 as u8 => Ok(BuiltinType::I128),
+            x if x == BuiltinType::Isize as u8 => Ok(BuiltinType::Isize),
+            x if x == BuiltinType::U8 as u8 => Ok(BuiltinType::U8),
+            x if x == BuiltinType::U16 as u8 => Ok(BuiltinType::U16),
+            x if x == BuiltinType::U32 as u8 => Ok(BuiltinType::U32),
+            x if x == BuiltinType::U64 as u8 => Ok(BuiltinType::U64),
+            x if x == BuiltinType::U128 as u8 => Ok(BuiltinType::U128),
+            x if x == BuiltinType::Usize as u8 => Ok(BuiltinType::Usize),
+            x if x == BuiltinType::F32 as u8 => Ok(BuiltinType::F32),
+            x if x == BuiltinType::F64 as u8 => Ok(BuiltinType::F64),
+            x if x == BuiltinType::Bool as u8 => Ok(BuiltinType::Bool),
+            x if x == BuiltinType::Str as u8 => Ok(BuiltinType::Str),
+            x if x == BuiltinType::Void as u8 => Ok(BuiltinType::Void),
+            x if x == BuiltinType::Type as u8 => Ok(BuiltinType::Type),
+            _ => Err(()),
         }
     }
 }
-
 
 /*const _: () = {
     if std::mem::size_of::<BuiltinType>() != 1 {
         panic!("BuiltinType must be 1 byte");
     }
 };*/
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeValue {
@@ -193,9 +208,11 @@ impl TypeStore {
             global_types: HashMap::new(),
         };
 
-        for i in 0..=BuiltinType::Type as u8{
-            let x = unsafe{std::mem::transmute(i)};
-            ans.intern(TypeValue::Builtin(x));
+        for i in 0.. {
+            let Ok(builtin) = BuiltinType::try_from(TypeId(i)) else {
+                break;
+            };
+            ans.intern(TypeValue::Builtin(builtin));
         }
         ans
     }
@@ -1157,8 +1174,6 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
 
             let lc = gather_constraints(ctx, lhs)?;
             let rc = gather_constraints(ctx, rhs)?;
-
-
 
             // Result cluster:
             // - comparisons always produce bool
