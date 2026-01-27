@@ -62,9 +62,6 @@ use crate::{
 //     },
 // }
 
-
-
-
 /* ================================================================
  * Core IDs (STABLE)
  * ================================================================ */
@@ -198,27 +195,19 @@ impl TypeStore {
     }
 
     #[inline(always)]
-    pub fn is_int_like(&self,t:TypeId)->bool{
+    pub fn is_int_like(&self, t: TypeId) -> bool {
         use BuiltinType::*;
         matches!(
             self.as_builtin(t),
-            Some(
-                Int
-                | I8 | I16 | I32 | I64 | I128 | Isize
-                | U8 | U16 | U32 | U64 | U128 | Usize
-            )
+            Some(Int | I8 | I16 | I32 | I64 | I128 | Isize | U8 | U16 | U32 | U64 | U128 | Usize)
         )
     }
 
     #[inline(always)]
-    pub fn is_float_like(&self,t:TypeId)->bool{
+    pub fn is_float_like(&self, t: TypeId) -> bool {
         use BuiltinType::*;
-        matches!(
-            self.as_builtin(t),
-            Some(F32 | F64)
-        )
+        matches!(self.as_builtin(t), Some(F32 | F64))
     }
-
 }
 
 pub struct LocalTypes {
@@ -261,7 +250,6 @@ impl LocalTypes {
 // /* ================================================================
 //  * Constraint model (CORE)
 //  * ================================================================ */
-
 // #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // struct LocalId(usize);
 
@@ -329,7 +317,7 @@ impl LocalTypes {
 //     ///this was an R value to some assignment
 //     ///assign expressions return the var assigned to so
 //     WrittenTo,
-    
+
 //     /// this was an L value to an assigment of some type
 //     TakenFrom(InferId),
 
@@ -337,7 +325,6 @@ impl LocalTypes {
 //     ///this happens when we apply union rules
 //     Guessed(InferId),
 // }
-
 
 // type Used = WithId<TypeUse>;//the id is of the expression causing the use
 
@@ -407,8 +394,8 @@ impl LocalTypes {
 //         };
 //         self.register(InferId::Resolved(t),p)
 //     }
-    
-//     // fn get_local_id()    
+
+//     // fn get_local_id()
 
 //     fn register(&mut self,guess:InferId,produced:Prod)->&mut Reqs{
 //         self.reqs_map.insert(produced.id,LocalId(self.reqs.len()));
@@ -446,7 +433,6 @@ impl LocalTypes {
 //         self.reqs.last_mut().unwrap().get_mut()
 //     }
 
-
 // }
 
 // #[derive(Debug, Clone)]
@@ -473,8 +459,6 @@ impl LocalTypes {
 //     NameRef(NameId),
 //     Bind(NameId),
 
-    
-    
 //     BinOp {
 //         op: BinOp,
 //     },
@@ -491,7 +475,6 @@ impl LocalTypes {
 //     },
 //     Other(&'static str),
 // }
-
 
 // fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut Reqs, TypeError> {
 //     match &v.value {
@@ -553,11 +536,10 @@ impl LocalTypes {
 //             unreachable!("BUG: name used before its declared after resolution")
 //         }
 
-
 //         Value::Let { pat, value, else_part }=>{
 //             let rhs = gather_constraints(ctx,value)?;
 //             rhs.add_use(v.with(TypeUse::WrittenTo));
-//             let guess = rhs.guess; 
+//             let guess = rhs.guess;
 
 //             let else_guess =  match else_part{
 //                 Some(x)=>{
@@ -577,8 +559,8 @@ impl LocalTypes {
 
 //             let guess = p.guess;
 
-//             Ok(ctx.register(guess,v.with(ProducedBy::Let { 
-//                 tgt: pat.id, 
+//             Ok(ctx.register(guess,v.with(ProducedBy::Let {
+//                 tgt: pat.id,
 //                 src: value.id,
 //                 or:else_part.as_ref().map(|x|x.id)
 //             })))
@@ -590,7 +572,7 @@ impl LocalTypes {
 //             }
 //              match return_value {
 //                 None=>{
-//                     let void = ctx.buildin(BuiltinType::Void); 
+//                     let void = ctx.buildin(BuiltinType::Void);
 //                     Ok(ctx.register_solved(
 //                         v.id,void
 //                     ))
@@ -681,13 +663,10 @@ impl LocalTypes {
 //         changed = false;
 //         seen.clear();
 
-
 //         for cell in ctx.reqs.iter(){
 //             mark_one(&mut changed,ctx,cell,&mut seen)
 //         }
 //     }
-    
-
 
 //     #[inline(always)]
 //     fn mark_one<'a>(changed:&mut bool,ctx:&'a InferState<'_>,cell:&'a RefCell<Reqs>,seen:&mut Vec<Ref<'a, Reqs>>){
@@ -713,7 +692,7 @@ impl LocalTypes {
 //                 },
 //                 (InferId::Resolved(a),InferId::Resolved(b))=>{
 //                     if a!=b{
-//                         todo!("error report here")  
+//                         todo!("error report here")
 //                     }
 //                 }
 //                 _=>{},
@@ -727,7 +706,6 @@ impl LocalTypes {
 //         seen.push(cell.borrow());
 //         let Reqs { guess, produced: _, used_as } = &*r;
 
-
 //         //2. push value so all the cluster has our guess
 //         for u in used_as.iter(){
 //             let tgt = match u.value {
@@ -738,7 +716,7 @@ impl LocalTypes {
 //                         _=>continue,
 //                     }
 //                 },
-                
+
 //                 TypeUse::WrittenTo=>ctx.reqs_map[&u.id],
 
 //             };
@@ -759,7 +737,6 @@ impl LocalTypes {
 
 //         }
 
-        
 //     }
 
 //     Ok(())
@@ -783,10 +760,7 @@ impl LocalTypes {
 #[derive(Debug)]
 pub enum TypeError {
     /// Could not infer a concrete type for this value
-    Unresolved {
-        value: ValId,
-        message: &'static str,
-    },
+    Unresolved { value: ValId, message: &'static str },
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedType {
@@ -1075,7 +1049,11 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             Ok(c)
         }
 
-        Value::Let { pat, value, else_part } => {
+        Value::Let {
+            pat,
+            value,
+            else_part,
+        } => {
             let rhs = gather_constraints(ctx, value)?;
             let lhs = gather_pattern_constraints(ctx, pat)?;
 
@@ -1105,7 +1083,10 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             Ok(lhs)
         }
 
-        Value::Block { statements, return_value } => {
+        Value::Block {
+            statements,
+            return_value,
+        } => {
             for s in statements {
                 gather_constraints(ctx, s)?;
             }
@@ -1140,9 +1121,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
                 // ======================
                 // Comparisons: bool
                 // ======================
-                BinOp::Eq | BinOp::Ne
-                | BinOp::Lt | BinOp::Le
-                | BinOp::Gt | BinOp::Ge => {
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     // operands must be comparable -> same cluster
                     if let Err(Clash { a, b }) = ctx.union(lc, rc) {
                         return Err(TypeError::IncompatibleTypes {
@@ -1194,8 +1173,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             }
         }
 
-
-        _ => panic!("more expressions {:?}",v.value),
+        _ => panic!("more expressions {:?}", v.value),
     }
 }
 
@@ -1307,8 +1285,6 @@ fn finalize(ctx: &mut InferState) {
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod type_infer_tests {
@@ -1454,7 +1430,6 @@ mod type_infer_tests {
             BuiltinType::Bool
         );
     }
-
 
     /* ------------------------------------------------------------
      * Error cases

@@ -336,6 +336,9 @@ impl Program {
                 self.lower_match_expr(expr.loc, items)
             }
 
+            // if <cond> <then> [else <else>]
+            Expr::Prefix(open, items) if open.value == "if" => self.lower_if_expr(expr.loc, items),
+
             // assignment
             Expr::Bin(op, pair) if op.value == "=" => self.lower_assign_expr(expr.loc, *pair),
 
@@ -488,6 +491,35 @@ impl Program {
         let arms = arms?;
 
         Ok(self.id_value(loc, Value::Match { value, arms }))
+    }
+
+    #[inline(always)]
+    fn lower_if_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+        if items.len() < 2 || items.len() > 3 {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: "if expression requires condition and then branch, optional else branch",
+            });
+        }
+
+        let mut items = items;
+        let cond_expr = items.remove(0);
+        let then_expr = items.remove(0);
+        let else_expr = if items.len() == 1 {
+            Some(items.remove(0))
+        } else {
+            None
+        };
+
+        let cond = Box::new(self.lower_value(cond_expr)?);
+        let then = Box::new(self.lower_value(then_expr)?);
+        let els = if let Some(else_expr) = else_expr {
+            Some(Box::new(self.lower_value(else_expr)?))
+        } else {
+            None
+        };
+
+        Ok(self.id_value(loc, Value::If { cond, then, els }))
     }
 
     #[inline(always)]
@@ -1039,7 +1071,7 @@ mod var_scope_test {
 #[cfg(test)]
 mod lowering_tests {
     use super::*;
-    use crate::error_messages::{ERR_ACCESS_EXPECTS_NAME, ERR_UNSUPPORTED_EXPRESSION};
+    use crate::error_messages::ERR_ACCESS_EXPECTS_NAME;
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
@@ -1431,17 +1463,84 @@ mod lowering_tests {
     }
 
     #[test]
-    fn unsupported_expression_reports_error() {
-        let src = "if 1 2";
+    fn lowers_if_expression() {
+        let src = "if 1 { 2 }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
-        let err = program.lower_value(expr).unwrap_err();
-        match err {
-            CompileError::UnsupportedForm { message, .. } => {
-                assert_eq!(message, ERR_UNSUPPORTED_EXPRESSION);
+        let ir = program.lower_value(expr).unwrap();
+
+        match ir.value {
+            Value::If { cond, then, els } => {
+                match cond.value {
+                    Value::Literal(Literal::Num(1)) => {}
+                    _ => panic!("expected condition to be literal 1"),
+                }
+                match then.value {
+                    Value::Block {
+                        statements,
+                        return_value,
+                    } => {
+                        assert_eq!(statements.len(), 0);
+                        assert!(return_value.is_some());
+                        match return_value.unwrap().value {
+                            Value::Literal(Literal::Num(2)) => {}
+                            _ => panic!("expected then branch to return literal 2"),
+                        }
+                    }
+                    _ => panic!("expected then branch to be a block"),
+                }
+                assert!(els.is_none(), "expected no else branch");
             }
-            _ => panic!("expected simple error"),
+            _ => panic!("expected if expression"),
+        }
+    }
+
+    #[test]
+    fn lowers_if_else_expression() {
+        let src = "if 1 { 2 } else { 3 }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let expr = parser.consume_expr().unwrap();
+        let ir = program.lower_value(expr).unwrap();
+
+        match ir.value {
+            Value::If { cond, then, els } => {
+                match cond.value {
+                    Value::Literal(Literal::Num(1)) => {}
+                    _ => panic!("expected condition to be literal 1"),
+                }
+                match then.value {
+                    Value::Block {
+                        statements,
+                        return_value,
+                    } => {
+                        assert_eq!(statements.len(), 0);
+                        assert!(return_value.is_some());
+                        match return_value.unwrap().value {
+                            Value::Literal(Literal::Num(2)) => {}
+                            _ => panic!("expected then branch to return literal 2"),
+                        }
+                    }
+                    _ => panic!("expected then branch to be a block"),
+                }
+                assert!(els.is_some(), "expected else branch");
+                match els.unwrap().value {
+                    Value::Block {
+                        statements,
+                        return_value,
+                    } => {
+                        assert_eq!(statements.len(), 0);
+                        assert!(return_value.is_some());
+                        match return_value.unwrap().value {
+                            Value::Literal(Literal::Num(3)) => {}
+                            _ => panic!("expected else branch to return literal 3"),
+                        }
+                    }
+                    _ => panic!("expected else branch to be a block"),
+                }
+            }
+            _ => panic!("expected if expression"),
         }
     }
 

@@ -45,7 +45,7 @@ pub enum Defined {
     ToBeDefined,
     Raw(LExpr),
     Value(IValue),
-    Type{val:IValue,ty:TypeId},
+    Type { val: IValue, ty: TypeId },
     // TypeRef(TypeId),
     BuildinType(TypeValue),
     Macro(Macro),
