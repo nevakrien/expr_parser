@@ -1,15 +1,15 @@
-//! Type inference sketch (constraint-first, local, non-integrated)
+//! Type inference sketch
 //
 // ================================================================
-// DESIGN GOALS (SHOULD STAY TRUE)
+// DESIGN GOALS
 // ================================================================
-// 1) Constraints are RECORDS, not guesses.
-// 2) Inference is a SEPARATE, mutable process.
-// 3) Every value has exactly ONE producer, and 0..N consumers.
-// 4) Errors come from constraints (produce + consume sites).
+// 1) make simple infrence dead obvious and have good errors
+// 2) get a working sketch
+// 3) be still open to add overloads+lifetimes
 //
 // ================================================================
 
+use std::collections::LinkedList;
 use std::cell::Ref;
 use std::cell::RefCell;
 use crate::program::WithId;
@@ -26,46 +26,49 @@ use crate::{
  * Errors (STABLE SHAPE)
  * ================================================================ */
 
-#[derive(Debug)]
-pub enum TypeError {
-    Unresolved {
-        produced_loc: Loc,
-        message: &'static str,
-    },
+// #[derive(Debug)]
+// pub enum TypeError {
+//     Unresolved {
+//         produced_loc: Loc,
+//         message: &'static str,
+//     },
 
-    SimpleMismatch {
-        required_loc: Loc,
-        produced_loc: Loc,
-        expected: TypeId,
-        found: TypeId,
-        note: &'static str,
-    },
+//     SimpleMismatch {
+//         required_loc: Loc,
+//         produced_loc: Loc,
+//         expected: TypeId,
+//         found: TypeId,
+//         note: &'static str,
+//     },
 
-    Unsupported {
-        loc: Loc,
-        message: &'static str,
-    },
+//     Unsupported {
+//         loc: Loc,
+//         message: &'static str,
+//     },
 
-    ExpectedType {
-        loc: Loc,
-        message: &'static str,
-    },
+//     ExpectedType {
+//         loc: Loc,
+//         message: &'static str,
+//     },
 
-    InvalidOperator {
-        loc: Loc,
-        op: BinOp,
-        lhs: TypeId,
-        rhs: TypeId,
-        note: &'static str,
-    },
-    // InvalidLiteral {
-    //     loc: Loc,
-    //     loc_reqired:Loc,
-    //     literal: Literal,
-    //     target: TypeId,
-    //     note: &'static str,
-    // },
-}
+//     InvalidOperator {
+//         loc: Loc,
+//         op: BinOp,
+//         lhs: TypeId,
+//         rhs: TypeId,
+//         note: &'static str,
+//     },
+//     InvalidLiteral {
+//         loc: Loc,
+//         loc_reqired:Loc,
+//         literal: Literal,
+//         target: TypeId,
+//         note: &'static str,
+//     },
+// }
+
+
+
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -190,6 +193,37 @@ impl TypeStore {
         self.intern.insert(ty, id);
         id
     }
+
+    #[inline]
+    pub fn as_builtin(&self, t: TypeId) -> Option<BuiltinType> {
+        match self.type_value(t) {
+            TypeValue::Builtin(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_int_like(&self,t:TypeId)->bool{
+        use BuiltinType::*;
+        matches!(
+            self.as_builtin(t),
+            Some(
+                Int
+                | I8 | I16 | I32 | I64 | I128 | Isize
+                | U8 | U16 | U32 | U64 | U128 | Usize
+            )
+        )
+    }
+
+    #[inline(always)]
+    pub fn is_float_like(&self,t:TypeId)->bool{
+        use BuiltinType::*;
+        matches!(
+            self.as_builtin(t),
+            Some(F32 | F64)
+        )
+    }
+
 }
 
 pub struct LocalTypes {
@@ -215,491 +249,1000 @@ impl LocalTypes {
     }
 }
 
+// pub fn infer_value_internals(
+//     program: &Program,
+//     store: &mut TypeStore,
+//     value: &IValue,
+// ) -> Result<LocalTypes, TypeError> {
+//     let mut state = InferState::new(store,program);
+
+//     gather_constraints(&mut state, value)?;
+//     basic_propegation(&mut state)?;
+//     finalize(&mut state)?;
+//     // todo!()
+//     Ok(state.ans)
+// }
+
+// /* ================================================================
+//  * Constraint model (CORE)
+//  * ================================================================ */
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// struct LocalId(usize);
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// enum InferId {
+//     Resolved(TypeId),
+//     Local(LocalId),
+//     //?more
+// }
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// enum BoundReason {
+//     Anotated{parrent:ValId,anotation:ValId},
+//     MatchArm{full:ValId,other:ValId,me:ValId},
+//     ClearDerived{derived_spot:ValId,ty:InferId}
+// }
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// struct TypeBound {
+//     tgt:InferId,
+//     reason:BoundReason,
+// }
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// enum NumLit {
+//     Float,
+//     Int,
+// }
+
+// #[derive(Debug, Clone,Copy, PartialEq)]
+// enum ResolveState {
+//     Unresolved,
+//     Good(TypeId),
+//     Poison,
+// }
+
+// impl ResolveState{
+//     fn merge(self,other:ResolveState)->(Self,Option<(TypeId,TypeId)>){
+//         match(self,other){
+//             (ResolveState::Good(t1), ResolveState::Good(t2)) => (ResolveState::Poison,Some((t1,t2))),
+//             (ResolveState::Poison,_)|(_,ResolveState::Poison)=>(ResolveState::Poison,None),
+//             (ResolveState::Unresolved,x)|(x,ResolveState::Unresolved)=>(x,None),
+//         }
+//     }
+// }
+
+// #[derive(Debug, Clone, PartialEq)]
+// struct InferInfo {
+//     bounds:Vec<BoundReason>,
+//     litkind:Option<NumLit>,
+//     resolved:ResolveState,
+// }
+
+// #[derive(Debug, Clone, PartialEq)]
+// struct Cluster {
+//     resolved:ResolveState,
+//     members:LinkedList<LocalId>,
+// }
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// enum TypeUse {
+//     StatedAs(InferId),
+//     InputArg(InferId),
+
+//     ///this was an R value to some assignment
+//     ///assign expressions return the var assigned to so
+//     WrittenTo,
+    
+//     /// this was an L value to an assigment of some type
+//     TakenFrom(InferId),
+
+//     ///for SOME reason we infered this should be the same
+//     ///this happens when we apply union rules
+//     Guessed(InferId),
+// }
+
+
+// type Used = WithId<TypeUse>;//the id is of the expression causing the use
+
+// type Prod = WithId<ProducedBy>;
+// struct Reqs {
+//     //we union the guesses as much as we can
+//     guess:InferId,
+
+//     produced:Prod,
+
+//     //these dont have to be exustive
+//     //in many cases we would put them in where guess points to
+//     //for exaple {let x = 2: f(x) g(x)} the requirments on NameRef{x} are gona go on x
+//     used_as:Vec<Used>,
+// }
+
+// impl Reqs {
+//     fn add_use(&mut self,x:Used){
+//         self.used_as.push(x)
+//     }
+// }
+
+// struct InferState<'a> {
+//     store: &'a mut TypeStore,
+//     program:&'a Program,
+//     ans: LocalTypes,
+//     names: HashMap<NameId, InferId>,
+//     reqs_map:HashMap<ValId,LocalId>,
+//     ///this is a refcell because natually we want to look at 1 element and use it to modify children
+//     ///refcells are actually semantically meaningful here they stop recursion
+//     ///using a try_borrow is a more economical way to go about things than a visted set
+//     reqs:Vec<RefCell<Reqs>>,
+// }
+
+// type RefReqs = RefCell<Reqs>;
+
+// impl<'a> InferState<'a> {
+//     fn new(store: &'a mut TypeStore,program:&'a Program) -> Self {
+//         Self {
+//             store,program,
+//             ans: LocalTypes::new(),
+//             names: HashMap::new(),
+//             reqs:Vec::new(),
+//             reqs_map:HashMap::new(),
+//         }
+//     }
+
+//     fn buildin(&mut self,t:BuiltinType)->TypeId{
+//         self.intern(TypeValue::Builtin(t))
+//     }
+
+//     fn intern(&mut self,t:TypeValue)->TypeId{
+//         self.store.intern(t)
+//     }
+
+//     // fn solved(&mut self,id:ValId,t:TypeId) -> Option<TypeId>{
+//     //     //TODO if we ever move to multi error
+//     //     // this place would be weird
+//     //     self.ans.types.insert(id,t)
+//     // }
+
+//     fn register_solved(&mut self,id:ValId,t:TypeId) -> &mut Reqs{
+//         self.ans.types.insert(id,t);
+//         let p = WithId {
+//             id,
+//             value:ProducedBy::Known(t)
+//         };
+//         self.register(InferId::Resolved(t),p)
+//     }
+    
+//     // fn get_local_id()    
+
+//     fn register(&mut self,guess:InferId,produced:Prod)->&mut Reqs{
+//         self.reqs_map.insert(produced.id,LocalId(self.reqs.len()));
+//         self.reqs.push(Reqs{
+//             guess,
+//             produced,
+//             used_as:Vec::new(),
+
+//         }.into());
+//         self.reqs.last_mut().unwrap().get_mut()
+//     }
+
+//     fn register_unknown(&mut self,produced:Prod)->&mut Reqs{
+//         let id = LocalId(self.reqs.len());
+//         self.reqs_map.insert(produced.id,id);
+//         self.reqs.push(Reqs{
+//             guess:InferId::Local(id),
+//             produced,
+//             used_as:Vec::new(),
+
+//         }.into());
+//         self.reqs.last_mut().unwrap().get_mut()
+//     }
+
+//     fn register_bind(&mut self,bind:WithId<NameId>)->&mut Reqs{
+//         let id = LocalId(self.reqs.len());
+//         self.names.insert(bind.value,InferId::Local(id));
+//         self.reqs_map.insert(bind.id,id);
+//         self.reqs.push(Reqs{
+//             guess:InferId::Local(id),
+//             produced:bind.map(ProducedBy::Bind),
+//             used_as:Vec::new(),
+
+//         }.into());
+//         self.reqs.last_mut().unwrap().get_mut()
+//     }
+
+
+// }
+
+// #[derive(Debug, Clone)]
+// enum ProducedBy {
+//     Explicit {
+//         ty: InferId,
+//     },
+
+//     Cast {
+//         target: InferId,
+//     },
+
+//     //for void/string literals blocks that return void or constants that are typed etc.
+//     Known(TypeId),
+
+//     IntLit,
+//     FloatLit,
+
+//     Let{
+//         tgt:ValId,
+//         src:ValId,
+//         or:Option<ValId>,
+//     },
+//     NameRef(NameId),
+//     Bind(NameId),
+
+    
+    
+//     BinOp {
+//         op: BinOp,
+//     },
+//     UnOp {
+//         op: UnOp,
+//     },
+//     Block {
+//         ret:ValId, //if there is no return value its known void so why care
+//     },
+//     Func {
+//         inputs: Vec<(NameId, InferId)>,
+//         output_ty: InferId,
+//         body: ValId,
+//     },
+//     Other(&'static str),
+// }
+
+
+// fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut Reqs, TypeError> {
+//     match &v.value {
+//         Value::TypeAnnotation { value:other, ty}=>{
+//             let ty = compile_type_expr(ctx,ty)?;
+//             let other = gather_constraints(ctx,other)?;
+//             other.add_use(v.with(TypeUse::StatedAs(ty)));
+//             Ok(ctx.register(
+//                 ty,
+//                 v.with(ProducedBy::Explicit{ty})
+//             ))
+//         }
+
+//         Value::Cast { value:other, ty}=>{
+//             let ty = compile_type_expr(ctx,ty)?;
+//             let _ = gather_constraints(ctx,other)?;
+//             Ok(ctx.register(
+//                 ty,
+//                 v.with(ProducedBy::Explicit{ty})
+//             ))
+//         }
+
+//         Value::Literal(Literal::Str(_))=>{
+//             let t = ctx.buildin(BuiltinType::Str);
+//             Ok(ctx.register_solved(v.id,t))
+//         }
+
+//         Value::Literal(Literal::Void)=>{
+//             let t = ctx.buildin(BuiltinType::Void);
+//             Ok(ctx.register_solved(v.id,t))
+//         }
+
+//         Value::Literal(Literal::Float(_))=>{
+//             Ok(ctx.register_unknown(
+//                 v.with(ProducedBy::FloatLit)
+//             ))
+//         }
+
+//         Value::Literal(Literal::Num(_))=>{
+//             Ok(ctx.register_unknown(
+//                 v.with(ProducedBy::IntLit)
+//             ))
+//         }
+
+//         Value::NameRef(n)=>{
+//             if let Some(guess) = ctx.names.get(n){
+//                 let guess = *guess;
+//                 let ans = ctx.register(
+//                     guess,
+//                     v.with(ProducedBy::NameRef(*n))
+//                 );
+//                 ans.add_use(v.with(TypeUse::TakenFrom(guess)));
+//                 return Ok(ans)
+//             }
+//             if let Some(_x) = ctx.program.definitions.get(n){
+//                 todo!("something clever")
+//             };
+
+//             unreachable!("BUG: name used before its declared after resolution")
+//         }
+
+
+//         Value::Let { pat, value, else_part }=>{
+//             let rhs = gather_constraints(ctx,value)?;
+//             rhs.add_use(v.with(TypeUse::WrittenTo));
+//             let guess = rhs.guess; 
+
+//             let else_guess =  match else_part{
+//                 Some(x)=>{
+//                     let x = gather_constraints(ctx,x)?;
+//                     x.add_use(v.with(TypeUse::WrittenTo));
+//                     x.add_use(v.with(TypeUse::Guessed(guess)));
+//                     Some(x.guess)
+//                 },
+//                 None=>None,
+//             };
+
+//             let p = gather_pattern_constraints(ctx,pat)?;
+//             p.add_use(v.with(TypeUse::TakenFrom(guess)));
+//             if let Some(x) = else_guess {
+//                 p.add_use(v.with(TypeUse::TakenFrom(x)));
+//             }
+
+//             let guess = p.guess;
+
+//             Ok(ctx.register(guess,v.with(ProducedBy::Let { 
+//                 tgt: pat.id, 
+//                 src: value.id,
+//                 or:else_part.as_ref().map(|x|x.id)
+//             })))
+//         }
+
+//         Value::Block { statements, return_value} => {
+//             for x in statements {
+//                 gather_constraints(ctx,x)?;
+//             }
+//              match return_value {
+//                 None=>{
+//                     let void = ctx.buildin(BuiltinType::Void); 
+//                     Ok(ctx.register_solved(
+//                         v.id,void
+//                     ))
+//                 }
+//                 Some(x)=>{
+//                     let r = gather_constraints(ctx,x)?;
+//                     r.add_use(v.with(TypeUse::WrittenTo));
+//                     let guess = r.guess;
+
+//                     Ok(ctx.register(
+//                         guess,
+//                         v.with(ProducedBy::Block { ret: x.id})
+//                     ))
+//                 }
+
+//             }
+//         }
+
+//         Value::Func { generics: _, params, output_type, body}=>{
+//             //TODO actually resolve all these and use the generics
+//             let inputs = params.iter().map(|_p|{
+//                 todo!()
+//             }).collect::<Result<_,_>>()?;
+
+//             let output_ty = match output_type {
+//                 None=>InferId::Resolved(ctx.buildin(BuiltinType::Void)),
+//                 _=>todo!()
+//             };
+
+//             let b = gather_constraints(ctx,body)?;
+//             b.add_use(v.with(TypeUse::StatedAs(output_ty)));
+//             Ok(ctx.register_unknown(
+//                 v.with(ProducedBy::Func{
+//                     output_ty,body:body.id,
+//                     inputs
+//                 })
+
+//             ))
+//         }
+
+//         _ => todo!("more values"),
+//     }
+// }
+
+// fn gather_pattern_constraints<'a>(ctx: &'a mut InferState, p: &IPattern) -> Result<&'a mut Reqs, TypeError>{
+//     match &p.value {
+//         Pattern::TypeAnnotation { pat:other, ty } =>{
+//             let ty = compile_type_expr(ctx,ty)?;
+//             let other = gather_pattern_constraints(ctx,other)?;
+//             other.add_use(p.with(TypeUse::StatedAs(ty)));
+//             Ok(ctx.register(
+//                 ty,
+//                 p.with(ProducedBy::Explicit{ty})
+//             ))
+//         }
+
+//         Pattern::Bind(n)=>{
+//             Ok(ctx.register_bind(p.with(*n)))
+
+//         }
+//         _ => todo!(),
+//     }
+// }
+
+// fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<InferId, TypeError>{
+//     match &v.value {
+//         Value::NameRef(name) => match ctx.program.definitions.get(name) {
+//             Some(Defined::Type { val: _, ty }) => Ok(InferId::Resolved(*ty)),
+//             Some(Defined::BuildinType(b)) => Ok(InferId::Resolved(ctx.intern(b.clone()))),
+
+//             _ => Err(TypeError::ExpectedType {
+//                 loc: ctx.program.get_loc(v.id),
+//                 message: "expected type",
+//             }),
+//         },
+//         _ => Err(TypeError::ExpectedType {
+//             loc: ctx.program.get_loc(v.id),
+//             message: "unsupported type expr",
+//         }),
+//     }
+// }
+
+// fn basic_propegation(ctx:&mut InferState)->Result<(),TypeError>{
+//     let mut seen = Vec::new();//we are using refcell to mark
+//     let mut changed = true;
+
+//     while changed{
+//         changed = false;
+//         seen.clear();
+
+
+//         for cell in ctx.reqs.iter(){
+//             mark_one(&mut changed,ctx,cell,&mut seen)
+//         }
+//     }
+    
+
+
+//     #[inline(always)]
+//     fn mark_one<'a>(changed:&mut bool,ctx:&'a InferState<'_>,cell:&'a RefCell<Reqs>,seen:&mut Vec<Ref<'a, Reqs>>){
+//         let Ok(mut r) = cell.try_borrow_mut() else {
+//             return;
+//         };
+
+//         let Reqs { guess, produced: _, used_as } = &mut*r;
+
+//         //1. find concrete if possible
+//         for u in used_as.iter(){
+//             let tgt = match u.value {
+//                 TypeUse::StatedAs(x)|TypeUse::TakenFrom(x)=>x,
+//                 TypeUse::InputArg(x) | TypeUse::Guessed(x) => x,
+//                 TypeUse::WrittenTo=>continue,
+
+//             };
+
+//             match (*guess,tgt) {
+//                 (InferId::Local(_),InferId::Resolved(_))=>{
+//                     *changed=true;
+//                     *guess=tgt;
+//                 },
+//                 (InferId::Resolved(a),InferId::Resolved(b))=>{
+//                     if a!=b{
+//                         todo!("error report here")  
+//                     }
+//                 }
+//                 _=>{},
+//             }
+
+//         }
+
+//         //we are done updating but we wana still push
+//         drop(r);
+//         let r = cell.borrow();
+//         seen.push(cell.borrow());
+//         let Reqs { guess, produced: _, used_as } = &*r;
+
+
+//         //2. push value so all the cluster has our guess
+//         for u in used_as.iter(){
+//             let tgt = match u.value {
+//                 TypeUse::StatedAs(x)|TypeUse::TakenFrom(x)|
+//                 TypeUse::InputArg(x) | TypeUse::Guessed(x) => {
+//                     match x {
+//                         InferId::Local(y)=>y,
+//                         _=>continue,
+//                     }
+//                 },
+                
+//                 TypeUse::WrittenTo=>ctx.reqs_map[&u.id],
+
+//             };
+
+//             let Ok(mut other) = ctx.reqs[tgt.0].try_borrow_mut() else {
+//                 continue;
+//             };
+//             match other.guess {
+//                 InferId::Resolved(_) => {},
+//                 InferId::Local(_) => {
+//                     if other.guess!=*guess{
+//                         *changed=true;
+//                         other.guess = *guess;
+//                     }
+//                 },
+//             }
+//             mark_one(changed,ctx, &ctx.reqs[tgt.0],seen);
+
+//         }
+
+        
+//     }
+
+//     Ok(())
+// }
+
+// fn finalize(ctx:&mut InferState)->Result<(),TypeError>{
+//     for cell in ctx.reqs.iter_mut(){
+//         let r = cell.get_mut();
+//         match r.guess {
+//             InferId::Resolved(t)=>{ctx.ans.types.insert(r.produced.id,t);},
+//             _=>{}//todo report an errpr
+//         };
+//     }
+//     Ok(())
+// }
+
+// ==============================
+// Errors (richer + ValId-based)
+// ==============================
+
+#[derive(Debug)]
+pub enum TypeError {
+    /// Could not infer a concrete type for this value
+    Unresolved {
+        value: ValId,
+        message: &'static str,
+    },
+
+    /// Type expression (the RHS of `:` / `as`) wasn't a valid type
+    ExpectedType {
+        type_expr: ValId,
+        message: &'static str,
+    },
+
+    /// `expr : T` or `pat : T` conflicts with what the value/pattern already implies.
+    /// Carries BOTH the annotation node and the constrained node so diagnostics can point at both.
+    AnnotationMismatch {
+        /// The annotation node (Value::TypeAnnotation / Pattern::TypeAnnotation)
+        annotation: ValId,
+        /// The value/pattern being constrained (the `value` inside the annotation)
+        constrained: ValId,
+        expected: TypeId,
+        found: TypeId,
+        note: &'static str,
+    },
+
+    /// Equality constraint failure at some site (let/match/etc).
+    /// Carries a site ValId so you can point at the operator/let/match that demanded equality.
+    IncompatibleTypes {
+        site: ValId,
+        left: TypeId,
+        right: TypeId,
+        note: &'static str,
+    },
+
+    /// Literal cluster resolved to an incompatible concrete type, or stayed unresolved.
+    InvalidLiteral {
+        literal: ValId,
+        resolved: Option<TypeId>,
+        message: &'static str,
+    },
+
+    /// (future) Operator rule failure.
+    InvalidOperator {
+        site: ValId,
+        op: BinOp,
+        lhs: TypeId,
+        rhs: TypeId,
+        note: &'static str,
+    },
+}
+
+// ===================================
+// Entry point (no allocations)
+// ===================================
+
 pub fn infer_value_internals(
     program: &Program,
     store: &mut TypeStore,
     value: &IValue,
 ) -> Result<LocalTypes, TypeError> {
-    let mut state = InferState::new(store,program);
+    let mut ctx = InferState::new(store, program);
 
-    gather_constraints(&mut state, value)?;
-    basic_propegation(&mut state)?;
-    finalize(&mut state)?;
-    // todo!()
-    Ok(state.ans)
+    let _root = gather_constraints(&mut ctx, value)?;
+
+    // One linear normalization pass (no extra allocations).
+    ctx.normalize_clusters();
+
+    validate_literals(&ctx)?;
+    finalize(&mut ctx);
+
+    Ok(ctx.ans)
 }
 
-/* ================================================================
- * Constraint model (CORE)
- * ================================================================ */
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct LocalId(usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum InferId {
-    Resolved(TypeId),
-    Local(LocalId),
-    //?more
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum TypeUse {
-    StatedAs(InferId),
-    InputArg(InferId),
-
-    ///this was an R value to some assignment
-    ///assign expressions return the var assigned to so
-    WrittenTo,
-    
-    /// this was an L value to an assigment of some type
-    TakenFrom(InferId),
-
-    ///for SOME reason we infered this should be the same
-    ///this happens when we apply union rules
-    Guessed(InferId),
-}
-
-
-type Used = WithId<TypeUse>;//the id is of the expression causing the use
-
-type Prod = WithId<ProducedBy>;
-struct Reqs {
-    //we union the guesses as much as we can
-    guess:InferId,
-
-    produced:Prod,
-
-    //these dont have to be exustive
-    //in many cases we would put them in where guess points to
-    //for exaple {let x = 2: f(x) g(x)} the requirments on NameRef{x} are gona go on x
-    used_as:Vec<Used>,
-}
-
-impl Reqs {
-    fn add_use(&mut self,x:Used){
-        self.used_as.push(x)
-    }
-}
+// ===================================
+// Inference state + union-find clusters
+// ===================================
 
 struct InferState<'a> {
     store: &'a mut TypeStore,
-    program:&'a Program,
+    program: &'a Program,
+
+    // ValId -> cluster
+    val_cluster: HashMap<ValId, usize>,
+
+    // NameId -> cluster (names already resolved / qualified)
+    names: HashMap<NameId, usize>,
+
+    // union-find
+    parent: Vec<usize>,
+    cluster: Vec<Cluster>,
+
+    // literal bookkeeping: keep ValId for error context
+    int_lits: Vec<(ValId, usize)>,
+    float_lits: Vec<(ValId, usize)>,
+
     ans: LocalTypes,
-    names: HashMap<NameId, InferId>,
-    reqs_map:HashMap<ValId,LocalId>,
-    ///this is a refcell because natually we want to look at 1 element and use it to modify children
-    ///refcells are actually semantically meaningful here they stop recursion
-    ///using a try_borrow is a more economical way to go about things than a visted set
-    reqs:Vec<RefCell<Reqs>>,
 }
 
-type RefReqs = RefCell<Reqs>;
+#[derive(Clone, Debug)]
+struct Cluster {
+    ty: Option<TypeId>,
+    has_int_lit: bool,
+    has_float_lit: bool,
+}
 
 impl<'a> InferState<'a> {
-    fn new(store: &'a mut TypeStore,program:&'a Program) -> Self {
+    fn new(store: &'a mut TypeStore, program: &'a Program) -> Self {
         Self {
-            store,program,
-            ans: LocalTypes::new(),
+            store,
+            program,
+            val_cluster: HashMap::new(),
             names: HashMap::new(),
-            reqs:Vec::new(),
-            reqs_map:HashMap::new(),
+            parent: Vec::new(),
+            cluster: Vec::new(),
+            int_lits: Vec::new(),
+            float_lits: Vec::new(),
+            ans: LocalTypes::new(),
         }
     }
 
-    fn buildin(&mut self,t:BuiltinType)->TypeId{
-        self.intern(TypeValue::Builtin(t))
+    fn new_cluster(&mut self) -> usize {
+        let id = self.parent.len();
+        self.parent.push(id);
+        self.cluster.push(Cluster {
+            ty: None,
+            has_int_lit: false,
+            has_float_lit: false,
+        });
+        id
     }
 
-    fn intern(&mut self,t:TypeValue)->TypeId{
-        self.store.intern(t)
+    fn bind_val(&mut self, v: ValId, c: usize) {
+        self.val_cluster.insert(v, c);
     }
 
-    // fn solved(&mut self,id:ValId,t:TypeId) -> Option<TypeId>{
-    //     //TODO if we ever move to multi error
-    //     // this place would be weird
-    //     self.ans.types.insert(id,t)
-    // }
-
-    fn register_solved(&mut self,id:ValId,t:TypeId) -> &mut Reqs{
-        self.ans.types.insert(id,t);
-        let p = WithId {
-            id,
-            value:ProducedBy::Known(t)
-        };
-        self.register(InferId::Resolved(t),p)
-    }
-    
-    // fn get_local_id()    
-
-    fn register(&mut self,guess:InferId,produced:Prod)->&mut Reqs{
-        self.reqs_map.insert(produced.id,LocalId(self.reqs.len()));
-        self.reqs.push(Reqs{
-            guess,
-            produced,
-            used_as:Vec::new(),
-
-        }.into());
-        self.reqs.last_mut().unwrap().get_mut()
+    /// Default: values get their own cluster unless the semantics aliases them
+    fn cluster_of(&mut self, v: ValId) -> usize {
+        if let Some(&c) = self.val_cluster.get(&v) {
+            return c;
+        }
+        let c = self.new_cluster();
+        self.bind_val(v, c);
+        c
     }
 
-    fn register_unknown(&mut self,produced:Prod)->&mut Reqs{
-        let id = LocalId(self.reqs.len());
-        self.reqs_map.insert(produced.id,id);
-        self.reqs.push(Reqs{
-            guess:InferId::Local(id),
-            produced,
-            used_as:Vec::new(),
-
-        }.into());
-        self.reqs.last_mut().unwrap().get_mut()
+    fn find(&mut self, x: usize) -> usize {
+        let p = self.parent[x];
+        if p != x {
+            let r = self.find(p);
+            self.parent[x] = r;
+        }
+        self.parent[x]
     }
 
-    fn register_bind(&mut self,bind:WithId<NameId>)->&mut Reqs{
-        let id = LocalId(self.reqs.len());
-        self.names.insert(bind.value,InferId::Local(id));
-        self.reqs_map.insert(bind.id,id);
-        self.reqs.push(Reqs{
-            guess:InferId::Local(id),
-            produced:bind.map(ProducedBy::Bind),
-            used_as:Vec::new(),
-
-        }.into());
-        self.reqs.last_mut().unwrap().get_mut()
+    /// Normalize everything once so later phases can use parent[c] without calling find().
+    fn normalize_clusters(&mut self) {
+        for i in 0..self.parent.len() {
+            let r = self.find(i);
+            self.parent[i] = r;
+        }
     }
 
+    fn union(&mut self, a: usize, b: usize) -> Result<usize, Clash> {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra == rb {
+            return Ok(ra);
+        }
 
+        let ta = self.cluster[ra].ty;
+        let tb = self.cluster[rb].ty;
+        if let (Some(a), Some(b)) = (ta, tb) {
+            if a != b {
+                return Err(Clash { a, b });
+            }
+        }
+
+        // No rank: simplest correct UF (you can add rank later if you care)
+        self.parent[rb] = ra;
+
+        let other_c = self.cluster[rb].clone();
+        let root_c = &mut self.cluster[ra];
+
+        root_c.ty = root_c.ty.or(other_c.ty);
+        root_c.has_int_lit |= other_c.has_int_lit;
+        root_c.has_float_lit |= other_c.has_float_lit;
+
+        Ok(ra)
+    }
+
+    fn force_type(&mut self, c: usize, ty: TypeId) -> Result<(), Clash> {
+        let r = self.find(c);
+        match self.cluster[r].ty {
+            None => {
+                self.cluster[r].ty = Some(ty);
+                Ok(())
+            }
+            Some(t) if t == ty => Ok(()),
+            Some(t) => Err(Clash { a: t, b: ty }),
+        }
+    }
+
+    fn builtin(&mut self, b: BuiltinType) -> TypeId {
+        self.store.intern(TypeValue::Builtin(b))
+    }
 }
 
-#[derive(Debug, Clone)]
-enum ProducedBy {
-    Explicit {
-        ty: InferId,
-    },
-
-    Cast {
-        target: InferId,
-    },
-
-    //for void/string literals blocks that return void or constants that are typed etc.
-    Known(TypeId),
-
-    IntLit,
-    FloatLit,
-
-    Let{
-        tgt:ValId,
-        src:ValId,
-        or:Option<ValId>,
-    },
-    NameRef(NameId),
-    Bind(NameId),
-
-    
-    
-    BinOp {
-        op: BinOp,
-    },
-    UnOp {
-        op: UnOp,
-    },
-    Block {
-        ret:ValId, //if there is no return value its known void so why care
-    },
-    Func {
-        inputs: Vec<(NameId, InferId)>,
-        output_ty: InferId,
-        body: ValId,
-    },
-    Other(&'static str),
+#[derive(Debug, Clone, Copy)]
+struct Clash {
+    a: TypeId,
+    b: TypeId,
 }
 
+// ===================================
+// Constraint gathering (alias where possible)
+// ===================================
 
-
-
-
-fn gather_constraints<'a>(ctx: &'a mut InferState, v: &IValue) -> Result<&'a mut Reqs, TypeError> {
+fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeError> {
     match &v.value {
-        Value::TypeAnnotation { value:other, ty}=>{
-            let ty = compile_type_expr(ctx,ty)?;
-            let other = gather_constraints(ctx,other)?;
-            other.add_use(v.with(TypeUse::StatedAs(ty)));
-            Ok(ctx.register(
-                ty,
-                v.with(ProducedBy::Explicit{ty})
-            ))
+        Value::Literal(Literal::Num(_)) => {
+            let c = ctx.new_cluster();
+            ctx.cluster[c].has_int_lit = true;
+            ctx.bind_val(v.id, c);
+            ctx.int_lits.push((v.id, c));
+            Ok(c)
         }
 
-        Value::Cast { value:other, ty}=>{
-            let ty = compile_type_expr(ctx,ty)?;
-            let _ = gather_constraints(ctx,other)?;
-            Ok(ctx.register(
-                ty,
-                v.with(ProducedBy::Explicit{ty})
-            ))
+        Value::Literal(Literal::Float(_)) => {
+            let c = ctx.new_cluster();
+            ctx.cluster[c].has_float_lit = true;
+            ctx.bind_val(v.id, c);
+            ctx.float_lits.push((v.id, c));
+            Ok(c)
         }
 
-        Value::Literal(Literal::Str(_))=>{
-            let t = ctx.buildin(BuiltinType::Str);
-            Ok(ctx.register_solved(v.id,t))
+        Value::Literal(Literal::Str(_)) => {
+            let c = ctx.new_cluster();
+            let t = ctx.builtin(BuiltinType::Str);
+            ctx.cluster[c].ty = Some(t);
+            ctx.bind_val(v.id, c);
+            Ok(c)
         }
 
-        Value::Literal(Literal::Void)=>{
-            let t = ctx.buildin(BuiltinType::Void);
-            Ok(ctx.register_solved(v.id,t))
+        Value::Literal(Literal::Void) => {
+            let c = ctx.new_cluster();
+            let t = ctx.builtin(BuiltinType::Void);
+            ctx.cluster[c].ty = Some(t);
+            ctx.bind_val(v.id, c);
+            Ok(c)
         }
 
-        Value::Literal(Literal::Float(_))=>{
-            Ok(ctx.register_unknown(
-                v.with(ProducedBy::FloatLit)
-            ))
-        }
-
-        Value::Literal(Literal::Num(_))=>{
-            Ok(ctx.register_unknown(
-                v.with(ProducedBy::IntLit)
-            ))
-        }
-
-        Value::NameRef(n)=>{
-            if let Some(guess) = ctx.names.get(n){
-                let guess = *guess;
-                let ans = ctx.register(
-                    guess,
-                    v.with(ProducedBy::NameRef(*n))
-                );
-                ans.add_use(v.with(TypeUse::TakenFrom(guess)));
-                return Ok(ans)
-            }
-            if let Some(_x) = ctx.program.definitions.get(n){
-                todo!("something clever")
-            };
-
-            unreachable!("BUG: name used before its declared after resolution")
-        }
-
-
-        Value::Let { pat, value, else_part }=>{
-            let rhs = gather_constraints(ctx,value)?;
-            rhs.add_use(v.with(TypeUse::WrittenTo));
-            let guess = rhs.guess; 
-
-            let else_guess =  match else_part{
-                Some(x)=>{
-                    let x = gather_constraints(ctx,x)?;
-                    x.add_use(v.with(TypeUse::WrittenTo));
-                    x.add_use(v.with(TypeUse::Guessed(guess)));
-                    Some(x.guess)
-                },
-                None=>None,
-            };
-
-            let p = gather_pattern_constraints(ctx,pat)?;
-            p.add_use(v.with(TypeUse::TakenFrom(guess)));
-            if let Some(x) = else_guess {
-                p.add_use(v.with(TypeUse::TakenFrom(x)));
+        Value::NameRef(n) => {
+            if let Some(&c) = ctx.names.get(n) {
+                // immediate alias: this node is the same cluster as the binding
+                ctx.bind_val(v.id, c);
+                return Ok(c);
             }
 
-            let guess = p.guess;
+            if ctx.program.definitions.contains_key(n) {
+                todo!("global name resolution / overload sets");
+            }
 
-            Ok(ctx.register(guess,v.with(ProducedBy::Let { 
-                tgt: pat.id, 
-                src: value.id,
-                or:else_part.as_ref().map(|x|x.id)
-            })))
+            unreachable!("name used before binding");
         }
 
-        Value::Block { statements, return_value} => {
-            for x in statements {
-                gather_constraints(ctx,x)?;
+        Value::TypeAnnotation { value, ty } => {
+            let rhs_cluster = gather_constraints(ctx, value)?;
+            let ann_ty = compile_type_expr(ctx, ty)?;
+
+            if let Err(Clash { a, b: _ }) = ctx.force_type(rhs_cluster, ann_ty) {
+                return Err(TypeError::AnnotationMismatch {
+                    annotation: v.id,
+                    constrained: value.id,
+                    expected: ann_ty,
+                    found: a,
+                    note: "type annotation does not match value",
+                });
             }
-             match return_value {
-                None=>{
-                    let void = ctx.buildin(BuiltinType::Void); 
-                    Ok(ctx.register_solved(
-                        v.id,void
-                    ))
+
+            // Annotation does not introduce a new type identity: alias to the value
+            ctx.bind_val(v.id, rhs_cluster);
+            Ok(rhs_cluster)
+        }
+
+        Value::Cast { value, ty } => {
+            let _ = gather_constraints(ctx, value)?;
+            // Cast produces a new type identity: the target type
+            let c = ctx.new_cluster();
+            let t = compile_type_expr(ctx, ty)?;
+            ctx.cluster[c].ty = Some(t);
+            ctx.bind_val(v.id, c);
+            Ok(c)
+        }
+
+        Value::Let { pat, value, else_part } => {
+            let rhs = gather_constraints(ctx, value)?;
+            let lhs = gather_pattern_constraints(ctx, pat)?;
+
+            if let Err(Clash { a, b }) = ctx.union(lhs, rhs) {
+                return Err(TypeError::IncompatibleTypes {
+                    site: v.id,
+                    left: a,
+                    right: b,
+                    note: "let binding types do not match",
+                });
+            }
+
+            if let Some(e) = else_part {
+                let ec = gather_constraints(ctx, e)?;
+                if let Err(Clash { a, b }) = ctx.union(lhs, ec) {
+                    return Err(TypeError::IncompatibleTypes {
+                        site: e.id,
+                        left: a,
+                        right: b,
+                        note: "let-else requires the else value to match the pattern type",
+                    });
                 }
-                Some(x)=>{
-                    let r = gather_constraints(ctx,x)?;
-                    r.add_use(v.with(TypeUse::WrittenTo));
-                    let guess = r.guess;
-
-                    Ok(ctx.register(
-                        guess,
-                        v.with(ProducedBy::Block { ret: x.id})
-                    ))
-                }
-
             }
+
+            // let-expr evaluates to the bound pattern value => alias
+            ctx.bind_val(v.id, lhs);
+            Ok(lhs)
         }
 
-        Value::Func { generics: _, params, output_type, body}=>{
-            //TODO actually resolve all these and use the generics
-            let inputs = params.iter().map(|_p|{
-                todo!()
-            }).collect::<Result<_,_>>()?;
+        Value::Block { statements, return_value } => {
+            for s in statements {
+                gather_constraints(ctx, s)?;
+            }
 
-            let output_ty = match output_type {
-                None=>InferId::Resolved(ctx.buildin(BuiltinType::Void)),
-                _=>todo!()
+            // block aliases its return value cluster (or void)
+            let c = match return_value {
+                Some(r) => gather_constraints(ctx, r)?,
+                None => {
+                    let c = ctx.new_cluster();
+                    let t = ctx.builtin(BuiltinType::Void);
+                    ctx.cluster[c].ty = Some(t);
+                    c
+                }
             };
 
-            let b = gather_constraints(ctx,body)?;
-            b.add_use(v.with(TypeUse::StatedAs(output_ty)));
-            Ok(ctx.register_unknown(
-                v.with(ProducedBy::Func{
-                    output_ty,body:body.id,
-                    inputs
-                })
-
-            ))
+            ctx.bind_val(v.id, c);
+            Ok(c)
         }
 
-        _ => todo!("more values"),
+        _ => todo!("more expressions"),
     }
 }
 
-fn gather_pattern_constraints<'a>(ctx: &'a mut InferState, p: &IPattern) -> Result<&'a mut Reqs, TypeError>{
+fn gather_pattern_constraints(ctx: &mut InferState, p: &IPattern) -> Result<usize, TypeError> {
     match &p.value {
-        Pattern::TypeAnnotation { pat:other, ty } =>{
-            let ty = compile_type_expr(ctx,ty)?;
-            let other = gather_pattern_constraints(ctx,other)?;
-            other.add_use(p.with(TypeUse::StatedAs(ty)));
-            Ok(ctx.register(
-                ty,
-                p.with(ProducedBy::Explicit{ty})
-            ))
+        Pattern::Bind(n) => {
+            let c = ctx.new_cluster();
+            ctx.names.insert(*n, c);
+            ctx.bind_val(p.id, c);
+            Ok(c)
         }
 
-        Pattern::Bind(n)=>{
-            Ok(ctx.register_bind(p.with(*n)))
+        Pattern::TypeAnnotation { pat, ty } => {
+            let c = gather_pattern_constraints(ctx, pat)?;
+            let t = compile_type_expr(ctx, ty)?;
 
+            if let Err(Clash { a, b: _ }) = ctx.force_type(c, t) {
+                return Err(TypeError::AnnotationMismatch {
+                    annotation: p.id,
+                    constrained: pat.id,
+                    expected: t,
+                    found: a,
+                    note: "pattern annotation does not match the value bound here",
+                });
+            }
+
+            Ok(c)
         }
+
         _ => todo!(),
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<InferId, TypeError>{
+fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<TypeId, TypeError> {
     match &v.value {
-        Value::NameRef(name) => match ctx.program.definitions.get(name) {
-            Some(Defined::Type { val: _, ty }) => Ok(InferId::Resolved(*ty)),
-            Some(Defined::BuildinType(b)) => Ok(InferId::Resolved(ctx.intern(b.clone()))),
-
+        Value::NameRef(n) => match ctx.program.definitions.get(n) {
+            Some(Defined::BuildinType(b)) => Ok(ctx.store.intern(b.clone())),
+            Some(Defined::Type { ty, .. }) => Ok(*ty),
             _ => Err(TypeError::ExpectedType {
-                loc: ctx.program.get_loc(v.id),
+                type_expr: v.id,
                 message: "expected type",
             }),
         },
         _ => Err(TypeError::ExpectedType {
-            loc: ctx.program.get_loc(v.id),
-            message: "unsupported type expr",
+            type_expr: v.id,
+            message: "unsupported type expression",
         }),
     }
 }
 
-fn basic_propegation(ctx:&mut InferState)->Result<(),TypeError>{
-    let mut seen = Vec::new();//we are using refcell to mark
-    let mut changed = true;
+// ===================================
+// Late phases (normalized parent[] access)
+// ===================================
 
-    while changed{
-        changed = false;
-        seen.clear();
-
-
-        for cell in ctx.reqs.iter(){
-            mark_one(&mut changed,ctx,cell,&mut seen)
-        }
-    }
-    
-
-
-    #[inline(always)]
-    fn mark_one<'a>(changed:&mut bool,ctx:&'a InferState<'_>,cell:&'a RefCell<Reqs>,seen:&mut Vec<Ref<'a, Reqs>>){
-        let Ok(mut r) = cell.try_borrow_mut() else {
-            return;
-        };
-
-        let Reqs { guess, produced: _, used_as } = &mut*r;
-
-        //1. find concrete if possible
-        for u in used_as.iter(){
-            let tgt = match u.value {
-                TypeUse::StatedAs(x)|TypeUse::TakenFrom(x)=>x,
-                TypeUse::InputArg(x) | TypeUse::Guessed(x) => x,
-                TypeUse::WrittenTo=>continue,
-
-            };
-
-            match (*guess,tgt) {
-                (InferId::Local(_),InferId::Resolved(_))=>{
-                    *changed=true;
-                    *guess=tgt;
-                },
-                (InferId::Resolved(a),InferId::Resolved(b))=>{
-                    if a!=b{
-                        todo!("error report here")  
-                    }
+fn validate_literals(ctx: &InferState) -> Result<(), TypeError> {
+    for &(lit, c) in ctx.int_lits.iter() {
+        let r = ctx.parent[c];
+        match ctx.cluster[r].ty {
+            Some(t) => {
+                if !ctx.store.is_int_like(t) {
+                    return Err(TypeError::InvalidLiteral {
+                        literal: lit,
+                        resolved: Some(t),
+                        message: "integer literal used as non-integer type",
+                    });
                 }
-                _=>{},
             }
-
-        }
-
-        //we are done updating but we wana still push
-        drop(r);
-        let r = cell.borrow();
-        seen.push(cell.borrow());
-        let Reqs { guess, produced: _, used_as } = &*r;
-
-
-        //2. push value so all the cluster has our guess
-        for u in used_as.iter(){
-            let tgt = match u.value {
-                TypeUse::StatedAs(x)|TypeUse::TakenFrom(x)|
-                TypeUse::InputArg(x) | TypeUse::Guessed(x) => {
-                    match x {
-                        InferId::Local(y)=>y,
-                        _=>continue,
-                    }
-                },
-                
-                TypeUse::WrittenTo=>ctx.reqs_map[&u.id],
-
-            };
-
-            let Ok(mut other) = ctx.reqs[tgt.0].try_borrow_mut() else {
-                continue;
-            };
-            match other.guess {
-                InferId::Resolved(_) => {},
-                InferId::Local(_) => {
-                    if other.guess!=*guess{
-                        *changed=true;
-                        other.guess = *guess;
-                    }
-                },
+            None => {
+                return Err(TypeError::InvalidLiteral {
+                    literal: lit,
+                    resolved: None,
+                    message: "cannot infer type of integer literal",
+                });
             }
-            mark_one(changed,ctx, &ctx.reqs[tgt.0],seen);
-
         }
+    }
 
-        
+    for &(lit, c) in ctx.float_lits.iter() {
+        let r = ctx.parent[c];
+        match ctx.cluster[r].ty {
+            Some(t) => {
+                if !ctx.store.is_float_like(t) {
+                    return Err(TypeError::InvalidLiteral {
+                        literal: lit,
+                        resolved: Some(t),
+                        message: "float literal used as non-float type",
+                    });
+                }
+            }
+            None => {
+                return Err(TypeError::InvalidLiteral {
+                    literal: lit,
+                    resolved: None,
+                    message: "cannot infer type of float literal",
+                });
+            }
+        }
     }
 
     Ok(())
 }
 
-fn finalize(ctx:&mut InferState)->Result<(),TypeError>{
-    for cell in ctx.reqs.iter_mut(){
-        let r = cell.get_mut();
-        match r.guess {
-            InferId::Resolved(t)=>{ctx.ans.types.insert(r.produced.id,t);},
-            _=>{}//todo report an errpr
-        };
+fn finalize(ctx: &mut InferState) {
+    // ctx.parent[] already normalized
+    for (&v, &c) in ctx.val_cluster.iter() {
+        let r = ctx.parent[c];
+        if let Some(t) = ctx.cluster[r].ty {
+            ctx.ans.types.insert(v, t);
+        }
     }
-    Ok(())
 }
+
 
 
 #[cfg(test)]
@@ -789,7 +1332,7 @@ mod type_infer_tests {
 
     #[test]
     fn infer_cast() {
-        assert_fn_type!("f = fn(){ 1 as int }", BuiltinType::Int);
+        assert_fn_type!("f = fn(){ 1 : u32 as int }", BuiltinType::Int);
     }
 
     #[test]
