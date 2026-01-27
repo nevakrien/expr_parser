@@ -856,8 +856,8 @@ struct InferState<'a> {
 #[derive(Clone, Debug)]
 struct Cluster {
     ty: Option<TypeId>,
-    has_int_lit: bool,
-    has_float_lit: bool,
+    // has_int_lit: bool,
+    // has_float_lit: bool,
 }
 
 impl<'a> InferState<'a> {
@@ -880,8 +880,8 @@ impl<'a> InferState<'a> {
         self.parent.push(id);
         self.cluster.push(Cluster {
             ty: None,
-            has_int_lit: false,
-            has_float_lit: false,
+            // has_int_lit: false,
+            // has_float_lit: false,
         });
         id
     }
@@ -940,8 +940,8 @@ impl<'a> InferState<'a> {
         let root_c = &mut self.cluster[ra];
 
         root_c.ty = root_c.ty.or(other_c.ty);
-        root_c.has_int_lit |= other_c.has_int_lit;
-        root_c.has_float_lit |= other_c.has_float_lit;
+        // root_c.has_int_lit |= other_c.has_int_lit;
+        // root_c.has_float_lit |= other_c.has_float_lit;
 
         Ok(ra)
     }
@@ -977,7 +977,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
     match &v.value {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
-            ctx.cluster[c].has_int_lit = true;
+            // ctx.cluster[c].has_int_lit = true;
             ctx.bind_val(v.id, c);
             ctx.int_lits.push((v.id, c));
             Ok(c)
@@ -985,7 +985,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
 
         Value::Literal(Literal::Float(_)) => {
             let c = ctx.new_cluster();
-            ctx.cluster[c].has_float_lit = true;
+            // ctx.cluster[c].has_float_lit = true;
             ctx.bind_val(v.id, c);
             ctx.float_lits.push((v.id, c));
             Ok(c)
@@ -1422,11 +1422,8 @@ mod type_infer_tests {
                 let z = b + 1.0:float;
 
                 let c = a == (2 + 1);
-
                 let d: i64 = a;
-
                 let e = d + 5;
-
                 let f = b as i64;
 
                 let g = f == e;
