@@ -1425,6 +1425,37 @@ mod type_infer_tests {
         assert_fn_type!("f = fn(){ (1.0 : f64) + 2.0 }", BuiltinType::F64);
     }
 
+    #[test]
+    fn large_mixed_types_with_casts() {
+        assert_fn_type!(
+            r#"
+            f = fn() {
+                let a = 1 + 2;
+
+                let b = 3.0 + 4.0;
+                let z = b + 1.0:float;
+
+                let c = a == (2 + 1);
+
+                let d: i64 = a;
+
+                let e = d + 5;
+
+                let f = b as i64;
+
+                let g = f == e;
+
+                {
+                    let h = g;
+                    h
+                }
+            }
+            "#,
+            BuiltinType::Bool
+        );
+    }
+
+
     /* ------------------------------------------------------------
      * Error cases
      * ------------------------------------------------------------ */
