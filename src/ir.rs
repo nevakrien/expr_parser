@@ -1271,7 +1271,7 @@ mod lowering_tests {
         let src = "f = fn[T](x:T){ let y:T = x; y }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.compile_all(&mut parser).unwrap();
+        program.lower_all(&mut parser).unwrap();
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -1295,7 +1295,7 @@ mod lowering_tests {
         let src = "f = fn(){ g() } g = fn(){ f() }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.compile_all(&mut parser).unwrap();
+        program.lower_all(&mut parser).unwrap();
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program

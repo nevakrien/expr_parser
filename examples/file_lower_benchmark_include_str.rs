@@ -4,12 +4,12 @@ use expr_parser::program::Program;
 use std::time::Instant;
 
 fn main() {
-    println!("Running file-based compile benchmark (include_str)");
+    println!("Running file-based lower benchmark (include_str)");
 
     // NOTE: This keeps UTF-8 validation out of the runtime benchmark, but it
     // bakes the file into the binary and may not represent real-world usage.
     // Prefer the mmap-backed benchmark for end-to-end measurement.
-    let file_content = include_str!("../compile_benchmark_data.txt");
+    let file_content = include_str!("../lower_benchmark_data.txt");
 
     let statement_count = file_content.lines().count();
     let start = Instant::now();
@@ -20,7 +20,7 @@ fn main() {
 
     let mut compiled_count = 0;
     let mut error_count = 0;
-    if let Err(err) = program.compile_all(&mut parser) {
+    if let Err(err) = program.lower_all(&mut parser) {
         error_count = 1;
         let _ = reporter.report_compile_error(&err);
     } else {

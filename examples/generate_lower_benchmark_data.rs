@@ -17,7 +17,11 @@ impl Rng {
     }
 
     fn range(&mut self, max: u32) -> u32 {
-        if max == 0 { 0 } else { self.next_u32() % max }
+        if max == 0 {
+            0
+        } else {
+            self.next_u32() % max
+        }
     }
 
     fn shuffle<T>(&mut self, values: &mut [T]) {
@@ -208,7 +212,7 @@ const DEFAULT_FUNCTION_COUNT: usize = 100_000;
 fn main() {
     let output_path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "compile_benchmark_data.txt".to_string());
+        .unwrap_or_else(|| "lower_benchmark_data.txt".to_string());
     let function_count = std::env::args()
         .nth(2)
         .and_then(|value| value.parse::<usize>().ok())

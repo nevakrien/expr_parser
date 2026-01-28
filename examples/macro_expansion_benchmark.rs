@@ -64,7 +64,7 @@ fn main() {
         let mut program = Program::new();
         let mut parser = Parser::new(SOURCE, 0);
 
-        match program.compile_all(&mut parser) {
+        match program.lower_all(&mut parser) {
             Ok(()) => expanded_count += 1,
             Err(_) => error_count += 1,
         }

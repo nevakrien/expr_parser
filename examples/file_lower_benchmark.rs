@@ -72,11 +72,11 @@ impl Drop for MappedFile {
 }
 
 fn main() {
-    println!("Running file-based compile benchmark (single large file)");
+    println!("Running file-based lower benchmark (single large file)");
 
     let path = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "compile_benchmark_data.txt".to_string());
+        .unwrap_or_else(|| "lower_benchmark_data.txt".to_string());
 
     let mapping = match MappedFile::map(&path) {
         Ok(mapping) => mapping,
@@ -102,7 +102,7 @@ fn main() {
 
     let mut compiled_count = 0;
     let mut error_count = 0;
-    if let Err(err) = program.compile_all(&mut parser) {
+    if let Err(err) = program.lower_all(&mut parser) {
         error_count = 1;
         let _ = reporter.report_compile_error(&err);
     } else {

@@ -5,19 +5,19 @@ echo "Iteration,Time_s,Statements_per_sec,Microseconds_per_statement,Cache_miss_
 
 cd /home/user/Desktop/rust_stuff/expr_parser
 git checkout main >/dev/null 2>&1
-cargo build --release --example file_compile_benchmark >/dev/null 2>&1
+cargo build --release --example file_lower_benchmark >/dev/null 2>&1
 
 for i in {1..10}; do
     echo -n "$i,"
     
     # Run benchmark and extract timing info
-    result=$(./target/release/examples/file_compile_benchmark compile_benchmark_data.txt 2>/dev/null | grep -E "(Time:|Statements per second:|Microseconds per statement:)")
+    result=$(./target/release/examples/file_lower_benchmark lower_benchmark_data.txt 2>/dev/null | grep -E "(Time:|Statements per second:|Microseconds per statement:)")
     time=$(echo "$result" | grep "Time:" | sed 's/.*Time: \([0-9.]*\)s.*/\1/')
     stmts_per_sec=$(echo "$result" | grep "Statements per second:" | sed 's/.*Statements per second: \([0-9.]*\).*/\1/')
     microsecs=$(echo "$result" | grep "Microseconds per statement:" | sed 's/.*Microseconds per statement: \([0-9.]*\).*/\1/')
     
     # Run perf and extract key metrics
-    perf_result=$(perf stat -e cache-misses,cache-references,branch-misses,branches,instructions,cycles ./target/release/examples/file_compile_benchmark compile_benchmark_data.txt 2>&1 | grep -E "(cache-misses|cache-references|branch-misses|branches|instructions|cycles)" | tail -6)
+    perf_result=$(perf stat -e cache-misses,cache-references,branch-misses,branches,instructions,cycles ./target/release/examples/file_lower_benchmark lower_benchmark_data.txt 2>&1 | grep -E "(cache-misses|cache-references|branch-misses|branches|instructions|cycles)" | tail -6)
     
     cache_misses=$(echo "$perf_result" | grep "cache-misses" | awk '{print $1}' | head -1)
     cache_refs=$(echo "$perf_result" | grep "cache-references" | awk '{print $1}' | head -1)
