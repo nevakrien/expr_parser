@@ -1,8 +1,8 @@
+use crate::Expr;
+use crate::Token;
 use crate::error_messages::{ERR_MACRO_NEEDS_BODY, ERR_MACRO_PARAM_IDENT, ERR_MACRO_SIGNATURE};
 use crate::parsing::{LExpr, Loc, Located};
 use crate::program::{CResult, CompileError, Program};
-use crate::Expr;
-use crate::Token;
 
 #[derive(Debug)]
 pub struct Macro {
@@ -173,10 +173,10 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &mut Program) -> CResu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Parser;
     use crate::error_messages::ERR_MACRO_NEEDS_BODY;
     use crate::parsing::Expr;
     use crate::program::{CompileError, Program};
-    use crate::Parser;
 
     #[test]
     fn expands_recursive_and_nested_macros() {

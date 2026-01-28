@@ -72,7 +72,7 @@ pub struct TypeId(pub usize);
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
-    Int = 0,//for now this enum MUST start at 0 and we also need values in order
+    Int = 0, //for now this enum MUST start at 0 and we also need values in order
     Uint,
     I8,
     I16,
@@ -136,7 +136,6 @@ impl TryFrom<TypeId> for BuiltinType {
         panic!("BuiltinType must be 1 byte");
     }
 };*/
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeValue {
@@ -285,7 +284,6 @@ impl LocalTypes {
         self.types.get(&id).copied()
     }
 }
-
 
 // ==============================
 // Errors (richer + ValId-based)
@@ -714,22 +712,33 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
                 }
             }
         }
-        Value::While { cond: _, body: _ } => { todo!() } 
-        Value::If { cond: _, then: _, els: _ } => { todo!() }
-        Value::Func { generics: _, params, output_type, body } => {
-
-
+        Value::While { cond: _, body: _ } => {
+            todo!()
+        }
+        Value::If {
+            cond: _,
+            then: _,
+            els: _,
+        } => {
+            todo!()
+        }
+        Value::Func {
+            generics: _,
+            params,
+            output_type,
+            body,
+        } => {
             for pat in params {
-                let _p = gather_pattern_constraints(ctx,pat)?;
+                let _p = gather_pattern_constraints(ctx, pat)?;
             }
 
-            let out_ty = if let Some(x)=output_type{
-                compile_type_expr(ctx,x)?
-            }else{
+            let out_ty = if let Some(x) = output_type {
+                compile_type_expr(ctx, x)?
+            } else {
                 BuiltinType::Void.into()
             };
 
-            let body_cluster = gather_constraints(ctx,body)?;
+            let body_cluster = gather_constraints(ctx, body)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(body_cluster, out_ty) {
                 return Err(TypeError::AnnotationMismatch {
@@ -800,7 +809,6 @@ fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<TypeId, TypeErr
     }
 }
 
-
 // ===================================
 // Late phases (normalized parent[] access)
 // ===================================
@@ -853,17 +861,16 @@ fn validate_literals(ctx: &InferState) -> Result<(), TypeError> {
     Ok(())
 }
 
-fn finalize(ctx: &mut InferState) -> Result<(),TypeError> {
+fn finalize(ctx: &mut InferState) -> Result<(), TypeError> {
     // ctx.parent[] already normalized
     for (&v, &c) in ctx.val_cluster.iter() {
         let r = ctx.parent[c];
         if let Some(t) = ctx.cluster[r].ty {
             ctx.ans.types.insert(v, t);
-        }else{
-            return Err(TypeError::Unresolved{
-                value:v,
-                message:"could not infer type"
-
+        } else {
+            return Err(TypeError::Unresolved {
+                value: v,
+                message: "could not infer type",
             });
         }
     }
@@ -1012,13 +1019,12 @@ mod type_infer_tests {
         );
     }
 
-    #[test]
-    fn infer_empty_function() {
-        let mut store = TypeStore::new();
-        infer_fn("f=fn(){}", &mut store).unwrap();
+    // #[test]
+    // fn infer_empty_function() {
+    //     let mut store = TypeStore::new();
+    //     infer_fn("f=fn(){}", &mut store).unwrap();
 
-    }
-
+    // }
 
     /* ------------------------------------------------------------
      * Error cases

@@ -1,7 +1,7 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::ir::IValue;
 use crate::ir::NameId;
-use crate::macros::{expand_macros_recursive, Macro};
+use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;

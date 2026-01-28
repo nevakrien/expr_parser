@@ -338,7 +338,9 @@ impl Program {
 
             // if <cond> <then> [else <else>]
             Expr::Prefix(open, items) if open.value == "if" => self.lower_if_expr(expr.loc, items),
-            Expr::Prefix(open, items) if open.value == "while" => self.lower_while_expr(expr.loc, items),
+            Expr::Prefix(open, items) if open.value == "while" => {
+                self.lower_while_expr(expr.loc, items)
+            }
 
             // assignment
             Expr::Bin(op, pair) if op.value == "=" => self.lower_assign_expr(expr.loc, *pair),
@@ -523,9 +525,9 @@ impl Program {
         Ok(self.id_value(loc, Value::If { cond, then, els }))
     }
 
-     #[inline(always)]
+    #[inline(always)]
     fn lower_while_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
-        if items.len() !=2 {
+        if items.len() != 2 {
             return Err(CompileError::SimpleError {
                 loc,
                 s: "while expression requires condition",
@@ -535,11 +537,9 @@ impl Program {
         let mut items = items;
         let cond_expr = items.remove(0);
         let then_expr = items.remove(0);
-       
 
         let cond = Box::new(self.lower_value(cond_expr)?);
         let body = Box::new(self.lower_value(then_expr)?);
-        
 
         Ok(self.id_value(loc, Value::While { cond, body }))
     }
