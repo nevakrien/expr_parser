@@ -46,12 +46,12 @@ pub struct AccessName {
     pub name: String,
 }
 
-/// Function parameter declaration
-#[derive(Debug, Clone, PartialEq)]
-pub struct Param {
-    pub pat: IPattern,
-    pub ty: Option<IValue>,
-}
+// /// Function parameter declaration
+// #[derive(Debug, Clone, PartialEq)]
+// pub struct Param {
+//     pub pat: IPattern,
+//     pub ty: Option<IValue>,
+// }
 
 /// Single variant within an enum declaration
 #[derive(Debug, Clone, PartialEq)]
@@ -237,7 +237,7 @@ pub enum Value {
     /// Function literal
     Func {
         generics: Vec<NameId>,
-        params: Vec<Param>,
+        params: Vec<IPattern>,
         output_type: Option<Box<IValue>>,
         body: Box<IValue>,
     },
@@ -627,7 +627,7 @@ impl Program {
             for param in param_items {
                 //TODO support type anotation
                 let pat = p.lower_pattern(param)?;
-                params.push(Param { pat, ty: None });
+                params.push(pat);
             }
 
             let output_type = match ret_expr {
