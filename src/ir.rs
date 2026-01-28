@@ -13,8 +13,8 @@ use crate::error_messages::{
     ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
-use crate::program::ValId;
 use crate::program::{CResult, CompileError, Program};
+use crate::string_intern::StrId;
 
 //this file needs to move Value and Pattern into a dense array
 //note that currently the only major diffrence between Value and Pattern is Bind
@@ -24,10 +24,14 @@ use crate::program::{CResult, CompileError, Program};
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>;
 
-//IValue would become neich now since Value can just store ValId instead of Box<IValue>
-//it is still meaningful in all other places just not so much this file
-pub type IValue = ValId;
-pub type IPattern = ValId;
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ValueId(pub usize);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct PatternId(pub usize);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct MatchArmId(pub usize);
 
 ///comment is now for explaining to LLM later LLM should rewrite it to actual docs explaining usage
 ///
@@ -40,37 +44,149 @@ pub type IPattern = ValId;
 ///if cleanup would seem needed we add it AFTER this change batch
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ValueSpan {
-    pub start: ValId,
-    pub count: usize,
+    _start: ValueId,
+    _count: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct PatternSpan {
-    pub start: ValId,
-    pub count: usize,
+    _start: PatternId,
+    _count: usize,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct MatchArmSpan {
+    _start: MatchArmId,
+    _count: usize,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct NameSpan {
+    _start: usize,
+    _count: usize,
 }
 
 impl ValueSpan {
     #[inline]
-    pub fn at(&self, index: usize) -> ValId {
-        ValId(self.start.0 + index)
+    pub fn new(start: ValueId, count: usize) -> Self {
+        Self {
+            _start: start,
+            _count: count,
+        }
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = ValId> + '_ {
-        (self.start.0..self.start.0 + self.count).map(ValId)
+    pub fn start(&self) -> ValueId {
+        self._start
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self._count
+    }
+
+    #[inline]
+    pub fn at(&self, index: usize) -> ValueId {
+        debug_assert!(index < self._count, "ValueSpan index out of bounds");
+        ValueId(self._start.0 + index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl Iterator<Item = ValueId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(ValueId)
     }
 }
 
 impl PatternSpan {
     #[inline]
-    pub fn at(&self, index: usize) -> ValId {
-        ValId(self.start.0 + index)
+    pub fn new(start: PatternId, count: usize) -> Self {
+        Self {
+            _start: start,
+            _count: count,
+        }
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = ValId> + '_ {
-        (self.start.0..self.start.0 + self.count).map(ValId)
+    pub fn start(&self) -> PatternId {
+        self._start
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self._count
+    }
+
+    #[inline]
+    pub fn at(&self, index: usize) -> PatternId {
+        debug_assert!(index < self._count, "PatternSpan index out of bounds");
+        PatternId(self._start.0 + index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl Iterator<Item = PatternId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(PatternId)
+    }
+}
+
+impl MatchArmSpan {
+    #[inline]
+    pub fn new(start: MatchArmId, count: usize) -> Self {
+        Self {
+            _start: start,
+            _count: count,
+        }
+    }
+
+    #[inline]
+    pub fn start(&self) -> MatchArmId {
+        self._start
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self._count
+    }
+
+    #[inline]
+    pub fn at(&self, index: usize) -> MatchArmId {
+        debug_assert!(index < self._count, "MatchArmSpan index out of bounds");
+        MatchArmId(self._start.0 + index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl Iterator<Item = MatchArmId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(MatchArmId)
+    }
+}
+
+impl NameSpan {
+    #[inline]
+    pub fn new(start: usize, count: usize) -> Self {
+        Self {
+            _start: start,
+            _count: count,
+        }
+    }
+
+    #[inline]
+    pub fn start(&self) -> usize {
+        self._start
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self._count
+    }
+
+    #[inline]
+    pub fn at(&self, index: usize) -> usize {
+        debug_assert!(index < self._count, "NameSpan index out of bounds");
+        self._start + index
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl Iterator<Item = usize> + '_ {
+        self._start..self._start + self._count
     }
 }
 
@@ -79,24 +195,24 @@ impl PatternSpan {
 pub struct NameId(pub usize);
 
 /// Literal values that can appear in the code
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Literal {
     Num(u64),
     Float(f64),
-    Str(String),
+    Str(StrId),
     Void,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AccessKind {
     Dot,
     Type,
     Ptr,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AccessName {
-    pub name: String,
+    pub name: StrId,
 }
 
 // /// Function parameter declaration
@@ -110,7 +226,7 @@ pub struct AccessName {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumVariant {
     pub name: LName,
-    pub fields: Vec<IPattern>,
+    pub fields: PatternSpan,
 }
 /// Pure binary operations.
 ///
@@ -164,10 +280,10 @@ pub enum Dir {
 }
 
 /// Assignment operator, where `None` means plain `=`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum AssignOp {
-    Nothing(IValue),
-    Bin(BinOp, IValue),
+    Nothing(ValueId),
+    Bin(BinOp, ValueId),
     Pre(Dir),
     Post(Dir),
 }
@@ -185,7 +301,7 @@ pub enum LogicOp {
 /// - Mutation is represented explicitly (`Assign`, `Let`)
 /// - Control flow is explicit (`If`, `While`, `Match`)
 /// - `BinOp` / `UnOp` are guaranteed to be pure
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Value {
     /// Reference to a resolved name
     NameRef(NameId),
@@ -201,32 +317,32 @@ pub enum Value {
     /// Pure binary operation
     BinOp {
         op: BinOp,
-        values: (IValue, IValue),
+        values: (ValueId, ValueId),
     },
 
     /// Pure unary operation
     UnOp {
         op: UnOp,
-        value: IValue,
+        value: ValueId,
     },
 
     //===== TYPES =====
     /// Explicit type cast
     Cast {
-        value: IValue,
-        ty: IValue,
+        value: ValueId,
+        ty: ValueId,
     },
 
     /// Type annotation
     TypeAnnotation {
-        value: IValue,
-        ty: IValue,
+        value: ValueId,
+        ty: ValueId,
     },
 
     //==== MUTATION GATES =====
     /// Function or callable invocation
     Call {
-        callee: IValue,
+        callee: ValueId,
         args: ValueSpan,
     },
 
@@ -237,18 +353,18 @@ pub enum Value {
     /// - Mutation occurs
     Assign {
         op: AssignOp,
-        target: IValue,
+        target: ValueId,
     },
 
     /// Indexing or specialization
     Index {
-        base: IValue,
+        base: ValueId,
         args: ValueSpan,
     },
 
     /// Field/type access with deferred name resolution
     Access {
-        base: IValue,
+        base: ValueId,
         name: AccessName,
         kind: AccessKind,
     },
@@ -256,55 +372,55 @@ pub enum Value {
     // ===== SCOPE =====
     /// Immutable binding
     Let {
-        pat: IPattern,
-        value: IValue,
-        else_part: Option<IValue>,
+        pat: PatternId,
+        value: ValueId,
+        else_part: Option<ValueId>,
     },
 
     /// Lexical block
     Block {
         statements: ValueSpan,
-        return_value: Option<IValue>,
+        return_value: Option<ValueId>,
     },
 
     //==== CONTROL FLOW =====
     /// Short-circuiting logical operations.
     LogicOp {
         op: LogicOp,
-        values: (IValue, IValue),
+        values: (ValueId, ValueId),
     },
 
     /// Conditional expression
     If {
-        cond: IValue,
-        then: IValue,
-        els: Option<IValue>,
+        cond: ValueId,
+        then: ValueId,
+        els: Option<ValueId>,
     },
 
     /// Loop
     While {
-        cond: IValue,
-        body: IValue,
+        cond: ValueId,
+        body: ValueId,
     },
 
     /// Function literal
     Func {
-        generics: Vec<NameId>,
+        generics: NameSpan,
         params: PatternSpan,
-        output_type: Option<IValue>,
-        body: IValue,
+        output_type: Option<ValueId>,
+        body: ValueId,
     },
 
     /// Early return
-    Return(Option<IValue>),
+    Return(Option<ValueId>),
 
     Break,
     Continue,
 
     /// Pattern match
     Match {
-        value: IValue,
-        arms: Vec<MatchArm>,
+        value: ValueId,
+        arms: MatchArmSpan,
     },
 }
 
@@ -315,7 +431,7 @@ pub enum Value {
 ///
 /// TODO: figure out if this should have a field for Value
 ///        this would come up for *x[T] = 2; or similar
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Pattern {
     /// Bind a value to a name (variable binding)
     Bind(NameId),
@@ -326,7 +442,7 @@ pub enum Pattern {
     /// Literal value pattern
     Literal(Literal),
     /// Type annotation pattern (x:T)
-    TypeAnnotation { pat: IPattern, ty: IValue },
+    TypeAnnotation { pat: PatternId, ty: ValueId },
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -343,24 +459,24 @@ pub enum Pattern {
 
 
 /// Single arm in a match expression
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct MatchArm {
-    pub pat: IPattern,
-    pub guard: Option<IValue>,
-    pub body: IValue,
+    pub pat: PatternId,
+    pub guard: Option<ValueId>,
+    pub body: ValueId,
 }
 
 impl Program {
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
-    pub fn lower_value(&mut self, expr: LExpr) -> CResult<IValue> {
+    pub fn lower_value(&mut self, expr: LExpr) -> CResult<ValueId> {
         let loc = expr.loc.clone();
         let value = self.lower_value_inner(expr)?;
         Ok(self.id_value(loc, value))
     }
 
-    fn lower_value_into(&mut self, target: ValId, expr: LExpr) -> CResult<IValue> {
+    fn lower_value_into(&mut self, target: ValueId, expr: LExpr) -> CResult<ValueId> {
         let loc = expr.loc.clone();
         let value = self.lower_value_inner(expr)?;
         self.set_value(target, loc, value);
@@ -432,7 +548,7 @@ impl Program {
         let value = match token {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
-            Token::StrLit(s) => Value::Literal(Literal::Str(s)),
+            Token::StrLit(s) => Value::Literal(Literal::Str(self.str_intern.intern(&s))),
             Token::Operator("(") => Value::Literal(Literal::Void),
 
             Token::Ident(name) => {
@@ -560,11 +676,16 @@ impl Program {
         let mut items = items;
         let value = self.lower_value(items.remove(0))?;
 
-        let arms: Result<Vec<_>, _> = items
-            .into_iter()
-            .map(|arm| self.lower_match_arm(arm))
-            .collect();
-        let arms = arms?;
+        let arms_start = self.start_arm_span();
+        let mut arms_count = 0;
+        for arm_expr in items {
+            let arm_loc = arm_expr.loc.clone();
+            let arm = self.lower_match_arm(arm_expr)?;
+            self.push_match_arm(arm_loc, arm);
+            arms_count += 1;
+        }
+
+        let arms = MatchArmSpan::new(arms_start, arms_count);
 
         let _ = loc;
         Ok(Value::Match { value, arms })
@@ -670,7 +791,8 @@ impl Program {
         debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
         self.with_scope(|p| {
-            let mut generics = Vec::new();
+            let generics_start = p.start_name_span();
+            let mut generics_count = 0;
             if let Some(gen_expr) = generics_expr {
                 let Expr::Prefix(open, items) = gen_expr.value else {
                     debug_assert!(false, "fn generics must use brackets");
@@ -683,7 +805,8 @@ impl Program {
                         Expr::Atom(Token::Ident(name)) => {
                             let name = p.str_intern.intern(&name);
                             let id = p.insert_value_in_current_scope(name);
-                            generics.push(id);
+                            p.push_name_id(id);
+                            generics_count += 1;
                         }
                         _ => {
                             return Err(CompileError::SimpleError {
@@ -694,6 +817,8 @@ impl Program {
                     }
                 }
             }
+
+            let generics = NameSpan::new(generics_start, generics_count);
 
             let params_span = p.reserve_pattern_span(param_items.len());
             for (index, param) in param_items.into_iter().enumerate() {
@@ -752,7 +877,10 @@ impl Program {
     ) -> CResult<Value> {
         let base = self.lower_value(lhs)?;
         let name = match rhs.value {
-            Expr::Atom(Token::Ident(name)) => AccessName { name },
+            Expr::Atom(Token::Ident(name)) => {
+                let name = self.str_intern.intern(&name);
+                AccessName { name }
+            }
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: rhs.loc,
@@ -772,13 +900,13 @@ impl Program {
         Ok(Value::Access { base, name, kind })
     }
 
-    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<IPattern> {
+    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<PatternId> {
         let loc = expr.loc.clone();
         let pattern = self.lower_pattern_inner(expr)?;
         Ok(self.id_pattern(loc, pattern))
     }
 
-    fn lower_pattern_into(&mut self, target: ValId, expr: LExpr) -> CResult<IPattern> {
+    fn lower_pattern_into(&mut self, target: PatternId, expr: LExpr) -> CResult<PatternId> {
         let loc = expr.loc.clone();
         let pattern = self.lower_pattern_inner(expr)?;
         self.set_pattern(target, loc, pattern);
@@ -1119,13 +1247,13 @@ mod var_scope_test {
             Value::Let { pat, .. } => pat,
             _ => panic!("expected outer let"),
         };
-        let outer_id = match program.pattern(*outer_pat) {
-            Pattern::Bind(id) => *id,
+        let outer_id = match program.pattern(outer_pat) {
+            Pattern::Bind(id) => id,
             _ => panic!("expected bind pattern"),
         };
         // Final name ref refers to outer
         let final_ref = match program.value(top_block[2]) {
-            Value::NameRef(id) => *id,
+            Value::NameRef(id) => id,
             _ => panic!("expected final name reference"),
         };
         assert_eq!(outer_id, final_ref);
@@ -1139,12 +1267,12 @@ mod var_scope_test {
             Value::Let { pat, .. } => pat,
             _ => panic!("expected inner let"),
         };
-        let inner_id = match program.pattern(*inner_pat) {
-            Pattern::Bind(id) => *id,
+        let inner_id = match program.pattern(inner_pat) {
+            Pattern::Bind(id) => id,
             _ => panic!("expected bind pattern"),
         };
         let inner_ref = match program.value(inner_block[1]) {
-            Value::NameRef(id) => *id,
+            Value::NameRef(id) => id,
             _ => panic!("expected inner name reference"),
         };
         assert_eq!(inner_id, inner_ref);
@@ -1163,7 +1291,7 @@ mod lowering_tests {
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
-    fn lower_block(src: &str) -> (Program, IValue) {
+    fn lower_block(src: &str) -> (Program, ValueId) {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
@@ -1171,10 +1299,10 @@ mod lowering_tests {
         (program, ir)
     }
 
-    fn bound_id(program: &Program, stmt: IValue) -> NameId {
+    fn bound_id(program: &Program, stmt: ValueId) -> NameId {
         match program.value(stmt) {
-            Value::Let { pat, .. } => match program.pattern(*pat) {
-                Pattern::Bind(id) => *id,
+            Value::Let { pat, .. } => match program.pattern(pat) {
+                Pattern::Bind(id) => id,
                 _ => panic!("expected bind pattern"),
             },
             _ => panic!("expected let statement"),
@@ -1196,23 +1324,23 @@ mod lowering_tests {
         let a_id = bound_id(&program, statements[1]);
 
         let (base, index_args) = match program.value(statements[2]) {
-            Value::Index { base, args } => (*base, *args),
+            Value::Index { base, args } => (base, args),
             _ => panic!("expected index expression"),
         };
 
         let (callee, call_args) = match program.value(base) {
-            Value::Call { callee, args } => (*callee, *args),
+            Value::Call { callee, args } => (callee, args),
             _ => panic!("expected call base"),
         };
 
         match program.value(callee) {
-            Value::NameRef(id) => assert_eq!(*id, f_id),
+            Value::NameRef(id) => assert_eq!(id, f_id),
             _ => panic!("expected callee to be name"),
         }
         let call_args = call_args.ids().collect::<Vec<_>>();
         assert_eq!(call_args.len(), 2);
         match program.value(call_args[0]) {
-            Value::NameRef(id) => assert_eq!(*id, a_id),
+            Value::NameRef(id) => assert_eq!(id, a_id),
             _ => panic!("expected first call arg to be name"),
         }
         match program.value(call_args[1]) {
@@ -1223,7 +1351,7 @@ mod lowering_tests {
         let index_args = index_args.ids().collect::<Vec<_>>();
         assert_eq!(index_args.len(), 2);
         match program.value(index_args[0]) {
-            Value::NameRef(id) => assert_eq!(*id, a_id),
+            Value::NameRef(id) => assert_eq!(id, a_id),
             _ => panic!("expected first index arg to be name"),
         }
         match program.value(index_args[1]) {
@@ -1246,22 +1374,23 @@ mod lowering_tests {
         let x_id = bound_id(&program, statements[0]);
 
         let (scrutinee, arms) = match program.value(statements[1]) {
-            Value::Match { value, arms } => (*value, arms),
+            Value::Match { value, arms } => (value, arms),
             _ => panic!("expected match"),
         };
 
         match program.value(scrutinee) {
-            Value::NameRef(id) => assert_eq!(*id, x_id),
+            Value::NameRef(id) => assert_eq!(id, x_id),
             _ => panic!("expected scrutinee name"),
         }
 
         assert_eq!(arms.len(), 1);
-        match program.pattern(arms[0].pat) {
+        let arm = program.arm(arms.at(0));
+        match program.pattern(arm.pat) {
             Pattern::Wildcard => {}
             _ => panic!("expected wildcard pattern"),
         }
-        match program.value(arms[0].body) {
-            Value::NameRef(id) => assert_eq!(*id, x_id),
+        match program.value(arm.body) {
+            Value::NameRef(id) => assert_eq!(id, x_id),
             _ => panic!("expected arm body to reference x"),
         }
     }
@@ -1286,12 +1415,12 @@ mod lowering_tests {
         let x_id = bound_id(&program, statements[0]);
         let match_expr = return_value.unwrap();
         let (scrutinee, arms) = match program.value(match_expr) {
-            Value::Match { value, arms } => (*value, arms),
+            Value::Match { value, arms } => (value, arms),
             _ => panic!("expected match"),
         };
 
         match program.value(scrutinee) {
-            Value::NameRef(id) => assert_eq!(*id, x_id),
+            Value::NameRef(id) => assert_eq!(id, x_id),
             _ => panic!("expected scrutinee name"),
         }
         assert_eq!(arms.len(), 1);
@@ -1313,24 +1442,24 @@ mod lowering_tests {
 
         match program.value(statements[2]) {
             Value::Access { base, name, kind } => {
-                assert_eq!(*kind, AccessKind::Dot);
-                match program.value(*base) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                assert_eq!(kind, AccessKind::Dot);
+                match program.value(base) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected dot base name"),
                 }
-                assert_eq!(name.name, "b");
+                assert_eq!(program.str_intern.resolve(name.name), "b");
             }
             _ => panic!("expected dot access"),
         }
 
         match program.value(statements[3]) {
             Value::Access { base, name, kind } => {
-                assert_eq!(*kind, AccessKind::Type);
-                match program.value(*base) {
-                    Value::NameRef(id) => assert_eq!(*id, t_id),
+                assert_eq!(kind, AccessKind::Type);
+                match program.value(base) {
+                    Value::NameRef(id) => assert_eq!(id, t_id),
                     _ => panic!("expected type base name"),
                 }
-                assert_eq!(name.name, "c");
+                assert_eq!(program.str_intern.resolve(name.name), "c");
             }
             _ => panic!("expected type access"),
         }
@@ -1406,23 +1535,23 @@ mod lowering_tests {
             _ => panic!("expected g to lower to a value"),
         };
 
-        let f_call = match program.value(*f_body) {
-            Value::Call { callee, .. } => *callee,
+        let f_call = match program.value(f_body) {
+            Value::Call { callee, .. } => callee,
             Value::Block { return_value, .. } => return_value
                 .as_ref()
                 .map(|value| match program.value(*value) {
-                    Value::Call { callee, .. } => *callee,
+                    Value::Call { callee, .. } => callee,
                     _ => panic!("expected f return to be a call"),
                 })
                 .expect("expected f to return a call"),
             _ => panic!("expected f body to be a call or block"),
         };
-        let g_call = match program.value(*g_body) {
-            Value::Call { callee, .. } => *callee,
+        let g_call = match program.value(g_body) {
+            Value::Call { callee, .. } => callee,
             Value::Block { return_value, .. } => return_value
                 .as_ref()
                 .map(|value| match program.value(*value) {
-                    Value::Call { callee, .. } => *callee,
+                    Value::Call { callee, .. } => callee,
                     _ => panic!("expected g return to be a call"),
                 })
                 .expect("expected g to return a call"),
@@ -1430,11 +1559,11 @@ mod lowering_tests {
         };
 
         match program.value(f_call) {
-            Value::NameRef(id) => assert_eq!(*id, g_id),
+            Value::NameRef(id) => assert_eq!(id, g_id),
             _ => panic!("expected f to call g"),
         }
         match program.value(g_call) {
-            Value::NameRef(id) => assert_eq!(*id, f_id),
+            Value::NameRef(id) => assert_eq!(id, f_id),
             _ => panic!("expected g to call f"),
         }
     }
@@ -1471,16 +1600,16 @@ mod lowering_tests {
             Value::Assign { op, target } => {
                 match op {
                     AssignOp::Bin(bin_op, value) => {
-                        assert_eq!(*bin_op, BinOp::Add);
-                        match program.value(*value) {
+                        assert_eq!(bin_op, BinOp::Add);
+                        match program.value(value) {
                             Value::Literal(Literal::Num(2)) => {}
                             _ => panic!("expected assign literal value"),
                         }
                     }
                     _ => panic!("expected compound assignment op"),
                 }
-                match program.value(*target) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                match program.value(target) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected assign target name"),
                 }
             }
@@ -1490,8 +1619,8 @@ mod lowering_tests {
         match program.value(statements[2]) {
             Value::Assign { op, target } => {
                 assert!(matches!(op, AssignOp::Pre(Dir::Inc)));
-                match program.value(*target) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                match program.value(target) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected inc target name"),
                 }
             }
@@ -1501,8 +1630,8 @@ mod lowering_tests {
         match program.value(statements[3]) {
             Value::Assign { op, target } => {
                 assert!(matches!(op, AssignOp::Post(Dir::Inc)));
-                match program.value(*target) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                match program.value(target) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected inc target name"),
                 }
             }
@@ -1511,14 +1640,14 @@ mod lowering_tests {
 
         match program.value(statements[4]) {
             Value::LogicOp { op, values } => {
-                assert_eq!(*op, LogicOp::And);
+                assert_eq!(op, LogicOp::And);
                 let (left, right) = values;
-                match program.value(*left) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                match program.value(left) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected logic left name"),
                 }
-                match program.value(*right) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                match program.value(right) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected logic right name"),
                 }
             }
@@ -1538,15 +1667,15 @@ mod lowering_tests {
         assert_eq!(statements.len(), 2);
 
         let a_id = bound_id(&program, statements[0]);
-        let cast_expr = &statements[1];
-        match program.value(*cast_expr) {
+        let cast_expr = statements[1];
+        match program.value(cast_expr) {
             Value::Cast { value, ty } => {
-                match program.value(*value) {
-                    Value::NameRef(id) => assert_eq!(*id, a_id),
+                match program.value(value) {
+                    Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected cast value to be name"),
                 }
-                match program.value(*ty) {
-                    Value::NameRef(id) => assert_ne!(*id, a_id),
+                match program.value(ty) {
+                    Value::NameRef(id) => assert_ne!(id, a_id),
                     _ => panic!("expected cast type pattern"),
                 }
             }
@@ -1564,16 +1693,16 @@ mod lowering_tests {
 
         match program.value(ir) {
             Value::If { cond, then, els } => {
-                match program.value(*cond) {
+                match program.value(cond) {
                     Value::Literal(Literal::Num(1)) => {}
                     _ => panic!("expected condition to be literal 1"),
                 }
-                match program.value(*then) {
+                match program.value(then) {
                     Value::Block {
                         statements,
                         return_value,
                     } => {
-                        assert_eq!(statements.count, 0);
+                        assert_eq!(statements.len(), 0);
                         assert!(return_value.is_some());
                         match program.value(return_value.unwrap()) {
                             Value::Literal(Literal::Num(2)) => {}
@@ -1598,16 +1727,16 @@ mod lowering_tests {
 
         match program.value(ir) {
             Value::If { cond, then, els } => {
-                match program.value(*cond) {
+                match program.value(cond) {
                     Value::Literal(Literal::Num(1)) => {}
                     _ => panic!("expected condition to be literal 1"),
                 }
-                match program.value(*then) {
+                match program.value(then) {
                     Value::Block {
                         statements,
                         return_value,
                     } => {
-                        assert_eq!(statements.count, 0);
+                        assert_eq!(statements.len(), 0);
                         assert!(return_value.is_some());
                         match program.value(return_value.unwrap()) {
                             Value::Literal(Literal::Num(2)) => {}
@@ -1622,7 +1751,7 @@ mod lowering_tests {
                         statements,
                         return_value,
                     } => {
-                        assert_eq!(statements.count, 0);
+                        assert_eq!(statements.len(), 0);
                         assert!(return_value.is_some());
                         match program.value(return_value.unwrap()) {
                             Value::Literal(Literal::Num(3)) => {}
@@ -1655,13 +1784,13 @@ mod lowering_tests {
                 else_part,
             } => {
                 assert!(else_part.is_none(), "expected no else part");
-                match program.pattern(*pat) {
+                match program.pattern(pat) {
                     Pattern::TypeAnnotation { pat: inner_pat, ty } => {
                         // The inner pattern should bind a new name 'x'
-                        match program.pattern(*inner_pat) {
+                        match program.pattern(inner_pat) {
                             Pattern::Bind(_x_id) => {
                                 // Verify the value is the expected literal
-                                match program.value(*value) {
+                                match program.value(value) {
                                     Value::Literal(Literal::Num(1)) => {}
                                     _ => panic!("expected literal value"),
                                 }
@@ -1669,7 +1798,7 @@ mod lowering_tests {
                             _ => panic!("expected bind pattern for variable name"),
                         }
                         // The type should resolve to the predefined 'int' name
-                        match program.value(*ty) {
+                        match program.value(ty) {
                             Value::NameRef(_int_id) => {} // Type should be a name reference to 'int'
                             _ => panic!("expected type to be name reference to predefined type"),
                         }

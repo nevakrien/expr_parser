@@ -9,12 +9,12 @@
 //
 // ================================================================
 
-use crate::ir::NameId;
+use crate::ir::{NameId, PatternId, ValueId};
 use std::collections::HashMap;
 
 use crate::{
-    ir::{BinOp, IPattern, IValue, Literal, Pattern, Value},
-    program::{Defined, Program, ValId},
+    ir::{BinOp, Literal, Pattern, Value},
+    program::{Defined, Program},
 };
 
 /* ================================================================
@@ -191,7 +191,7 @@ impl Program {
 pub struct TypeStore {
     values: Vec<TypeValue>,
     intern: HashMap<TypeValue, TypeId>,
-    global_types: HashMap<ValId, TypeId>,
+    global_types: HashMap<ValueId, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -218,7 +218,7 @@ impl TypeStore {
     }
 
     #[inline(always)]
-    pub fn get_global(&self, id: ValId) -> Option<TypeId> {
+    pub fn get_global(&self, id: ValueId) -> Option<TypeId> {
         self.global_types.get(&id).copied()
     }
 
@@ -263,7 +263,7 @@ impl TypeStore {
 }
 
 pub struct LocalTypes {
-    types: HashMap<ValId, TypeId>,
+    types: HashMap<ValueId, TypeId>,
 }
 
 impl Default for LocalTypes {
@@ -280,7 +280,7 @@ impl LocalTypes {
     }
 
     #[inline(always)]
-    pub fn type_of(&self, id: ValId) -> Option<TypeId> {
+    pub fn type_of(&self, id: ValueId) -> Option<TypeId> {
         self.types.get(&id).copied()
     }
 }
@@ -292,11 +292,14 @@ impl LocalTypes {
 #[derive(Debug)]
 pub enum TypeError {
     /// Could not infer a concrete type for this value
-    Unresolved { value: ValId, message: &'static str },
+    Unresolved {
+        value: ValueId,
+        message: &'static str,
+    },
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedType {
-        type_expr: ValId,
+        type_expr: ValueId,
         message: &'static str,
     },
 
@@ -304,9 +307,18 @@ pub enum TypeError {
     /// Carries BOTH the annotation node and the constrained node so diagnostics can point at both.
     AnnotationMismatch {
         /// The annotation node (Value::TypeAnnotation / Pattern::TypeAnnotation)
-        annotation: ValId,
+        annotation: ValueId,
         /// The value/pattern being constrained (the `value` inside the annotation)
-        constrained: ValId,
+        constrained: ValueId,
+        expected: TypeId,
+        found: TypeId,
+        note: &'static str,
+    },
+
+    /// Pattern annotation mismatch
+    PatternAnnotationMismatch {
+        annotation: PatternId,
+        constrained: PatternId,
         expected: TypeId,
         found: TypeId,
         note: &'static str,
@@ -315,7 +327,7 @@ pub enum TypeError {
     /// Equality constraint failure at some site (let/match/etc).
     /// Carries a site ValId so you can point at the operator/let/match that demanded equality.
     IncompatibleTypes {
-        site: ValId,
+        site: ValueId,
         left: TypeId,
         right: TypeId,
         note: &'static str,
@@ -323,14 +335,14 @@ pub enum TypeError {
 
     /// Literal cluster resolved to an incompatible concrete type, or stayed unresolved.
     InvalidLiteral {
-        literal: ValId,
+        literal: ValueId,
         resolved: Option<TypeId>,
         message: &'static str,
     },
 
     /// (future) Operator rule failure.
     InvalidOperator {
-        site: ValId,
+        site: ValueId,
         op: BinOp,
         lhs: TypeId,
         rhs: TypeId,
@@ -345,7 +357,7 @@ pub enum TypeError {
 pub fn infer_value_internals(
     program: &Program,
     store: &mut TypeStore,
-    value: IValue,
+    value: ValueId,
 ) -> Result<LocalTypes, TypeError> {
     let mut ctx = InferState::new(store, program);
 
@@ -369,7 +381,8 @@ struct InferState<'a> {
     program: &'a Program,
 
     // ValId -> cluster
-    val_cluster: HashMap<ValId, usize>,
+    val_cluster: HashMap<ValueId, usize>,
+    pat_cluster: HashMap<PatternId, usize>,
 
     // NameId -> cluster (names already resolved / qualified)
     names: HashMap<NameId, usize>,
@@ -379,8 +392,8 @@ struct InferState<'a> {
     cluster: Vec<Cluster>,
 
     // literal bookkeeping: keep ValId for error context
-    int_lits: Vec<(ValId, usize)>,
-    float_lits: Vec<(ValId, usize)>,
+    int_lits: Vec<(ValueId, usize)>,
+    float_lits: Vec<(ValueId, usize)>,
 
     ans: LocalTypes,
 }
@@ -398,6 +411,7 @@ impl<'a> InferState<'a> {
             store,
             program,
             val_cluster: HashMap::new(),
+            pat_cluster: HashMap::new(),
             names: HashMap::new(),
             parent: Vec::new(),
             cluster: Vec::new(),
@@ -418,8 +432,12 @@ impl<'a> InferState<'a> {
         id
     }
 
-    fn bind_val(&mut self, v: ValId, c: usize) {
+    fn bind_val(&mut self, v: ValueId, c: usize) {
         self.val_cluster.insert(v, c);
+    }
+
+    fn bind_pat(&mut self, p: PatternId, c: usize) {
+        self.pat_cluster.insert(p, c);
     }
 
     /// Default: values get their own cluster unless the semantics aliases them
@@ -505,7 +523,7 @@ struct Clash {
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeError> {
+fn gather_constraints(ctx: &mut InferState, v: ValueId) -> Result<usize, TypeError> {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
@@ -540,13 +558,13 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
         }
 
         Value::NameRef(n) => {
-            if let Some(&c) = ctx.names.get(n) {
+            if let Some(&c) = ctx.names.get(&n) {
                 // immediate alias: this node is the same cluster as the binding
                 ctx.bind_val(v, c);
                 return Ok(c);
             }
 
-            if ctx.program.definitions.contains_key(n) {
+            if ctx.program.definitions.contains_key(&n) {
                 todo!("global name resolution / overload sets");
             }
 
@@ -554,13 +572,13 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let rhs_cluster = gather_constraints(ctx, *value)?;
-            let ann_ty = compile_type_expr(ctx, *ty)?;
+            let rhs_cluster = gather_constraints(ctx, value)?;
+            let ann_ty = compile_type_expr(ctx, ty)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(rhs_cluster, ann_ty) {
                 return Err(TypeError::AnnotationMismatch {
                     annotation: v,
-                    constrained: *value,
+                    constrained: value,
                     expected: ann_ty,
                     found: a,
                     note: "type annotation does not match value",
@@ -573,10 +591,10 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
         }
 
         Value::Cast { value, ty } => {
-            let _ = gather_constraints(ctx, *value)?;
+            let _ = gather_constraints(ctx, value)?;
             // Cast produces a new type identity: the target type
             let c = ctx.new_cluster();
-            let t = compile_type_expr(ctx, *ty)?;
+            let t = compile_type_expr(ctx, ty)?;
             ctx.cluster[c].ty = Some(t);
             ctx.bind_val(v, c);
             Ok(c)
@@ -587,8 +605,8 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
             value,
             else_part,
         } => {
-            let rhs = gather_constraints(ctx, *value)?;
-            let lhs = gather_pattern_constraints(ctx, *pat)?;
+            let rhs = gather_constraints(ctx, value)?;
+            let lhs = gather_pattern_constraints(ctx, pat)?;
 
             if let Err(Clash { a, b }) = ctx.union(lhs, rhs) {
                 return Err(TypeError::IncompatibleTypes {
@@ -600,10 +618,10 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
             }
 
             if let Some(e) = else_part {
-                let ec = gather_constraints(ctx, *e)?;
+                let ec = gather_constraints(ctx, e)?;
                 if let Err(Clash { a, b }) = ctx.union(lhs, ec) {
                     return Err(TypeError::IncompatibleTypes {
-                        site: *e,
+                        site: e,
                         left: a,
                         right: b,
                         note: "let-else requires the else value to match the pattern type",
@@ -626,7 +644,7 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
 
             // block aliases its return value cluster (or void)
             let c = match return_value {
-                Some(r) => gather_constraints(ctx, *r)?,
+                Some(r) => gather_constraints(ctx, r)?,
                 None => {
                     let c = ctx.new_cluster();
                     let t = ctx.builtin(BuiltinType::Void);
@@ -651,8 +669,8 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
             // so its sound to do the following:
             //    if we have {x OP int_lit} we can require the int literal is of the same type as op
 
-            let lc = gather_constraints(ctx, *lhs)?;
-            let rc = gather_constraints(ctx, *rhs)?;
+            let lc = gather_constraints(ctx, lhs)?;
+            let rc = gather_constraints(ctx, rhs)?;
 
             // Result cluster:
             // - comparisons always produce bool
@@ -733,17 +751,17 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
             }
 
             let out_ty = if let Some(x) = output_type {
-                compile_type_expr(ctx, *x)?
+                compile_type_expr(ctx, x)?
             } else {
                 BuiltinType::Void.into()
             };
 
-            let body_cluster = gather_constraints(ctx, *body)?;
+            let body_cluster = gather_constraints(ctx, body)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(body_cluster, out_ty) {
                 return Err(TypeError::AnnotationMismatch {
                     annotation: v,
-                    constrained: *body,
+                    constrained: body,
                     expected: out_ty,
                     found: a,
                     note: "type annotation does not match function output",
@@ -762,29 +780,30 @@ fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeErro
     }
 }
 
-fn gather_pattern_constraints(ctx: &mut InferState, p: IPattern) -> Result<usize, TypeError> {
+fn gather_pattern_constraints(ctx: &mut InferState, p: PatternId) -> Result<usize, TypeError> {
     match ctx.program.pattern(p) {
         Pattern::Bind(n) => {
             let c = ctx.new_cluster();
-            ctx.names.insert(*n, c);
-            ctx.bind_val(p, c);
+            ctx.names.insert(n, c);
+            ctx.bind_pat(p, c);
             Ok(c)
         }
 
         Pattern::TypeAnnotation { pat, ty } => {
-            let c = gather_pattern_constraints(ctx, *pat)?;
-            let t = compile_type_expr(ctx, *ty)?;
+            let c = gather_pattern_constraints(ctx, pat)?;
+            let t = compile_type_expr(ctx, ty)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(c, t) {
-                return Err(TypeError::AnnotationMismatch {
+                return Err(TypeError::PatternAnnotationMismatch {
                     annotation: p,
-                    constrained: *pat,
+                    constrained: pat,
                     expected: t,
                     found: a,
                     note: "pattern annotation does not match the value bound here",
                 });
             }
 
+            ctx.bind_pat(p, c);
             Ok(c)
         }
 
@@ -792,9 +811,9 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: IPattern) -> Result<usize
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, v: IValue) -> Result<TypeId, TypeError> {
+fn compile_type_expr(ctx: &mut InferState, v: ValueId) -> Result<TypeId, TypeError> {
     match ctx.program.value(v) {
-        Value::NameRef(n) => match ctx.program.definitions.get(n) {
+        Value::NameRef(n) => match ctx.program.definitions.get(&n) {
             Some(Defined::BuildinType(b)) => Ok(ctx.store.intern(b.clone())),
             Some(Defined::Type { ty, .. }) => Ok(*ty),
             _ => Err(TypeError::ExpectedType {
@@ -910,7 +929,7 @@ mod type_infer_tests {
     }
 
     /// Extract the body of the *single* function in the program.
-    fn extract_single_fn(program: &Program) -> IValue {
+    fn extract_single_fn(program: &Program) -> ValueId {
         *program
             .definitions
             .iter()
@@ -931,7 +950,7 @@ mod type_infer_tests {
         };
 
         let types = infer_value_internals(&program, store, f)?;
-        Ok(types.type_of(*body).unwrap())
+        Ok(types.type_of(body).unwrap())
     }
 
     //this is a hack for just testing
@@ -943,8 +962,8 @@ mod type_infer_tests {
             _ => panic!("expected function value"),
         };
 
-        let types = infer_value_internals(&program, store, *body)?;
-        Ok(types.type_of(*body).unwrap())
+        let types = infer_value_internals(&program, store, body)?;
+        Ok(types.type_of(body).unwrap())
     }
 
     macro_rules! assert_fn_type {

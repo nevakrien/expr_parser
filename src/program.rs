@@ -1,5 +1,8 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
-use crate::ir::{IPattern, IValue, Literal, NameId, Pattern, PatternSpan, Value, ValueSpan};
+use crate::ir::{
+    Literal, MatchArm, MatchArmId, NameId, Pattern, PatternId, PatternSpan, Value, ValueId,
+    ValueSpan,
+};
 use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
@@ -43,20 +46,11 @@ pub enum CompileError {
 pub enum Defined {
     ToBeDefined,
     Raw(LExpr),
-    Value(IValue),
-    Type { val: IValue, ty: TypeId },
+    Value(ValueId),
+    Type { val: ValueId, ty: TypeId },
     // TypeRef(TypeId),
     BuildinType(TypeValue),
     Macro(Macro),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ValId(pub usize);
-
-#[derive(Debug)]
-enum IrNode {
-    Value(Value),
-    Pattern(Pattern),
 }
 
 #[derive(Debug)]
@@ -64,8 +58,13 @@ pub struct Program {
     pub definitions: HashMap<NameId, Defined>,
     // pub current_infrence: Vec<TypeInfo>,
     // pub type_store: TypeStore,
-    nodes: Vec<IrNode>,
-    val_locs: Vec<Loc>,
+    values: Vec<Value>,
+    patterns: Vec<Pattern>,
+    arms: Vec<MatchArm>,
+    name_ids: Vec<NameId>,
+    value_locs: Vec<Loc>,
+    pattern_locs: Vec<Loc>,
+    arm_locs: Vec<Loc>,
 
     names_strs: Vec<StrId>,
     pub str_intern: StringInterner,
@@ -85,8 +84,13 @@ impl Program {
         let mut program = Self {
             definitions: HashMap::new(),
             // type_store: TypeStore::new(),
-            nodes: Vec::new(),
-            val_locs: Vec::new(),
+            values: Vec::new(),
+            patterns: Vec::new(),
+            arms: Vec::new(),
+            name_ids: Vec::new(),
+            value_locs: Vec::new(),
+            pattern_locs: Vec::new(),
+            arm_locs: Vec::new(),
 
             names_strs: Vec::new(),
             str_intern: StringInterner::new(),
@@ -105,65 +109,89 @@ impl Program {
         }
     }
 
-    pub fn id_value(&mut self, loc: Loc, value: Value) -> IValue {
-        let id = ValId(self.nodes.len());
-        self.nodes.push(IrNode::Value(value));
-        self.val_locs.push(loc);
+    pub fn id_value(&mut self, loc: Loc, value: Value) -> ValueId {
+        let id = ValueId(self.values.len());
+        self.values.push(value);
+        self.value_locs.push(loc);
         id
     }
 
-    pub fn id_pattern(&mut self, loc: Loc, pattern: Pattern) -> IPattern {
-        let id = ValId(self.nodes.len());
-        self.nodes.push(IrNode::Pattern(pattern));
-        self.val_locs.push(loc);
+    pub fn id_pattern(&mut self, loc: Loc, pattern: Pattern) -> PatternId {
+        let id = PatternId(self.patterns.len());
+        self.patterns.push(pattern);
+        self.pattern_locs.push(loc);
         id
+    }
+
+    pub fn push_match_arm(&mut self, loc: Loc, arm: MatchArm) -> MatchArmId {
+        let id = MatchArmId(self.arms.len());
+        self.arms.push(arm);
+        self.arm_locs.push(loc);
+        id
+    }
+
+    pub fn start_arm_span(&self) -> MatchArmId {
+        MatchArmId(self.arms.len())
+    }
+
+    pub fn start_name_span(&self) -> usize {
+        self.name_ids.len()
+    }
+
+    pub fn push_name_id(&mut self, id: NameId) {
+        self.name_ids.push(id);
     }
 
     pub fn reserve_value_span(&mut self, count: usize) -> ValueSpan {
-        let start = ValId(self.nodes.len());
+        let start = ValueId(self.values.len());
         for _ in 0..count {
-            self.nodes
-                .push(IrNode::Value(Value::Literal(Literal::Void)));
-            self.val_locs.push(Self::placeholder_loc());
+            self.values.push(Value::Literal(Literal::Void));
+            self.value_locs.push(Self::placeholder_loc());
         }
-        ValueSpan { start, count }
+        ValueSpan::new(start, count)
     }
 
     pub fn reserve_pattern_span(&mut self, count: usize) -> PatternSpan {
-        let start = ValId(self.nodes.len());
+        let start = PatternId(self.patterns.len());
         for _ in 0..count {
-            self.nodes.push(IrNode::Pattern(Pattern::Wildcard));
-            self.val_locs.push(Self::placeholder_loc());
+            self.patterns.push(Pattern::Wildcard);
+            self.pattern_locs.push(Self::placeholder_loc());
         }
-        PatternSpan { start, count }
+        PatternSpan::new(start, count)
     }
 
-    pub fn set_value(&mut self, id: ValId, loc: Loc, value: Value) {
-        self.val_locs[id.0] = loc;
-        self.nodes[id.0] = IrNode::Value(value);
+    pub fn set_value(&mut self, id: ValueId, loc: Loc, value: Value) {
+        self.value_locs[id.0] = loc;
+        self.values[id.0] = value;
     }
 
-    pub fn set_pattern(&mut self, id: ValId, loc: Loc, pattern: Pattern) {
-        self.val_locs[id.0] = loc;
-        self.nodes[id.0] = IrNode::Pattern(pattern);
+    pub fn set_pattern(&mut self, id: PatternId, loc: Loc, pattern: Pattern) {
+        self.pattern_locs[id.0] = loc;
+        self.patterns[id.0] = pattern;
     }
 
-    pub fn value(&self, id: ValId) -> &Value {
-        match &self.nodes[id.0] {
-            IrNode::Value(value) => value,
-            IrNode::Pattern(_) => panic!("expected value for id {id:?}"),
-        }
+    pub fn value(&self, id: ValueId) -> Value {
+        self.values[id.0]
     }
 
-    pub fn pattern(&self, id: ValId) -> &Pattern {
-        match &self.nodes[id.0] {
-            IrNode::Pattern(pattern) => pattern,
-            IrNode::Value(_) => panic!("expected pattern for id {id:?}"),
-        }
+    pub fn pattern(&self, id: PatternId) -> Pattern {
+        self.patterns[id.0]
     }
 
-    pub fn get_loc(&self, v: ValId) -> Loc {
-        self.val_locs[v.0].clone()
+    pub fn arm(&self, id: MatchArmId) -> MatchArm {
+        self.arms[id.0]
+    }
+
+    pub fn value_loc(&self, v: ValueId) -> Loc {
+        self.value_locs[v.0].clone()
+    }
+
+    pub fn pattern_loc(&self, p: PatternId) -> Loc {
+        self.pattern_locs[p.0].clone()
+    }
+
+    pub fn arm_loc(&self, a: MatchArmId) -> Loc {
+        self.arm_locs[a.0].clone()
     }
 
     /// Push a new variable scope onto the stack
