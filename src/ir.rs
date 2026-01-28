@@ -461,7 +461,6 @@ pub enum Pattern {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct MatchArm {
     pub pat: PatId,
-    pub guard: Option<ValId>,
     pub body: ValId,
 }
 
@@ -975,34 +974,8 @@ impl Program {
                 let body = self.lower_value(body_expr)?;
                 Ok(MatchArm {
                     pat,
-                    guard: None,
                     body,
                 })
-            }
-
-            Expr::Bin(op, pair) if op.value == "if" => {
-                let (left, guard_expr) = *pair;
-
-                if let Expr::Bin(arrow, inner_pair) = left.value
-                    && arrow.value == "=>"
-                {
-                    let (pat_expr, body_expr) = *inner_pair;
-                    let pat = self.lower_pattern(pat_expr)?;
-                    let guard = self.lower_value(guard_expr)?;
-                    let body = self.lower_value(body_expr)?;
-                    Ok(MatchArm {
-                        pat,
-                        guard: Some(guard),
-                        body,
-                    })
-                } else {
-                    Err(CompileError::UnsupportedForm {
-                        loc: expr.loc,
-                        op_loc: Some(op.loc),
-                        op: Some(op.value),
-                        message: ERR_INVALID_MATCH_ARM_GUARD,
-                    })
-                }
             }
 
             Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
