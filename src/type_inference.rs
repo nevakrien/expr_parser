@@ -72,7 +72,7 @@ pub struct TypeId(pub usize);
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
-    Int = 0,//for now this enum MUST start at 0
+    Int = 0,//for now this enum MUST start at 0 and we also need values in order
     Uint,
     I8,
     I16,
@@ -136,6 +136,7 @@ impl TryFrom<TypeId> for BuiltinType {
         panic!("BuiltinType must be 1 byte");
     }
 };*/
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeValue {
@@ -1025,7 +1026,6 @@ struct Clash {
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-
 fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeError> {
     match &v.value {
         Value::Literal(Literal::Num(_)) => {
@@ -1284,6 +1284,7 @@ fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<TypeId, TypeErr
         }),
     }
 }
+
 
 // ===================================
 // Late phases (normalized parent[] access)
