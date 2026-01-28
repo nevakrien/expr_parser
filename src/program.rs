@@ -1,7 +1,6 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
-use crate::ir::IValue;
-use crate::ir::NameId;
-use crate::macros::{Macro, expand_macros_recursive};
+use crate::ir::{IPattern, IValue, Literal, NameId, Pattern, PatternSpan, Value, ValueSpan};
+use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
@@ -54,25 +53,10 @@ pub enum Defined {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ValId(pub usize);
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct WithId<T> {
-    pub value: T,
-    pub id: ValId,
-}
-
-impl<T> WithId<T> {
-    /// Create a new Typed value with the same location and type but different inner value
-    pub fn with<U>(&self, value: U) -> WithId<U> {
-        WithId { id: self.id, value }
-    }
-
-    /// Transform the inner value using a function while preserving location and type
-    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> WithId<U> {
-        WithId {
-            id: self.id,
-            value: f(self.value),
-        }
-    }
+#[derive(Debug)]
+enum IrNode {
+    Value(Value),
+    Pattern(Pattern),
 }
 
 #[derive(Debug)]
@@ -80,6 +64,7 @@ pub struct Program {
     pub definitions: HashMap<NameId, Defined>,
     // pub current_infrence: Vec<TypeInfo>,
     // pub type_store: TypeStore,
+    nodes: Vec<IrNode>,
     val_locs: Vec<Loc>,
 
     names_strs: Vec<StrId>,
@@ -100,6 +85,7 @@ impl Program {
         let mut program = Self {
             definitions: HashMap::new(),
             // type_store: TypeStore::new(),
+            nodes: Vec::new(),
             val_locs: Vec::new(),
 
             names_strs: Vec::new(),
@@ -112,14 +98,68 @@ impl Program {
         program
     }
 
-    pub fn with_id<T>(&mut self, x: Located<T>) -> WithId<T> {
-        let id = ValId(self.val_locs.len());
-        self.val_locs.push(x.loc);
-        WithId { value: x.value, id }
+    fn placeholder_loc() -> Loc {
+        Loc {
+            range: 0..0,
+            file: 0,
+        }
     }
 
-    pub fn id_value<T>(&mut self, loc: Loc, value: T) -> WithId<T> {
-        self.with_id(loc.clone().with(value))
+    pub fn id_value(&mut self, loc: Loc, value: Value) -> IValue {
+        let id = ValId(self.nodes.len());
+        self.nodes.push(IrNode::Value(value));
+        self.val_locs.push(loc);
+        id
+    }
+
+    pub fn id_pattern(&mut self, loc: Loc, pattern: Pattern) -> IPattern {
+        let id = ValId(self.nodes.len());
+        self.nodes.push(IrNode::Pattern(pattern));
+        self.val_locs.push(loc);
+        id
+    }
+
+    pub fn reserve_value_span(&mut self, count: usize) -> ValueSpan {
+        let start = ValId(self.nodes.len());
+        for _ in 0..count {
+            self.nodes
+                .push(IrNode::Value(Value::Literal(Literal::Void)));
+            self.val_locs.push(Self::placeholder_loc());
+        }
+        ValueSpan { start, count }
+    }
+
+    pub fn reserve_pattern_span(&mut self, count: usize) -> PatternSpan {
+        let start = ValId(self.nodes.len());
+        for _ in 0..count {
+            self.nodes.push(IrNode::Pattern(Pattern::Wildcard));
+            self.val_locs.push(Self::placeholder_loc());
+        }
+        PatternSpan { start, count }
+    }
+
+    pub fn set_value(&mut self, id: ValId, loc: Loc, value: Value) {
+        self.val_locs[id.0] = loc;
+        self.nodes[id.0] = IrNode::Value(value);
+    }
+
+    pub fn set_pattern(&mut self, id: ValId, loc: Loc, pattern: Pattern) {
+        self.val_locs[id.0] = loc;
+        self.nodes[id.0] = IrNode::Pattern(pattern);
+    }
+
+    pub fn value(&self, id: ValId) -> &Value {
+        match &self.nodes[id.0] {
+            IrNode::Value(value) => value,
+            IrNode::Pattern(_) => panic!("expected value for id {id:?}"),
+        }
+    }
+
+    pub fn pattern(&self, id: ValId) -> &Pattern {
+        match &self.nodes[id.0] {
+            IrNode::Pattern(pattern) => pattern,
+            IrNode::Value(_) => panic!("expected pattern for id {id:?}"),
+        }
     }
 
     pub fn get_loc(&self, v: ValId) -> Loc {

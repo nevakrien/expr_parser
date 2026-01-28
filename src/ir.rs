@@ -13,13 +13,66 @@ use crate::error_messages::{
     ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
-use crate::program::WithId;
+use crate::program::ValId;
 use crate::program::{CResult, CompileError, Program};
+
+//this file needs to move Value and Pattern into a dense array
+//note that currently the only major diffrence between Value and Pattern is Bind
+//the one place which actually reads them would become simpler if we merge the 2. 
+//would actually remove a lot of semi duplicate code from type infrence
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>;
-pub type IValue = WithId<Value>;
-pub type IPattern = WithId<Pattern>;
+
+//IValue would become neich now since Value can just store ValId instead of Box<IValue>
+//it is still meaningful in all other places just not so much this file
+pub type IValue = ValId;
+pub type IPattern = ValId;
+
+///comment is now for explaining to LLM later LLM should rewrite it to actual docs explaining usage
+///
+///this type would be used to store &[Value] in our dynamic array
+///things that used to push/collect a vec on the fly should be converted to: 
+///1. push some sentinal value say Value::Void ahead of time so we have the span of size N ready. 
+///2. compile sub expressions and overwrite the sentinal value with the correct thing 
+///
+///its generally fine if errors leave sentinal values as errors imply we are gona not read the thing anyway
+///if cleanup would seem needed we add it AFTER this change batch
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct ValueSpan {
+    pub start: ValId,
+    pub count: usize,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct PatternSpan {
+    pub start: ValId,
+    pub count: usize,
+}
+
+impl ValueSpan {
+    #[inline]
+    pub fn at(&self, index: usize) -> ValId {
+        ValId(self.start.0 + index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl Iterator<Item = ValId> + '_ {
+        (self.start.0..self.start.0 + self.count).map(ValId)
+    }
+}
+
+impl PatternSpan {
+    #[inline]
+    pub fn at(&self, index: usize) -> ValId {
+        ValId(self.start.0 + index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl Iterator<Item = ValId> + '_ {
+        (self.start.0..self.start.0 + self.count).map(ValId)
+    }
+}
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -113,8 +166,8 @@ pub enum Dir {
 /// Assignment operator, where `None` means plain `=`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AssignOp {
-    Nothing(Box<IValue>),
-    Bin(BinOp, Box<IValue>),
+    Nothing(IValue),
+    Bin(BinOp, IValue),
     Pre(Dir),
     Post(Dir),
 }
@@ -143,38 +196,38 @@ pub enum Value {
     /// Wildcard pattern that matches anything (_)
     Wildcard,
 
-    Tuple(Vec<IValue>),
+    Tuple(ValueSpan),
 
     /// Pure binary operation
     BinOp {
         op: BinOp,
-        values: Box<(IValue, IValue)>,
+        values: (IValue, IValue),
     },
 
     /// Pure unary operation
     UnOp {
         op: UnOp,
-        value: Box<IValue>,
+        value: IValue,
     },
 
     //===== TYPES =====
     /// Explicit type cast
     Cast {
-        value: Box<IValue>,
-        ty: Box<IValue>,
+        value: IValue,
+        ty: IValue,
     },
 
     /// Type annotation
     TypeAnnotation {
-        value: Box<IValue>,
-        ty: Box<IValue>,
+        value: IValue,
+        ty: IValue,
     },
 
     //==== MUTATION GATES =====
     /// Function or callable invocation
     Call {
-        callee: Box<IValue>,
-        args: Vec<IValue>,
+        callee: IValue,
+        args: ValueSpan,
     },
 
     /// Assignment with explicit sequencing.
@@ -184,18 +237,18 @@ pub enum Value {
     /// - Mutation occurs
     Assign {
         op: AssignOp,
-        target: Box<IValue>,
+        target: IValue,
     },
 
     /// Indexing or specialization
     Index {
-        base: Box<IValue>,
-        args: Vec<IValue>,
+        base: IValue,
+        args: ValueSpan,
     },
 
     /// Field/type access with deferred name resolution
     Access {
-        base: Box<IValue>,
+        base: IValue,
         name: AccessName,
         kind: AccessKind,
     },
@@ -204,53 +257,53 @@ pub enum Value {
     /// Immutable binding
     Let {
         pat: IPattern,
-        value: Box<IValue>,
-        else_part: Option<Box<IValue>>,
+        value: IValue,
+        else_part: Option<IValue>,
     },
 
     /// Lexical block
     Block {
-        statements: Vec<IValue>,
-        return_value: Option<Box<IValue>>,
+        statements: ValueSpan,
+        return_value: Option<IValue>,
     },
 
     //==== CONTROL FLOW =====
     /// Short-circuiting logical operations.
     LogicOp {
         op: LogicOp,
-        values: Box<(IValue, IValue)>,
+        values: (IValue, IValue),
     },
 
     /// Conditional expression
     If {
-        cond: Box<IValue>,
-        then: Box<IValue>,
-        els: Option<Box<IValue>>,
+        cond: IValue,
+        then: IValue,
+        els: Option<IValue>,
     },
 
     /// Loop
     While {
-        cond: Box<IValue>,
-        body: Box<IValue>,
+        cond: IValue,
+        body: IValue,
     },
 
     /// Function literal
     Func {
         generics: Vec<NameId>,
-        params: Vec<IPattern>,
-        output_type: Option<Box<IValue>>,
-        body: Box<IValue>,
+        params: PatternSpan,
+        output_type: Option<IValue>,
+        body: IValue,
     },
 
     /// Early return
-    Return(Option<Box<IValue>>),
+    Return(Option<IValue>),
 
     Break,
     Continue,
 
     /// Pattern match
     Match {
-        value: Box<IValue>,
+        value: IValue,
         arms: Vec<MatchArm>,
     },
 }
@@ -269,11 +322,11 @@ pub enum Pattern {
     /// Wildcard pattern that matches anything (_)
     Wildcard,
     /// Tuple pattern with multiple sub-patterns
-    Tuple(Vec<IPattern>),
+    Tuple(PatternSpan),
     /// Literal value pattern
     Literal(Literal),
     /// Type annotation pattern (x:T)
-    TypeAnnotation { pat: Box<IPattern>, ty: Box<IValue> },
+    TypeAnnotation { pat: IPattern, ty: IValue },
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -288,12 +341,6 @@ pub enum Pattern {
     // },
 }
 
-/// Named field in a destructoring pattern
-#[derive(Debug, Clone, PartialEq)]
-pub struct PatternField {
-    pub name: LName,
-    pub value: IPattern,
-}
 
 /// Single arm in a match expression
 #[derive(Debug, Clone, PartialEq)]
@@ -308,6 +355,19 @@ impl Program {
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
     pub fn lower_value(&mut self, expr: LExpr) -> CResult<IValue> {
+        let loc = expr.loc.clone();
+        let value = self.lower_value_inner(expr)?;
+        Ok(self.id_value(loc, value))
+    }
+
+    fn lower_value_into(&mut self, target: ValId, expr: LExpr) -> CResult<IValue> {
+        let loc = expr.loc.clone();
+        let value = self.lower_value_inner(expr)?;
+        self.set_value(target, loc, value);
+        Ok(target)
+    }
+
+    fn lower_value_inner(&mut self, expr: LExpr) -> CResult<Value> {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
 
@@ -368,7 +428,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_atom(&mut self, loc: &Loc, token: Token) -> CResult<IValue> {
+    fn lower_atom(&mut self, loc: &Loc, token: Token) -> CResult<Value> {
         let value = match token {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
@@ -390,37 +450,39 @@ impl Program {
             }
         };
 
-        Ok(self.id_value(loc.clone(), value))
+        Ok(value)
     }
 
     #[inline(always)]
-    fn lower_block_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_block_expr(&mut self, _loc: Loc, mut items: Vec<LExpr>) -> CResult<Value> {
         self.with_scope(|this| {
-            let mut statements = Vec::new();
-            let mut return_value = None;
-
-            if let Some(last) = items.pop() {
-                for item in items {
-                    statements.push(this.lower_value(item)?);
+            let (statements, return_value) = if let Some(last) = items.pop() {
+                let span = this.reserve_value_span(items.len());
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = span.at(index);
+                    this.lower_value_into(target, item)?;
                 }
 
-                if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
-                    return_value = Some(Box::new(this.lower_value(last)?));
-                }
-            }
+                let return_value = if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
+                    Some(this.lower_value(last)?)
+                } else {
+                    None
+                };
 
-            Ok(this.id_value(
-                loc,
-                Value::Block {
-                    statements,
-                    return_value,
-                },
-            ))
+                (span, return_value)
+            } else {
+                (this.reserve_value_span(0), None)
+            };
+
+            Ok(Value::Block {
+                statements,
+                return_value,
+            })
         })
     }
 
     #[inline(always)]
-    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(2 <= items.len() && items.len() <= 3);
 
         let else_exp = if items.len() == 3 { items.pop() } else { None };
@@ -428,55 +490,66 @@ impl Program {
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
 
-        let value = Box::new(self.lower_value(value_expr)?);
+        let value = self.lower_value(value_expr)?;
         let pat = self.lower_pattern(pat_expr)?;
 
         let else_part = if let Some(exp) = else_exp {
             let v = self.with_scope(|prog| prog.lower_value(exp))?;
-            Some(Box::new(v))
+            Some(v)
         } else {
             None
         };
 
-        Ok(self.id_value(
-            loc,
-            Value::Let {
-                pat,
-                value,
-                else_part,
-            },
-        ))
+        let _ = loc;
+
+        Ok(Value::Let {
+            pat,
+            value,
+            else_part,
+        })
     }
 
     #[inline(always)]
-    fn lower_call_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_call_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(!items.is_empty(), "call expression missing callee");
 
         let mut items = items;
-        let callee = Box::new(self.lower_value(items.remove(0))?);
+        let callee = self.lower_value(items.remove(0))?;
 
-        let args: Result<Vec<_>, _> = items.into_iter().map(|arg| self.lower_value(arg)).collect();
-        let args = args?;
+        let args_span = self.reserve_value_span(items.len());
+        for (index, arg) in items.into_iter().enumerate() {
+            let target = args_span.at(index);
+            self.lower_value_into(target, arg)?;
+        }
 
-        Ok(self.id_value(loc, Value::Call { callee, args }))
+        Ok(Value::Call {
+            callee,
+            args: args_span,
+        })
     }
 
     #[inline(always)]
-    fn lower_index_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_index_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(!items.is_empty(), "index expression missing base");
 
         let mut items = items;
         //TODO this can actually be a generic so a pattern
-        let base = Box::new(self.lower_value(items.remove(0))?);
+        let base = self.lower_value(items.remove(0))?;
 
-        let args: Result<Vec<_>, _> = items.into_iter().map(|arg| self.lower_value(arg)).collect();
-        let args = args?;
+        let args_span = self.reserve_value_span(items.len());
+        for (index, arg) in items.into_iter().enumerate() {
+            let target = args_span.at(index);
+            self.lower_value_into(target, arg)?;
+        }
 
-        Ok(self.id_value(loc, Value::Index { base, args }))
+        Ok(Value::Index {
+            base,
+            args: args_span,
+        })
     }
 
     #[inline(always)]
-    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         if items.len() < 2 {
             return Err(CompileError::SimpleError {
                 loc,
@@ -485,7 +558,7 @@ impl Program {
         }
 
         let mut items = items;
-        let value = Box::new(self.lower_value(items.remove(0))?);
+        let value = self.lower_value(items.remove(0))?;
 
         let arms: Result<Vec<_>, _> = items
             .into_iter()
@@ -493,11 +566,12 @@ impl Program {
             .collect();
         let arms = arms?;
 
-        Ok(self.id_value(loc, Value::Match { value, arms }))
+        let _ = loc;
+        Ok(Value::Match { value, arms })
     }
 
     #[inline(always)]
-    fn lower_if_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_if_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         if items.len() < 2 || items.len() > 3 {
             return Err(CompileError::SimpleError {
                 loc,
@@ -514,19 +588,19 @@ impl Program {
             None
         };
 
-        let cond = Box::new(self.lower_value(cond_expr)?);
-        let then = Box::new(self.lower_value(then_expr)?);
+        let cond = self.lower_value(cond_expr)?;
+        let then = self.lower_value(then_expr)?;
         let els = if let Some(else_expr) = else_expr {
-            Some(Box::new(self.lower_value(else_expr)?))
+            Some(self.lower_value(else_expr)?)
         } else {
             None
         };
-
-        Ok(self.id_value(loc, Value::If { cond, then, els }))
+        let _ = loc;
+        Ok(Value::If { cond, then, els })
     }
 
     #[inline(always)]
-    fn lower_while_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_while_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         if items.len() != 2 {
             return Err(CompileError::SimpleError {
                 loc,
@@ -538,31 +612,29 @@ impl Program {
         let cond_expr = items.remove(0);
         let then_expr = items.remove(0);
 
-        let cond = Box::new(self.lower_value(cond_expr)?);
-        let body = Box::new(self.lower_value(then_expr)?);
-
-        Ok(self.id_value(loc, Value::While { cond, body }))
+        let cond = self.lower_value(cond_expr)?;
+        let body = self.lower_value(then_expr)?;
+        let _ = loc;
+        Ok(Value::While { cond, body })
     }
 
     #[inline(always)]
-    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<IValue> {
+    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<Value> {
         let (lhs, rhs) = pair;
 
         //TODO: target might be a pattern in rare cases? not sure
-        let target = Box::new(self.lower_value(lhs)?);
-        let value = Box::new(self.lower_value(rhs)?);
+        let target = self.lower_value(lhs)?;
+        let value = self.lower_value(rhs)?;
 
-        Ok(self.id_value(
-            loc,
-            Value::Assign {
-                op: AssignOp::Nothing(value),
-                target,
-            },
-        ))
+        let _ = loc;
+        Ok(Value::Assign {
+            op: AssignOp::Nothing(value),
+            target,
+        })
     }
 
     #[inline(always)]
-    fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(
             (1..=3).contains(&items.len()),
             "fn expects optional generics, signature, and optional body"
@@ -623,15 +695,15 @@ impl Program {
                 }
             }
 
-            let mut params = Vec::with_capacity(param_items.len());
-            for param in param_items {
+            let params_span = p.reserve_pattern_span(param_items.len());
+            for (index, param) in param_items.into_iter().enumerate() {
                 //TODO support type anotation
-                let pat = p.lower_pattern(param)?;
-                params.push(pat);
+                let target = params_span.at(index);
+                p.lower_pattern_into(target, param)?;
             }
 
             let output_type = match ret_expr {
-                Some(e) => Some(Box::new(p.lower_value(e)?)),
+                Some(e) => Some(p.lower_value(e)?),
                 None => None,
             };
 
@@ -639,17 +711,15 @@ impl Program {
                 Some(expr) => expr,
                 None => todo!(),
             };
-            let body = Box::new(p.lower_value(body_expr)?);
+            let body = p.lower_value(body_expr)?;
 
-            Ok(p.id_value(
-                loc,
-                Value::Func {
-                    generics,
-                    params,
-                    output_type,
-                    body,
-                },
-            ))
+            let _ = loc;
+            Ok(Value::Func {
+                generics,
+                params: params_span,
+                output_type,
+                body,
+            })
         })
     }
 
@@ -659,16 +729,17 @@ impl Program {
         loc: Loc,
         op: Located<&'static str>,
         pair: (LExpr, LExpr),
-    ) -> CResult<IValue> {
+    ) -> CResult<Value> {
         let (value_expr, ty_expr) = pair;
-        let value = Box::new(self.lower_value(value_expr)?);
-        let ty = Box::new(self.lower_value(ty_expr)?);
+        let value = self.lower_value(value_expr)?;
+        let ty = self.lower_value(ty_expr)?;
         let v = match op.value {
             "as" => Value::Cast { value, ty },
             ":" => Value::TypeAnnotation { value, ty },
             _ => panic!("unsupported cast operator `{}`", op.value),
         };
-        Ok(self.id_value(loc, v))
+        let _ = loc;
+        Ok(v)
     }
 
     #[inline(always)]
@@ -678,8 +749,8 @@ impl Program {
         op: Located<&'static str>,
         lhs: LExpr,
         rhs: LExpr,
-    ) -> CResult<IValue> {
-        let base = Box::new(self.lower_value(lhs)?);
+    ) -> CResult<Value> {
+        let base = self.lower_value(lhs)?;
         let name = match rhs.value {
             Expr::Atom(Token::Ident(name)) => AccessName { name },
             _ => {
@@ -697,28 +768,43 @@ impl Program {
             _ => panic!("unsupported access operator `{}`", op.value),
         };
 
-        Ok(self.id_value(loc, Value::Access { base, name, kind }))
+        let _ = loc;
+        Ok(Value::Access { base, name, kind })
     }
 
     pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<IPattern> {
-        let loc = expr.loc;
+        let loc = expr.loc.clone();
+        let pattern = self.lower_pattern_inner(expr)?;
+        Ok(self.id_pattern(loc, pattern))
+    }
+
+    fn lower_pattern_into(&mut self, target: ValId, expr: LExpr) -> CResult<IPattern> {
+        let loc = expr.loc.clone();
+        let pattern = self.lower_pattern_inner(expr)?;
+        self.set_pattern(target, loc, pattern);
+        Ok(target)
+    }
+
+    fn lower_pattern_inner(&mut self, expr: LExpr) -> CResult<Pattern> {
+        let loc = expr.loc.clone();
         match expr.value {
             Expr::Atom(Token::Ident(name)) if name == "_" => {
-                Ok(self.id_value(loc, Pattern::Wildcard))
+                Ok(Pattern::Wildcard)
             }
 
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
                 let id = self.insert_value_in_current_scope(name);
-                Ok(self.id_value(loc, Pattern::Bind(id)))
+                Ok(Pattern::Bind(id))
             }
 
             Expr::Prefix(open, items) if open.value == "(" => {
-                let mut parts = Vec::with_capacity(items.len());
-                for item in items {
-                    parts.push(self.lower_pattern(item)?);
+                let span = self.reserve_pattern_span(items.len());
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = span.at(index);
+                    self.lower_pattern_into(target, item)?;
                 }
-                Ok(self.id_value(loc, Pattern::Tuple(parts)))
+                Ok(Pattern::Tuple(span))
             }
 
             // Pattern with type annotation: x:T
@@ -728,13 +814,8 @@ impl Program {
                 let ty = self.lower_value(ty_expr)?;
 
                 // Create a type annotation pattern
-                Ok(self.id_value(
-                    loc,
-                    Pattern::TypeAnnotation {
-                        pat: Box::new(pat),
-                        ty: Box::new(ty),
-                    },
-                ))
+                let _ = loc;
+                Ok(Pattern::TypeAnnotation { pat, ty })
             }
 
             Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
@@ -832,7 +913,7 @@ impl Program {
         loc: Loc,
         op: Located<&'static str>,
         items: Vec<LExpr>,
-    ) -> CResult<IValue> {
+    ) -> CResult<Value> {
         let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
@@ -857,15 +938,10 @@ impl Program {
             panic!("prefix operator `{}` with {} operands", op, items.len());
         }
 
-        let rhs = Box::new(self.lower_value(items.into_iter().next().unwrap())?);
+        let rhs = self.lower_value(items.into_iter().next().unwrap())?;
 
-        Ok(self.id_value(
-            loc,
-            Value::UnOp {
-                op: unop,
-                value: rhs,
-            },
-        ))
+        let _ = loc;
+        Ok(Value::UnOp { op: unop, value: rhs })
     }
 
     #[inline(always)]
@@ -874,7 +950,7 @@ impl Program {
         _loc: Loc,
         op: Located<&'static str>,
         items: Vec<LExpr>,
-    ) -> CResult<IValue> {
+    ) -> CResult<Value> {
         match op.value {
             // these are handled earlier and must never reach here
             "(" | "[" => unreachable!("call/index should be handled before postfix ops"),
@@ -892,20 +968,18 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<IValue> {
+    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<Value> {
         if items.len() != 1 {
             panic!("prefix operator with {} operands", items.len());
         }
 
-        let target = Box::new(self.lower_value(items.pop().unwrap())?);
+        let target = self.lower_value(items.pop().unwrap())?;
 
-        Ok(self.id_value(
-            op.loc,
-            Value::Assign {
-                op: AssignOp::Pre(op.value),
-                target,
-            },
-        ))
+        let _ = op.loc;
+        Ok(Value::Assign {
+            op: AssignOp::Pre(op.value),
+            target,
+        })
     }
 
     #[inline(always)]
@@ -913,20 +987,18 @@ impl Program {
         &mut self,
         op: Located<Dir>,
         mut items: Vec<LExpr>,
-    ) -> CResult<IValue> {
+    ) -> CResult<Value> {
         if items.len() != 1 {
             panic!("postfix operator with {} operands", items.len());
         }
 
-        let target = Box::new(self.lower_value(items.remove(0))?);
+        let target = self.lower_value(items.remove(0))?;
 
-        Ok(self.id_value(
-            op.loc.clone(),
-            Value::Assign {
-                op: AssignOp::Post(op.value),
-                target,
-            },
-        ))
+        let _ = op.loc.clone();
+        Ok(Value::Assign {
+            op: AssignOp::Post(op.value),
+            target,
+        })
     }
 
     #[inline(always)]
@@ -936,7 +1008,7 @@ impl Program {
         op: Located<&'static str>,
         lhs: LExpr,
         rhs: LExpr,
-    ) -> CResult<IValue> {
+    ) -> CResult<Value> {
         if let Some(assign_op) = match op.value {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
@@ -951,20 +1023,18 @@ impl Program {
             ">>=" => Some(Some(BinOp::Shr)),
             _ => None,
         } {
-            let target = Box::new(self.lower_value(lhs)?);
-            let value = Box::new(self.lower_value(rhs)?);
+            let target = self.lower_value(lhs)?;
+            let value = self.lower_value(rhs)?;
 
-            return Ok(self.id_value(
-                loc,
-                Value::Assign {
-                    target,
-                    op: if let Some(o) = assign_op {
-                        AssignOp::Bin(o, value)
-                    } else {
-                        AssignOp::Nothing(value)
-                    },
+            let _ = loc;
+            return Ok(Value::Assign {
+                target,
+                op: if let Some(o) = assign_op {
+                    AssignOp::Bin(o, value)
+                } else {
+                    AssignOp::Nothing(value)
                 },
-            ));
+            });
         }
 
         if let Some(logic_op) = match op.value {
@@ -974,13 +1044,11 @@ impl Program {
         } {
             let left = self.lower_value(lhs)?;
             let right = self.lower_value(rhs)?;
-            return Ok(self.id_value(
-                loc,
-                Value::LogicOp {
-                    op: logic_op,
-                    values: Box::new((left, right)),
-                },
-            ));
+            let _ = loc;
+            return Ok(Value::LogicOp {
+                op: logic_op,
+                values: (left, right),
+            });
         }
 
         let binop = match op.value {
@@ -1016,13 +1084,11 @@ impl Program {
         let left = self.lower_value(lhs)?;
         let right = self.lower_value(rhs)?;
 
-        Ok(self.id_value(
-            loc,
-            Value::BinOp {
-                op: binop,
-                values: Box::new((left, right)),
-            },
-        ))
+        let _ = loc;
+        Ok(Value::BinOp {
+            op: binop,
+            values: (left, right),
+        })
     }
 }
 
@@ -1042,42 +1108,42 @@ mod var_scope_test {
         let expr = parser.consume_expr().expect("failed to parse expr");
         let ir = program.lower_value(expr).expect("lowering failed");
         // top-level should be a block
-        let top_block = match ir.value {
-            Value::Block { ref statements, .. } => statements,
+        let top_block = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected top-level block"),
         };
         // expect three statements: let a, inner block, final a
         assert_eq!(top_block.len(), 3);
         // Grab outer let bind id
-        let outer_pat = match &top_block[0].value {
+        let outer_pat = match program.value(top_block[0]) {
             Value::Let { pat, .. } => pat,
             _ => panic!("expected outer let"),
         };
-        let outer_id = match &outer_pat.value {
+        let outer_id = match program.pattern(*outer_pat) {
             Pattern::Bind(id) => *id,
             _ => panic!("expected bind pattern"),
         };
         // Final name ref refers to outer
-        let final_ref = match &top_block[2].value {
+        let final_ref = match program.value(top_block[2]) {
             Value::NameRef(id) => *id,
             _ => panic!("expected final name reference"),
         };
         assert_eq!(outer_id, final_ref);
         // Inner block
-        let inner_block = match &top_block[1].value {
-            Value::Block { statements, .. } => statements,
+        let inner_block = match program.value(top_block[1]) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected inner block"),
         };
         assert_eq!(inner_block.len(), 2);
-        let inner_pat = match &inner_block[0].value {
+        let inner_pat = match program.value(inner_block[0]) {
             Value::Let { pat, .. } => pat,
             _ => panic!("expected inner let"),
         };
-        let inner_id = match &inner_pat.value {
+        let inner_id = match program.pattern(*inner_pat) {
             Pattern::Bind(id) => *id,
             _ => panic!("expected bind pattern"),
         };
-        let inner_ref = match &inner_block[1].value {
+        let inner_ref = match program.value(inner_block[1]) {
             Value::NameRef(id) => *id,
             _ => panic!("expected inner name reference"),
         };
@@ -1097,17 +1163,18 @@ mod lowering_tests {
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
-    fn lower_block(src: &str) -> IValue {
+    fn lower_block(src: &str) -> (Program, IValue) {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
-        program.lower_value(expr).unwrap()
+        let ir = program.lower_value(expr).unwrap();
+        (program, ir)
     }
 
-    fn bound_id(stmt: &IValue) -> NameId {
-        match &stmt.value {
-            Value::Let { pat, .. } => match pat.value {
-                Pattern::Bind(id) => id,
+    fn bound_id(program: &Program, stmt: IValue) -> NameId {
+        match program.value(stmt) {
+            Value::Let { pat, .. } => match program.pattern(*pat) {
+                Pattern::Bind(id) => *id,
                 _ => panic!("expected bind pattern"),
             },
             _ => panic!("expected let statement"),
@@ -1117,47 +1184,49 @@ mod lowering_tests {
     #[test]
     fn lowers_call_and_index_with_bound_names() {
         let src = "{ let f = 1; let a = 2; f(a, 3)[a, 4]; }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let statements = match ir.value {
-            Value::Block { statements, .. } => statements,
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected block"),
         };
         assert_eq!(statements.len(), 3);
 
-        let f_id = bound_id(&statements[0]);
-        let a_id = bound_id(&statements[1]);
+        let f_id = bound_id(&program, statements[0]);
+        let a_id = bound_id(&program, statements[1]);
 
-        let (base, index_args) = match &statements[2].value {
-            Value::Index { base, args } => (base, args),
+        let (base, index_args) = match program.value(statements[2]) {
+            Value::Index { base, args } => (*base, *args),
             _ => panic!("expected index expression"),
         };
 
-        let (callee, call_args) = match &base.value {
-            Value::Call { callee, args } => (callee, args),
+        let (callee, call_args) = match program.value(base) {
+            Value::Call { callee, args } => (*callee, *args),
             _ => panic!("expected call base"),
         };
 
-        match callee.value {
-            Value::NameRef(id) => assert_eq!(id, f_id),
+        match program.value(callee) {
+            Value::NameRef(id) => assert_eq!(*id, f_id),
             _ => panic!("expected callee to be name"),
         }
+        let call_args = call_args.ids().collect::<Vec<_>>();
         assert_eq!(call_args.len(), 2);
-        match call_args[0].value {
-            Value::NameRef(id) => assert_eq!(id, a_id),
+        match program.value(call_args[0]) {
+            Value::NameRef(id) => assert_eq!(*id, a_id),
             _ => panic!("expected first call arg to be name"),
         }
-        match call_args[1].value {
+        match program.value(call_args[1]) {
             Value::Literal(Literal::Num(3)) => {}
             _ => panic!("expected literal call arg"),
         }
 
+        let index_args = index_args.ids().collect::<Vec<_>>();
         assert_eq!(index_args.len(), 2);
-        match index_args[0].value {
-            Value::NameRef(id) => assert_eq!(id, a_id),
+        match program.value(index_args[0]) {
+            Value::NameRef(id) => assert_eq!(*id, a_id),
             _ => panic!("expected first index arg to be name"),
         }
-        match index_args[1].value {
+        match program.value(index_args[1]) {
             Value::Literal(Literal::Num(4)) => {}
             _ => panic!("expected literal index arg"),
         }
@@ -1166,33 +1235,33 @@ mod lowering_tests {
     #[test]
     fn lowers_match_with_wildcard_arm() {
         let src = "{ let x = 1; match x { _ => x; }; }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let statements = match ir.value {
-            Value::Block { statements, .. } => statements,
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected block"),
         };
         assert_eq!(statements.len(), 2);
 
-        let x_id = bound_id(&statements[0]);
+        let x_id = bound_id(&program, statements[0]);
 
-        let (scrutinee, arms) = match &statements[1].value {
-            Value::Match { value, arms } => (value, arms),
+        let (scrutinee, arms) = match program.value(statements[1]) {
+            Value::Match { value, arms } => (*value, arms),
             _ => panic!("expected match"),
         };
 
-        match scrutinee.value {
-            Value::NameRef(id) => assert_eq!(id, x_id),
+        match program.value(scrutinee) {
+            Value::NameRef(id) => assert_eq!(*id, x_id),
             _ => panic!("expected scrutinee name"),
         }
 
         assert_eq!(arms.len(), 1);
-        match arms[0].pat.value {
+        match program.pattern(arms[0].pat) {
             Pattern::Wildcard => {}
             _ => panic!("expected wildcard pattern"),
         }
-        match arms[0].body.value {
-            Value::NameRef(id) => assert_eq!(id, x_id),
+        match program.value(arms[0].body) {
+            Value::NameRef(id) => assert_eq!(*id, x_id),
             _ => panic!("expected arm body to reference x"),
         }
     }
@@ -1200,9 +1269,9 @@ mod lowering_tests {
     #[test]
     fn lowers_match_as_block_return_value() {
         let src = "{ let x = 1; match x { _ => x; } }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let (statements, return_value) = match ir.value {
+        let (statements, return_value) = match program.value(ir) {
             Value::Block {
                 statements,
                 return_value,
@@ -1210,18 +1279,19 @@ mod lowering_tests {
             _ => panic!("expected block"),
         };
 
+        let statements = statements.ids().collect::<Vec<_>>();
         assert_eq!(statements.len(), 1);
         assert!(return_value.is_some());
 
-        let x_id = bound_id(&statements[0]);
+        let x_id = bound_id(&program, statements[0]);
         let match_expr = return_value.unwrap();
-        let (scrutinee, arms) = match match_expr.value {
-            Value::Match { value, arms } => (value, arms),
+        let (scrutinee, arms) = match program.value(match_expr) {
+            Value::Match { value, arms } => (*value, arms),
             _ => panic!("expected match"),
         };
 
-        match scrutinee.value {
-            Value::NameRef(id) => assert_eq!(id, x_id),
+        match program.value(scrutinee) {
+            Value::NameRef(id) => assert_eq!(*id, x_id),
             _ => panic!("expected scrutinee name"),
         }
         assert_eq!(arms.len(), 1);
@@ -1230,22 +1300,22 @@ mod lowering_tests {
     #[test]
     fn lowers_access_for_dot_and_paths() {
         let src = "{ let a = 1; let t = 2; a.b; t::c; }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let statements = match ir.value {
-            Value::Block { statements, .. } => statements,
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected block"),
         };
         assert_eq!(statements.len(), 4);
 
-        let a_id = bound_id(&statements[0]);
-        let t_id = bound_id(&statements[1]);
+        let a_id = bound_id(&program, statements[0]);
+        let t_id = bound_id(&program, statements[1]);
 
-        match &statements[2].value {
+        match program.value(statements[2]) {
             Value::Access { base, name, kind } => {
                 assert_eq!(*kind, AccessKind::Dot);
-                match base.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                match program.value(*base) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected dot base name"),
                 }
                 assert_eq!(name.name, "b");
@@ -1253,11 +1323,11 @@ mod lowering_tests {
             _ => panic!("expected dot access"),
         }
 
-        match &statements[3].value {
+        match program.value(statements[3]) {
             Value::Access { base, name, kind } => {
                 assert_eq!(*kind, AccessKind::Type);
-                match base.value {
-                    Value::NameRef(id) => assert_eq!(id, t_id),
+                match program.value(*base) {
+                    Value::NameRef(id) => assert_eq!(*id, t_id),
                     _ => panic!("expected type base name"),
                 }
                 assert_eq!(name.name, "c");
@@ -1282,7 +1352,7 @@ mod lowering_tests {
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
-            Defined::Value(value) => match &value.value {
+            Defined::Value(value) => match program.value(*value) {
                 Value::Func { generics, .. } => assert_eq!(generics.len(), 1),
                 _ => panic!("expected function value"),
             },
@@ -1321,7 +1391,7 @@ mod lowering_tests {
             .expect("missing g definition");
 
         let f_body = match f_def {
-            Defined::Value(value) => match &value.value {
+            Defined::Value(value) => match program.value(*value) {
                 Value::Func { body, .. } => body,
                 _ => panic!("expected f to be a function"),
             },
@@ -1329,42 +1399,42 @@ mod lowering_tests {
         };
 
         let g_body = match g_def {
-            Defined::Value(value) => match &value.value {
+            Defined::Value(value) => match program.value(*value) {
                 Value::Func { body, .. } => body,
                 _ => panic!("expected g to be a function"),
             },
             _ => panic!("expected g to lower to a value"),
         };
 
-        let f_call = match &f_body.value {
-            Value::Call { callee, .. } => callee,
+        let f_call = match program.value(*f_body) {
+            Value::Call { callee, .. } => *callee,
             Value::Block { return_value, .. } => return_value
-                .as_deref()
-                .map(|value| match &value.value {
-                    Value::Call { callee, .. } => callee,
+                .as_ref()
+                .map(|value| match program.value(*value) {
+                    Value::Call { callee, .. } => *callee,
                     _ => panic!("expected f return to be a call"),
                 })
                 .expect("expected f to return a call"),
             _ => panic!("expected f body to be a call or block"),
         };
-        let g_call = match &g_body.value {
-            Value::Call { callee, .. } => callee,
+        let g_call = match program.value(*g_body) {
+            Value::Call { callee, .. } => *callee,
             Value::Block { return_value, .. } => return_value
-                .as_deref()
-                .map(|value| match &value.value {
-                    Value::Call { callee, .. } => callee,
+                .as_ref()
+                .map(|value| match program.value(*value) {
+                    Value::Call { callee, .. } => *callee,
                     _ => panic!("expected g return to be a call"),
                 })
                 .expect("expected g to return a call"),
             _ => panic!("expected g body to be a call or block"),
         };
 
-        match f_call.value {
-            Value::NameRef(id) => assert_eq!(id, g_id),
+        match program.value(f_call) {
+            Value::NameRef(id) => assert_eq!(*id, g_id),
             _ => panic!("expected f to call g"),
         }
-        match g_call.value {
-            Value::NameRef(id) => assert_eq!(id, f_id),
+        match program.value(g_call) {
+            Value::NameRef(id) => assert_eq!(*id, f_id),
             _ => panic!("expected g to call f"),
         }
     }
@@ -1387,68 +1457,68 @@ mod lowering_tests {
     #[test]
     fn lowers_compound_assign_inc_and_logic_ops() {
         let src = "{ let a = 1; a += 2; ++a; a++; a && a; }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let statements = match ir.value {
-            Value::Block { statements, .. } => statements,
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected block"),
         };
         assert_eq!(statements.len(), 5);
 
-        let a_id = bound_id(&statements[0]);
+        let a_id = bound_id(&program, statements[0]);
 
-        match &statements[1].value {
+        match program.value(statements[1]) {
             Value::Assign { op, target } => {
                 match op {
                     AssignOp::Bin(bin_op, value) => {
                         assert_eq!(*bin_op, BinOp::Add);
-                        match value.value {
+                        match program.value(*value) {
                             Value::Literal(Literal::Num(2)) => {}
                             _ => panic!("expected assign literal value"),
                         }
                     }
                     _ => panic!("expected compound assignment op"),
                 }
-                match target.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                match program.value(*target) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected assign target name"),
                 }
             }
             _ => panic!("expected compound assignment"),
         }
 
-        match &statements[2].value {
+        match program.value(statements[2]) {
             Value::Assign { op, target } => {
                 assert!(matches!(op, AssignOp::Pre(Dir::Inc)));
-                match target.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                match program.value(*target) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected inc target name"),
                 }
             }
             _ => panic!("expected prefix inc assignment"),
         }
 
-        match &statements[3].value {
+        match program.value(statements[3]) {
             Value::Assign { op, target } => {
                 assert!(matches!(op, AssignOp::Post(Dir::Inc)));
-                match target.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                match program.value(*target) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected inc target name"),
                 }
             }
             _ => panic!("expected postfix inc assignment"),
         }
 
-        match &statements[4].value {
+        match program.value(statements[4]) {
             Value::LogicOp { op, values } => {
                 assert_eq!(*op, LogicOp::And);
-                let (left, right) = &**values;
-                match left.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                let (left, right) = values;
+                match program.value(*left) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected logic left name"),
                 }
-                match right.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                match program.value(*right) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected logic right name"),
                 }
             }
@@ -1459,24 +1529,24 @@ mod lowering_tests {
     #[test]
     fn lowers_cast_expression() {
         let src = "{ let a = 1; a as int; }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let statements = match ir.value {
-            Value::Block { statements, .. } => statements,
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected block"),
         };
         assert_eq!(statements.len(), 2);
 
-        let a_id = bound_id(&statements[0]);
+        let a_id = bound_id(&program, statements[0]);
         let cast_expr = &statements[1];
-        match &cast_expr.value {
+        match program.value(*cast_expr) {
             Value::Cast { value, ty } => {
-                match value.value {
-                    Value::NameRef(id) => assert_eq!(id, a_id),
+                match program.value(*value) {
+                    Value::NameRef(id) => assert_eq!(*id, a_id),
                     _ => panic!("expected cast value to be name"),
                 }
-                match ty.value {
-                    Value::NameRef(id) => assert_ne!(id, a_id),
+                match program.value(*ty) {
+                    Value::NameRef(id) => assert_ne!(*id, a_id),
                     _ => panic!("expected cast type pattern"),
                 }
             }
@@ -1492,20 +1562,20 @@ mod lowering_tests {
         let expr = parser.consume_expr().unwrap();
         let ir = program.lower_value(expr).unwrap();
 
-        match ir.value {
+        match program.value(ir) {
             Value::If { cond, then, els } => {
-                match cond.value {
+                match program.value(*cond) {
                     Value::Literal(Literal::Num(1)) => {}
                     _ => panic!("expected condition to be literal 1"),
                 }
-                match then.value {
+                match program.value(*then) {
                     Value::Block {
                         statements,
                         return_value,
                     } => {
-                        assert_eq!(statements.len(), 0);
+                        assert_eq!(statements.count, 0);
                         assert!(return_value.is_some());
-                        match return_value.unwrap().value {
+                        match program.value(return_value.unwrap()) {
                             Value::Literal(Literal::Num(2)) => {}
                             _ => panic!("expected then branch to return literal 2"),
                         }
@@ -1526,20 +1596,20 @@ mod lowering_tests {
         let expr = parser.consume_expr().unwrap();
         let ir = program.lower_value(expr).unwrap();
 
-        match ir.value {
+        match program.value(ir) {
             Value::If { cond, then, els } => {
-                match cond.value {
+                match program.value(*cond) {
                     Value::Literal(Literal::Num(1)) => {}
                     _ => panic!("expected condition to be literal 1"),
                 }
-                match then.value {
+                match program.value(*then) {
                     Value::Block {
                         statements,
                         return_value,
                     } => {
-                        assert_eq!(statements.len(), 0);
+                        assert_eq!(statements.count, 0);
                         assert!(return_value.is_some());
-                        match return_value.unwrap().value {
+                        match program.value(return_value.unwrap()) {
                             Value::Literal(Literal::Num(2)) => {}
                             _ => panic!("expected then branch to return literal 2"),
                         }
@@ -1547,14 +1617,14 @@ mod lowering_tests {
                     _ => panic!("expected then branch to be a block"),
                 }
                 assert!(els.is_some(), "expected else branch");
-                match els.unwrap().value {
+                match program.value(els.unwrap()) {
                     Value::Block {
                         statements,
                         return_value,
                     } => {
-                        assert_eq!(statements.len(), 0);
+                        assert_eq!(statements.count, 0);
                         assert!(return_value.is_some());
-                        match return_value.unwrap().value {
+                        match program.value(return_value.unwrap()) {
                             Value::Literal(Literal::Num(3)) => {}
                             _ => panic!("expected else branch to return literal 3"),
                         }
@@ -1569,29 +1639,29 @@ mod lowering_tests {
     #[test]
     fn lowers_pattern_with_type_annotation() {
         let src = "{ let x:int = 1; }";
-        let ir = lower_block(src);
+        let (program, ir) = lower_block(src);
 
-        let statements = match ir.value {
-            Value::Block { statements, .. } => statements,
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
             _ => panic!("expected block"),
         };
         assert_eq!(statements.len(), 1);
 
-        let let_stmt = &statements[0];
-        match &let_stmt.value {
+        let let_stmt = statements[0];
+        match program.value(let_stmt) {
             Value::Let {
                 pat,
                 value,
                 else_part,
             } => {
                 assert!(else_part.is_none(), "expected no else part");
-                match &pat.value {
+                match program.pattern(*pat) {
                     Pattern::TypeAnnotation { pat: inner_pat, ty } => {
                         // The inner pattern should bind a new name 'x'
-                        match &inner_pat.value {
+                        match program.pattern(*inner_pat) {
                             Pattern::Bind(_x_id) => {
                                 // Verify the value is the expected literal
-                                match &value.value {
+                                match program.value(*value) {
                                     Value::Literal(Literal::Num(1)) => {}
                                     _ => panic!("expected literal value"),
                                 }
@@ -1599,7 +1669,7 @@ mod lowering_tests {
                             _ => panic!("expected bind pattern for variable name"),
                         }
                         // The type should resolve to the predefined 'int' name
-                        match &ty.value {
+                        match program.value(*ty) {
                             Value::NameRef(_int_id) => {} // Type should be a name reference to 'int'
                             _ => panic!("expected type to be name reference to predefined type"),
                         }

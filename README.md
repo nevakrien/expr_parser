@@ -175,3 +175,7 @@ key metrics:
 - **branch miss rate slightly worsened** from 1.47% to 1.55%
 
 the improvements are statistically significant with much tighter variance on the new algorithm.
+
+### flattening the ir tree
+after flatterning the ir tree we cut from around 13-12 ms to 11-10 which is a semi signigicant imrpvoment. 
+this was while till keeping some heap

@@ -345,7 +345,7 @@ pub enum TypeError {
 pub fn infer_value_internals(
     program: &Program,
     store: &mut TypeStore,
-    value: &IValue,
+    value: IValue,
 ) -> Result<LocalTypes, TypeError> {
     let mut ctx = InferState::new(store, program);
 
@@ -505,21 +505,21 @@ struct Clash {
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeError> {
-    match &v.value {
+fn gather_constraints(ctx: &mut InferState, v: IValue) -> Result<usize, TypeError> {
+    match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
             // ctx.cluster[c].has_int_lit = true;
-            ctx.bind_val(v.id, c);
-            ctx.int_lits.push((v.id, c));
+            ctx.bind_val(v, c);
+            ctx.int_lits.push((v, c));
             Ok(c)
         }
 
         Value::Literal(Literal::Float(_)) => {
             let c = ctx.new_cluster();
             // ctx.cluster[c].has_float_lit = true;
-            ctx.bind_val(v.id, c);
-            ctx.float_lits.push((v.id, c));
+            ctx.bind_val(v, c);
+            ctx.float_lits.push((v, c));
             Ok(c)
         }
 
@@ -527,7 +527,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             let c = ctx.new_cluster();
             let t = ctx.builtin(BuiltinType::Str);
             ctx.cluster[c].ty = Some(t);
-            ctx.bind_val(v.id, c);
+            ctx.bind_val(v, c);
             Ok(c)
         }
 
@@ -535,14 +535,14 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             let c = ctx.new_cluster();
             let t = ctx.builtin(BuiltinType::Void);
             ctx.cluster[c].ty = Some(t);
-            ctx.bind_val(v.id, c);
+            ctx.bind_val(v, c);
             Ok(c)
         }
 
         Value::NameRef(n) => {
             if let Some(&c) = ctx.names.get(n) {
                 // immediate alias: this node is the same cluster as the binding
-                ctx.bind_val(v.id, c);
+                ctx.bind_val(v, c);
                 return Ok(c);
             }
 
@@ -554,13 +554,13 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let rhs_cluster = gather_constraints(ctx, value)?;
-            let ann_ty = compile_type_expr(ctx, ty)?;
+            let rhs_cluster = gather_constraints(ctx, *value)?;
+            let ann_ty = compile_type_expr(ctx, *ty)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(rhs_cluster, ann_ty) {
                 return Err(TypeError::AnnotationMismatch {
-                    annotation: v.id,
-                    constrained: value.id,
+                    annotation: v,
+                    constrained: *value,
                     expected: ann_ty,
                     found: a,
                     note: "type annotation does not match value",
@@ -568,17 +568,17 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             }
 
             // Annotation does not introduce a new type identity: alias to the value
-            ctx.bind_val(v.id, rhs_cluster);
+            ctx.bind_val(v, rhs_cluster);
             Ok(rhs_cluster)
         }
 
         Value::Cast { value, ty } => {
-            let _ = gather_constraints(ctx, value)?;
+            let _ = gather_constraints(ctx, *value)?;
             // Cast produces a new type identity: the target type
             let c = ctx.new_cluster();
-            let t = compile_type_expr(ctx, ty)?;
+            let t = compile_type_expr(ctx, *ty)?;
             ctx.cluster[c].ty = Some(t);
-            ctx.bind_val(v.id, c);
+            ctx.bind_val(v, c);
             Ok(c)
         }
 
@@ -587,12 +587,12 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             value,
             else_part,
         } => {
-            let rhs = gather_constraints(ctx, value)?;
-            let lhs = gather_pattern_constraints(ctx, pat)?;
+            let rhs = gather_constraints(ctx, *value)?;
+            let lhs = gather_pattern_constraints(ctx, *pat)?;
 
             if let Err(Clash { a, b }) = ctx.union(lhs, rhs) {
                 return Err(TypeError::IncompatibleTypes {
-                    site: v.id,
+                    site: v,
                     left: a,
                     right: b,
                     note: "let binding types do not match",
@@ -600,10 +600,10 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             }
 
             if let Some(e) = else_part {
-                let ec = gather_constraints(ctx, e)?;
+                let ec = gather_constraints(ctx, *e)?;
                 if let Err(Clash { a, b }) = ctx.union(lhs, ec) {
                     return Err(TypeError::IncompatibleTypes {
-                        site: e.id,
+                        site: *e,
                         left: a,
                         right: b,
                         note: "let-else requires the else value to match the pattern type",
@@ -612,7 +612,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             }
 
             // let-expr evaluates to the bound pattern value => alias
-            ctx.bind_val(v.id, lhs);
+            ctx.bind_val(v, lhs);
             Ok(lhs)
         }
 
@@ -620,13 +620,13 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             statements,
             return_value,
         } => {
-            for s in statements {
+            for s in statements.ids() {
                 gather_constraints(ctx, s)?;
             }
 
             // block aliases its return value cluster (or void)
             let c = match return_value {
-                Some(r) => gather_constraints(ctx, r)?,
+                Some(r) => gather_constraints(ctx, *r)?,
                 None => {
                     let c = ctx.new_cluster();
                     let t = ctx.builtin(BuiltinType::Void);
@@ -635,12 +635,12 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
                 }
             };
 
-            ctx.bind_val(v.id, c);
+            ctx.bind_val(v, c);
             Ok(c)
         }
 
         Value::BinOp { op, values } => {
-            let (lhs, rhs) = &**values;
+            let (lhs, rhs) = values;
 
             //we are assuming no overloading here.
             //TODO: this part probably needs to be pooled into a vector of these constraints
@@ -651,8 +651,8 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             // so its sound to do the following:
             //    if we have {x OP int_lit} we can require the int literal is of the same type as op
 
-            let lc = gather_constraints(ctx, lhs)?;
-            let rc = gather_constraints(ctx, rhs)?;
+            let lc = gather_constraints(ctx, *lhs)?;
+            let rc = gather_constraints(ctx, *rhs)?;
 
             // Result cluster:
             // - comparisons always produce bool
@@ -665,7 +665,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
                     // operands must be comparable -> same cluster
                     if let Err(Clash { a, b }) = ctx.union(lc, rc) {
                         return Err(TypeError::IncompatibleTypes {
-                            site: v.id,
+                            site: v,
                             left: a,
                             right: b,
                             note: "comparison operands must have the same type",
@@ -675,7 +675,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
                     let c = ctx.new_cluster();
                     let t = ctx.builtin(BuiltinType::Bool);
                     ctx.cluster[c].ty = Some(t);
-                    ctx.bind_val(v.id, c);
+                    ctx.bind_val(v, c);
                     Ok(c)
                 }
 
@@ -697,7 +697,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
                         Ok(r) => r,
                         Err(Clash { a, b }) => {
                             return Err(TypeError::IncompatibleTypes {
-                                site: v.id,
+                                site: v,
                                 left: a,
                                 right: b,
                                 note: "binary operator requires operands of the same type",
@@ -707,7 +707,7 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
 
                     // Now: literal handling (currently a no op)
                     // when we add overloading we need to check here that we actualyl merge literals explictly
-                    ctx.bind_val(v.id, root);
+                    ctx.bind_val(v, root);
                     Ok(root)
                 }
             }
@@ -728,22 +728,22 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             output_type,
             body,
         } => {
-            for pat in params {
+            for pat in params.ids() {
                 let _p = gather_pattern_constraints(ctx, pat)?;
             }
 
             let out_ty = if let Some(x) = output_type {
-                compile_type_expr(ctx, x)?
+                compile_type_expr(ctx, *x)?
             } else {
                 BuiltinType::Void.into()
             };
 
-            let body_cluster = gather_constraints(ctx, body)?;
+            let body_cluster = gather_constraints(ctx, *body)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(body_cluster, out_ty) {
                 return Err(TypeError::AnnotationMismatch {
-                    annotation: v.id,
-                    constrained: body.id,
+                    annotation: v,
+                    constrained: *body,
                     expected: out_ty,
                     found: a,
                     note: "type annotation does not match function output",
@@ -751,34 +751,34 @@ fn gather_constraints(ctx: &mut InferState, v: &IValue) -> Result<usize, TypeErr
             }
 
             let f = ctx.new_cluster();
-            ctx.bind_val(v.id, f);
+            ctx.bind_val(v, f);
             //TODO limit f on params and out somehow
             //this might need to be done ahead of time globaly for all funcs
             //so that we can have weird type recursions
             //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
             Ok(f)
         }
-        _ => panic!("more expressions {:?}", v.value),
+        _ => panic!("more expressions {:?}", ctx.program.value(v)),
     }
 }
 
-fn gather_pattern_constraints(ctx: &mut InferState, p: &IPattern) -> Result<usize, TypeError> {
-    match &p.value {
+fn gather_pattern_constraints(ctx: &mut InferState, p: IPattern) -> Result<usize, TypeError> {
+    match ctx.program.pattern(p) {
         Pattern::Bind(n) => {
             let c = ctx.new_cluster();
             ctx.names.insert(*n, c);
-            ctx.bind_val(p.id, c);
+            ctx.bind_val(p, c);
             Ok(c)
         }
 
         Pattern::TypeAnnotation { pat, ty } => {
-            let c = gather_pattern_constraints(ctx, pat)?;
-            let t = compile_type_expr(ctx, ty)?;
+            let c = gather_pattern_constraints(ctx, *pat)?;
+            let t = compile_type_expr(ctx, *ty)?;
 
             if let Err(Clash { a, b: _ }) = ctx.force_type(c, t) {
                 return Err(TypeError::AnnotationMismatch {
-                    annotation: p.id,
-                    constrained: pat.id,
+                    annotation: p,
+                    constrained: *pat,
                     expected: t,
                     found: a,
                     note: "pattern annotation does not match the value bound here",
@@ -792,18 +792,18 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: &IPattern) -> Result<usiz
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, v: &IValue) -> Result<TypeId, TypeError> {
-    match &v.value {
+fn compile_type_expr(ctx: &mut InferState, v: IValue) -> Result<TypeId, TypeError> {
+    match ctx.program.value(v) {
         Value::NameRef(n) => match ctx.program.definitions.get(n) {
             Some(Defined::BuildinType(b)) => Ok(ctx.store.intern(b.clone())),
             Some(Defined::Type { ty, .. }) => Ok(*ty),
             _ => Err(TypeError::ExpectedType {
-                type_expr: v.id,
+                type_expr: v,
                 message: "expected type",
             }),
         },
         _ => Err(TypeError::ExpectedType {
-            type_expr: v.id,
+            type_expr: v,
             message: "unsupported type expression",
         }),
     }
@@ -910,8 +910,8 @@ mod type_infer_tests {
     }
 
     /// Extract the body of the *single* function in the program.
-    fn extract_single_fn(program: &Program) -> &IValue {
-        program
+    fn extract_single_fn(program: &Program) -> IValue {
+        *program
             .definitions
             .iter()
             .find_map(|(_, def)| match def {
@@ -925,26 +925,26 @@ mod type_infer_tests {
     fn infer_fn(src: &str, store: &mut TypeStore) -> Result<TypeId, TypeError> {
         let program = gather_program(src);
         let f = extract_single_fn(&program);
-        let body = match &f.value {
+        let body = match program.value(f) {
             Value::Func { body, .. } => body,
             _ => panic!("expected function value"),
         };
 
         let types = infer_value_internals(&program, store, f)?;
-        Ok(types.type_of(body.id).unwrap())
+        Ok(types.type_of(*body).unwrap())
     }
 
     //this is a hack for just testing
     fn infer_fn_body(src: &str, store: &mut TypeStore) -> Result<TypeId, TypeError> {
         let program = gather_program(src);
         let f = extract_single_fn(&program);
-        let body = match &f.value {
+        let body = match program.value(f) {
             Value::Func { body, .. } => body,
             _ => panic!("expected function value"),
         };
 
-        let types = infer_value_internals(&program, store, body)?;
-        Ok(types.type_of(body.id).unwrap())
+        let types = infer_value_internals(&program, store, *body)?;
+        Ok(types.type_of(*body).unwrap())
     }
 
     macro_rules! assert_fn_type {
