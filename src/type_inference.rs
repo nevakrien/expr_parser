@@ -9,7 +9,7 @@
 //
 // ================================================================
 
-use crate::ir::{NameId, PatternId, ValueId};
+use crate::ir::{NameId, PatId, ValId};
 use std::collections::HashMap;
 
 use crate::{
@@ -191,7 +191,7 @@ impl Program {
 pub struct TypeStore {
     values: Vec<TypeValue>,
     intern: HashMap<TypeValue, TypeId>,
-    global_types: HashMap<ValueId, TypeId>,
+    global_types: HashMap<ValId, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -218,7 +218,7 @@ impl TypeStore {
     }
 
     #[inline(always)]
-    pub fn get_global(&self, id: ValueId) -> Option<TypeId> {
+    pub fn get_global(&self, id: ValId) -> Option<TypeId> {
         self.global_types.get(&id).copied()
     }
 
@@ -263,7 +263,7 @@ impl TypeStore {
 }
 
 pub struct LocalTypes {
-    types: HashMap<ValueId, TypeId>,
+    types: HashMap<ValId, TypeId>,
 }
 
 impl Default for LocalTypes {
@@ -280,7 +280,7 @@ impl LocalTypes {
     }
 
     #[inline(always)]
-    pub fn type_of(&self, id: ValueId) -> Option<TypeId> {
+    pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         self.types.get(&id).copied()
     }
 }
@@ -292,14 +292,11 @@ impl LocalTypes {
 #[derive(Debug)]
 pub enum TypeError {
     /// Could not infer a concrete type for this value
-    Unresolved {
-        value: ValueId,
-        message: &'static str,
-    },
+    Unresolved { value: ValId, message: &'static str },
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedType {
-        type_expr: ValueId,
+        type_expr: ValId,
         message: &'static str,
     },
 
@@ -307,9 +304,9 @@ pub enum TypeError {
     /// Carries BOTH the annotation node and the constrained node so diagnostics can point at both.
     AnnotationMismatch {
         /// The annotation node (Value::TypeAnnotation / Pattern::TypeAnnotation)
-        annotation: ValueId,
+        annotation: ValId,
         /// The value/pattern being constrained (the `value` inside the annotation)
-        constrained: ValueId,
+        constrained: ValId,
         expected: TypeId,
         found: TypeId,
         note: &'static str,
@@ -317,8 +314,8 @@ pub enum TypeError {
 
     /// Pattern annotation mismatch
     PatternAnnotationMismatch {
-        annotation: PatternId,
-        constrained: PatternId,
+        annotation: PatId,
+        constrained: PatId,
         expected: TypeId,
         found: TypeId,
         note: &'static str,
@@ -327,7 +324,7 @@ pub enum TypeError {
     /// Equality constraint failure at some site (let/match/etc).
     /// Carries a site ValId so you can point at the operator/let/match that demanded equality.
     IncompatibleTypes {
-        site: ValueId,
+        site: ValId,
         left: TypeId,
         right: TypeId,
         note: &'static str,
@@ -335,14 +332,14 @@ pub enum TypeError {
 
     /// Literal cluster resolved to an incompatible concrete type, or stayed unresolved.
     InvalidLiteral {
-        literal: ValueId,
+        literal: ValId,
         resolved: Option<TypeId>,
         message: &'static str,
     },
 
     /// (future) Operator rule failure.
     InvalidOperator {
-        site: ValueId,
+        site: ValId,
         op: BinOp,
         lhs: TypeId,
         rhs: TypeId,
@@ -357,7 +354,7 @@ pub enum TypeError {
 pub fn infer_value_internals(
     program: &Program,
     store: &mut TypeStore,
-    value: ValueId,
+    value: ValId,
 ) -> Result<LocalTypes, TypeError> {
     let mut ctx = InferState::new(store, program);
 
@@ -381,8 +378,8 @@ struct InferState<'a> {
     program: &'a Program,
 
     // ValId -> cluster
-    val_cluster: HashMap<ValueId, usize>,
-    pat_cluster: HashMap<PatternId, usize>,
+    val_cluster: HashMap<ValId, usize>,
+    pat_cluster: HashMap<PatId, usize>,
 
     // NameId -> cluster (names already resolved / qualified)
     names: HashMap<NameId, usize>,
@@ -392,8 +389,8 @@ struct InferState<'a> {
     cluster: Vec<Cluster>,
 
     // literal bookkeeping: keep ValId for error context
-    int_lits: Vec<(ValueId, usize)>,
-    float_lits: Vec<(ValueId, usize)>,
+    int_lits: Vec<(ValId, usize)>,
+    float_lits: Vec<(ValId, usize)>,
 
     ans: LocalTypes,
 }
@@ -432,11 +429,11 @@ impl<'a> InferState<'a> {
         id
     }
 
-    fn bind_val(&mut self, v: ValueId, c: usize) {
+    fn bind_val(&mut self, v: ValId, c: usize) {
         self.val_cluster.insert(v, c);
     }
 
-    fn bind_pat(&mut self, p: PatternId, c: usize) {
+    fn bind_pat(&mut self, p: PatId, c: usize) {
         self.pat_cluster.insert(p, c);
     }
 
@@ -523,7 +520,7 @@ struct Clash {
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn gather_constraints(ctx: &mut InferState, v: ValueId) -> Result<usize, TypeError> {
+fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<usize, TypeError> {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
@@ -780,7 +777,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValueId) -> Result<usize, TypeErr
     }
 }
 
-fn gather_pattern_constraints(ctx: &mut InferState, p: PatternId) -> Result<usize, TypeError> {
+fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> Result<usize, TypeError> {
     match ctx.program.pattern(p) {
         Pattern::Bind(n) => {
             let c = ctx.new_cluster();
@@ -811,7 +808,7 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatternId) -> Result<usiz
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, v: ValueId) -> Result<TypeId, TypeError> {
+fn compile_type_expr(ctx: &mut InferState, v: ValId) -> Result<TypeId, TypeError> {
     match ctx.program.value(v) {
         Value::NameRef(n) => match ctx.program.definitions.get(&n) {
             Some(Defined::BuildinType(b)) => Ok(ctx.store.intern(b.clone())),
@@ -929,7 +926,7 @@ mod type_infer_tests {
     }
 
     /// Extract the body of the *single* function in the program.
-    fn extract_single_fn(program: &Program) -> ValueId {
+    fn extract_single_fn(program: &Program) -> ValId {
         *program
             .definitions
             .iter()

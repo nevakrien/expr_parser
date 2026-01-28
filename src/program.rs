@@ -1,9 +1,8 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::ir::{
-    Literal, MatchArm, MatchArmId, NameId, Pattern, PatternId, PatternSpan, Value, ValueId,
-    ValueSpan,
+    ArmId, Literal, MatchArm, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan,
 };
-use crate::macros::{expand_macros_recursive, Macro};
+use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
@@ -46,8 +45,8 @@ pub enum CompileError {
 pub enum Defined {
     ToBeDefined,
     Raw(LExpr),
-    Value(ValueId),
-    Type { val: ValueId, ty: TypeId },
+    Value(ValId),
+    Type { val: ValId, ty: TypeId },
     // TypeRef(TypeId),
     BuildinType(TypeValue),
     Macro(Macro),
@@ -109,29 +108,29 @@ impl Program {
         }
     }
 
-    pub fn id_value(&mut self, loc: Loc, value: Value) -> ValueId {
-        let id = ValueId(self.values.len());
+    pub fn id_value(&mut self, loc: Loc, value: Value) -> ValId {
+        let id = ValId(self.values.len());
         self.values.push(value);
         self.value_locs.push(loc);
         id
     }
 
-    pub fn id_pattern(&mut self, loc: Loc, pattern: Pattern) -> PatternId {
-        let id = PatternId(self.patterns.len());
+    pub fn id_pattern(&mut self, loc: Loc, pattern: Pattern) -> PatId {
+        let id = PatId(self.patterns.len());
         self.patterns.push(pattern);
         self.pattern_locs.push(loc);
         id
     }
 
-    pub fn push_match_arm(&mut self, loc: Loc, arm: MatchArm) -> MatchArmId {
-        let id = MatchArmId(self.arms.len());
+    pub fn push_match_arm(&mut self, loc: Loc, arm: MatchArm) -> ArmId {
+        let id = ArmId(self.arms.len());
         self.arms.push(arm);
         self.arm_locs.push(loc);
         id
     }
 
-    pub fn start_arm_span(&self) -> MatchArmId {
-        MatchArmId(self.arms.len())
+    pub fn start_arm_span(&self) -> ArmId {
+        ArmId(self.arms.len())
     }
 
     pub fn start_name_span(&self) -> usize {
@@ -143,7 +142,7 @@ impl Program {
     }
 
     pub fn reserve_value_span(&mut self, count: usize) -> ValueSpan {
-        let start = ValueId(self.values.len());
+        let start = ValId(self.values.len());
         for _ in 0..count {
             self.values.push(Value::Literal(Literal::Void));
             self.value_locs.push(Self::placeholder_loc());
@@ -152,7 +151,7 @@ impl Program {
     }
 
     pub fn reserve_pattern_span(&mut self, count: usize) -> PatternSpan {
-        let start = PatternId(self.patterns.len());
+        let start = PatId(self.patterns.len());
         for _ in 0..count {
             self.patterns.push(Pattern::Wildcard);
             self.pattern_locs.push(Self::placeholder_loc());
@@ -160,37 +159,37 @@ impl Program {
         PatternSpan::new(start, count)
     }
 
-    pub fn set_value(&mut self, id: ValueId, loc: Loc, value: Value) {
+    pub fn set_value(&mut self, id: ValId, loc: Loc, value: Value) {
         self.value_locs[id.0] = loc;
         self.values[id.0] = value;
     }
 
-    pub fn set_pattern(&mut self, id: PatternId, loc: Loc, pattern: Pattern) {
+    pub fn set_pattern(&mut self, id: PatId, loc: Loc, pattern: Pattern) {
         self.pattern_locs[id.0] = loc;
         self.patterns[id.0] = pattern;
     }
 
-    pub fn value(&self, id: ValueId) -> Value {
+    pub fn value(&self, id: ValId) -> Value {
         self.values[id.0]
     }
 
-    pub fn pattern(&self, id: PatternId) -> Pattern {
+    pub fn pattern(&self, id: PatId) -> Pattern {
         self.patterns[id.0]
     }
 
-    pub fn arm(&self, id: MatchArmId) -> MatchArm {
+    pub fn arm(&self, id: ArmId) -> MatchArm {
         self.arms[id.0]
     }
 
-    pub fn value_loc(&self, v: ValueId) -> Loc {
+    pub fn value_loc(&self, v: ValId) -> Loc {
         self.value_locs[v.0].clone()
     }
 
-    pub fn pattern_loc(&self, p: PatternId) -> Loc {
+    pub fn pattern_loc(&self, p: PatId) -> Loc {
         self.pattern_locs[p.0].clone()
     }
 
-    pub fn arm_loc(&self, a: MatchArmId) -> Loc {
+    pub fn arm_loc(&self, a: ArmId) -> Loc {
         self.arm_locs[a.0].clone()
     }
 

@@ -18,45 +18,45 @@ use crate::string_intern::StrId;
 
 //this file needs to move Value and Pattern into a dense array
 //note that currently the only major diffrence between Value and Pattern is Bind
-//the one place which actually reads them would become simpler if we merge the 2. 
+//the one place which actually reads them would become simpler if we merge the 2.
 //would actually remove a lot of semi duplicate code from type infrence
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ValueId(pub usize);
+pub struct ValId(pub usize);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PatternId(pub usize);
+pub struct PatId(pub usize);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct MatchArmId(pub usize);
+pub struct ArmId(pub usize);
 
 ///comment is now for explaining to LLM later LLM should rewrite it to actual docs explaining usage
 ///
 ///this type would be used to store &[Value] in our dynamic array
-///things that used to push/collect a vec on the fly should be converted to: 
-///1. push some sentinal value say Value::Void ahead of time so we have the span of size N ready. 
-///2. compile sub expressions and overwrite the sentinal value with the correct thing 
+///things that used to push/collect a vec on the fly should be converted to:
+///1. push some sentinal value say Value::Void ahead of time so we have the span of size N ready.
+///2. compile sub expressions and overwrite the sentinal value with the correct thing
 ///
 ///its generally fine if errors leave sentinal values as errors imply we are gona not read the thing anyway
 ///if cleanup would seem needed we add it AFTER this change batch
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ValueSpan {
-    _start: ValueId,
+    _start: ValId,
     _count: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct PatternSpan {
-    _start: PatternId,
+    _start: PatId,
     _count: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct MatchArmSpan {
-    _start: MatchArmId,
+    _start: ArmId,
     _count: usize,
 }
 
@@ -68,7 +68,7 @@ pub struct NameSpan {
 
 impl ValueSpan {
     #[inline]
-    pub fn new(start: ValueId, count: usize) -> Self {
+    pub fn new(start: ValId, count: usize) -> Self {
         Self {
             _start: start,
             _count: count,
@@ -76,7 +76,7 @@ impl ValueSpan {
     }
 
     #[inline]
-    pub fn start(&self) -> ValueId {
+    pub fn start(&self) -> ValId {
         self._start
     }
 
@@ -86,20 +86,20 @@ impl ValueSpan {
     }
 
     #[inline]
-    pub fn at(&self, index: usize) -> ValueId {
+    pub fn at(&self, index: usize) -> ValId {
         debug_assert!(index < self._count, "ValueSpan index out of bounds");
-        ValueId(self._start.0 + index)
+        ValId(self._start.0 + index)
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = ValueId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(ValueId)
+    pub fn ids(&self) -> impl Iterator<Item = ValId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(ValId)
     }
 }
 
 impl PatternSpan {
     #[inline]
-    pub fn new(start: PatternId, count: usize) -> Self {
+    pub fn new(start: PatId, count: usize) -> Self {
         Self {
             _start: start,
             _count: count,
@@ -107,7 +107,7 @@ impl PatternSpan {
     }
 
     #[inline]
-    pub fn start(&self) -> PatternId {
+    pub fn start(&self) -> PatId {
         self._start
     }
 
@@ -117,20 +117,20 @@ impl PatternSpan {
     }
 
     #[inline]
-    pub fn at(&self, index: usize) -> PatternId {
+    pub fn at(&self, index: usize) -> PatId {
         debug_assert!(index < self._count, "PatternSpan index out of bounds");
-        PatternId(self._start.0 + index)
+        PatId(self._start.0 + index)
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = PatternId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(PatternId)
+    pub fn ids(&self) -> impl Iterator<Item = PatId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(PatId)
     }
 }
 
 impl MatchArmSpan {
     #[inline]
-    pub fn new(start: MatchArmId, count: usize) -> Self {
+    pub fn new(start: ArmId, count: usize) -> Self {
         Self {
             _start: start,
             _count: count,
@@ -138,7 +138,7 @@ impl MatchArmSpan {
     }
 
     #[inline]
-    pub fn start(&self) -> MatchArmId {
+    pub fn start(&self) -> ArmId {
         self._start
     }
 
@@ -148,14 +148,14 @@ impl MatchArmSpan {
     }
 
     #[inline]
-    pub fn at(&self, index: usize) -> MatchArmId {
+    pub fn at(&self, index: usize) -> ArmId {
         debug_assert!(index < self._count, "MatchArmSpan index out of bounds");
-        MatchArmId(self._start.0 + index)
+        ArmId(self._start.0 + index)
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = MatchArmId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(MatchArmId)
+    pub fn ids(&self) -> impl Iterator<Item = ArmId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(ArmId)
     }
 }
 
@@ -282,8 +282,8 @@ pub enum Dir {
 /// Assignment operator, where `None` means plain `=`.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum AssignOp {
-    Nothing(ValueId),
-    Bin(BinOp, ValueId),
+    Nothing(ValId),
+    Bin(BinOp, ValId),
     Pre(Dir),
     Post(Dir),
 }
@@ -317,32 +317,32 @@ pub enum Value {
     /// Pure binary operation
     BinOp {
         op: BinOp,
-        values: (ValueId, ValueId),
+        values: (ValId, ValId),
     },
 
     /// Pure unary operation
     UnOp {
         op: UnOp,
-        value: ValueId,
+        value: ValId,
     },
 
     //===== TYPES =====
     /// Explicit type cast
     Cast {
-        value: ValueId,
-        ty: ValueId,
+        value: ValId,
+        ty: ValId,
     },
 
     /// Type annotation
     TypeAnnotation {
-        value: ValueId,
-        ty: ValueId,
+        value: ValId,
+        ty: ValId,
     },
 
     //==== MUTATION GATES =====
     /// Function or callable invocation
     Call {
-        callee: ValueId,
+        callee: ValId,
         args: ValueSpan,
     },
 
@@ -353,18 +353,18 @@ pub enum Value {
     /// - Mutation occurs
     Assign {
         op: AssignOp,
-        target: ValueId,
+        target: ValId,
     },
 
     /// Indexing or specialization
     Index {
-        base: ValueId,
+        base: ValId,
         args: ValueSpan,
     },
 
     /// Field/type access with deferred name resolution
     Access {
-        base: ValueId,
+        base: ValId,
         name: AccessName,
         kind: AccessKind,
     },
@@ -372,54 +372,54 @@ pub enum Value {
     // ===== SCOPE =====
     /// Immutable binding
     Let {
-        pat: PatternId,
-        value: ValueId,
-        else_part: Option<ValueId>,
+        pat: PatId,
+        value: ValId,
+        else_part: Option<ValId>,
     },
 
     /// Lexical block
     Block {
         statements: ValueSpan,
-        return_value: Option<ValueId>,
+        return_value: Option<ValId>,
     },
 
     //==== CONTROL FLOW =====
     /// Short-circuiting logical operations.
     LogicOp {
         op: LogicOp,
-        values: (ValueId, ValueId),
+        values: (ValId, ValId),
     },
 
     /// Conditional expression
     If {
-        cond: ValueId,
-        then: ValueId,
-        els: Option<ValueId>,
+        cond: ValId,
+        then: ValId,
+        els: Option<ValId>,
     },
 
     /// Loop
     While {
-        cond: ValueId,
-        body: ValueId,
+        cond: ValId,
+        body: ValId,
     },
 
     /// Function literal
     Func {
         generics: NameSpan,
         params: PatternSpan,
-        output_type: Option<ValueId>,
-        body: ValueId,
+        output_type: Option<ValId>,
+        body: ValId,
     },
 
     /// Early return
-    Return(Option<ValueId>),
+    Return(Option<ValId>),
 
     Break,
     Continue,
 
     /// Pattern match
     Match {
-        value: ValueId,
+        value: ValId,
         arms: MatchArmSpan,
     },
 }
@@ -442,7 +442,7 @@ pub enum Pattern {
     /// Literal value pattern
     Literal(Literal),
     /// Type annotation pattern (x:T)
-    TypeAnnotation { pat: PatternId, ty: ValueId },
+    TypeAnnotation { pat: PatId, ty: ValId },
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -457,26 +457,25 @@ pub enum Pattern {
     // },
 }
 
-
 /// Single arm in a match expression
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct MatchArm {
-    pub pat: PatternId,
-    pub guard: Option<ValueId>,
-    pub body: ValueId,
+    pub pat: PatId,
+    pub guard: Option<ValId>,
+    pub body: ValId,
 }
 
 impl Program {
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
-    pub fn lower_value(&mut self, expr: LExpr) -> CResult<ValueId> {
+    pub fn lower_value(&mut self, expr: LExpr) -> CResult<ValId> {
         let loc = expr.loc.clone();
         let value = self.lower_value_inner(expr)?;
         Ok(self.id_value(loc, value))
     }
 
-    fn lower_value_into(&mut self, target: ValueId, expr: LExpr) -> CResult<ValueId> {
+    fn lower_value_into(&mut self, target: ValId, expr: LExpr) -> CResult<ValId> {
         let loc = expr.loc.clone();
         let value = self.lower_value_inner(expr)?;
         self.set_value(target, loc, value);
@@ -900,13 +899,13 @@ impl Program {
         Ok(Value::Access { base, name, kind })
     }
 
-    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<PatternId> {
+    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<PatId> {
         let loc = expr.loc.clone();
         let pattern = self.lower_pattern_inner(expr)?;
         Ok(self.id_pattern(loc, pattern))
     }
 
-    fn lower_pattern_into(&mut self, target: PatternId, expr: LExpr) -> CResult<PatternId> {
+    fn lower_pattern_into(&mut self, target: PatId, expr: LExpr) -> CResult<PatId> {
         let loc = expr.loc.clone();
         let pattern = self.lower_pattern_inner(expr)?;
         self.set_pattern(target, loc, pattern);
@@ -916,9 +915,7 @@ impl Program {
     fn lower_pattern_inner(&mut self, expr: LExpr) -> CResult<Pattern> {
         let loc = expr.loc.clone();
         match expr.value {
-            Expr::Atom(Token::Ident(name)) if name == "_" => {
-                Ok(Pattern::Wildcard)
-            }
+            Expr::Atom(Token::Ident(name)) if name == "_" => Ok(Pattern::Wildcard),
 
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
@@ -1069,7 +1066,10 @@ impl Program {
         let rhs = self.lower_value(items.into_iter().next().unwrap())?;
 
         let _ = loc;
-        Ok(Value::UnOp { op: unop, value: rhs })
+        Ok(Value::UnOp {
+            op: unop,
+            value: rhs,
+        })
     }
 
     #[inline(always)]
@@ -1111,11 +1111,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_inc_dec_postfix(
-        &mut self,
-        op: Located<Dir>,
-        mut items: Vec<LExpr>,
-    ) -> CResult<Value> {
+    fn lower_inc_dec_postfix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<Value> {
         if items.len() != 1 {
             panic!("postfix operator with {} operands", items.len());
         }
@@ -1291,15 +1287,15 @@ mod lowering_tests {
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
-    fn lower_block(src: &str) -> (Program, ValueId) {
+    fn lower_block(src: &str) -> (Program, ValId) {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        let expr = parser.consume_expr().unwrap();
-        let ir = program.lower_value(expr).unwrap();
+        let expr = parser.consume_expr().expect("failed to parse expr");
+        let ir = program.lower_value(expr).expect("lowering failed");
         (program, ir)
     }
 
-    fn bound_id(program: &Program, stmt: ValueId) -> NameId {
+    fn bound_id(program: &Program, stmt: ValId) -> NameId {
         match program.value(stmt) {
             Value::Let { pat, .. } => match program.pattern(pat) {
                 Pattern::Bind(id) => id,
