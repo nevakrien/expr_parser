@@ -330,7 +330,7 @@ pub fn infer_value_internals(
 }
 
 // ===================================
-// Inference state + union-find clusters
+// Inference state + unify-find clusters
 // ===================================
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CId(usize);
@@ -358,7 +358,7 @@ struct InferState<'a> {
     pat_cluster: HashMap<PatId, CId>,
     names: HashMap<NameId, CId>,
 
-    // union-find
+    // unify-find
     parent: ClusterVec<CId>,
     cluster: ClusterVec<Cluster>,
 
@@ -441,7 +441,7 @@ impl<'a> InferState<'a> {
         }
     }
 
-    fn union(&mut self, a: CId, b: CId) -> Result<CId, Clash> {
+    fn unify(&mut self, a: CId, b: CId) -> Result<CId, Clash> {
         let ra = self.find(a);
         let rb = self.find(b);
         if ra == rb {
@@ -469,17 +469,17 @@ impl<'a> InferState<'a> {
         Ok(ra)
     }
 
-    fn force_type(&mut self, c: CId, ty: TypeId) -> Result<(), Clash> {
-        let r = self.find(c);
-        match self.cluster[r].ty {
-            None => {
-                self.cluster[r].ty = Some(ty);
-                Ok(())
-            }
-            Some(t) if t == ty => Ok(()),
-            Some(t) => Err(Clash { a: t, b: ty }),
-        }
-    }
+    // fn force_type(&mut self, c: CId, ty: TypeId) -> Result<(), Clash> {
+    //     let r = self.find(c);
+    //     match self.cluster[r].ty {
+    //         None => {
+    //             self.cluster[r].ty = Some(ty);
+    //             Ok(())
+    //         }
+    //         Some(t) if t == ty => Ok(()),
+    //         Some(t) => Err(Clash { a: t, b: ty }),
+    //     }
+    // }
 
     fn builtin(&mut self, b: BuiltinType) -> TypeId {
         // self.store.intern(TypeValue::Builtin(b))
@@ -548,11 +548,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             let rhs_cluster = gather_constraints(ctx, value)?;
             let ann_ty = compile_type_expr(ctx, ty)?;
 
-            if let Err(Clash { a, b: _ }) = ctx.force_type(rhs_cluster, ann_ty) {
+            if let Err(Clash { a, b }) = ctx.unify(rhs_cluster, ann_ty) {
                 return Err(TypeError::AnnotationMismatch {
                     annotation: v,
                     constrained: value,
-                    expected: ann_ty,
+                    expected: b,
                     found: a,
                     note: "type annotation does not match value",
                 });
@@ -566,9 +566,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
         Value::Cast { value, ty } => {
             let _ = gather_constraints(ctx, value)?;
             // Cast produces a new type identity: the target type
-            let c = ctx.new_cluster();
-            let t = compile_type_expr(ctx, ty)?;
-            ctx.cluster[c].ty = Some(t);
+            let c = compile_type_expr(ctx, ty)?;
             ctx.bind_val(v, c);
             Ok(c)
         }
@@ -581,7 +579,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             let rhs = gather_constraints(ctx, value)?;
             let lhs = gather_pattern_constraints(ctx, pat)?;
 
-            if let Err(Clash { a, b }) = ctx.union(lhs, rhs) {
+            if let Err(Clash { a, b }) = ctx.unify(lhs, rhs) {
                 return Err(TypeError::IncompatibleTypes {
                     site: v,
                     left: a,
@@ -592,7 +590,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
 
             if let Some(e) = else_part {
                 let ec = gather_constraints(ctx, e)?;
-                if let Err(Clash { a, b }) = ctx.union(lhs, ec) {
+                if let Err(Clash { a, b }) = ctx.unify(lhs, ec) {
                     return Err(TypeError::IncompatibleTypes {
                         site: e,
                         left: a,
@@ -654,7 +652,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                 // ======================
                 BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                     // operands must be comparable -> same cluster
-                    if let Err(Clash { a, b }) = ctx.union(lc, rc) {
+                    if let Err(Clash { a, b }) = ctx.unify(lc, rc) {
                         return Err(TypeError::IncompatibleTypes {
                             site: v,
                             left: a,
@@ -684,7 +682,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                 | BinOp::Shl
                 | BinOp::Shr => {
                     // First, operands must have the same type
-                    let root = match ctx.union(lc, rc) {
+                    let root = match ctx.unify(lc, rc) {
                         Ok(r) => r,
                         Err(Clash { a, b }) => {
                             return Err(TypeError::IncompatibleTypes {
@@ -726,16 +724,18 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             let out_ty = if let Some(x) = output_type {
                 compile_type_expr(ctx, x)?
             } else {
-                BuiltinType::Void.into()
+                let c = ctx.new_cluster();
+                ctx.cluster[c].ty=Some(BuiltinType::Void.into());
+                c
             };
 
             let body_cluster = gather_constraints(ctx, body)?;
 
-            if let Err(Clash { a, b: _ }) = ctx.force_type(body_cluster, out_ty) {
+            if let Err(Clash { a, b }) = ctx.unify(body_cluster, out_ty) {
                 return Err(TypeError::AnnotationMismatch {
                     annotation: v,
                     constrained: body,
-                    expected: out_ty,
+                    expected: b,
                     found: a,
                     note: "type annotation does not match function output",
                 });
@@ -766,11 +766,11 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> Result<CId, Typ
             let c = gather_pattern_constraints(ctx, pat)?;
             let t = compile_type_expr(ctx, ty)?;
 
-            if let Err(Clash { a, b: _ }) = ctx.force_type(c, t) {
+            if let Err(Clash { a, b }) = ctx.unify(c, t) {
                 return Err(TypeError::PatternAnnotationMismatch {
                     annotation: p,
                     constrained: pat,
-                    expected: t,
+                    expected: b,
                     found: a,
                     note: "pattern annotation does not match the value bound here",
                 });
@@ -784,17 +784,29 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> Result<CId, Typ
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, v: ValId) -> Result<TypeId, TypeError> {
+fn compile_type_expr(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> {
     match ctx.program.value(v) {
-        Value::NameRef(n) => match ctx.program.definitions.get(&n) {
-            Some(Defined::BuildinType(b)) => Ok(ctx.store.intern(b.clone())),
-            Some(Defined::Type { ty, .. }) => Ok(*ty),
-            _ => Err(TypeError::ExpectedType {
-                type_expr: v,
-                message: "expected type",
-            }),
-        },
-        _ => Err(TypeError::ExpectedType {
+        Value::NameRef(n) => {
+            let t = match ctx.program.definitions.get(&n) {
+                Some(Defined::BuildinType(b)) => ctx.store.intern(b.clone()),
+                Some(Defined::Type { ty, .. }) => *ty,
+                _ => return Err(TypeError::ExpectedType {
+                    type_expr: v,
+                    message: "expected type",
+                }),
+            };
+
+            let c = ctx.new_cluster();
+            ctx.cluster[c].ty=Some(t);
+            ctx.bind_val(v,c);
+            Ok(c)
+        }
+        Value::Wildcard=>{
+            let c = ctx.new_cluster();
+            ctx.bind_val(v,c);
+            Ok(c)
+        }
+        _ => return Err(TypeError::ExpectedType {
             type_expr: v,
             message: "unsupported type expression",
         }),
