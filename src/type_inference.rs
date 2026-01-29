@@ -18,50 +18,6 @@ use crate::{
     program::{Defined, Program},
 };
 
-/* ================================================================
- * Errors (STABLE SHAPE)
- * ================================================================ */
-
-// #[derive(Debug)]
-// pub enum TypeError {
-//     Unresolved {
-//         produced_loc: Loc,
-//         message: &'static str,
-//     },
-
-//     SimpleMismatch {
-//         required_loc: Loc,
-//         produced_loc: Loc,
-//         expected: TypeId,
-//         found: TypeId,
-//         note: &'static str,
-//     },
-
-//     Unsupported {
-//         loc: Loc,
-//         message: &'static str,
-//     },
-
-//     ExpectedType {
-//         loc: Loc,
-//         message: &'static str,
-//     },
-
-//     InvalidOperator {
-//         loc: Loc,
-//         op: BinOp,
-//         lhs: TypeId,
-//         rhs: TypeId,
-//         note: &'static str,
-//     },
-//     InvalidLiteral {
-//         loc: Loc,
-//         loc_reqired:Loc,
-//         literal: Literal,
-//         target: TypeId,
-//         note: &'static str,
-//     },
-// }
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -397,11 +353,9 @@ struct InferState<'a> {
     store: &'a mut TypeStore,
     program: &'a Program,
 
-    // ValId -> cluster
+    //ir -> cid
     val_cluster: HashMap<ValId, CId>,
     pat_cluster: HashMap<PatId, CId>,
-
-    // NameId -> cluster (names already resolved / qualified)
     names: HashMap<NameId, CId>,
 
     // union-find
@@ -412,14 +366,15 @@ struct InferState<'a> {
     int_lits: Vec<(ValId, CId)>,
     float_lits: Vec<(ValId, CId)>,
 
+    //functions
+
+
     ans: LocalTypes,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct Cluster {
     ty: Option<TypeId>,
-    // has_int_lit: bool,
-    // has_float_lit: bool,
 }
 
 impl<'a> InferState<'a> {
@@ -504,10 +459,10 @@ impl<'a> InferState<'a> {
         // No rank: simplest correct UF (you can add rank later if you care)
         self.parent[rb] = ra;
 
-        let other_c = self.cluster[rb].clone();
+        let other_ty = self.cluster[rb].ty;//.clone();
         let root_c = &mut self.cluster[ra];
 
-        root_c.ty = root_c.ty.or(other_c.ty);
+        root_c.ty = root_c.ty.or(other_ty);
         // root_c.has_int_lit |= other_c.has_int_lit;
         // root_c.has_float_lit |= other_c.has_float_lit;
 
