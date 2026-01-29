@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use std::ops::{Index,IndexMut};
 use crate::ir::{NameId, PatId, ValId};
 use std::collections::HashMap;
 
@@ -372,25 +373,41 @@ pub fn infer_value_internals(
 // ===================================
 // Inference state + union-find clusters
 // ===================================
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CId(usize);
+
+struct ClusterVec<T>(Vec<T>);
+impl<T> ClusterVec<T>{
+    fn new()->Self{Self(Vec::new())}
+    fn len(&self)->usize{self.0.len()}
+}
+impl<T> Index<CId> for ClusterVec<T>{
+type Output = T;
+fn index(&self, id: CId) -> &T { &self.0[id.0]}
+}
+
+impl<T> IndexMut<CId> for ClusterVec<T>{
+fn index_mut(&mut self, id: CId) -> &mut T { &mut self.0[id.0]}
+}
 
 struct InferState<'a> {
     store: &'a mut TypeStore,
     program: &'a Program,
 
     // ValId -> cluster
-    val_cluster: HashMap<ValId, usize>,
-    pat_cluster: HashMap<PatId, usize>,
+    val_cluster: HashMap<ValId, CId>,
+    pat_cluster: HashMap<PatId, CId>,
 
     // NameId -> cluster (names already resolved / qualified)
-    names: HashMap<NameId, usize>,
+    names: HashMap<NameId, CId>,
 
     // union-find
-    parent: Vec<usize>,
-    cluster: Vec<Cluster>,
+    parent: ClusterVec<CId>,
+    cluster: ClusterVec<Cluster>,
 
     // literal bookkeeping: keep ValId for error context
-    int_lits: Vec<(ValId, usize)>,
-    float_lits: Vec<(ValId, usize)>,
+    int_lits: Vec<(ValId, CId)>,
+    float_lits: Vec<(ValId, CId)>,
 
     ans: LocalTypes,
 }
@@ -410,18 +427,18 @@ impl<'a> InferState<'a> {
             val_cluster: HashMap::new(),
             pat_cluster: HashMap::new(),
             names: HashMap::new(),
-            parent: Vec::new(),
-            cluster: Vec::new(),
+            parent: ClusterVec::new(),
+            cluster: ClusterVec::new(),
             int_lits: Vec::new(),
             float_lits: Vec::new(),
             ans: LocalTypes::new(),
         }
     }
 
-    fn new_cluster(&mut self) -> usize {
-        let id = self.parent.len();
-        self.parent.push(id);
-        self.cluster.push(Cluster {
+    fn new_cluster(&mut self) -> CId {
+        let id = CId(self.parent.len());
+        self.parent.0.push(id);
+        self.cluster.0.push(Cluster {
             ty: None,
             // has_int_lit: false,
             // has_float_lit: false,
@@ -429,11 +446,11 @@ impl<'a> InferState<'a> {
         id
     }
 
-    fn bind_val(&mut self, v: ValId, c: usize) {
+    fn bind_val(&mut self, v: ValId, c: CId) {
         self.val_cluster.insert(v, c);
     }
 
-    fn bind_pat(&mut self, p: PatId, c: usize) {
+    fn bind_pat(&mut self, p: PatId, c: CId) {
         self.pat_cluster.insert(p, c);
     }
 
@@ -448,7 +465,7 @@ impl<'a> InferState<'a> {
     // }
 
     #[inline(always)]
-    fn find(&mut self, x: usize) -> usize {
+    fn find(&mut self, x: CId) -> CId {
         let p = self.parent[x];
         if p != x {
             let r = self.find(p);
@@ -460,12 +477,13 @@ impl<'a> InferState<'a> {
     /// Normalize everything once so later phases can use parent[c] without calling find().
     fn normalize_clusters(&mut self) {
         for i in 0..self.parent.len() {
+            let i = CId(i);
             let r = self.find(i);
             self.parent[i] = r;
         }
     }
 
-    fn union(&mut self, a: usize, b: usize) -> Result<usize, Clash> {
+    fn union(&mut self, a: CId, b: CId) -> Result<CId, Clash> {
         let ra = self.find(a);
         let rb = self.find(b);
         if ra == rb {
@@ -493,7 +511,7 @@ impl<'a> InferState<'a> {
         Ok(ra)
     }
 
-    fn force_type(&mut self, c: usize, ty: TypeId) -> Result<(), Clash> {
+    fn force_type(&mut self, c: CId, ty: TypeId) -> Result<(), Clash> {
         let r = self.find(c);
         match self.cluster[r].ty {
             None => {
@@ -520,7 +538,7 @@ struct Clash {
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<usize, TypeError> {
+fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
@@ -777,7 +795,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<usize, TypeError
     }
 }
 
-fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> Result<usize, TypeError> {
+fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> Result<CId, TypeError> {
     match ctx.program.pattern(p) {
         Pattern::Bind(n) => {
             let c = ctx.new_cluster();
