@@ -319,6 +319,8 @@ pub fn infer_value_internals(
     let mut ctx = InferState::new(store, program);
 
     let _root = gather_constraints(&mut ctx, value)?;
+    resolve_func_types(&mut ctx)?;
+
 
     // One linear normalization pass (no extra allocations).
     ctx.normalize_clusters();
@@ -368,9 +370,18 @@ struct InferState<'a> {
 
     //functions
     func_decs:Vec<(CId,CallSite)>,
-    func_calls:Vec<CallSite>,
+    func_calls:HashMap<CId,CallSite>,
 
     ans: LocalTypes,
+}
+
+#[derive(Debug)]
+enum InferStyle {
+    ///can merge super agressively
+    Lit,
+
+    ///can
+    LocalVar,
 }
 
 #[derive(Debug)]
@@ -381,8 +392,19 @@ struct Cluster {
 
 #[derive(Debug)]
 struct CallSite {
+    loc:ValId,
     inputs:Vec<CId>,
     output:CId,
+}
+
+#[inline(always)]
+fn find_root(parent:&mut ClusterVec<CId>,x:CId)-> CId {
+    let p = parent[x];
+    if p != x {
+        let r = find_root(parent,p);
+        parent[x] = r;
+    }
+    parent[x]
 }
 
 impl<'a> InferState<'a> {
@@ -398,7 +420,7 @@ impl<'a> InferState<'a> {
             int_lits: Vec::new(),
             float_lits: Vec::new(),
             func_decs:Vec::new(),
-            func_calls:Vec::new(),
+            func_calls:HashMap::new(),
             ans: LocalTypes::new(),
         }
     }
@@ -434,12 +456,7 @@ impl<'a> InferState<'a> {
 
     #[inline(always)]
     fn find(&mut self, x: CId) -> CId {
-        let p = self.parent[x];
-        if p != x {
-            let r = self.find(p);
-            self.parent[x] = r;
-        }
-        self.parent[x]
+        find_root(&mut self.parent,x)
     }
 
     /// Normalize everything once so later phases can use parent[c] without calling find().
@@ -479,6 +496,18 @@ impl<'a> InferState<'a> {
 
         Ok(ra)
     }
+
+    // fn force_type(&mut self, c: CId, ty: TypeId) -> Result<(), Clash> {
+    //     let r = self.find(c);
+    //     match self.cluster[r].ty {
+    //         None => {
+    //             self.cluster[r].ty = Some(ty);
+    //             Ok(())
+    //         }
+    //         Some(t) if t == ty => Ok(()),
+    //         Some(t) => Err(Clash { a: t, b: ty }),
+    //     }
+    // }
 
 
     fn builtin(&mut self, b: BuiltinType) -> TypeId {
@@ -532,7 +561,8 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
 
         Value::NameRef(n) => {
             if let Some(&c) = ctx.names.get(&n) {
-                // immediate alias: this node is the same cluster as the binding
+                //names might refer to something that us generic in the local scope...
+                //so this here is actually wrong for when users define local genric stuff
                 ctx.bind_val(v, c);
                 return Ok(c);
             }
@@ -730,7 +760,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             };
             let f = ctx.new_cluster();
             ctx.bind_val(v, f);
-            ctx.func_decs.push((f,CallSite{inputs,output}));
+            ctx.func_decs.push((f,CallSite{inputs,output,loc:v}));
 
 
             let body_cluster = gather_constraints(ctx, body)?;
@@ -814,6 +844,41 @@ fn compile_type_expr(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> {
             message: "unsupported type expression",
         }),
     }
+}
+
+// ===================================
+// middle phase
+// ===================================
+fn resolve_func_types(ctx:&mut InferState)-> Result<(), TypeError> {
+    'outer:for (cid,dec) in ctx.func_decs.iter_mut() {
+
+        let mut params = Vec::with_capacity(dec.inputs.len());
+        for x in dec.inputs.iter_mut(){
+            *x=find_root(&mut ctx.parent,*x);
+            let Some(t) = ctx.cluster[*x].ty else {
+                continue 'outer;
+            };
+            params.push(t)
+        }
+        dec.output = find_root(&mut ctx.parent,dec.output);
+        let Some(ret) = ctx.cluster[dec.output].ty else {
+            continue 'outer;
+        };
+
+        let tid = ctx.store.intern(TypeValue::Func{
+            params,ret
+        });
+        *cid = find_root(&mut ctx.parent,*cid);
+        let f = &mut ctx.cluster[*cid];
+        if let Some(found) = f.ty {
+            if found!=tid{
+                todo!()
+            }
+        }
+        f.ty=Some(tid);
+
+    }
+    Ok(())
 }
 
 // ===================================
@@ -1037,12 +1102,12 @@ mod type_infer_tests {
         );
     }
 
-    // #[test]
-    // fn infer_empty_function() {
-    //     let mut store = TypeStore::new();
-    //     infer_fn("f=fn(){}", &mut store).unwrap();
+    #[test]
+    fn infer_empty_function() {
+        let mut store = TypeStore::new();
+        infer_fn("f=fn(){}", &mut store).unwrap();
 
-    // }
+    }
 
     /* ------------------------------------------------------------
      * Error cases
