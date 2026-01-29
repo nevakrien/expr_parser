@@ -264,7 +264,8 @@ impl TypeStore {
 }
 
 pub struct LocalTypes {
-    types: HashMap<ValId, TypeId>,
+    val_types: HashMap<ValId, TypeId>,
+    pat_types: HashMap<PatId, TypeId>,
 }
 
 impl Default for LocalTypes {
@@ -276,13 +277,14 @@ impl Default for LocalTypes {
 impl LocalTypes {
     pub fn new() -> Self {
         Self {
-            types: HashMap::new(),
+            pat_types: HashMap::new(),
+            val_types: HashMap::new(),
         }
     }
 
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
-        self.types.get(&id).copied()
+        self.val_types.get(&id).copied()
     }
 }
 
@@ -294,6 +296,7 @@ impl LocalTypes {
 pub enum TypeError {
     /// Could not infer a concrete type for this value
     Unresolved { value: ValId, message: &'static str },
+    UnresolvedPattern { pattern: PatId, message: &'static str },
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedType {
@@ -900,10 +903,21 @@ fn finalize(ctx: &mut InferState) -> Result<(), TypeError> {
     for (&v, &c) in ctx.val_cluster.iter() {
         let r = ctx.parent[c];
         if let Some(t) = ctx.cluster[r].ty {
-            ctx.ans.types.insert(v, t);
+            ctx.ans.val_types.insert(v, t);
         } else {
             return Err(TypeError::Unresolved {
                 value: v,
+                message: "could not infer type",
+            });
+        }
+    }
+    for (&p, &c) in ctx.pat_cluster.iter() {
+        let r = ctx.parent[c];
+        if let Some(t) = ctx.cluster[r].ty {
+            ctx.ans.pat_types.insert(p, t);
+        } else {
+            return Err(TypeError::UnresolvedPattern {
+                pattern: p,
                 message: "could not infer type",
             });
         }
