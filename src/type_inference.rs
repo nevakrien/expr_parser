@@ -367,7 +367,8 @@ struct InferState<'a> {
     float_lits: Vec<(ValId, CId)>,
 
     //functions
-
+    func_decs:Vec<(CId,CallSite)>,
+    func_calls:Vec<CallSite>,
 
     ans: LocalTypes,
 }
@@ -375,6 +376,13 @@ struct InferState<'a> {
 #[derive(Debug)]
 struct Cluster {
     ty: Option<TypeId>,
+    // call:Option<CallInfer>
+}
+
+#[derive(Debug)]
+struct CallSite {
+    inputs:Vec<CId>,
+    output:CId,
 }
 
 impl<'a> InferState<'a> {
@@ -389,6 +397,8 @@ impl<'a> InferState<'a> {
             cluster: ClusterVec::new(),
             int_lits: Vec::new(),
             float_lits: Vec::new(),
+            func_decs:Vec::new(),
+            func_calls:Vec::new(),
             ans: LocalTypes::new(),
         }
     }
@@ -398,11 +408,11 @@ impl<'a> InferState<'a> {
         self.parent.0.push(id);
         self.cluster.0.push(Cluster {
             ty: None,
-            // has_int_lit: false,
-            // has_float_lit: false,
         });
         id
     }
+
+
 
     fn bind_val(&mut self, v: ValId, c: CId) {
         self.val_cluster.insert(v, c);
@@ -441,6 +451,7 @@ impl<'a> InferState<'a> {
         }
     }
 
+    //TODO: actually check call and have proper errors for when it fails
     fn unify(&mut self, a: CId, b: CId) -> Result<CId, Clash> {
         let ra = self.find(a);
         let rb = self.find(b);
@@ -469,17 +480,6 @@ impl<'a> InferState<'a> {
         Ok(ra)
     }
 
-    // fn force_type(&mut self, c: CId, ty: TypeId) -> Result<(), Clash> {
-    //     let r = self.find(c);
-    //     match self.cluster[r].ty {
-    //         None => {
-    //             self.cluster[r].ty = Some(ty);
-    //             Ok(())
-    //         }
-    //         Some(t) if t == ty => Ok(()),
-    //         Some(t) => Err(Clash { a: t, b: ty }),
-    //     }
-    // }
 
     fn builtin(&mut self, b: BuiltinType) -> TypeId {
         // self.store.intern(TypeValue::Builtin(b))
@@ -717,21 +717,25 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             output_type,
             body,
         } => {
-            for pat in params.ids() {
-                let _p = gather_pattern_constraints(ctx, pat)?;
-            }
+            let inputs = params.ids().map(|pat|{
+                gather_pattern_constraints(ctx, pat)
+            }).collect::<Result<_,_>>()?;
 
-            let out_ty = if let Some(x) = output_type {
+            let output = if let Some(x) = output_type {
                 compile_type_expr(ctx, x)?
             } else {
                 let c = ctx.new_cluster();
                 ctx.cluster[c].ty=Some(BuiltinType::Void.into());
                 c
             };
+            let f = ctx.new_cluster();
+            ctx.bind_val(v, f);
+            ctx.func_decs.push((f,CallSite{inputs,output}));
+
 
             let body_cluster = gather_constraints(ctx, body)?;
 
-            if let Err(Clash { a, b }) = ctx.unify(body_cluster, out_ty) {
+            if let Err(Clash { a, b }) = ctx.unify(body_cluster, output) {
                 return Err(TypeError::AnnotationMismatch {
                     annotation: v,
                     constrained: body,
@@ -741,8 +745,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                 });
             }
 
-            let f = ctx.new_cluster();
-            ctx.bind_val(v, f);
+
             //TODO limit f on params and out somehow
             //this might need to be done ahead of time globaly for all funcs
             //so that we can have weird type recursions
