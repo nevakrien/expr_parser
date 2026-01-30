@@ -531,6 +531,8 @@ enum InferStyle {
 
     ///these are implictly generic in some ways which is trick
     LocalFunc,
+
+    StructName,
 }
 
 impl InferStyle{
@@ -686,6 +688,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             let style = match (ls,rs){
                (InferStyle::Literal, s) | (s,InferStyle::Literal) => s,
                _=>todo!("properly handle operator overloading...") 
+               // _=>{
+               //  //placeholder
+               //  let c = ctx.new_cluster();
+               //  ctx.bind_val(v, c);
+               //  return Ok((c,InferStyle::LocalVar))
+               // }
             };
 
             // Result cluster:
