@@ -2,14 +2,19 @@ use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use std::fs::File;
-use std::os::fd::AsRawFd;
 use std::time::Instant;
 
+
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+
+#[cfg(target_os = "linux")]
 struct MappedFile {
     ptr: *mut libc::c_void,
     len: usize,
 }
 
+#[cfg(target_os = "linux")]
 impl MappedFile {
     fn map(path: &str) -> Result<Self, String> {
         let file = File::open(path).map_err(|err| format!("Error opening {path}: {err}"))?;
@@ -63,6 +68,7 @@ impl MappedFile {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for MappedFile {
     fn drop(&mut self) {
         unsafe {
@@ -78,6 +84,7 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "lower_benchmark_data.txt".to_string());
 
+    #[cfg(target_os = "linux")]
     let mapping = match MappedFile::map(&path) {
         Ok(mapping) => mapping,
         Err(message) => {
@@ -85,6 +92,8 @@ fn main() {
             return;
         }
     };
+
+    #[cfg(target_os = "linux")]
     let file_content = match mapping.as_str() {
         Ok(content) => content,
         Err(message) => {
@@ -92,6 +101,12 @@ fn main() {
             return;
         }
     };
+
+    #[cfg(target_os = "windows")]
+    let file_stuff = std::fs::read_to_string(path).unwrap();
+
+    #[cfg(target_os = "windows")]
+    let file_content = file_stuff.as_str();
 
     let statement_count = file_content.lines().count();
     let start = Instant::now();
