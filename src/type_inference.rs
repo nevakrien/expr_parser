@@ -245,7 +245,7 @@ impl LocalTypes {
 }
 
 // ==============================
-// Errors (richer + ValId-based)
+// Errors
 // ==============================
 
 #[derive(Debug)]
@@ -308,7 +308,7 @@ pub enum TypeError {
 }
 
 // ===================================
-// Entry point (no allocations)
+// Entry point 
 // ===================================
 
 pub fn infer_value_internals(
@@ -375,14 +375,7 @@ struct InferState<'a> {
     ans: LocalTypes,
 }
 
-#[derive(Debug)]
-enum InferStyle {
-    ///can merge super agressively
-    Lit,
 
-    ///can
-    LocalVar,
-}
 
 #[derive(Debug)]
 struct Cluster {
@@ -525,14 +518,38 @@ struct Clash {
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> {
+
+///this enum is just for initial gathering
+///the main point is we can constant fold literals
+///howver non literals are kinda tricky and should be avoided for agressive merges
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+enum InferStyle {
+    ///can merge super agressively
+    Literal,
+
+    LocalVar,
+
+    ///these are implictly generic in some ways which is trick
+    LocalFunc,
+}
+
+impl InferStyle{
+    fn delit(self)->Self{
+        match self {
+            InferStyle::Literal => InferStyle::LocalVar,
+            t=>t
+        }
+    }
+}
+
+fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle), TypeError> {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
             // ctx.cluster[c].has_int_lit = true;
             ctx.bind_val(v, c);
             ctx.int_lits.push((v, c));
-            Ok(c)
+            Ok((c,InferStyle::Literal))
         }
 
         Value::Literal(Literal::Float(_)) => {
@@ -540,7 +557,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             // ctx.cluster[c].has_float_lit = true;
             ctx.bind_val(v, c);
             ctx.float_lits.push((v, c));
-            Ok(c)
+            Ok((c,InferStyle::Literal))
         }
 
         Value::Literal(Literal::Str(_)) => {
@@ -548,7 +565,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             let t = ctx.builtin(BuiltinType::Str);
             ctx.cluster[c].ty = Some(t);
             ctx.bind_val(v, c);
-            Ok(c)
+            Ok((c,InferStyle::Literal))
         }
 
         Value::Literal(Literal::Void) => {
@@ -556,7 +573,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             let t = ctx.builtin(BuiltinType::Void);
             ctx.cluster[c].ty = Some(t);
             ctx.bind_val(v, c);
-            Ok(c)
+            Ok((c,InferStyle::Literal))
         }
 
         Value::NameRef(n) => {
@@ -564,7 +581,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                 //names might refer to something that us generic in the local scope...
                 //so this here is actually wrong for when users define local genric stuff
                 ctx.bind_val(v, c);
-                return Ok(c);
+                return Ok((c,InferStyle::LocalVar));
             }
 
             if ctx.program.definitions.contains_key(&n) {
@@ -575,7 +592,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let rhs_cluster = gather_constraints(ctx, value)?;
+            let (rhs_cluster,style) = gather_constraints(ctx, value)?;
             let ann_ty = compile_type_expr(ctx, ty)?;
 
             if let Err(Clash { a, b }) = ctx.unify(rhs_cluster, ann_ty) {
@@ -588,9 +605,10 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                 });
             }
 
+
             // Annotation does not introduce a new type identity: alias to the value
             ctx.bind_val(v, rhs_cluster);
-            Ok(rhs_cluster)
+            Ok((rhs_cluster,style.delit()))
         }
 
         Value::Cast { value, ty } => {
@@ -598,7 +616,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty)?;
             ctx.bind_val(v, c);
-            Ok(c)
+            Ok((c,InferStyle::LocalVar))
         }
 
         Value::Let {
@@ -606,7 +624,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             value,
             else_part,
         } => {
-            let rhs = gather_constraints(ctx, value)?;
+            let (rhs,_) = gather_constraints(ctx, value)?;
             let lhs = gather_pattern_constraints(ctx, pat)?;
 
             if let Err(Clash { a, b }) = ctx.unify(lhs, rhs) {
@@ -619,7 +637,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             }
 
             if let Some(e) = else_part {
-                let ec = gather_constraints(ctx, e)?;
+                let (ec,_) = gather_constraints(ctx, e)?;
                 if let Err(Clash { a, b }) = ctx.unify(lhs, ec) {
                     return Err(TypeError::IncompatibleTypes {
                         site: e,
@@ -632,7 +650,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
 
             // let-expr evaluates to the bound pattern value => alias
             ctx.bind_val(v, lhs);
-            Ok(lhs)
+            Ok((lhs,InferStyle::LocalVar))
         }
 
         Value::Block {
@@ -644,34 +662,31 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             }
 
             // block aliases its return value cluster (or void)
-            let c = match return_value {
+            let (c,style) = match return_value {
                 Some(r) => gather_constraints(ctx, r)?,
                 None => {
                     let c = ctx.new_cluster();
                     let t = ctx.builtin(BuiltinType::Void);
                     ctx.cluster[c].ty = Some(t);
-                    c
+                    (c,InferStyle::LocalVar)
                 }
             };
 
             ctx.bind_val(v, c);
-            Ok(c)
+            Ok((c,style))
         }
 
         Value::BinOp { op, values } => {
             let (lhs, rhs) = values;
 
-            //we are assuming no overloading here.
-            //TODO: this part probably needs to be pooled into a vector of these constraints
-            // in paticular we might want to allow x+y to work for cases like x=i32 and y=u8
-            // the main argument aginst is it makes some infrence tricky to do because we cant blindly apply same_as
-            // BUT we can apply it for a few extra cases
-            // mainly by using the fact literals have 1 and only 1 relation.
-            // so its sound to do the following:
-            //    if we have {x OP int_lit} we can require the int literal is of the same type as op
 
-            let lc = gather_constraints(ctx, lhs)?;
-            let rc = gather_constraints(ctx, rhs)?;
+            let (lc,ls) = gather_constraints(ctx, lhs)?;
+            let (rc,rs) = gather_constraints(ctx, rhs)?;
+
+            let style = match (ls,rs){
+               (InferStyle::Literal, s) | (s,InferStyle::Literal) => s,
+               _=>todo!("properly handle operator overloading...") 
+            };
 
             // Result cluster:
             // - comparisons always produce bool
@@ -695,7 +710,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                     let t = ctx.builtin(BuiltinType::Bool);
                     ctx.cluster[c].ty = Some(t);
                     ctx.bind_val(v, c);
-                    Ok(c)
+                    Ok((c,InferStyle::Literal))
                 }
 
                 // ======================
@@ -727,7 +742,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
                     // Now: literal handling (currently a no op)
                     // when we add overloading we need to check here that we actualyl merge literals explictly
                     ctx.bind_val(v, root);
-                    Ok(root)
+                    Ok((root,style))
                 }
             }
         }
@@ -763,7 +778,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             ctx.func_decs.push((f,CallSite{inputs,output,loc:v}));
 
 
-            let body_cluster = gather_constraints(ctx, body)?;
+            let (body_cluster,_) = gather_constraints(ctx, body)?;
 
             if let Err(Clash { a, b }) = ctx.unify(body_cluster, output) {
                 return Err(TypeError::AnnotationMismatch {
@@ -780,7 +795,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> 
             //this might need to be done ahead of time globaly for all funcs
             //so that we can have weird type recursions
             //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
-            Ok(f)
+            Ok((f,InferStyle::LocalFunc))
         }
         _ => panic!("more expressions {:?}", ctx.program.value(v)),
     }
@@ -1073,6 +1088,26 @@ mod type_infer_tests {
     #[test]
     fn arithmetic_on_float_is_allowed() {
         assert_fn_type!("f = fn(){ (1.0 : f64) + 2.0 }", BuiltinType::F64);
+    }
+
+    #[test]
+    fn large_lit_chains() {
+        assert_fn_type!(
+            r#"
+            f = fn() {
+                let a = 1 + 2;
+
+                let b = 3.0 + 4.0;
+                let z = b + 1.0:float;
+
+                let c = a == (2 + 1);
+                let d: i64 = a;
+                let e = d + 5;
+                let f = b as i64;
+            }
+            "#,
+             BuiltinType::Void
+        )
     }
 
     #[test]
