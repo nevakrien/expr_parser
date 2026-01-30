@@ -9,15 +9,14 @@
 //
 // ================================================================
 
-use std::ops::{Index,IndexMut};
 use crate::ir::{NameId, PatId, ValId};
 use std::collections::HashMap;
+use std::ops::{Index, IndexMut};
 
 use crate::{
     ir::{BinOp, Literal, Pattern, Value},
     program::{Defined, Program},
 };
-
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -252,7 +251,10 @@ impl LocalTypes {
 pub enum TypeError {
     /// Could not infer a concrete type for this value
     Unresolved { value: ValId, message: &'static str },
-    UnresolvedPattern { pattern: PatId, message: &'static str },
+    UnresolvedPattern {
+        pattern: PatId,
+        message: &'static str,
+    },
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedType {
@@ -308,7 +310,7 @@ pub enum TypeError {
 }
 
 // ===================================
-// Entry point 
+// Entry point
 // ===================================
 
 pub fn infer_value_internals(
@@ -319,8 +321,15 @@ pub fn infer_value_internals(
     let mut ctx = InferState::new(store, program);
 
     let _root = gather_constraints(&mut ctx, value)?;
-    resolve_func_types(&mut ctx)?;
 
+    loop {
+        let mut progress = false;
+        progress |= resolve_func_types(&mut ctx)?;
+        progress |= resolve_operator_types(&mut ctx)?;
+        if !progress {
+            break;
+        }
+    }
 
     // One linear normalization pass (no extra allocations).
     ctx.normalize_clusters();
@@ -338,17 +347,25 @@ pub fn infer_value_internals(
 struct CId(usize);
 
 struct ClusterVec<T>(Vec<T>);
-impl<T> ClusterVec<T>{
-    fn new()->Self{Self(Vec::new())}
-    fn len(&self)->usize{self.0.len()}
+impl<T> ClusterVec<T> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
 }
-impl<T> Index<CId> for ClusterVec<T>{
-type Output = T;
-fn index(&self, id: CId) -> &T { &self.0[id.0]}
+impl<T> Index<CId> for ClusterVec<T> {
+    type Output = T;
+    fn index(&self, id: CId) -> &T {
+        &self.0[id.0]
+    }
 }
 
-impl<T> IndexMut<CId> for ClusterVec<T>{
-fn index_mut(&mut self, id: CId) -> &mut T { &mut self.0[id.0]}
+impl<T> IndexMut<CId> for ClusterVec<T> {
+    fn index_mut(&mut self, id: CId) -> &mut T {
+        &mut self.0[id.0]
+    }
 }
 
 struct InferState<'a> {
@@ -369,13 +386,14 @@ struct InferState<'a> {
     float_lits: Vec<(ValId, CId)>,
 
     //functions
-    func_decs:Vec<(CId,CallSite)>,
-    func_calls:HashMap<CId,CallSite>,
+    func_decs: Vec<(CId, CallSite)>,
+    func_calls: HashMap<CId, CallSite>,
+
+    //operators
+    op_sites: Vec<OpSite>,
 
     ans: LocalTypes,
 }
-
-
 
 #[derive(Debug)]
 struct Cluster {
@@ -385,20 +403,57 @@ struct Cluster {
 
 #[derive(Debug)]
 struct CallSite {
-    loc:ValId,
-    inputs:Vec<CId>,
-    output:CId,
+    loc: ValId,
+    inputs: Vec<CId>,
+    output: CId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OpSite {
+    loc: ValId,
+    op: BinOp,
+    lhs: CId,
+    rhs: CId,
+    output: CId,
 }
 
 #[inline(always)]
-fn find_root(parent:&mut ClusterVec<CId>,x:CId)-> CId {
+fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
     let p = parent[x];
     if p != x {
-        let r = find_root(parent,p);
+        let r = find_root(parent, p);
         parent[x] = r;
     }
     parent[x]
 }
+
+fn unify_clusters(parent: &mut ClusterVec<CId>,cluster: &mut ClusterVec<Cluster>, a: CId, b: CId) -> Result<CId, Clash> {
+        let ra = find_root(parent,a);
+        let rb = find_root(parent,b);
+        if ra == rb {
+            return Ok(ra);
+        }
+
+        let ta = cluster[ra].ty;
+        let tb = cluster[rb].ty;
+        if let (Some(a), Some(b)) = (ta, tb) {
+            if a != b {
+                return Err(Clash { a, b });
+            }
+        }
+
+        // No rank: simplest correct UF (you can add rank later if you care)
+        parent[rb] = ra;
+
+        let other_ty = cluster[rb].ty; //.clone();
+        let root_c = &mut cluster[ra];
+
+        root_c.ty = root_c.ty.or(other_ty);
+        // root_c.has_int_lit |= other_c.has_int_lit;
+        // root_c.has_float_lit |= other_c.has_float_lit;
+
+        Ok(ra)
+    }
 
 impl<'a> InferState<'a> {
     fn new(store: &'a mut TypeStore, program: &'a Program) -> Self {
@@ -412,8 +467,9 @@ impl<'a> InferState<'a> {
             cluster: ClusterVec::new(),
             int_lits: Vec::new(),
             float_lits: Vec::new(),
-            func_decs:Vec::new(),
-            func_calls:HashMap::new(),
+            func_decs: Vec::new(),
+            func_calls: HashMap::new(),
+            op_sites: Vec::new(),
             ans: LocalTypes::new(),
         }
     }
@@ -421,13 +477,9 @@ impl<'a> InferState<'a> {
     fn new_cluster(&mut self) -> CId {
         let id = CId(self.parent.len());
         self.parent.0.push(id);
-        self.cluster.0.push(Cluster {
-            ty: None,
-        });
+        self.cluster.0.push(Cluster { ty: None });
         id
     }
-
-
 
     fn bind_val(&mut self, v: ValId, c: CId) {
         self.val_cluster.insert(v, c);
@@ -449,7 +501,7 @@ impl<'a> InferState<'a> {
 
     #[inline(always)]
     fn find(&mut self, x: CId) -> CId {
-        find_root(&mut self.parent,x)
+        find_root(&mut self.parent, x)
     }
 
     /// Normalize everything once so later phases can use parent[c] without calling find().
@@ -463,31 +515,7 @@ impl<'a> InferState<'a> {
 
     //TODO: actually check call and have proper errors for when it fails
     fn unify(&mut self, a: CId, b: CId) -> Result<CId, Clash> {
-        let ra = self.find(a);
-        let rb = self.find(b);
-        if ra == rb {
-            return Ok(ra);
-        }
-
-        let ta = self.cluster[ra].ty;
-        let tb = self.cluster[rb].ty;
-        if let (Some(a), Some(b)) = (ta, tb) {
-            if a != b {
-                return Err(Clash { a, b });
-            }
-        }
-
-        // No rank: simplest correct UF (you can add rank later if you care)
-        self.parent[rb] = ra;
-
-        let other_ty = self.cluster[rb].ty;//.clone();
-        let root_c = &mut self.cluster[ra];
-
-        root_c.ty = root_c.ty.or(other_ty);
-        // root_c.has_int_lit |= other_c.has_int_lit;
-        // root_c.has_float_lit |= other_c.has_float_lit;
-
-        Ok(ra)
+        unify_clusters(&mut self.parent, &mut self.cluster, a, b)
     }
 
     // fn force_type(&mut self, c: CId, ty: TypeId) -> Result<(), Clash> {
@@ -501,7 +529,6 @@ impl<'a> InferState<'a> {
     //         Some(t) => Err(Clash { a: t, b: ty }),
     //     }
     // }
-
 
     fn builtin(&mut self, b: BuiltinType) -> TypeId {
         // self.store.intern(TypeValue::Builtin(b))
@@ -522,7 +549,7 @@ struct Clash {
 ///this enum is just for initial gathering
 ///the main point is we can constant fold literals
 ///howver non literals are kinda tricky and should be avoided for agressive merges
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InferStyle {
     ///can merge super agressively
     Literal,
@@ -535,23 +562,23 @@ enum InferStyle {
     StructName,
 }
 
-impl InferStyle{
-    fn delit(self)->Self{
+impl InferStyle {
+    fn delit(self) -> Self {
         match self {
             InferStyle::Literal => InferStyle::LocalVar,
-            t=>t
+            t => t,
         }
     }
 }
 
-fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle), TypeError> {
+fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId, InferStyle), TypeError> {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_cluster();
             // ctx.cluster[c].has_int_lit = true;
             ctx.bind_val(v, c);
             ctx.int_lits.push((v, c));
-            Ok((c,InferStyle::Literal))
+            Ok((c, InferStyle::Literal))
         }
 
         Value::Literal(Literal::Float(_)) => {
@@ -559,7 +586,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             // ctx.cluster[c].has_float_lit = true;
             ctx.bind_val(v, c);
             ctx.float_lits.push((v, c));
-            Ok((c,InferStyle::Literal))
+            Ok((c, InferStyle::Literal))
         }
 
         Value::Literal(Literal::Str(_)) => {
@@ -567,7 +594,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             let t = ctx.builtin(BuiltinType::Str);
             ctx.cluster[c].ty = Some(t);
             ctx.bind_val(v, c);
-            Ok((c,InferStyle::Literal))
+            Ok((c, InferStyle::Literal))
         }
 
         Value::Literal(Literal::Void) => {
@@ -575,7 +602,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             let t = ctx.builtin(BuiltinType::Void);
             ctx.cluster[c].ty = Some(t);
             ctx.bind_val(v, c);
-            Ok((c,InferStyle::Literal))
+            Ok((c, InferStyle::Literal))
         }
 
         Value::NameRef(n) => {
@@ -583,7 +610,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
                 //names might refer to something that us generic in the local scope...
                 //so this here is actually wrong for when users define local genric stuff
                 ctx.bind_val(v, c);
-                return Ok((c,InferStyle::LocalVar));
+                return Ok((c, InferStyle::LocalVar));
             }
 
             if ctx.program.definitions.contains_key(&n) {
@@ -594,7 +621,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let (rhs_cluster,style) = gather_constraints(ctx, value)?;
+            let (rhs_cluster, style) = gather_constraints(ctx, value)?;
             let ann_ty = compile_type_expr(ctx, ty)?;
 
             if let Err(Clash { a, b }) = ctx.unify(rhs_cluster, ann_ty) {
@@ -607,10 +634,9 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
                 });
             }
 
-
             // Annotation does not introduce a new type identity: alias to the value
             ctx.bind_val(v, rhs_cluster);
-            Ok((rhs_cluster,style.delit()))
+            Ok((rhs_cluster, style))
         }
 
         Value::Cast { value, ty } => {
@@ -618,7 +644,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty)?;
             ctx.bind_val(v, c);
-            Ok((c,InferStyle::LocalVar))
+            Ok((c, InferStyle::LocalVar))
         }
 
         Value::Let {
@@ -626,7 +652,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             value,
             else_part,
         } => {
-            let (rhs,_) = gather_constraints(ctx, value)?;
+            let (rhs, _) = gather_constraints(ctx, value)?;
             let lhs = gather_pattern_constraints(ctx, pat)?;
 
             if let Err(Clash { a, b }) = ctx.unify(lhs, rhs) {
@@ -639,7 +665,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             }
 
             if let Some(e) = else_part {
-                let (ec,_) = gather_constraints(ctx, e)?;
+                let (ec, _) = gather_constraints(ctx, e)?;
                 if let Err(Clash { a, b }) = ctx.unify(lhs, ec) {
                     return Err(TypeError::IncompatibleTypes {
                         site: e,
@@ -652,7 +678,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
 
             // let-expr evaluates to the bound pattern value => alias
             ctx.bind_val(v, lhs);
-            Ok((lhs,InferStyle::LocalVar))
+            Ok((lhs, InferStyle::LocalVar))
         }
 
         Value::Block {
@@ -664,37 +690,61 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             }
 
             // block aliases its return value cluster (or void)
-            let (c,style) = match return_value {
+            let (c, style) = match return_value {
                 Some(r) => gather_constraints(ctx, r)?,
                 None => {
                     let c = ctx.new_cluster();
                     let t = ctx.builtin(BuiltinType::Void);
                     ctx.cluster[c].ty = Some(t);
-                    (c,InferStyle::LocalVar)
+                    (c, InferStyle::LocalVar)
                 }
             };
 
             ctx.bind_val(v, c);
-            Ok((c,style))
+            Ok((c, style))
         }
 
         Value::BinOp { op, values } => {
             let (lhs, rhs) = values;
 
+            let (lc, ls) = gather_constraints(ctx, lhs)?;
+            let (rc, rs) = gather_constraints(ctx, rhs)?;
 
-            let (lc,ls) = gather_constraints(ctx, lhs)?;
-            let (rc,rs) = gather_constraints(ctx, rhs)?;
-
-            let style = match (ls,rs){
-               (InferStyle::Literal, s) | (s,InferStyle::Literal) => s,
-               _=>todo!("properly handle operator overloading...") 
-               // _=>{
-               //  //placeholder
-               //  let c = ctx.new_cluster();
-               //  ctx.bind_val(v, c);
-               //  return Ok((c,InferStyle::LocalVar))
-               // }
+            let (style, is_trivial) = match (ls, rs) {
+                (InferStyle::Literal, InferStyle::Literal) => (InferStyle::Literal, true),
+                _ => (InferStyle::LocalVar, false),
             };
+
+            if !is_trivial {
+                let output = match op {
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        let c = ctx.new_cluster();
+                        let t = ctx.builtin(BuiltinType::Bool);
+                        ctx.cluster[c].ty = Some(t);
+                        c
+                    }
+                    BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Div
+                    | BinOp::Mod
+                    | BinOp::BitAnd
+                    | BinOp::BitOr
+                    | BinOp::BitXor
+                    | BinOp::Shl
+                    | BinOp::Shr => ctx.new_cluster(),
+                };
+
+                ctx.bind_val(v, output);
+                ctx.op_sites.push(OpSite {
+                    loc: v,
+                    op,
+                    lhs: lc,
+                    rhs: rc,
+                    output,
+                });
+                return Ok((output, style));
+            }
 
             // Result cluster:
             // - comparisons always produce bool
@@ -718,7 +768,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
                     let t = ctx.builtin(BuiltinType::Bool);
                     ctx.cluster[c].ty = Some(t);
                     ctx.bind_val(v, c);
-                    Ok((c,InferStyle::Literal))
+                    Ok((c, InferStyle::Literal))
                 }
 
                 // ======================
@@ -750,7 +800,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
                     // Now: literal handling (currently a no op)
                     // when we add overloading we need to check here that we actualyl merge literals explictly
                     ctx.bind_val(v, root);
-                    Ok((root,style))
+                    Ok((root, style))
                 }
             }
         }
@@ -770,23 +820,30 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
             output_type,
             body,
         } => {
-            let inputs = params.ids().map(|pat|{
-                gather_pattern_constraints(ctx, pat)
-            }).collect::<Result<_,_>>()?;
+            let inputs = params
+                .ids()
+                .map(|pat| gather_pattern_constraints(ctx, pat))
+                .collect::<Result<_, _>>()?;
 
             let output = if let Some(x) = output_type {
                 compile_type_expr(ctx, x)?
             } else {
                 let c = ctx.new_cluster();
-                ctx.cluster[c].ty=Some(BuiltinType::Void.into());
+                ctx.cluster[c].ty = Some(BuiltinType::Void.into());
                 c
             };
             let f = ctx.new_cluster();
             ctx.bind_val(v, f);
-            ctx.func_decs.push((f,CallSite{inputs,output,loc:v}));
+            ctx.func_decs.push((
+                f,
+                CallSite {
+                    inputs,
+                    output,
+                    loc: v,
+                },
+            ));
 
-
-            let (body_cluster,_) = gather_constraints(ctx, body)?;
+            let (body_cluster, _) = gather_constraints(ctx, body)?;
 
             if let Err(Clash { a, b }) = ctx.unify(body_cluster, output) {
                 return Err(TypeError::AnnotationMismatch {
@@ -798,12 +855,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId,InferStyle)
                 });
             }
 
-
             //TODO limit f on params and out somehow
             //this might need to be done ahead of time globaly for all funcs
             //so that we can have weird type recursions
             //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
-            Ok((f,InferStyle::LocalFunc))
+            Ok((f, InferStyle::LocalFunc))
         }
         _ => panic!("more expressions {:?}", ctx.program.value(v)),
     }
@@ -846,63 +902,173 @@ fn compile_type_expr(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> {
             let t = match ctx.program.definitions.get(&n) {
                 Some(Defined::BuildinType(b)) => ctx.store.intern(b.clone()),
                 Some(Defined::Type { ty, .. }) => *ty,
-                _ => return Err(TypeError::ExpectedType {
-                    type_expr: v,
-                    message: "expected type",
-                }),
+                _ => {
+                    return Err(TypeError::ExpectedType {
+                        type_expr: v,
+                        message: "expected type",
+                    })
+                }
             };
 
             let c = ctx.new_cluster();
-            ctx.cluster[c].ty=Some(t);
-            ctx.bind_val(v,c);
+            ctx.cluster[c].ty = Some(t);
+            ctx.bind_val(v, c);
             Ok(c)
         }
-        Value::Wildcard=>{
+        Value::Wildcard => {
             let c = ctx.new_cluster();
-            ctx.bind_val(v,c);
+            ctx.bind_val(v, c);
             Ok(c)
         }
-        _ => return Err(TypeError::ExpectedType {
-            type_expr: v,
-            message: "unsupported type expression",
-        }),
+        _ => {
+            return Err(TypeError::ExpectedType {
+                type_expr: v,
+                message: "unsupported type expression",
+            })
+        }
     }
 }
 
 // ===================================
 // middle phase
 // ===================================
-fn resolve_func_types(ctx:&mut InferState)-> Result<(), TypeError> {
-    'outer:for (cid,dec) in ctx.func_decs.iter_mut() {
 
+fn resolve_func_types(ctx: &mut InferState) -> Result<bool, TypeError> {
+    let mut progress = false;
+    'outer: for (cid, dec) in ctx.func_decs.iter_mut() {
         let mut params = Vec::with_capacity(dec.inputs.len());
-        for x in dec.inputs.iter_mut(){
-            *x=find_root(&mut ctx.parent,*x);
+        for x in dec.inputs.iter_mut() {
+            *x = find_root(&mut ctx.parent, *x);
             let Some(t) = ctx.cluster[*x].ty else {
                 continue 'outer;
             };
             params.push(t)
         }
-        dec.output = find_root(&mut ctx.parent,dec.output);
+        dec.output = find_root(&mut ctx.parent, dec.output);
         let Some(ret) = ctx.cluster[dec.output].ty else {
             continue 'outer;
         };
 
-        let tid = ctx.store.intern(TypeValue::Func{
-            params,ret
-        });
-        *cid = find_root(&mut ctx.parent,*cid);
+        let tid = ctx.store.intern(TypeValue::Func { params, ret });
+        *cid = find_root(&mut ctx.parent, *cid);
         let f = &mut ctx.cluster[*cid];
         if let Some(found) = f.ty {
-            if found!=tid{
+            if found != tid {
                 todo!()
             }
+        } else {
+            progress = true;
         }
-        f.ty=Some(tid);
-
+        f.ty = Some(tid);
     }
-    Ok(())
+    Ok(progress)
 }
+
+#[inline]
+fn operator_allows_type(ctx: &TypeStore, op: BinOp, t: TypeId) -> bool {
+    use BinOp::*;
+    match op {
+        Eq | Ne => true,
+
+        Add | Sub | Mul | Div | Mod =>
+            ctx.is_int_like(t) || ctx.is_float_like(t),
+
+        BitAnd | BitOr | BitXor | Shl | Shr =>
+            ctx.is_int_like(t),
+
+        // not handled here yet
+        Lt | Le | Gt | Ge => true,
+    }
+}
+
+#[inline]
+fn operator_requires_exact_match(op: BinOp) -> bool {
+    matches!(op, BinOp::Eq | BinOp::Ne)
+}
+
+fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
+    let mut progress = false;
+
+    for site in ctx.op_sites.iter() {
+        let lhs = find_root(&mut ctx.parent, site.lhs);
+        let rhs = find_root(&mut ctx.parent, site.rhs);
+
+        let lhs_ty = ctx.cluster[lhs].ty;
+        let rhs_ty = ctx.cluster[rhs].ty;
+
+        let op = site.op;
+
+        match (lhs_ty, rhs_ty) {
+            // ============================================================
+            // Case A: both sides known
+            // ============================================================
+            (Some(lt), Some(rt)) => {
+                // applicability check (int/float/bitwise)
+                if !operator_allows_type(ctx.store, op, lt)
+                    || !operator_allows_type(ctx.store, op, rt)
+                {
+                    return Err(TypeError::InvalidOperator {
+                        site: site.loc,
+                        op,
+                        lhs: lt,
+                        rhs: rt,
+                        note: "operator not supported for this type",
+                    });
+                }
+
+                // Eq / Ne require EXACT same type
+                if operator_requires_exact_match(op) && lt != rt {
+                    return Err(TypeError::InvalidOperator {
+                        site: site.loc,
+                        op,
+                        lhs: lt,
+                        rhs: rt,
+                        note: "equality requires operands of the exact same type",
+                    });
+                }
+            }
+
+            // ============================================================
+            // Case B: exactly one side known
+            // ============================================================
+            (Some(t), None) | (None, Some(t)) => {
+                // early rejection (void excluded intentionally)
+                if !operator_allows_type(ctx.store, op, t) {
+                    return Err(TypeError::InvalidOperator {
+                        site: site.loc,
+                        op,
+                        lhs: t,
+                        rhs: t,
+                        note: "operator cannot apply to this type",
+                    });
+                }
+
+                // Eq / Ne force unification
+                if operator_requires_exact_match(op) {
+                    if let Err(Clash { a, b }) = unify_clusters(&mut ctx.parent,&mut ctx.cluster,lhs, rhs) {
+                        return Err(TypeError::InvalidOperator {
+                            site: site.loc,
+                            op,
+                            lhs: a,
+                            rhs: b,
+                            note: "equality requires operands of the same type",
+                        });
+                    }
+                    progress = true;
+                }
+            }
+
+            // ============================================================
+            // Case C: nothing known yet
+            // ============================================================
+            (None, None) => {}
+        }
+    }
+
+    Ok(progress)
+}
+
+
 
 // ===================================
 // Late phases (normalized parent[] access)
@@ -955,6 +1121,8 @@ fn validate_literals(ctx: &InferState) -> Result<(), TypeError> {
 
     Ok(())
 }
+
+
 
 fn finalize(ctx: &mut InferState) -> Result<(), TypeError> {
     // ctx.parent[] already normalized
@@ -1099,6 +1267,20 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn resolves_eq() {
+        assert_fn_type!(
+            r#"
+            f = fn() {
+                let a = 1 + 2;
+                let c = a == (2 + 1);
+                let d: i64 = a;
+            }
+            "#,
+            BuiltinType::Void
+        )
+    }
+
+    #[test]
     fn large_lit_chains() {
         assert_fn_type!(
             r#"
@@ -1114,7 +1296,7 @@ mod type_infer_tests {
                 let f = b as i64;
             }
             "#,
-             BuiltinType::Void
+            BuiltinType::Void
         )
     }
 
@@ -1149,7 +1331,6 @@ mod type_infer_tests {
     fn infer_empty_function() {
         let mut store = TypeStore::new();
         infer_fn("f=fn(){}", &mut store).unwrap();
-
     }
 
     /* ------------------------------------------------------------
