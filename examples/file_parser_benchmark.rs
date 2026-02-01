@@ -1,79 +1,8 @@
 use expr_parser::parsing::Parser;
-use std::fs::File;
 use std::time::Instant;
 
-#[cfg(target_os = "linux")]
-use std::os::fd::AsRawFd;
-
-
-#[cfg(target_os = "linux")]
-struct MappedFile {
-    ptr: *mut libc::c_void,
-    len: usize,
-}
-
-#[cfg(target_os = "linux")]
-impl MappedFile {
-    fn map(path: &str) -> Result<Self, String> {
-        let file = File::open(path).map_err(|err| format!("Error opening {path}: {err}"))?;
-        let metadata = file
-            .metadata()
-            .map_err(|err| format!("Error reading metadata for {path}: {err}"))?;
-        let len = metadata.len() as usize;
-        if len == 0 {
-            return Err(format!("File {path} is empty"));
-        }
-
-        let ptr = unsafe {
-            libc::mmap(
-                std::ptr::null_mut(),
-                len,
-                libc::PROT_READ,
-                libc::MAP_PRIVATE,
-                file.as_raw_fd(),
-                0,
-            )
-        };
-
-        if ptr == libc::MAP_FAILED {
-            return Err(format!("mmap failed for {path}"));
-        }
-
-        let mapping = Self { ptr, len };
-        mapping.name_mapping("parser_input");
-        Ok(mapping)
-    }
-
-    fn name_mapping(&self, name: &str) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            let cstr = std::ffi::CString::new(name).ok();
-            if let Some(cstr) = cstr {
-                let _ = libc::prctl(
-                    libc::PR_SET_VMA,
-                    libc::PR_SET_VMA_ANON_NAME,
-                    self.ptr,
-                    self.len,
-                    cstr.as_ptr(),
-                );
-            }
-        }
-    }
-
-    fn as_str(&self) -> Result<&str, String> {
-        let bytes = unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) };
-        std::str::from_utf8(bytes).map_err(|err| format!("Invalid UTF-8: {err}"))
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Drop for MappedFile {
-    fn drop(&mut self) {
-        unsafe {
-            libc::munmap(self.ptr, self.len);
-        }
-    }
-}
+mod mapped_file;
+use mapped_file::MappedFile;
 
 fn main() {
     println!("Running file-based benchmark (single large file)");
@@ -82,16 +11,14 @@ fn main() {
         .nth(1)
         .unwrap_or_else(|| "benchmark_data.txt".to_string());
 
-    #[cfg(target_os = "linux")]
-    let mapping = match MappedFile::map(&path) {
+    let mapping = match MappedFile::map(&path, "parser_input") {
         Ok(mapping) => mapping,
         Err(message) => {
             eprintln!("{message}");
             return;
         }
     };
-    
-    #[cfg(target_os = "linux")]
+
     let file_content = match mapping.as_str() {
         Ok(content) => content,
         Err(message) => {
@@ -99,12 +26,6 @@ fn main() {
             return;
         }
     };
-
-    #[cfg(target_os = "windows")]
-    let file_stuff = std::fs::read_to_string(path).unwrap();
-
-    #[cfg(target_os = "windows")]
-    let file_content = file_stuff.as_str();
 
     let start = Instant::now();
     let mut parsed_count = 0;
