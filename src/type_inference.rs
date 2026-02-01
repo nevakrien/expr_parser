@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::identity_hasher::IdHashMap;
 use crate::ir::{NameId, PatId, ValId};
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -147,7 +148,7 @@ impl Program {
 pub struct TypeStore {
     values: Vec<TypeValue>,
     intern: HashMap<TypeValue, TypeId>,
-    global_types: HashMap<ValId, TypeId>,
+    global_types: IdHashMap<ValId, TypeId>,
 }
 
 impl Default for TypeStore {
@@ -161,7 +162,7 @@ impl TypeStore {
         let mut ans = Self {
             values: Vec::new(),
             intern: HashMap::new(),
-            global_types: HashMap::new(),
+            global_types: IdHashMap::default(),
         };
 
         for i in 0.. {
@@ -219,8 +220,8 @@ impl TypeStore {
 }
 
 pub struct LocalTypes {
-    val_types: HashMap<ValId, TypeId>,
-    pat_types: HashMap<PatId, TypeId>,
+    val_types: IdHashMap<ValId, TypeId>,
+    pat_types: IdHashMap<PatId, TypeId>,
 }
 
 impl Default for LocalTypes {
@@ -232,8 +233,8 @@ impl Default for LocalTypes {
 impl LocalTypes {
     pub fn new() -> Self {
         Self {
-            pat_types: HashMap::new(),
-            val_types: HashMap::new(),
+            pat_types: IdHashMap::default(),
+            val_types: IdHashMap::default(),
         }
     }
 
@@ -373,9 +374,9 @@ struct InferState<'a> {
     program: &'a Program,
 
     //ir -> cid
-    val_cluster: HashMap<ValId, CId>,
-    pat_cluster: HashMap<PatId, CId>,
-    names: HashMap<NameId, CId>,
+    val_cluster: IdHashMap<ValId, CId>,
+    pat_cluster: IdHashMap<PatId, CId>,
+    names: IdHashMap<NameId, CId>,
 
     // unify-find
     parent: ClusterVec<CId>,
@@ -387,7 +388,7 @@ struct InferState<'a> {
 
     //functions
     func_decs: Vec<(CId, CallSite)>,
-    func_calls: HashMap<CId, CallSite>,
+    func_calls: IdHashMap<CId, CallSite>,
 
     //operators
     op_sites: Vec<OpSite>,
@@ -427,48 +428,53 @@ fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
     parent[x]
 }
 
-fn unify_clusters(parent: &mut ClusterVec<CId>,cluster: &mut ClusterVec<Cluster>, a: CId, b: CId) -> Result<CId, Clash> {
-        let ra = find_root(parent,a);
-        let rb = find_root(parent,b);
-        if ra == rb {
-            return Ok(ra);
-        }
-
-        let ta = cluster[ra].ty;
-        let tb = cluster[rb].ty;
-        if let (Some(a), Some(b)) = (ta, tb) {
-            if a != b {
-                return Err(Clash { a, b });
-            }
-        }
-
-        // No rank: simplest correct UF (you can add rank later if you care)
-        parent[rb] = ra;
-
-        let other_ty = cluster[rb].ty; //.clone();
-        let root_c = &mut cluster[ra];
-
-        root_c.ty = root_c.ty.or(other_ty);
-        // root_c.has_int_lit |= other_c.has_int_lit;
-        // root_c.has_float_lit |= other_c.has_float_lit;
-
-        Ok(ra)
+fn unify_clusters(
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    a: CId,
+    b: CId,
+) -> Result<CId, Clash> {
+    let ra = find_root(parent, a);
+    let rb = find_root(parent, b);
+    if ra == rb {
+        return Ok(ra);
     }
+
+    let ta = cluster[ra].ty;
+    let tb = cluster[rb].ty;
+    if let (Some(a), Some(b)) = (ta, tb) {
+        if a != b {
+            return Err(Clash { a, b });
+        }
+    }
+
+    // No rank: simplest correct UF (you can add rank later if you care)
+    parent[rb] = ra;
+
+    let other_ty = cluster[rb].ty; //.clone();
+    let root_c = &mut cluster[ra];
+
+    root_c.ty = root_c.ty.or(other_ty);
+    // root_c.has_int_lit |= other_c.has_int_lit;
+    // root_c.has_float_lit |= other_c.has_float_lit;
+
+    Ok(ra)
+}
 
 impl<'a> InferState<'a> {
     fn new(store: &'a mut TypeStore, program: &'a Program) -> Self {
         Self {
             store,
             program,
-            val_cluster: HashMap::new(),
-            pat_cluster: HashMap::new(),
-            names: HashMap::new(),
+            val_cluster: IdHashMap::default(),
+            pat_cluster: IdHashMap::default(),
+            names: IdHashMap::default(),
             parent: ClusterVec::new(),
             cluster: ClusterVec::new(),
             int_lits: Vec::new(),
             float_lits: Vec::new(),
             func_decs: Vec::new(),
-            func_calls: HashMap::new(),
+            func_calls: IdHashMap::default(),
             op_sites: Vec::new(),
             ans: LocalTypes::new(),
         }
@@ -970,11 +976,9 @@ fn operator_allows_type(ctx: &TypeStore, op: BinOp, t: TypeId) -> bool {
     match op {
         Eq | Ne => true,
 
-        Add | Sub | Mul | Div | Mod =>
-            ctx.is_int_like(t) || ctx.is_float_like(t),
+        Add | Sub | Mul | Div | Mod => ctx.is_int_like(t) || ctx.is_float_like(t),
 
-        BitAnd | BitOr | BitXor | Shl | Shr =>
-            ctx.is_int_like(t),
+        BitAnd | BitOr | BitXor | Shl | Shr => ctx.is_int_like(t),
 
         // not handled here yet
         Lt | Le | Gt | Ge => true,
@@ -1045,7 +1049,9 @@ fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
 
                 // Eq / Ne force unification
                 if operator_requires_exact_match(op) {
-                    if let Err(Clash { a, b }) = unify_clusters(&mut ctx.parent,&mut ctx.cluster,lhs, rhs) {
+                    if let Err(Clash { a, b }) =
+                        unify_clusters(&mut ctx.parent, &mut ctx.cluster, lhs, rhs)
+                    {
                         return Err(TypeError::InvalidOperator {
                             site: site.loc,
                             op,
@@ -1067,8 +1073,6 @@ fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
 
     Ok(progress)
 }
-
-
 
 // ===================================
 // Late phases (normalized parent[] access)
@@ -1121,8 +1125,6 @@ fn validate_literals(ctx: &InferState) -> Result<(), TypeError> {
 
     Ok(())
 }
-
-
 
 fn finalize(ctx: &mut InferState) -> Result<(), TypeError> {
     // ctx.parent[] already normalized

@@ -1,14 +1,14 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
+use crate::identity_hasher::IdHashMap;
 use crate::ir::{
     ArmId, Literal, MatchArm, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan,
 };
-use crate::macros::{Macro, expand_macros_recursive};
+use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
 use crate::type_inference::TypeId;
 use crate::type_inference::TypeValue;
-use std::collections::HashMap;
 use thiserror::Error;
 
 pub type CResult<T> = Result<T, CompileError>;
@@ -54,7 +54,7 @@ pub enum Defined {
 
 #[derive(Debug)]
 pub struct Program {
-    pub definitions: HashMap<NameId, Defined>,
+    pub definitions: IdHashMap<NameId, Defined>,
     // pub current_infrence: Vec<TypeInfo>,
     // pub type_store: TypeStore,
     values: Vec<Value>,
@@ -68,8 +68,8 @@ pub struct Program {
     names_strs: Vec<StrId>,
     pub str_intern: StringInterner,
 
-    pub scopes: Vec<HashMap<StrId, NameId>>,
-    pub pending_names: HashMap<NameId, Vec<Loc>>,
+    pub scopes: Vec<IdHashMap<StrId, NameId>>,
+    pub pending_names: IdHashMap<NameId, Vec<Loc>>,
 }
 
 impl Default for Program {
@@ -81,7 +81,7 @@ impl Default for Program {
 impl Program {
     pub fn new() -> Self {
         let mut program = Self {
-            definitions: HashMap::new(),
+            definitions: IdHashMap::default(),
             // type_store: TypeStore::new(),
             values: Vec::new(),
             patterns: Vec::new(),
@@ -94,8 +94,8 @@ impl Program {
             names_strs: Vec::new(),
             str_intern: StringInterner::new(),
 
-            scopes: vec![HashMap::new()],
-            pending_names: HashMap::new(),
+            scopes: vec![IdHashMap::default()],
+            pending_names: IdHashMap::default(),
         };
         program.insert_builtin_types();
         program
@@ -195,7 +195,7 @@ impl Program {
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(IdHashMap::default());
     }
 
     /// Pop the current variable scope

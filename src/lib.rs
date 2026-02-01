@@ -1,5 +1,6 @@
 pub mod error_messages;
 pub mod error_reporting;
+pub mod identity_hasher;
 pub mod ir;
 pub mod macros;
 pub mod parsing;
