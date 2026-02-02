@@ -241,10 +241,10 @@ impl TypeStore {
         matches!(self.as_builtin(t), Some(F32 | F64))
     }
 
-    pub fn get_type_string(&self, t: TypeId) -> String{
-        self.get_type_string_nested(t,0)
+    pub fn get_type_string(&self, t: TypeId) -> String {
+        self.get_type_string_nested(t, 0)
     }
-    pub fn get_type_string_nested(&self, t: TypeId,gen_count:usize) -> String {
+    pub fn get_type_string_nested(&self, t: TypeId, gen_count: usize) -> String {
         if t == UNKNOWN_TYPE {
             return "_".to_string();
         }
@@ -281,7 +281,7 @@ impl TypeStore {
             TypeValue::Tuple(items) => {
                 let inner = items
                     .iter()
-                    .map(|id| self.get_type_string_nested(*id,gen_count))
+                    .map(|id| self.get_type_string_nested(*id, gen_count))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("({})", inner)
@@ -289,20 +289,27 @@ impl TypeStore {
             TypeValue::Func { params, ret } => {
                 let params = params
                     .iter()
-                    .map(|id| self.get_type_string_nested(*id,gen_count))
+                    .map(|id| self.get_type_string_nested(*id, gen_count))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("fn({}) -> {}", params, self.get_type_string_nested(*ret,gen_count))
+                format!(
+                    "fn({}) -> {}",
+                    params,
+                    self.get_type_string_nested(*ret, gen_count)
+                )
             }
-            TypeValue::Ptr(inner) => format!("*{}", self.get_type_string_nested(*inner,gen_count)),
+            TypeValue::Ptr(inner) => format!("*{}", self.get_type_string_nested(*inner, gen_count)),
             TypeValue::Type => "Type".to_string(),
             TypeValue::WithGenerics { count, body } => {
-                let new_count = gen_count+count;
+                let new_count = gen_count + count;
                 let pars = (gen_count..new_count)
-                .map(|i| format!("T{i}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-                format!("for<{pars}> {}", self.get_type_string_nested(*body,new_count))
+                    .map(|i| format!("T{i}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "for<{pars}> {}",
+                    self.get_type_string_nested(*body, new_count)
+                )
             }
             TypeValue::Generic(g) => format!("T{}", g.0),
         }
@@ -934,7 +941,6 @@ fn func_call_clash(
     }
 }
 
-
 fn extract_bad_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -1066,8 +1072,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId, InferStyle
                 let (ec, _) = gather_constraints(ctx, e)?;
                 if let Err(clash) = ctx.unify(lhs, ec) {
                     return Err(TypeError::ValuesContradict {
-                        expectation_reason:
-                            "let-else requires the else value to match the pattern type",
+                        expectation_reason: "let-else requires the else value to match the pattern type",
                         site: e,
                         found: e,
                         expected_place: v,
@@ -1118,7 +1123,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId, InferStyle
                     //there is no legitmate reason to overload != == to have a diffrent signature
                     //because of this we just hard assume this
                     //we might take out Lt Gt later if thats a thing we need to handle it at resolve_operators
-                    BinOp::Eq | BinOp::Ne |  BinOp::Le |  BinOp::Ge  | BinOp::Gt | BinOp::Lt => {
+                    BinOp::Eq | BinOp::Ne | BinOp::Le | BinOp::Ge | BinOp::Gt | BinOp::Lt => {
                         if let Err(clash) = ctx.unify(lc, rc) {
                             return Err(TypeError::ValuesContradict {
                                 expectation_reason: "comparison operands must have the same type",
@@ -1130,8 +1135,6 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId, InferStyle
                         }
                         ctx.new_solved(BuiltinType::Bool.into())
                     }
-
-                    
 
                     BinOp::Add
                     | BinOp::Sub
@@ -1200,8 +1203,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId, InferStyle
                         Ok(r) => r,
                         Err(clash) => {
                             return Err(TypeError::ValuesContradict {
-                                expectation_reason:
-                                    "binary operator requires operands of the same type",
+                                expectation_reason: "binary operator requires operands of the same type",
                                 site: v,
                                 found: lhs,
                                 expected_place: rhs,
@@ -1389,19 +1391,17 @@ fn cluster_operator_applicable(
             }
         }
 
-        BitAnd | BitOr | BitXor | Shl | Shr => {
-            cluster_is_int_like(store, parent, cluster, cid)
-        }
+        BitAnd | BitOr | BitXor | Shl | Shr => cluster_is_int_like(store, parent, cluster, cid),
     }
 }
 
 /// Unify only if roots differ; report whether a merge happened.
 #[inline]
 fn unify_if_distinct(
-    store:&mut TypeStore,
-    parent:&mut ClusterVec<CId>,
-    cluster:&mut ClusterVec<Cluster>,
-    call_sites:&mut Vec<CallSite>,
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    call_sites: &mut Vec<CallSite>,
     a: CId,
     b: CId,
 ) -> Result<bool, TypeClash> {
@@ -1410,14 +1410,7 @@ fn unify_if_distinct(
     if ra == rb {
         return Ok(false);
     }
-    unify_clusters(
-        store,
-        parent,
-        cluster,
-        call_sites,
-        ra,
-        rb,
-    )?;
+    unify_clusters(store, parent, cluster, call_sites, ra, rb)?;
     Ok(true)
 }
 
@@ -1437,12 +1430,8 @@ fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
         // 1) Early legality rejection (single helper)
         // ----------------------------------------------------
 
-        let lhs_ok = cluster_operator_applicable(
-            ctx.store, &mut ctx.parent, &ctx.cluster, op, lhs,
-        );
-        let rhs_ok = cluster_operator_applicable(
-            ctx.store, &mut ctx.parent, &ctx.cluster, op, rhs,
-        );
+        let lhs_ok = cluster_operator_applicable(ctx.store, &mut ctx.parent, &ctx.cluster, op, lhs);
+        let rhs_ok = cluster_operator_applicable(ctx.store, &mut ctx.parent, &ctx.cluster, op, rhs);
 
         if lhs_ok == Some(false) || rhs_ok == Some(false) {
             return Err(TypeError::ValuesContradict {
@@ -1452,10 +1441,18 @@ fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
                 expected_place: site.rhs_val,
                 clash: TypeClash {
                     found: extract_bad_type(
-                        ctx.store, &mut ctx.parent, &ctx.cluster, &ctx.call_sites, lhs,
+                        ctx.store,
+                        &mut ctx.parent,
+                        &ctx.cluster,
+                        &ctx.call_sites,
+                        lhs,
                     ),
                     wanted: extract_bad_type(
-                        ctx.store, &mut ctx.parent, &ctx.cluster, &ctx.call_sites, rhs,
+                        ctx.store,
+                        &mut ctx.parent,
+                        &ctx.cluster,
+                        &ctx.call_sites,
+                        rhs,
                     ),
                 },
             });
@@ -1479,13 +1476,21 @@ fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
         // - Pointer arithmetic intentionally deferred
         // ----------------------------------------------------
 
-        let lhs_numeric =
-            matches!(cluster_is_int_like(ctx.store, &mut ctx.parent, &ctx.cluster, lhs), Some(true))
-         || matches!(cluster_is_float_like(ctx.store, &mut ctx.parent, &ctx.cluster, lhs), Some(true));
+        let lhs_numeric = matches!(
+            cluster_is_int_like(ctx.store, &mut ctx.parent, &ctx.cluster, lhs),
+            Some(true)
+        ) || matches!(
+            cluster_is_float_like(ctx.store, &mut ctx.parent, &ctx.cluster, lhs),
+            Some(true)
+        );
 
-        let rhs_numeric =
-            matches!(cluster_is_int_like(ctx.store, &mut ctx.parent, &ctx.cluster, rhs), Some(true))
-         || matches!(cluster_is_float_like(ctx.store, &mut ctx.parent, &ctx.cluster, rhs), Some(true));
+        let rhs_numeric = matches!(
+            cluster_is_int_like(ctx.store, &mut ctx.parent, &ctx.cluster, rhs),
+            Some(true)
+        ) || matches!(
+            cluster_is_float_like(ctx.store, &mut ctx.parent, &ctx.cluster, rhs),
+            Some(true)
+        );
 
         if !(lhs_numeric && rhs_numeric) {
             //TODO handle other cases
@@ -1539,8 +1544,6 @@ fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
 
     Ok(progress)
 }
-
-
 
 fn try_resolve_func_type(
     store: &mut TypeStore,

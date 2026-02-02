@@ -314,6 +314,11 @@ pub enum Value {
 
     Tuple(ValueSpan),
 
+    Enum(PatternSpan),
+    Struct(PatternSpan),
+    Union(PatternSpan),
+
+
     /// Pure binary operation
     BinOp {
         op: BinOp,
@@ -972,10 +977,7 @@ impl Program {
                 let (pat_expr, body_expr) = *pair;
                 let pat = self.lower_pattern(pat_expr)?;
                 let body = self.lower_value(body_expr)?;
-                Ok(MatchArm {
-                    pat,
-                    body,
-                })
+                Ok(MatchArm { pat, body })
             }
 
             Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {

@@ -1036,6 +1036,10 @@ impl<'a> Parser<'a> {
                     self.next_token()?.unwrap();
                     return self.parse_after_lbrace(start, op_s).map(Some);
                 }
+                if op == "[" {
+                    self.next_token()?.unwrap();
+                    return self.parse_bracket_list(start,op_s).map(Some);
+                }
 
                 // control keywords
                 if op == "if" {
@@ -1277,14 +1281,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_after_struct(&mut self, start: usize, def_tok: LFixed) -> PResult<LExpr> {
-        let mut fields = Vec::new();
+        let mut parts = Vec::new();
 
         if let Some(open) = self.try_operator("[")? {
             let bracket_start = open.loc.range.start;
             let generics = self.parse_bracket_list(bracket_start, open)?;
-            fields.push(generics);
+            parts.push(generics);
         }
 
+
+        let mut fields = Vec::new();
+        
+        let mark = self.expr_start();
         let open = self.expect_operator("{")?;
         while self.try_operator("}")?.is_none() {
             let Some(exp) = self.try_expr()? else {
@@ -1298,9 +1306,14 @@ impl<'a> Parser<'a> {
                 self.next_token()?;
             }
         }
+        parts.push(Located{
+            loc:self.produce_loc(mark),
+            value:Expr::Prefix(open,fields)
+        });
+
         Ok(Located {
             loc: self.produce_loc(start),
-            value: Expr::Prefix(def_tok, fields),
+            value: Expr::Prefix(def_tok, parts),
         })
     }
 }
@@ -2071,16 +2084,24 @@ mod parse_tests {
         let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Prefix(struct_kw, fields) => {
+            Expr::Prefix(struct_kw, parts) => {
                 assert_eq!(struct_kw.value, "struct");
-                assert_eq!(fields.len(), 3);
+                assert_eq!(parts.len(), 2);
 
-                match &fields[0].value {
+                match &parts[0].value {
                     Expr::Prefix(open, items) => {
                         assert_eq!(open.value, "[");
                         assert_eq!(items.len(), 2);
                     }
                     _ => panic!("expected generic list"),
+                }
+
+                match &parts[1].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "{");
+                        assert_eq!(items.len(), 2);
+                    }
+                    _ => panic!("expected fields list"),
                 }
             }
             _ => panic!("expected struct"),
@@ -2091,11 +2112,11 @@ mod parse_tests {
         let expr = p.consume_expr().unwrap();
 
         match expr.value {
-            Expr::Prefix(union_kw, fields) => {
+            Expr::Prefix(union_kw, parts) => {
                 assert_eq!(union_kw.value, "union");
-                assert_eq!(fields.len(), 2);
+                assert_eq!(parts.len(), 2);
 
-                match &fields[0].value {
+                match &parts[0].value {
                     Expr::Prefix(open, items) => {
                         assert_eq!(open.value, "[");
                         assert_eq!(items.len(), 1);
@@ -2142,9 +2163,13 @@ mod parse_tests {
 
                 // ---- RHS: struct { x:f y } ----
                 match &rhs.value {
-                    Expr::Prefix(struct_kw, fields) => {
+                    Expr::Prefix(struct_kw, parts) => {
                         assert_eq!(struct_kw.value, "struct");
-                        assert_eq!(fields.len(), 2);
+                        assert_eq!(parts.len(), 1);
+
+                        let Expr::Prefix(_,ref fields) = parts[0].value else{
+                            panic!()
+                        };
 
                         // x:f
                         match &fields[0].value {
