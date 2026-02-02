@@ -30,6 +30,8 @@ pub struct TypeId(pub usize);
 ///it is a way of representing unknown types that we can intern
 ///TypeId should not point to this as a general rule
 pub const UNKNOWN_TYPE: TypeId = TypeId(usize::MAX);
+pub const UNKNOWN_INT_SIZE: TypeId = TypeId(usize::MAX-1);
+pub const UNKNOWN_FLOAT_SIZE: TypeId = TypeId(usize::MAX-2);
 
 ///this type specifically has internals containing UNKNOWN_TYPE
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -816,8 +818,11 @@ fn extract_bad_type(state: &ResolveKind) -> Option<BadTypeId> {
     match state {
         ResolveKind::Solved(t) => Some(BadTypeId(*t)),
         ResolveKind::Nothing => None,
-        ResolveKind::IntLike(_v) | ResolveKind::FloatLike(_v) => None, //TODO its probably a good idea in these cases to use v as the value shown
         ResolveKind::Func(_) | ResolveKind::ExternRef(_) => None,
+
+        //TODO its probably a good idea in these cases to use v as the value shown
+        ResolveKind::IntLike(_v) => Some(BadTypeId(UNKNOWN_INT_SIZE)),
+        ResolveKind::FloatLike(_v) => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)), 
     }
 }
 
