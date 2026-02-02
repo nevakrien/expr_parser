@@ -619,7 +619,10 @@ fn unify_clusters(
     }
 
     // Neither direction worked → real contradiction
-    Err(build_type_clash(store, parent, cluster, call_sites, rf, rw))
+    Err(TypeClash {
+        found: extract_bad_type(store, parent, cluster, call_sites, found),
+        wanted: extract_bad_type(store, parent, cluster, call_sites, wanted),
+    })
 }
 
 fn try_absorb(
@@ -931,19 +934,6 @@ fn func_call_clash(
     }
 }
 
-fn build_type_clash(
-    store: &mut TypeStore,
-    parent: &mut ClusterVec<CId>,
-    cluster: &ClusterVec<Cluster>,
-    call_sites: &Vec<CallSite>,
-    a: CId,
-    b: CId,
-) -> TypeClash {
-    TypeClash {
-        found: extract_bad_type(store, parent, cluster, call_sites, a),
-        wanted: extract_bad_type(store, parent, cluster, call_sites, b),
-    }
-}
 
 fn extract_bad_type(
     store: &mut TypeStore,
@@ -1125,9 +1115,24 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> Result<(CId, InferStyle
 
             if !is_trivial {
                 let output = match op {
-                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    //there is no legitmate reason to overload != == to have a diffrent signature
+                    //because of this we just hard assume this
+                    //we might take out Lt Gt later if thats a thing we need to handle it at resolve_operators
+                    BinOp::Eq | BinOp::Ne |  BinOp::Le |  BinOp::Ge  | BinOp::Gt | BinOp::Lt => {
+                        if let Err(clash) = ctx.unify(lc, rc) {
+                            return Err(TypeError::ValuesContradict {
+                                expectation_reason: "comparison operands must have the same type",
+                                site: v,
+                                found: lhs,
+                                expected_place: rhs,
+                                clash,
+                            });
+                        }
                         ctx.new_solved(BuiltinType::Bool.into())
                     }
+
+                    
+
                     BinOp::Add
                     | BinOp::Sub
                     | BinOp::Mul
@@ -1322,131 +1327,220 @@ fn compile_type_expr(ctx: &mut InferState, v: ValId) -> Result<CId, TypeError> {
 // middle phase
 // ===================================
 
-#[inline]
-fn operator_allows_type(ctx: &TypeStore, op: BinOp, t: TypeId) -> bool {
-    use BinOp::*;
-    match op {
-        Eq | Ne => true,
-
-        Add | Sub | Mul | Div | Mod => ctx.is_int_like(t) || ctx.is_float_like(t),
-
-        BitAnd | BitOr | BitXor | Shl | Shr => ctx.is_int_like(t),
-
-        // not handled here yet
-        Lt | Le | Gt | Ge => true,
-    }
-}
-
-#[inline]
-fn operator_requires_exact_match(op: BinOp) -> bool {
-    matches!(op, BinOp::Eq | BinOp::Ne)
-}
-
-#[inline]
-fn cluster_solved_type(cluster: &Cluster) -> Option<TypeId> {
-    match cluster.state {
-        ResolveKind::Solved(t) => Some(t),
-        _ => None,
+#[inline(always)]
+fn cluster_is_int_like(
+    store: &TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    cid: CId,
+) -> Option<bool> {
+    let root = find_root(parent, cid);
+    match cluster[root].state {
+        ResolveKind::Solved(t) => Some(store.is_int_like(t)),
+        ResolveKind::IntLike(_) => Some(true),
+        ResolveKind::FloatLike(_) => Some(false),
+        ResolveKind::Func(_) => Some(false),
+        ResolveKind::Nothing | ResolveKind::ExternRef(_) => None,
     }
 }
 
 #[inline(always)]
+fn cluster_is_float_like(
+    store: &TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    cid: CId,
+) -> Option<bool> {
+    let root = find_root(parent, cid);
+    match cluster[root].state {
+        ResolveKind::Solved(t) => Some(store.is_float_like(t)),
+        ResolveKind::FloatLike(_) => Some(true),
+        ResolveKind::IntLike(_) => Some(false),
+        ResolveKind::Func(_) => Some(false),
+        ResolveKind::Nothing | ResolveKind::ExternRef(_) => None,
+    }
+}
+
+/// Operator legality, tri-state:
+///   Some(true)  = definitely allowed
+///   Some(false) = definitely illegal
+///   None        = insufficient info
+#[inline(always)]
+fn cluster_operator_applicable(
+    store: &TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    op: BinOp,
+    cid: CId,
+) -> Option<bool> {
+    use BinOp::*;
+    match op {
+        // Structural equality/comparison legality is handled elsewhere
+        Eq | Ne | Lt | Le | Gt | Ge => Some(true),
+
+        Add | Sub | Mul | Div | Mod => {
+            match (
+                cluster_is_int_like(store, parent, cluster, cid),
+                cluster_is_float_like(store, parent, cluster, cid),
+            ) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
+        }
+
+        BitAnd | BitOr | BitXor | Shl | Shr => {
+            cluster_is_int_like(store, parent, cluster, cid)
+        }
+    }
+}
+
+/// Unify only if roots differ; report whether a merge happened.
+#[inline]
+fn unify_if_distinct(
+    store:&mut TypeStore,
+    parent:&mut ClusterVec<CId>,
+    cluster:&mut ClusterVec<Cluster>,
+    call_sites:&mut Vec<CallSite>,
+    a: CId,
+    b: CId,
+) -> Result<bool, TypeClash> {
+    let ra = find_root(parent, a);
+    let rb = find_root(parent, b);
+    if ra == rb {
+        return Ok(false);
+    }
+    unify_clusters(
+        store,
+        parent,
+        cluster,
+        call_sites,
+        ra,
+        rb,
+    )?;
+    Ok(true)
+}
+
+#[inline(always)]
 fn resolve_operator_types(ctx: &mut InferState) -> Result<bool, TypeError> {
+    use BinOp::*;
+
     let mut progress = false;
 
     for site in ctx.op_sites.iter() {
         let lhs = find_root(&mut ctx.parent, site.lhs);
         let rhs = find_root(&mut ctx.parent, site.rhs);
-
-        let lhs_ty = cluster_solved_type(&ctx.cluster[lhs]);
-        let rhs_ty = cluster_solved_type(&ctx.cluster[rhs]);
-
+        let out = find_root(&mut ctx.parent, site.output);
         let op = site.op;
 
-        match (lhs_ty, rhs_ty) {
-            // ============================================================
-            // Case A: both sides known
-            // ============================================================
-            (Some(lt), Some(rt)) => {
-                // applicability check (int/float/bitwise)
-                if !operator_allows_type(ctx.store, op, lt)
-                    || !operator_allows_type(ctx.store, op, rt)
-                {
-                    return Err(TypeError::ValuesContradict {
-                        expectation_reason: "operator not supported for this type",
-                        site: site.loc,
-                        found: site.lhs_val,
-                        expected_place: site.rhs_val,
-                        clash: simple_type_clash(lt, rt),
-                    });
-                }
+        // ----------------------------------------------------
+        // 1) Early legality rejection (single helper)
+        // ----------------------------------------------------
 
-                // Eq / Ne require EXACT same type
-                if operator_requires_exact_match(op) && lt != rt {
-                    return Err(TypeError::ValuesContradict {
-                        expectation_reason: "equality requires operands of the exact same type",
-                        site: site.loc,
-                        found: site.lhs_val,
-                        expected_place: site.rhs_val,
-                        clash: simple_type_clash(lt, rt),
-                    });
-                }
+        let lhs_ok = cluster_operator_applicable(
+            ctx.store, &mut ctx.parent, &ctx.cluster, op, lhs,
+        );
+        let rhs_ok = cluster_operator_applicable(
+            ctx.store, &mut ctx.parent, &ctx.cluster, op, rhs,
+        );
+
+        if lhs_ok == Some(false) || rhs_ok == Some(false) {
+            return Err(TypeError::ValuesContradict {
+                expectation_reason: "operator cannot apply to this type",
+                site: site.loc,
+                found: site.lhs_val,
+                expected_place: site.rhs_val,
+                clash: TypeClash {
+                    found: extract_bad_type(
+                        ctx.store, &mut ctx.parent, &ctx.cluster, &ctx.call_sites, lhs,
+                    ),
+                    wanted: extract_bad_type(
+                        ctx.store, &mut ctx.parent, &ctx.cluster, &ctx.call_sites, rhs,
+                    ),
+                },
+            });
+        }
+
+        // ----------------------------------------------------
+        // 2) Equality / comparisons
+        //
+        // NOTE:
+        // - operand equality is already enforced in gather
+        // - output = bool is already enforced in gather
+        // ----------------------------------------------------
+        if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+            continue;
+        }
+
+        // ----------------------------------------------------
+        // 3) Arithmetic / bitwise
+        //
+        // - Only unify once both sides are known numeric
+        // - Pointer arithmetic intentionally deferred
+        // ----------------------------------------------------
+
+        let lhs_numeric =
+            matches!(cluster_is_int_like(ctx.store, &mut ctx.parent, &ctx.cluster, lhs), Some(true))
+         || matches!(cluster_is_float_like(ctx.store, &mut ctx.parent, &ctx.cluster, lhs), Some(true));
+
+        let rhs_numeric =
+            matches!(cluster_is_int_like(ctx.store, &mut ctx.parent, &ctx.cluster, rhs), Some(true))
+         || matches!(cluster_is_float_like(ctx.store, &mut ctx.parent, &ctx.cluster, rhs), Some(true));
+
+        if !(lhs_numeric && rhs_numeric) {
+            //TODO handle other cases
+            continue;
+        }
+
+        // (a) unify operands
+        match unify_if_distinct(
+            ctx.store,
+            &mut ctx.parent,
+            &mut ctx.cluster,
+            &mut ctx.call_sites,
+            lhs,
+            rhs,
+        ) {
+            Ok(changed) => progress |= changed,
+            Err(clash) => {
+                return Err(TypeError::ValuesContradict {
+                    expectation_reason: "binary operator requires operands of the same type",
+                    site: site.loc,
+                    found: site.lhs_val,
+                    expected_place: site.rhs_val,
+                    clash,
+                });
             }
+        }
 
-            // ============================================================
-            // Case B: exactly one side known
-            // ============================================================
-            (Some(t), None) | (None, Some(t)) => {
-                let (found_val, expected_val) = if lhs_ty.is_some() {
-                    (site.lhs_val, site.rhs_val)
-                } else {
-                    (site.rhs_val, site.lhs_val)
-                };
-                // early rejection (void excluded intentionally)
-                if !operator_allows_type(ctx.store, op, t) {
-                    return Err(TypeError::ValuesContradict {
-                        expectation_reason: "operator cannot apply to this type",
-                        site: site.loc,
-                        found: found_val,
-                        expected_place: expected_val,
-                        clash: TypeClash {
-                            found: Some(BadTypeId(t)),
-                            wanted: None,
-                        },
-                    });
-                }
+        let operand = find_root(&mut ctx.parent, lhs);
 
-                // Eq / Ne force unification
-                if operator_requires_exact_match(op) {
-                    if let Err(clash) = unify_clusters(
-                        ctx.store,
-                        &mut ctx.parent,
-                        &mut ctx.cluster,
-                        &mut ctx.call_sites,
-                        lhs,
-                        rhs,
-                    ) {
-                        return Err(TypeError::ValuesContradict {
-                            expectation_reason: "equality requires operands of the same type",
-                            site: site.loc,
-                            found: found_val,
-                            expected_place: expected_val,
-                            clash,
-                        });
-                    }
-                    progress = true;
-                }
+        // (b) unify output with operand
+        match unify_if_distinct(
+            ctx.store,
+            &mut ctx.parent,
+            &mut ctx.cluster,
+            &mut ctx.call_sites,
+            out,
+            operand,
+        ) {
+            Ok(changed) => progress |= changed,
+            Err(clash) => {
+                return Err(TypeError::ValuesContradict {
+                    expectation_reason: "operator result type must match operand type",
+                    site: site.loc,
+                    found: site.lhs_val,
+                    expected_place: site.rhs_val,
+                    clash,
+                });
             }
-
-            // ============================================================
-            // Case C: nothing known yet
-            // ============================================================
-            (None, None) => {}
         }
     }
 
     Ok(progress)
 }
+
+
 
 fn try_resolve_func_type(
     store: &mut TypeStore,
@@ -1648,52 +1742,52 @@ mod type_infer_tests {
         )
     }
 
-    // #[test]
-    // fn large_lit_chains() {
-    //     assert_fn_type!(
-    //         r#"
-    //         f = fn() {
-    //             let a = 1 + 2;
+    #[test]
+    fn large_lit_chains() {
+        assert_fn_type!(
+            r#"
+            f = fn() {
+                let a = 1 + 2;
 
-    //             let b = 3.0 + 4.0;
-    //             let z = b + 1.0:float;
+                let b = 3.0 + 4.0;
+                let z = b + 1.0:float;
 
-    //             let c = a == (2 + 1);
-    //             let d: i64 = a;
-    //             let e = d + 5;
-    //             let f = b as i64;
-    //         }
-    //         "#,
-    //         BuiltinType::Void
-    //     )
-    // }
+                let c = a == (2 + 1);
+                let d: i64 = a;
+                let e = d + 5;
+                let f = b as i64;
+            }
+            "#,
+            BuiltinType::Void
+        )
+    }
 
-    // #[test]
-    // fn large_mixed_types_with_casts() {
-    //     assert_fn_type!(
-    //         r#"
-    //         f = fn() {
-    //             let a = 1 + 2;
+    #[test]
+    fn large_mixed_types_with_casts() {
+        assert_fn_type!(
+            r#"
+            f = fn() {
+                let a = 1 + 2;
 
-    //             let b = 3.0 + 4.0;
-    //             let z = b + 1.0:float;
+                let b = 3.0 + 4.0;
+                let z = b + 1.0:float;
 
-    //             let c = a == (2 + 1);
-    //             let d: i64 = a;
-    //             let e = d + 5;
-    //             let f = b as i64;
+                let c = a == (2 + 1);
+                let d: i64 = a;
+                let e = d + 5;
+                let f = b as i64;
 
-    //             let g = f == e;
+                let g = f == e;
 
-    //             {
-    //                 let h = g;
-    //                 h
-    //             }
-    //         }
-    //         "#,
-    //         BuiltinType::Bool
-    //     );
-    // }
+                {
+                    let h = g;
+                    h
+                }
+            }
+            "#,
+            BuiltinType::Bool
+        );
+    }
 
     #[test]
     fn infer_empty_function() {
