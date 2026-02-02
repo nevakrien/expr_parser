@@ -30,8 +30,8 @@ pub struct TypeId(pub usize);
 ///it is a way of representing unknown types that we can intern
 ///TypeId should not point to this as a general rule
 pub const UNKNOWN_TYPE: TypeId = TypeId(usize::MAX);
-pub const UNKNOWN_INT_SIZE: TypeId = TypeId(usize::MAX-1);
-pub const UNKNOWN_FLOAT_SIZE: TypeId = TypeId(usize::MAX-2);
+pub const UNKNOWN_INT_SIZE: TypeId = TypeId(usize::MAX - 1);
+pub const UNKNOWN_FLOAT_SIZE: TypeId = TypeId(usize::MAX - 2);
 
 ///this type specifically has internals containing UNKNOWN_TYPE
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -240,6 +240,73 @@ impl TypeStore {
         use BuiltinType::*;
         matches!(self.as_builtin(t), Some(F32 | F64))
     }
+
+    pub fn get_type_string(&self, t: TypeId) -> String{
+        self.get_type_string_nested(t,0)
+    }
+    pub fn get_type_string_nested(&self, t: TypeId,gen_count:usize) -> String {
+        if t == UNKNOWN_TYPE {
+            return "_".to_string();
+        }
+        if t == UNKNOWN_INT_SIZE {
+            return "int?".to_string();
+        }
+        if t == UNKNOWN_FLOAT_SIZE {
+            return "float?".to_string();
+        }
+
+        match self.type_value(t) {
+            TypeValue::Builtin(b) => match b {
+                BuiltinType::Int => "int".to_string(),
+                BuiltinType::Uint => "uint".to_string(),
+                BuiltinType::I8 => "i8".to_string(),
+                BuiltinType::I16 => "i16".to_string(),
+                BuiltinType::I32 => "i32".to_string(),
+                BuiltinType::I64 => "i64".to_string(),
+                BuiltinType::I128 => "i128".to_string(),
+                BuiltinType::Isize => "isize".to_string(),
+                BuiltinType::U8 => "u8".to_string(),
+                BuiltinType::U16 => "u16".to_string(),
+                BuiltinType::U32 => "u32".to_string(),
+                BuiltinType::U64 => "u64".to_string(),
+                BuiltinType::U128 => "u128".to_string(),
+                BuiltinType::Usize => "usize".to_string(),
+                BuiltinType::F32 => "f32".to_string(),
+                BuiltinType::F64 => "f64".to_string(),
+                BuiltinType::Bool => "bool".to_string(),
+                BuiltinType::Str => "str".to_string(),
+                BuiltinType::Void => "void".to_string(),
+                BuiltinType::Type => "Type".to_string(),
+            },
+            TypeValue::Tuple(items) => {
+                let inner = items
+                    .iter()
+                    .map(|id| self.get_type_string_nested(*id,gen_count))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("({})", inner)
+            }
+            TypeValue::Func { params, ret } => {
+                let params = params
+                    .iter()
+                    .map(|id| self.get_type_string_nested(*id,gen_count))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("fn({}) -> {}", params, self.get_type_string_nested(*ret,gen_count))
+            }
+            TypeValue::Ptr(inner) => format!("*{}", self.get_type_string_nested(*inner,gen_count)),
+            TypeValue::Type => "Type".to_string(),
+            TypeValue::WithGenerics { count, body } => {
+                let new_count = gen_count+count;
+                let pars = (gen_count..new_count)
+                .map(|i| format!("T{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+                format!("for<{pars}> {}", self.get_type_string_nested(*body,new_count))
+            }
+            TypeValue::Generic(g) => format!("T{}", g.0),
+        }
+    }
 }
 
 pub struct LocalTypes {
@@ -405,7 +472,7 @@ struct Cluster {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct CallSiteId(usize);
 
-#[derive(Debug,Clone,Copy)]
+#[derive(Debug, Clone, Copy)]
 enum ResolveKind {
     Solved(TypeId),
     Nothing,
@@ -420,7 +487,6 @@ enum ResolveKind {
     ///not all functions are like this but if something is declared as a function its this
     Func(CallSiteId),
 }
-
 
 #[derive(Debug)]
 struct CallSite {
@@ -501,7 +567,6 @@ impl<'a> InferState<'a> {
         self.pat_cluster.insert(p, c);
     }
 
-
     //TODO: actually check call and have proper errors for when it fails
     fn unify(&mut self, a: CId, b: CId) -> Result<CId, TypeClash> {
         unify_clusters(
@@ -513,7 +578,6 @@ impl<'a> InferState<'a> {
             b,
         )
     }
-
 }
 
 // =====================================================
@@ -529,8 +593,6 @@ fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
     }
     parent[x]
 }
-
-
 
 fn unify_clusters(
     store: &mut TypeStore,
@@ -557,7 +619,7 @@ fn unify_clusters(
     }
 
     // Neither direction worked → real contradiction
-    Err(build_type_clash(cluster, rf, rw))
+    Err(build_type_clash(store, parent, cluster, call_sites, rf, rw))
 }
 
 fn try_absorb(
@@ -634,7 +696,9 @@ fn try_absorb(
                 (dst_call.inputs.len(), src_call.inputs.len())
             };
             if dst_len != src_len {
-                return Err(func_call_clash(store, dst_len, src_len));
+                return Err(func_call_clash(
+                    store, parent, cluster, call_sites, dst_call, src_call,
+                ));
             }
 
             for i in 0..dst_len {
@@ -644,7 +708,9 @@ fn try_absorb(
                     (dst_call.inputs[i], src_call.inputs[i])
                 };
                 if unify_clusters(store, parent, cluster, call_sites, a, b).is_err() {
-                    return Err(func_call_clash(store, dst_len, src_len));
+                    return Err(func_call_clash(
+                        store, parent, cluster, call_sites, dst_call, src_call,
+                    ));
                 }
             }
             let (dst_out, src_out) = {
@@ -653,7 +719,9 @@ fn try_absorb(
                 (dst_call.output, src_call.output)
             };
             if unify_clusters(store, parent, cluster, call_sites, dst_out, src_out).is_err() {
-                return Err(func_call_clash(store, dst_len, src_len));
+                return Err(func_call_clash(
+                    store, parent, cluster, call_sites, dst_call, src_call,
+                ));
             }
 
             parent[src] = dst;
@@ -758,10 +826,10 @@ fn unify_func_with_type(
 
         //TODO (maybe): we constantly take the params again from the spot because borrow checker
         //              technically the Vec params points to never reallocs
-        //              so theortically its possible to keep borowing this 
+        //              so theortically its possible to keep borowing this
         let param_ty = match store.type_value(ty) {
             TypeValue::Func { params, ret: _ } => params[i],
-            _=>unreachable!()
+            _ => unreachable!(),
         };
         force_type(store, parent, cluster, call_sites, input, param_ty)?;
     }
@@ -788,44 +856,116 @@ fn type_vs_literal_clash(t: TypeId) -> TypeClash {
 
 //TODO: this should actually check if some of the types are known
 // we wana do recursive partial resolution
-fn make_func_mock(store: &mut TypeStore, arity: usize) -> TypeId {
-    let params = vec![UNKNOWN_TYPE; arity];
-    store.intern(TypeValue::Func {
-        params,
-        ret: UNKNOWN_TYPE,
-    })
+fn mock_type_from_cluster(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    call_sites: &Vec<CallSite>,
+    cid: CId,
+    visiting: &mut std::collections::HashSet<CId>,
+) -> TypeId {
+    let root = find_root(parent, cid);
+    if !visiting.insert(root) {
+        return UNKNOWN_TYPE;
+    }
+
+    let ty = match cluster[root].state {
+        ResolveKind::Solved(t) => t,
+        ResolveKind::IntLike(_) => UNKNOWN_INT_SIZE,
+        ResolveKind::FloatLike(_) => UNKNOWN_FLOAT_SIZE,
+        ResolveKind::Func(call) => {
+            make_func_mock_inner(store, parent, cluster, call_sites, call, visiting)
+        }
+        ResolveKind::Nothing | ResolveKind::ExternRef(_) => UNKNOWN_TYPE,
+    };
+
+    visiting.remove(&root);
+    ty
 }
 
-//TODO this function likely shouldnt exist for sure not in this form
-//the main reason is that fn(intlike)->() and fn(floatlike)->() clash but have the same mock
-//by the time we get this to a TypeError its basically impossible to figure out whats wrong
-//might be we want intlike and floatlike to have mock ids similar to UNKNOWN_TYPE 
-fn func_call_clash(store: &mut TypeStore, dst_arity: usize, src_arity: usize) -> TypeClash {
+fn make_func_mock_inner(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    call_sites: &Vec<CallSite>,
+    call: CallSiteId,
+    visiting: &mut std::collections::HashSet<CId>,
+) -> TypeId {
+    let site = &call_sites[call.0];
+    let params = site
+        .inputs
+        .iter()
+        .map(|&input| mock_type_from_cluster(store, parent, cluster, call_sites, input, visiting))
+        .collect::<Vec<_>>();
+    let ret = mock_type_from_cluster(store, parent, cluster, call_sites, site.output, visiting);
+
+    store.intern(TypeValue::Func { params, ret })
+}
+
+fn make_func_mock(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    call_sites: &Vec<CallSite>,
+    call: CallSiteId,
+) -> TypeId {
+    let mut visiting = std::collections::HashSet::new();
+    make_func_mock_inner(store, parent, cluster, call_sites, call, &mut visiting)
+}
+
+fn func_call_clash(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    call_sites: &Vec<CallSite>,
+    dst_call: CallSiteId,
+    src_call: CallSiteId,
+) -> TypeClash {
     TypeClash {
-        found: Some(BadTypeId(make_func_mock(store, src_arity))),
-        wanted: Some(BadTypeId(make_func_mock(store, dst_arity))),
+        found: Some(BadTypeId(make_func_mock(
+            store, parent, cluster, call_sites, src_call,
+        ))),
+        wanted: Some(BadTypeId(make_func_mock(
+            store, parent, cluster, call_sites, dst_call,
+        ))),
     }
 }
 
-fn build_type_clash(cluster: &ClusterVec<Cluster>, a: CId, b: CId) -> TypeClash {
+fn build_type_clash(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    call_sites: &Vec<CallSite>,
+    a: CId,
+    b: CId,
+) -> TypeClash {
     TypeClash {
-        found: extract_bad_type(&cluster[a].state),
-        wanted: extract_bad_type(&cluster[b].state),
+        found: extract_bad_type(store, parent, cluster, call_sites, a),
+        wanted: extract_bad_type(store, parent, cluster, call_sites, b),
     }
 }
 
-fn extract_bad_type(state: &ResolveKind) -> Option<BadTypeId> {
-    match state {
-        ResolveKind::Solved(t) => Some(BadTypeId(*t)),
+fn extract_bad_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    call_sites: &Vec<CallSite>,
+    cid: CId,
+) -> Option<BadTypeId> {
+    let root = find_root(parent, cid);
+    match cluster[root].state {
+        ResolveKind::Solved(t) => Some(BadTypeId(t)),
         ResolveKind::Nothing => None,
-        ResolveKind::Func(_) | ResolveKind::ExternRef(_) => None,
+        ResolveKind::ExternRef(_) => None,
+        ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(
+            store, parent, cluster, call_sites, call,
+        ))),
 
         //TODO its probably a good idea in these cases to use v as the value shown
         ResolveKind::IntLike(_v) => Some(BadTypeId(UNKNOWN_INT_SIZE)),
-        ResolveKind::FloatLike(_v) => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)), 
+        ResolveKind::FloatLike(_v) => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
     }
 }
-
 
 // ===================================
 // Constraint gathering (alias where possible)
@@ -1357,13 +1497,11 @@ fn resolve_func_types(ctx: &mut InferState) -> Result<bool, TypeError> {
     Ok(change)
 }
 
-
-
 #[inline(always)]
 fn finalize(ctx: &mut InferState) -> Result<LocalTypes, TypeError> {
     let mut ans = LocalTypes::new();
     for (v, c) in ctx.val_cluster.iter() {
-        let c = find_root(&mut ctx.parent,*c);
+        let c = find_root(&mut ctx.parent, *c);
         if let ResolveKind::Solved(t) = ctx.cluster[c].state {
             ans.val_types.insert(*v, t);
         } else {
@@ -1371,7 +1509,7 @@ fn finalize(ctx: &mut InferState) -> Result<LocalTypes, TypeError> {
         }
     }
     for (p, c) in ctx.pat_cluster.iter() {
-        let c = find_root(&mut ctx.parent,*c);
+        let c = find_root(&mut ctx.parent, *c);
         if let ResolveKind::Solved(t) = ctx.cluster[c].state {
             ans.pat_types.insert(*p, t);
         } else {
