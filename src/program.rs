@@ -39,7 +39,7 @@ pub enum CompileError {
     #[error("repeated global assignment to `{name}`")]
     RepeatedGlobalAssignment {
         name: String,
-        existing: Loc,
+        existing: Option<Loc>,
         new: Loc,
     },
 
@@ -386,7 +386,6 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        let in_global_scope = self.scopes.len() == 1;
         let (name_str, name_id) = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
@@ -398,17 +397,14 @@ impl Program {
                 {
                     if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
                         (name, id)
-                    } else if in_global_scope {
-                        let existing_loc =
-                            self.definition_loc(id).unwrap_or_else(|| lhs_loc.clone());
+                    } else  {
+                        let existing_loc = self.definition_loc(id);
                         let name_string = self.str_intern.resolve(name).to_string();
                         return Err(CompileError::RepeatedGlobalAssignment {
                             name: name_string,
                             existing: existing_loc,
                             new: lhs_loc.clone(),
                         });
-                    } else {
-                        (name, self.insert_value_in_current_scope(name))
                     }
                 } else {
                     (name, self.insert_value_in_current_scope(name))
@@ -423,6 +419,7 @@ impl Program {
         };
 
         self.pending_names.remove(&name_id);
+        // println!("defining {}",self.str_intern.resolve(self.names_strs[name_id.0]));
 
         let def: Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {

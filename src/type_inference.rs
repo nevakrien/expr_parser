@@ -162,7 +162,7 @@ impl Program {
             let id = self.insert_value_in_current_scope(name);
             self.definitions
                 .insert(id, Defined::BuildinType(TypeValue::Builtin(builtin)));
-            self.set_definition_loc(id, Program::placeholder_loc());
+            // self.set_definition_loc(id, Program::placeholder_loc());
         }
     }
 }

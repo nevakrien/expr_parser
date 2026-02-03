@@ -174,7 +174,7 @@ impl ErrorReporter {
             }
             CompileError::RepeatedGlobalAssignment {
                 name,
-                existing,
+                existing:Some(existing),
                 new,
             } => {
                 let report = Report::build(ReportKind::Error, new.file, new.range.start)
@@ -192,6 +192,24 @@ impl ErrorReporter {
 
                 self.print_report(new.file, report.finish())
             }
+
+            CompileError::RepeatedGlobalAssignment {
+                name,
+                existing:None,
+                new,
+            } => {
+                let report = Report::build(ReportKind::Error, new.file, new.range.start)
+                    .with_message(format!("attempted global assignment to buildin `{name}`"))
+                    .with_label(
+                        Label::new((new.file, new.range.clone()))
+                            .with_message("reassigned here")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(new.file, report.finish())
+            }
+
+
             CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
         }
     }
