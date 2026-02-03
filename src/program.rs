@@ -1,6 +1,7 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
+use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
@@ -65,8 +66,10 @@ pub struct Program {
     // pub type_store: TypeStore,
     values: Vec<Value>,
     patterns: Vec<Pattern>,
+    type_exprs: Vec<TypeExpr>,
     value_locs: Vec<Loc>,
     pattern_locs: Vec<Loc>,
+    type_expr_locs: Vec<Loc>,
 
     names_strs: Vec<StrId>,
     pub str_intern: StringInterner,
@@ -89,8 +92,10 @@ impl Program {
             // type_store: TypeStore::new(),
             values: Vec::new(),
             patterns: Vec::new(),
+            type_exprs: Vec::new(),
             value_locs: Vec::new(),
             pattern_locs: Vec::new(),
+            type_expr_locs: Vec::new(),
 
             names_strs: Vec::new(),
             str_intern: StringInterner::new(),
@@ -141,6 +146,22 @@ impl Program {
         PatternSpan::new(start, count)
     }
 
+    pub fn reserve_type_expr_span(&mut self, count: usize) -> TypeExprSpan {
+        let start = TExpId(self.type_exprs.len());
+        for _ in 0..count {
+            self.type_exprs.push(TypeExpr::Wildcard);
+            self.type_expr_locs.push(Self::placeholder_loc());
+        }
+        TypeExprSpan::new(start, count)
+    }
+
+    pub fn id_type_expr(&mut self, loc: Loc, exp: TypeExpr) -> TExpId {
+        let id = TExpId(self.type_exprs.len());
+        self.type_exprs.push(exp);
+        self.type_expr_locs.push(loc);
+        id
+    }
+
     pub fn set_value(&mut self, id: ValId, loc: Loc, value: Value) {
         self.value_locs[id.0] = loc;
         self.values[id.0] = value;
@@ -151,6 +172,11 @@ impl Program {
         self.patterns[id.0] = pattern;
     }
 
+    pub fn set_type_expr(&mut self, id: TExpId, loc: Loc, exp: TypeExpr) {
+        self.type_expr_locs[id.0] = loc;
+        self.type_exprs[id.0] = exp;
+    }
+
     pub fn value(&self, id: ValId) -> Value {
         self.values[id.0]
     }
@@ -159,12 +185,20 @@ impl Program {
         self.patterns[id.0]
     }
 
+    pub fn type_expr(&self, id: TExpId) -> TypeExpr {
+        self.type_exprs[id.0]
+    }
+
     pub fn value_loc(&self, v: ValId) -> Loc {
         self.value_locs[v.0].clone()
     }
 
     pub fn pattern_loc(&self, p: PatId) -> Loc {
         self.pattern_locs[p.0].clone()
+    }
+
+    pub fn type_expr_loc(&self, t: TExpId) -> Loc {
+        self.type_expr_locs[t.0].clone()
     }
 
     /// Push a new variable scope onto the stack

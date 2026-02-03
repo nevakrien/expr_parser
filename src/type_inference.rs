@@ -11,7 +11,7 @@
 
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AssignOp;
-use crate::ir::{NameId, PatId, ValId};
+use crate::ir::{NameId, PatId, TExpId, ValId};
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -362,7 +362,7 @@ pub enum TypeError {
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedTypeExpr {
-        type_expr: ValId,
+        type_expr: TExpId,
     },
 
     /// 2 values are required to be the same type because of some value producing expression
@@ -1317,6 +1317,10 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
     }
 }
 
+///this method is kinda weird and ill formed
+///currently when compiling type expressions we give them a type other the Type::Type
+///we dont have a good destinction between the type of THE VALUE ITSELF and the type IT REFERS TO
+///and this means that fn[T](){let x=T;} is technically legal and x has type Generic(0).
 fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId {
     match ctx.program.pattern(p) {
         Pattern::Bind(n) => {
@@ -1331,33 +1335,25 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, v: ValId) -> CId {
-    match ctx.program.value(v) {
-        Value::NameRef(n) => {
+fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
+    match ctx.program.type_expr(texpr) {
+        crate::ir::TypeExpr::NameRef(n) => {
             let t = match ctx.program.definitions.get(&n) {
                 Some(Defined::BuildinType(b)) => ctx.store.intern(b.clone()),
                 Some(Defined::Type { ty, .. }) => *ty,
                 _ => {
                     let c = ctx.new_cluster();
-                    ctx.bind_val(v, c);
-                    ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: v });
+                    ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
                     return c;
                 }
             };
 
-            let c = ctx.new_solved(t);
-            ctx.bind_val(v, c);
-            c
+            ctx.new_solved(t)
         }
-        Value::Wildcard => {
-            let c = ctx.new_cluster();
-            ctx.bind_val(v, c);
-            c
-        }
+        crate::ir::TypeExpr::Wildcard => ctx.new_cluster(),
         _ => {
             let c = ctx.new_cluster();
-            ctx.bind_val(v, c);
-            ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: v });
+            ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
             c
         }
     }

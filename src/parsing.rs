@@ -1008,6 +1008,8 @@ impl<'a> Parser<'a> {
         };
         Ok(true)
     }
+
+    #[inline(always)]
     fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
         let Some(tok) = self.peek_token()? else {
             return Ok(None);
@@ -1065,9 +1067,14 @@ impl<'a> Parser<'a> {
                     return self.parse_after_struct(start, op_s).map(Some);
                 }
 
-                if op == "let" || op == "var" {
+                if op == "let" || op == "var"  {
                     self.next_token()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
+                }
+
+                if op=="type"{
+                    self.next_token()?.unwrap();
+                    return self.parse_after_type(start, op_s).map(Some);
                 }
 
                 // generic prefix operator via BP
@@ -1085,6 +1092,7 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[inline(always)]
     fn parse_after_lparen(&mut self, start: usize, open: LFixed) -> PResult<LExpr> {
         let mut parts = Vec::new();
         let mut saw_comma = false;
@@ -1138,6 +1146,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
     fn parse_after_lbrace(&mut self, start: usize, open: LFixed) -> PResult<LExpr> {
         let mut items = Vec::new();
         let mut semi = None;
@@ -1162,6 +1171,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
     fn parse_after_if(&mut self, start: usize, if_tok: LFixed) -> PResult<LExpr> {
         let cond = self.consume_expr()?;
         let then_expr = self.consume_stmt()?;
@@ -1179,6 +1189,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
     fn parse_after_while(&mut self, start: usize, w: LFixed) -> PResult<LExpr> {
         let cond = self.consume_expr()?;
         let body = self.consume_stmt()?;
@@ -1190,6 +1201,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
     fn parse_after_match(&mut self, start: usize, m: LFixed) -> PResult<LExpr> {
         let subject = self.consume_expr()?;
         let open = self.expect_operator("{")?;
@@ -1221,6 +1233,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
     fn parse_after_fn(&mut self, start: usize, fn_tok: LFixed) -> PResult<LExpr> {
         let mut v = Vec::new();
 
@@ -1264,6 +1277,7 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
     fn parse_after_let(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
         let mut vals = Vec::new();
         vals.push(self.consume_expr_bp(BP_PATTERN)?);
@@ -1280,6 +1294,20 @@ impl<'a> Parser<'a> {
         })
     }
 
+    #[inline(always)]
+    fn parse_after_type(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
+        let mut vals = Vec::new();
+        vals.push(self.consume_expr_bp(BP_PATTERN)?);
+        self.expect_operator("=")?;
+        vals.push(self.consume_expr()?);
+
+        Ok(Located {
+            loc: self.produce_loc(start),
+            value: Expr::Prefix(let_tok, vals),
+        })
+    }
+
+    #[inline(always)]
     fn parse_after_struct(&mut self, start: usize, def_tok: LFixed) -> PResult<LExpr> {
         let mut parts = Vec::new();
 

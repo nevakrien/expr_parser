@@ -226,7 +226,7 @@ impl ErrorReporter {
                 self.print_report(loc.file, report.finish())
             }
             TypeError::ExpectedTypeExpr { type_expr } => {
-                let loc = program.value_loc(*type_expr);
+                let loc = program.type_expr_loc(*type_expr);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("expected a type expression")
                     .with_label(

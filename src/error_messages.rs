@@ -2,6 +2,8 @@ pub const ERR_UNSUPPORTED_EXPRESSION: &str = "unsupported expression in IR lower
 pub const ERR_UNSUPPORTED_EXPRESSION_ATOM: &str = "unsupported expression atom in IR lowering";
 pub const ERR_UNSUPPORTED_PATTERN: &str =
     "unsupported pattern in IR lowering; expected binding, wildcard, or tuple";
+pub const ERR_UNSUPPORTED_TYPE_EXPR: &str =
+    "unsupported type expression in IR lowering; expected type name, wildcard, or tuple";
 pub const ERR_INVALID_MATCH_ARM: &str = "invalid match arm syntax";
 pub const ERR_INVALID_MATCH_ARM_GUARD: &str = "invalid match arm guard syntax";
 pub const ERR_MATCH_ARM_NEEDS_VALUE: &str = "match expects a value and at least one arm";

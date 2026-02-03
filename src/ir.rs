@@ -10,8 +10,9 @@
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
     ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
+    ERR_UNSUPPORTED_TYPE_EXPR,
 };
-use crate::parsing::{Expr, LExpr, Loc, Located, Token};
+use crate::parsing::{Expr, LExpr, LFixed, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
 use crate::string_intern::StrId;
 
@@ -19,6 +20,10 @@ use crate::string_intern::StrId;
 //note that currently the only major diffrence between Value and Pattern is Bind
 //the one place which actually reads them would become simpler if we merge the 2.
 //would actually remove a lot of semi duplicate code from type infrence
+
+/// Unique identifier for names in the IR
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct NameId(pub usize);
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>;
@@ -30,7 +35,7 @@ pub struct ValId(pub usize);
 pub struct PatId(pub usize);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ArmId(pub usize);
+pub struct TExpId(pub usize);
 
 ///comment is now for explaining to LLM later LLM should rewrite it to actual docs explaining usage
 ///
@@ -50,6 +55,12 @@ pub struct ValueSpan {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct PatternSpan {
     _start: PatId,
+    _count: usize,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TypeExprSpan {
+    _start: TExpId,
     _count: usize,
 }
 
@@ -74,7 +85,7 @@ impl ValueSpan {
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self._count==0
+        self._count == 0
     }
 
     #[inline]
@@ -110,7 +121,7 @@ impl PatternSpan {
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self._count==0
+        self._count == 0
     }
 
     #[inline]
@@ -125,9 +136,41 @@ impl PatternSpan {
     }
 }
 
-/// Unique identifier for names in the IR
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NameId(pub usize);
+impl TypeExprSpan {
+    #[inline]
+    pub fn new(start: TExpId, count: usize) -> Self {
+        Self {
+            _start: start,
+            _count: count,
+        }
+    }
+
+    #[inline]
+    pub fn start(&self) -> TExpId {
+        self._start
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self._count
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self._count == 0
+    }
+
+    #[inline]
+    pub fn at(&self, index: usize) -> TExpId {
+        debug_assert!(index < self._count, "PatternSpan index out of bounds");
+        TExpId(self._start.0 + index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = TExpId> + '_ {
+        (self._start.0..self._start.0 + self._count).map(TExpId)
+    }
+}
 
 /// Literal values that can appear in the code
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -249,9 +292,6 @@ pub enum Value {
 
     Tuple(ValueSpan),
 
-    // Enum(StructLike),
-    // Struct(StructLike),
-    // Union(StructLike),
     /// Pure binary operation
     BinOp {
         op: BinOp,
@@ -268,13 +308,18 @@ pub enum Value {
     /// Explicit type cast
     Cast {
         value: ValId,
-        ty: ValId,
+        ty: TExpId,
     },
 
     /// Type annotation
     TypeAnnotation {
         value: ValId,
-        ty: ValId,
+        ty: TExpId,
+    },
+
+    TypeDef {
+        pat: PatId,
+        ty: TExpId,
     },
 
     //==== MUTATION GATES =====
@@ -345,7 +390,7 @@ pub enum Value {
     Func {
         generics: PatternSpan,
         params: PatternSpan,
-        output_type: Option<ValId>,
+        output_type: Option<TExpId>,
         body: ValId,
     },
 
@@ -381,7 +426,7 @@ pub enum Pattern {
     /// Literal value pattern
     Literal(Literal),
     /// Type annotation pattern (x:T)
-    TypeAnnotation { pat: PatId, ty: ValId },
+    TypeAnnotation { pat: PatId, ty: TExpId },
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -394,6 +439,26 @@ pub enum Pattern {
     //     base: Box<IPattern>,
     //     args: Vec<IPattern>,
     // },
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum TypeExpr {
+    /// Bind a value to a name (variable binding)
+    NameRef(NameId),
+    /// Wildcard pattern that matches anything (_)
+    Wildcard,
+    /// Tuple pattern with multiple sub-patterns
+    Tuple(TypeExprSpan),
+
+    /// specialization
+    Index {
+        base: TExpId,
+        args: TypeExprSpan,
+    },
+
+    Enum(StructLike),
+    Struct(StructLike),
+    Union(StructLike),
 }
 
 /// Single arm in a match expression
@@ -439,6 +504,10 @@ impl Program {
             // let <pat> = <value>
             Expr::Prefix(open, items) if open.value == "let" => {
                 self.lower_let_expr(expr.loc, items)
+            }
+
+            Expr::Prefix(open, items) if open.value == "type" => {
+                self.lower_typedef_expr(expr.loc, items)
             }
 
             // call: <callee>(args...)
@@ -540,6 +609,21 @@ impl Program {
                 return_value,
             })
         })
+    }
+
+    #[inline(always)]
+    fn lower_typedef_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<Value> {
+        debug_assert!(2 == items.len());
+
+        let value_expr = items.pop().unwrap();
+        let pat_expr = items.pop().unwrap();
+
+        let pat = self.lower_pattern(pat_expr)?;
+        let ty = self.lower_type_expr(value_expr)?;
+
+        let _ = loc;
+
+        Ok(Value::TypeDef { pat, ty })
     }
 
     #[inline(always)]
@@ -704,7 +788,9 @@ impl Program {
         let mut items = items.into_iter().peekable();
 
         let mut generics_expr = None;
-        if matches!(&items.peek().unwrap().value, Expr::Prefix(open, _) if open.value == "[") {
+        if let Some(peek) = items.peek()
+            && matches!(&peek.value, Expr::Prefix(open, _) if open.value == "[")
+        {
             generics_expr = Some(items.next().unwrap());
         }
 
@@ -752,7 +838,7 @@ impl Program {
             }
 
             let output_type = match ret_expr {
-                Some(e) => Some(p.lower_value(e)?),
+                Some(e) => Some(p.lower_type_expr(e)?),
                 None => None,
             };
 
@@ -781,7 +867,7 @@ impl Program {
     ) -> CResult<Value> {
         let (value_expr, ty_expr) = pair;
         let value = self.lower_value(value_expr)?;
-        let ty = self.lower_value(ty_expr)?;
+        let ty = self.lower_type_expr(ty_expr)?;
         let v = match op.value {
             "as" => Value::Cast { value, ty },
             ":" => Value::TypeAnnotation { value, ty },
@@ -861,7 +947,7 @@ impl Program {
             Expr::Bin(op, pair) if op.value == ":" => {
                 let (pat_expr, ty_expr) = *pair;
                 let pat = self.lower_pattern(pat_expr)?;
-                let ty = self.lower_value(ty_expr)?;
+                let ty = self.lower_type_expr(ty_expr)?;
 
                 // Create a type annotation pattern
                 let _ = loc;
@@ -1108,6 +1194,180 @@ impl Program {
         Ok(Value::BinOp {
             op: binop,
             values: (left, right),
+        })
+    }
+
+    pub fn lower_type_expr(&mut self, expr: LExpr) -> CResult<TExpId> {
+        let loc = expr.loc.clone();
+        let exp = self.lower_type_expr_inner(expr)?;
+        Ok(self.id_type_expr(loc, exp))
+    }
+
+    fn lower_type_expr_into(&mut self, target: TExpId, expr: LExpr) -> CResult<TExpId> {
+        let loc = expr.loc.clone();
+        let exp = self.lower_type_expr_inner(expr)?;
+        self.set_type_expr(target, loc, exp);
+        Ok(target)
+    }
+
+    fn lower_type_expr_inner(&mut self, expr: LExpr) -> CResult<TypeExpr> {
+        let loc = expr.loc.clone();
+        match expr.value {
+            Expr::Atom(Token::Ident(name)) if name == "_" => Ok(TypeExpr::Wildcard),
+
+            Expr::Atom(Token::Ident(name)) => {
+                let id = self.resolve_name(&loc, &name)?;
+                Ok(TypeExpr::NameRef(id))
+            }
+
+            Expr::Atom(Token::Operator("(")) => {
+                let span = self.reserve_type_expr_span(0);
+                Ok(TypeExpr::Tuple(span))
+            }
+
+            Expr::Prefix(open, items) if open.value == "(" => {
+                let span = self.reserve_type_expr_span(items.len());
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = span.at(index);
+                    self.lower_type_expr_into(target, item)?;
+                }
+                Ok(TypeExpr::Tuple(span))
+            }
+
+            Expr::Postfix(open, items) if open.value == "[" => {
+                if items.is_empty() {
+                    return Err(CompileError::UnsupportedForm {
+                        loc,
+                        op_loc: Some(open.loc),
+                        op: Some(open.value),
+                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                    });
+                }
+
+                let mut items = items.into_iter();
+                let base = self.lower_type_expr(items.next().unwrap())?;
+                let args_span = self.reserve_type_expr_span(items.len());
+                for (index, arg) in items.enumerate() {
+                    let target = args_span.at(index);
+                    self.lower_type_expr_into(target, arg)?;
+                }
+
+                Ok(TypeExpr::Index {
+                    base,
+                    args: args_span,
+                })
+            }
+
+            Expr::Prefix(open, items) if matches!(open.value, "struct" | "enum" | "union") => {
+                self.lower_struct_like_type_expr(open, items)
+            }
+
+            Expr::Atom(Token::Operator(op)) => Err(CompileError::UnsupportedForm {
+                loc: loc.clone(),
+                op_loc: Some(loc),
+                op: Some(op),
+                message: ERR_UNSUPPORTED_TYPE_EXPR,
+            }),
+
+            Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_TYPE_EXPR,
+            }),
+
+            Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_TYPE_EXPR,
+            }),
+
+            _ => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: None,
+                op: None,
+                message: ERR_UNSUPPORTED_TYPE_EXPR,
+            }),
+        }
+    }
+
+    fn lower_struct_like_type_expr(&mut self, kw: LFixed, items: Vec<LExpr>) -> CResult<TypeExpr> {
+        let mut items = items.into_iter().peekable();
+
+        let mut generics_expr = None;
+        if matches!(&items.peek().unwrap().value, Expr::Prefix(open, _) if open.value == "[") {
+            generics_expr = Some(items.next().unwrap());
+        }
+
+        let fields_expr = match items.next() {
+            Some(expr) => expr,
+            None => {
+                return Err(CompileError::UnsupportedForm {
+                    loc: kw.loc.clone(),
+                    op_loc: Some(kw.loc),
+                    op: Some(kw.value),
+                    message: ERR_UNSUPPORTED_TYPE_EXPR,
+                });
+            }
+        };
+
+        if items.next().is_some() {
+            return Err(CompileError::UnsupportedForm {
+                loc: kw.loc.clone(),
+                op_loc: Some(kw.loc),
+                op: Some(kw.value),
+                message: ERR_UNSUPPORTED_TYPE_EXPR,
+            });
+        }
+
+        let generics = match generics_expr {
+            Some(gen_expr) => {
+                let Expr::Prefix(open, items) = gen_expr.value else {
+                    return Err(CompileError::UnsupportedForm {
+                        loc: gen_expr.loc,
+                        op_loc: Some(kw.loc),
+                        op: Some(kw.value),
+                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                    });
+                };
+                debug_assert!(open.value == "[");
+
+                let span = self.reserve_pattern_span(items.len());
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = span.at(index);
+                    self.lower_pattern_into(target, item)?;
+                }
+                span
+            }
+            None => self.reserve_pattern_span(0),
+        };
+
+        let fields = match fields_expr.value {
+            Expr::Prefix(open, items) if open.value == "{" => {
+                let span = self.reserve_pattern_span(items.len());
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = span.at(index);
+                    self.lower_pattern_into(target, item)?;
+                }
+                span
+            }
+            _ => {
+                return Err(CompileError::UnsupportedForm {
+                    loc: fields_expr.loc,
+                    op_loc: Some(kw.loc),
+                    op: Some(kw.value),
+                    message: ERR_UNSUPPORTED_TYPE_EXPR,
+                });
+            }
+        };
+
+        let def = StructLike { generics, fields };
+        Ok(match kw.value {
+            "struct" => TypeExpr::Struct(def),
+            "enum" => TypeExpr::Enum(def),
+            "union" => TypeExpr::Union(def),
+            _ => unreachable!(),
         })
     }
 }
@@ -1568,8 +1828,8 @@ mod lowering_tests {
                     Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected cast value to be name"),
                 }
-                match program.value(ty) {
-                    Value::NameRef(id) => assert_ne!(id, a_id),
+                match program.type_expr(ty) {
+                    TypeExpr::NameRef(id) => assert_ne!(id, a_id),
                     _ => panic!("expected cast type pattern"),
                 }
             }
@@ -1692,8 +1952,8 @@ mod lowering_tests {
                             _ => panic!("expected bind pattern for variable name"),
                         }
                         // The type should resolve to the predefined 'int' name
-                        match program.value(ty) {
-                            Value::NameRef(_int_id) => {} // Type should be a name reference to 'int'
+                        match program.type_expr(ty) {
+                            TypeExpr::NameRef(_int_id) => {} // Type should be a name reference to 'int'
                             _ => panic!("expected type to be name reference to predefined type"),
                         }
                     }
