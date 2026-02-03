@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::ir::AssignOp;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{NameId, PatId, ValId};
 use std::collections::HashMap;
@@ -1082,12 +1083,33 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             c
         }
 
+        Value::Assign { op:AssignOp::Nothing(value), target }=>{
+            let lhs = gather_constraints(ctx, target);
+            ctx.bind_val(v, lhs);
+
+            let rhs = gather_constraints(ctx, value);
+            if let Err(clash) = ctx.unify(rhs,lhs) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "assigment requires both sides match",
+                    site: v,
+                    found: value,
+                    expected_place: v,
+                    clash,
+                });
+            }
+
+            lhs
+        }
+
         Value::Let {
             pat,
             value,
             else_part,
         } => {
             let lhs = gather_pattern_constraints(ctx, pat);
+            // let-expr evaluates to the bound pattern value => alias
+            ctx.bind_val(v, lhs);
+
             let rhs = gather_constraints(ctx, value);
 
 
@@ -1115,8 +1137,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                 }
             }
 
-            // let-expr evaluates to the bound pattern value => alias
-            ctx.bind_val(v, lhs);
+
             lhs
         }
 
