@@ -83,7 +83,7 @@ impl ValueSpan {
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = ValId> + '_ {
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = ValId> + '_ {
         (self._start.0..self._start.0 + self._count).map(ValId)
     }
 }
@@ -114,7 +114,7 @@ impl PatternSpan {
     }
 
     #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = PatId> + '_ {
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = PatId> + '_ {
         (self._start.0..self._start.0 + self._count).map(PatId)
     }
 }
@@ -245,9 +245,9 @@ pub enum Value {
 
     Tuple(ValueSpan),
 
-    Enum(PatternSpan),
-    Struct(PatternSpan),
-    Union(PatternSpan),
+    // Enum(StructLike),
+    // Struct(StructLike),
+    // Union(StructLike),
 
 
     /// Pure binary operation
@@ -399,6 +399,13 @@ pub enum Pattern {
 pub struct MatchArm {
     pub pat: PatId,
     pub body: ValId,
+}
+
+/// Single arm in a match expression
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct StructLike {
+    pub generics: PatternSpan,
+    pub fields: PatternSpan,
 }
 
 impl Program {
@@ -613,15 +620,13 @@ impl Program {
         let value = self.lower_value(items.remove(0))?;
 
         let arms = self.reserve_value_span(items.len());
-
-        for (arm_expr,id) in items.into_iter().zip(arms.ids()) {
+        for (id,arm_expr) in arms.ids().zip(items.into_iter()){
             let loc = arm_expr.loc.clone();
             let arm = self.lower_match_arm(arm_expr)?;
             self.set_value(id,loc,Value::MatchArm(arm));
         }
+        
 
-
-        let _ = loc;
         Ok(Value::Match { value, arms })
     }
 
