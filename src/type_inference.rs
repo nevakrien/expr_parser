@@ -9,17 +9,14 @@
 //
 // ================================================================
 
-use crate::ir::TypeExpr;
 use crate::identity_hasher::IdHashMap;
-use crate::ir::AssignOp;
-use crate::ir::{NameId, PatId, TExpId, ValId};
+use crate::ir::{
+    AssignOp, BinOp, Literal, NameId, PatId, Pattern, TExpId, TypeExpr, ValId, Value,
+};
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
-use crate::{
-    ir::{BinOp, Literal, Pattern, Value},
-    program::{Defined, Program},
-};
+use crate::program::{Defined, Program};
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -491,7 +488,7 @@ struct InferState<'a> {
     val_cluster: Vec<(ValId, CId)>,
     pat_cluster: Vec<(PatId, CId)>,
     typedef_cluster: Vec<(ValId, CId)>,
-    local_types:IdHashMap<NameId,CId>,
+    local_types: IdHashMap<NameId, CId>,
     names: IdHashMap<NameId, CId>,
 
     // unify-find
@@ -558,8 +555,8 @@ impl<'a> InferState<'a> {
             program,
             val_cluster: Vec::default(),
             pat_cluster: Vec::default(),
-            typedef_cluster:Vec::default(),
-            local_types:IdHashMap::default(),
+            typedef_cluster: Vec::default(),
+            local_types: IdHashMap::default(),
             names: IdHashMap::default(),
             parent: ClusterVec::new(),
             cluster: ClusterVec::new(),
@@ -1126,10 +1123,10 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let rhs = gather_constraints(ctx, value);
             if let Err(clash) = ctx.unify(rhs, lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason: "assigment requires both sides match",
+                    expectation_reason: "assignment requires both sides match",
                     site: v,
                     found: value,
-                    expected_place: v,
+                    expected_place: target,
                     clash,
                 });
             }
@@ -1289,7 +1286,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     expectation_reason: "function body must match return type",
                     site: v,
                     found,
-                    expected_place: found,
+                    expected_place: v,
                     clash,
                 });
             }
