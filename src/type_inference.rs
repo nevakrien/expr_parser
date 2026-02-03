@@ -451,6 +451,9 @@ impl<T> ClusterVec<T> {
     fn len(&self) -> usize {
         self.0.len()
     }
+    fn swap(&mut self,a:CId,b:CId){
+        self.0.swap(a.0,b.0)
+    }
 }
 impl<T> Index<CId> for ClusterVec<T> {
     type Output = T;
@@ -489,6 +492,7 @@ struct InferState<'a> {
 #[derive(Debug)]
 struct Cluster {
     state: ResolveKind,
+    
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -503,9 +507,9 @@ enum ResolveKind {
 
     ///the val is the last entity easily considered a lit like (2+1+3) in (let y = let x = 2+1+3)
     ///these lits can be used for error reporting
-    IntLike(ValId),
+    IntLike,
     ///same as intlike but for float
-    FloatLike(ValId),
+    FloatLike,
     ///not all functions are like this but if something is declared as a function its this
     Func(CallSiteId),
 }
@@ -565,13 +569,13 @@ impl<'a> InferState<'a> {
 
     fn new_int_like(&mut self, v: ValId) -> CId {
         let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::IntLike(v);
+        self.cluster[id].state = ResolveKind::IntLike;
         id
     }
 
     fn new_float_like(&mut self, v: ValId) -> CId {
         let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::FloatLike(v);
+        self.cluster[id].state = ResolveKind::FloatLike;
         id
     }
 
@@ -595,7 +599,6 @@ impl<'a> InferState<'a> {
         self.errors.push(err);
     }
 
-    //TODO: actually check call and have proper errors for when it fails
     fn unify(&mut self, a: CId, b: CId) -> Result<CId, TypeClash> {
         unify_clusters(
             self.store,
@@ -604,6 +607,17 @@ impl<'a> InferState<'a> {
             &mut self.call_sites,
             a,
             b,
+        )
+    }
+
+    fn force_type(&mut self, a: CId, t: TypeId) -> Result<(), TypeClash> {
+        force_type(
+            self.store,
+            &mut self.parent,
+            &mut self.cluster,
+            &mut self.call_sites,
+            a,
+            t,
         )
     }
 }
@@ -636,17 +650,27 @@ fn unify_clusters(
     let rf = find_root(parent, found);
     let rw = find_root(parent, wanted);
     if rf == rw {
-        return Ok(rf);
+        return Ok(rw);
     }
 
     // Try found <- wanted
-    if let Some(root) = try_absorb(store, parent, cluster, call_sites, rf, rw)? {
-        return Ok(root);
+    if try_absorb(store, parent, cluster, call_sites, rw, rf)? {
+        if rf != parent[rf]{
+            todo!()
+        }
+
+        parent[rf]=rw;
+        return Ok(rw)
     }
 
     // Otherwise try wanted <- found
-    if let Some(root) = try_absorb(store, parent, cluster, call_sites, rw, rf)? {
-        return Ok(root);
+    if try_absorb(store, parent, cluster, call_sites, rf, rw)? {
+        if rw != parent[rw]{
+            todo!()
+        }
+
+        parent[rw]=rf;
+        return Ok(rf)
     }
 
     // Neither direction worked → real contradiction
@@ -663,7 +687,7 @@ fn try_absorb(
     call_sites: &mut Vec<CallSite>,
     dst: CId,
     src: CId,
-) -> Result<Option<CId>, TypeClash> {
+) -> Result<bool, TypeClash> {
     use ResolveKind::*;
 
     let dst_state = cluster[dst].state;
@@ -673,18 +697,14 @@ fn try_absorb(
         // =====================================================
         // src has no information → always safe to absorb
         // =====================================================
-        (_, Nothing) => {
-            parent[src] = dst;
-            Ok(Some(dst))
-        }
+        (_, Nothing) => Ok(true),
 
         // =====================================================
         // Solved types
         // =====================================================
         (Solved(t1), Solved(t2)) => {
             if t1 == t2 {
-                parent[src] = dst;
-                Ok(Some(dst))
+                Ok(true)
             } else {
                 Err(TypeClash {
                     found: Some(BadTypeId(t2)),
@@ -696,28 +716,25 @@ fn try_absorb(
         // =====================================================
         // Solved absorbs literals if compatible
         // =====================================================
-        (Solved(t), IntLike(_)) => {
+        (Solved(t), IntLike) => {
             if !store.is_int_like(t) {
                 return Err(type_vs_literal_clash(t));
             }
-            parent[src] = dst;
-            Ok(Some(dst))
+            Ok(true)
         }
 
-        (Solved(t), FloatLike(_)) => {
+        (Solved(t), FloatLike) => {
             if !store.is_float_like(t) {
                 return Err(type_vs_literal_clash(t));
             }
-            parent[src] = dst;
-            Ok(Some(dst))
+            Ok(true)
         }
 
         // =====================================================
         // Same-kind weak info: merge
         // =====================================================
-        (IntLike(_), IntLike(_)) | (FloatLike(_), FloatLike(_)) => {
-            parent[src] = dst;
-            Ok(Some(dst))
+        (IntLike, IntLike) | (FloatLike, FloatLike) => {
+            Ok(true)
         }
 
         // =====================================================
@@ -758,31 +775,28 @@ fn try_absorb(
                 ));
             }
 
-            parent[src] = dst;
             if let Some(t) = try_resolve_func_type(store, parent, cluster, call_sites, dst_call) {
                 cluster[dst].state = Solved(t);
             }
-            Ok(Some(dst))
+            Ok(true)
         }
 
         (Solved(t), Func(call)) => {
             unify_func_with_type(store, parent, cluster, call_sites, call, t)?;
-            parent[src] = dst;
-            Ok(Some(dst))
+            Ok(true)
         }
 
         // =====================================================
         // ExternRef can be cast into things
         // =====================================================
         (_, ExternRef(_)) => {
-            parent[src] = dst;
-            Ok(Some(dst))
+            Ok(true)
         }
 
         // =====================================================
         // Everything else: do not guess
         // =====================================================
-        _ => Ok(None),
+        _ => Ok(false),
     }
 }
 
@@ -803,14 +817,14 @@ fn force_type(
         }
         ResolveKind::Solved(t) if t == ty => Ok(()),
         ResolveKind::Solved(t) => Err(simple_type_clash(t, ty)),
-        ResolveKind::IntLike(_) => {
+        ResolveKind::IntLike => {
             if !store.is_int_like(ty) {
                 return Err(type_vs_literal_clash(ty));
             }
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
-        ResolveKind::FloatLike(_) => {
+        ResolveKind::FloatLike => {
             if !store.is_float_like(ty) {
                 return Err(type_vs_literal_clash(ty));
             }
@@ -905,8 +919,8 @@ fn mock_type_from_cluster(
 
     let ty = match cluster[root].state {
         ResolveKind::Solved(t) => t,
-        ResolveKind::IntLike(_) => UNKNOWN_INT_SIZE,
-        ResolveKind::FloatLike(_) => UNKNOWN_FLOAT_SIZE,
+        ResolveKind::IntLike => UNKNOWN_INT_SIZE,
+        ResolveKind::FloatLike => UNKNOWN_FLOAT_SIZE,
         ResolveKind::Func(call) => {
             make_func_mock_inner(store, parent, cluster, call_sites, call, visiting)
         }
@@ -981,9 +995,8 @@ fn extract_bad_type(
             store, parent, cluster, call_sites, call,
         ))),
 
-        //TODO its probably a good idea in these cases to use v as the value shown
-        ResolveKind::IntLike(_v) => Some(BadTypeId(UNKNOWN_INT_SIZE)),
-        ResolveKind::FloatLike(_v) => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
+        ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
+        ResolveKind::FloatLike=> Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
     }
 }
 
@@ -1079,10 +1092,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             value,
             else_part,
         } => {
-            let (rhs, _) = gather_constraints(ctx, value);
             let lhs = gather_pattern_constraints(ctx, pat);
+            let (rhs, _) = gather_constraints(ctx, value);
 
-            if let Err(clash) = ctx.unify(lhs, rhs) {
+
+            if let Err(clash) = ctx.unify(rhs,lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "let binding requires pattern and value to match",
                     site: v,
@@ -1094,7 +1108,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
 
             if let Some(e) = else_part {
                 let (ec, _) = gather_constraints(ctx, e);
-                if let Err(clash) = ctx.unify(lhs, ec) {
+                if let Err(clash) = ctx.unify(ec, lhs) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason:
                             "let-else requires the else value to match the pattern type",
@@ -1263,8 +1277,10 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             output_type,
             body,
         } => {
-            for g in generics.ids() {
-                gather_pattern_constraints(ctx,g);
+            for (i,pat) in generics.ids().enumerate() {
+                //TODO:actually use this for typing
+                gather_generic_constraints(ctx,pat,GenId(i));
+                
             }
             let inputs = params
                 .ids()
@@ -1339,6 +1355,23 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
     }
 }
 
+fn gather_generic_constraints(ctx: &mut InferState, p: PatId,id:GenId) -> CId {
+    match ctx.program.pattern(p) {
+       
+        Pattern::Bind(n) => {
+            let t = ctx.store.intern(TypeValue::Generic(id));
+            let c = ctx.new_solved(t);
+            ctx.names.insert(n, c);
+            ctx.bind_pat(p, c);
+            c
+        }
+
+      
+
+        _ => todo!(),
+    }
+}
+
 fn compile_type_expr(ctx: &mut InferState, v: ValId) -> CId {
     match ctx.program.value(v) {
         Value::NameRef(n) => {
@@ -1385,8 +1418,8 @@ fn cluster_is_int_like(
     let root = find_root(parent, cid);
     match cluster[root].state {
         ResolveKind::Solved(t) => Some(store.is_int_like(t)),
-        ResolveKind::IntLike(_) => Some(true),
-        ResolveKind::FloatLike(_) => Some(false),
+        ResolveKind::IntLike => Some(true),
+        ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Nothing | ResolveKind::ExternRef(_) => None,
     }
@@ -1402,8 +1435,8 @@ fn cluster_is_float_like(
     let root = find_root(parent, cid);
     match cluster[root].state {
         ResolveKind::Solved(t) => Some(store.is_float_like(t)),
-        ResolveKind::FloatLike(_) => Some(true),
-        ResolveKind::IntLike(_) => Some(false),
+        ResolveKind::FloatLike => Some(true),
+        ResolveKind::IntLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Nothing | ResolveKind::ExternRef(_) => None,
     }
@@ -1883,11 +1916,12 @@ mod type_infer_tests {
             .ids()
             .find(|id| matches!(program.value(*id), Value::Let { .. }))
             .expect("expected let statement");
-        let pat_x = match program.value(first_let) {
-            Value::Let { pat, .. } => pat,
-            _ => panic!("expected let value"),
-        };
-        let pat_x_loc = program.pattern_loc(pat_x);
+        // let pat_x = match program.value(first_let) {
+        //     Value::Let { pat, .. } => pat,
+        //     _ => panic!("expected let value"),
+        // };
+        // let pat_x_loc = program.pattern_loc(pat_x);
+        let let_x_loc = program.value_loc(first_let);
 
         let mut store = TypeStore::new();
         let errs = match infer_value_internals(&program, &mut store, body) {
@@ -1905,15 +1939,16 @@ mod type_infer_tests {
             .collect::<Vec<_>>();
 
         let unique = unresolved_locs.iter().cloned().collect::<HashSet<_>>();
-        let has_pat_x = errs.iter().any(|err| match err {
-            TypeError::UnresolvedPattern { pattern } => program.pattern_loc(*pattern) == pat_x_loc,
+        let has_let_x = errs.iter().any(|err| match err {
+            // TypeError::UnresolvedPattern { pattern } => program.pattern_loc(*pattern) == pat_x_loc,
+            TypeError::Unresolved { value } => program.value_loc(*value) == let_x_loc,
             _ => false,
         });
 
         assert_eq!(errs.len(), 2);
         assert_eq!(unresolved_locs.len(), 2);
         assert_eq!(unique.len(), 2);
-        assert!(has_pat_x);
+        assert!(has_let_x);
     }
 
     #[test]
