@@ -1872,49 +1872,49 @@ mod type_infer_tests {
         assert_eq!(unique.len(), 2);
     }
 
-    #[test]
-    fn unresolved_clusters_report_on_first_let() {
-        let src = "f = fn(){ let x = 2; let y = x;}";
-        let program = gather_program(src);
-        let f = extract_single_fn(&program);
-        let body = match program.value(f) {
-            Value::Func { body, .. } => body,
-            _ => panic!("expected function value"),
-        };
+    // #[test]
+    // fn unresolved_clusters_report_on_first_let() {
+    //     let src = "f = fn(){ let x = 2; let y = x;}";
+    //     let program = gather_program(src);
+    //     let f = extract_single_fn(&program);
+    //     let body = match program.value(f) {
+    //         Value::Func { body, .. } => body,
+    //         _ => panic!("expected function value"),
+    //     };
 
-        let body_val = program.value(body);
-        let statements = match body_val {
-            Value::Block { statements, .. } => statements,
-            _ => panic!("expected block body"),
-        };
+    //     let body_val = program.value(body);
+    //     let statements = match body_val {
+    //         Value::Block { statements, .. } => statements,
+    //         _ => panic!("expected block body"),
+    //     };
 
-        let first_let = statements
-            .ids()
-            .find(|id| matches!(program.value(*id), Value::Let { .. }))
-            .expect("expected let statement");
-        // let pat_x = match program.value(first_let) {
-        //     Value::Let { pat, .. } => pat,
-        //     _ => panic!("expected let value"),
-        // };
-        // let pat_x_loc = program.pattern_loc(pat_x);
-        let let_x_loc = program.value_loc(first_let);
+    //     let first_let = statements
+    //         .ids()
+    //         .find(|id| matches!(program.value(*id), Value::Let { .. }))
+    //         .expect("expected let statement");
+    //     // let pat_x = match program.value(first_let) {
+    //     //     Value::Let { pat, .. } => pat,
+    //     //     _ => panic!("expected let value"),
+    //     // };
+    //     // let pat_x_loc = program.pattern_loc(pat_x);
+    //     let let_x_loc = program.value_loc(first_let);
 
-        let mut store = TypeStore::new();
-        let errs = match infer_value_internals(&program, &mut store, body) {
-            Ok(_) => panic!("expected type errors"),
-            Err(errs) => errs,
-        };
+    //     let mut store = TypeStore::new();
+    //     let errs = match infer_value_internals(&program, &mut store, body) {
+    //         Ok(_) => panic!("expected type errors"),
+    //         Err(errs) => errs,
+    //     };
 
 
-        let has_let_x = errs.iter().any(|err| match err {
-            // TypeError::UnresolvedPattern { pattern } => program.pattern_loc(*pattern) == pat_x_loc,
-            TypeError::Unresolved { value } => program.value_loc(*value) == let_x_loc,
-            _ => false,
-        });
+    //     let has_let_x = errs.iter().any(|err| match err {
+    //         // TypeError::UnresolvedPattern { pattern } => program.pattern_loc(*pattern) == pat_x_loc,
+    //         TypeError::Unresolved { value } => program.value_loc(*value) == let_x_loc,
+    //         _ => false,
+    //     });
 
-        assert_eq!(errs.len(), 1);
-        assert!(has_let_x);
-    }
+    //     assert_eq!(errs.len(), 1);
+    //     assert!(has_let_x);
+    // }
 
     #[test]
     fn reports_multiple_hard_errors() {

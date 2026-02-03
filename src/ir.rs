@@ -572,11 +572,12 @@ impl Program {
     fn lower_call_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(!items.is_empty(), "call expression missing callee");
 
-        let mut items = items;
-        let callee = self.lower_value(items.remove(0))?;
+        let args_span = self.reserve_value_span(items.len()-1);
+        let mut items = items.into_iter();
 
-        let args_span = self.reserve_value_span(items.len());
-        for (index, arg) in items.into_iter().enumerate() {
+
+        let callee = self.lower_value(items.next().unwrap())?;
+        for (index, arg) in items.enumerate() {
             let target = args_span.at(index);
             self.lower_value_into(target, arg)?;
         }
@@ -591,12 +592,12 @@ impl Program {
     fn lower_index_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(!items.is_empty(), "index expression missing base");
 
-        let mut items = items;
+        let mut items = items.into_iter();
         //TODO this can actually be a generic so a pattern
-        let base = self.lower_value(items.remove(0))?;
+        let base = self.lower_value(items.next().unwrap())?;
 
         let args_span = self.reserve_value_span(items.len());
-        for (index, arg) in items.into_iter().enumerate() {
+        for (index, arg) in items.enumerate() {
             let target = args_span.at(index);
             self.lower_value_into(target, arg)?;
         }
@@ -616,11 +617,11 @@ impl Program {
             });
         }
 
-        let mut items = items;
-        let value = self.lower_value(items.remove(0))?;
+        let mut items = items.into_iter();
+        let value = self.lower_value(items.next().unwrap())?;
 
         let arms = self.reserve_value_span(items.len());
-        for (id,arm_expr) in arms.ids().zip(items.into_iter()){
+        for (id,arm_expr) in arms.ids().zip(items){
             let loc = arm_expr.loc.clone();
             let arm = self.lower_match_arm(arm_expr)?;
             self.set_value(id,loc,Value::MatchArm(arm));
@@ -639,11 +640,11 @@ impl Program {
             });
         }
 
-        let mut items = items;
-        let cond_expr = items.remove(0);
-        let then_expr = items.remove(0);
+        let mut items = items.into_iter();
+        let cond_expr = items.next().unwrap();
+        let then_expr = items.next().unwrap();
         let else_expr = if items.len() == 1 {
-            Some(items.remove(0))
+            Some(items.next().unwrap())
         } else {
             None
         };
@@ -668,9 +669,9 @@ impl Program {
             });
         }
 
-        let mut items = items;
-        let cond_expr = items.remove(0);
-        let then_expr = items.remove(0);
+        let mut items = items.into_iter();
+        let cond_expr = items.next().unwrap();
+        let then_expr = items.next().unwrap();
 
         let cond = self.lower_value(cond_expr)?;
         let body = self.lower_value(then_expr)?;
@@ -700,20 +701,15 @@ impl Program {
             "fn expects optional generics, signature, and optional body"
         );
 
-        let mut items = items;
+        let mut items = items.into_iter().peekable();
 
         let mut generics_expr = None;
-        if matches!(&items[0].value, Expr::Prefix(open, _) if open.value == "[") {
-            generics_expr = Some(items.remove(0));
+        if matches!(&items.peek().unwrap().value, Expr::Prefix(open, _) if open.value == "[") {
+            generics_expr = Some(items.next().unwrap());
         }
 
-        let body_expr = if items.len() >= 2 {
-            Some(items.pop().unwrap())
-        } else {
-            None
-        };
-
-        let sig_expr = items.pop().expect("fn missing signature");
+        let sig_expr = items.next().expect("fn missing signature");
+        let body_expr = items.next();
 
         let (params_expr, ret_expr) = match sig_expr.value {
             Expr::Bin(arrow, pair) if arrow.value == "->" => {
@@ -1019,7 +1015,7 @@ impl Program {
             panic!("postfix operator with {} operands", items.len());
         }
 
-        let target = self.lower_value(items.remove(0))?;
+        let target = self.lower_value(items.pop().unwrap())?;
 
         let _ = op.loc.clone();
         Ok(Value::Assign {
