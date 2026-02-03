@@ -404,6 +404,15 @@ pub struct TypeClash {
     pub wanted: Option<BadTypeId>,
 }
 
+impl TypeClash{
+    pub fn swap(self)->Self{
+        Self{
+            found:self.wanted,
+            wanted:self.found
+        }
+    }
+}
+
 // ===================================
 // Entry point
 // ===================================
@@ -665,7 +674,7 @@ fn unify_clusters(
     }
 
     // Otherwise try wanted <- found
-    if _try_absorb(store, parent, cluster, call_sites, rf, rw)? {
+    if _try_absorb(store, parent, cluster, call_sites, rf, rw).map_err(TypeClash::swap)? {
         if rw != parent[rw]{
             todo!()
         }
@@ -728,14 +737,20 @@ fn _try_absorb(
         // =====================================================
         (Solved(t), IntLike) => {
             if !store.is_int_like(t) {
-                return Err(type_vs_literal_clash(t));
+                return Err(TypeClash {
+                    found: Some(BadTypeId(UNKNOWN_INT_SIZE)),
+                    wanted: Some(BadTypeId(t)),
+                });
             }
             Ok(true)
         }
 
         (Solved(t), FloatLike) => {
             if !store.is_float_like(t) {
-                return Err(type_vs_literal_clash(t));
+                return Err(TypeClash {
+                    found: Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
+                    wanted: Some(BadTypeId(t)),
+                });
             }
             Ok(true)
         }
@@ -829,14 +844,20 @@ fn force_type(
         ResolveKind::Solved(t) => Err(simple_type_clash(t, ty)),
         ResolveKind::IntLike => {
             if !store.is_int_like(ty) {
-                return Err(type_vs_literal_clash(ty));
+                return Err(TypeClash {
+                    found: Some(BadTypeId(UNKNOWN_INT_SIZE)),
+                    wanted: Some(BadTypeId(ty)),
+                });
             }
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
         ResolveKind::FloatLike => {
             if !store.is_float_like(ty) {
-                return Err(type_vs_literal_clash(ty));
+                return Err(TypeClash {
+                    found: Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
+                    wanted: Some(BadTypeId(ty)),
+                });
             }
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
@@ -902,13 +923,6 @@ fn simple_type_clash(a: TypeId, b: TypeId) -> TypeClash {
     TypeClash {
         found: Some(BadTypeId(a)),
         wanted: Some(BadTypeId(b)),
-    }
-}
-
-fn type_vs_literal_clash(t: TypeId) -> TypeClash {
-    TypeClash {
-        found: Some(BadTypeId(t)),
-        wanted: None,
     }
 }
 
