@@ -554,6 +554,7 @@ impl Program {
             Token::StrLit(s) => Value::Literal(Literal::Str(self.str_intern.intern(&s))),
             Token::Operator("(") => Value::Literal(Literal::Void),
 
+            Token::Ident(name) if name == "_" => Value::Wildcard,
             Token::Ident(name) => {
                 let id = self.resolve_name(loc, &name)?;
                 Value::NameRef(id)

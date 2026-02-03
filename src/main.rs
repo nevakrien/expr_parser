@@ -1,3 +1,6 @@
+use expr_parser::program::Defined;
+use expr_parser::type_inference::TypeStore;
+use expr_parser::type_inference::infer_value_internals;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::{Expr, LExpr, Parser, Token};
 use expr_parser::program::Program;
@@ -57,7 +60,6 @@ where
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reporter = ErrorReporter::new();
     let mut input = String::new();
-    let mut program = Program::new();
 
     println!("Expression Parser REPL");
     println!("Type expressions to parse, or 'quit' to exit");
@@ -82,6 +84,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut parser = Parser::new(input, 0);
                 let mut expr_count = 0;
                 let mut compile_error = None;
+                let mut program = Program::new();
+
                 while !parser.is_empty() {
                     match parser.parse_with_macros(&mut program) {
                         Ok(None) => break,
@@ -115,6 +119,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if let Some(err) = compile_error {
                     reporter.report_compile_error(&err)?;
+                    continue;
+                }
+
+                let mut types = TypeStore::new();
+                for (_,def) in program.definitions.iter(){
+                    let Defined::Value(v) = def else {
+                        continue;
+
+                    };
+                    let Err(errs) = infer_value_internals(&program,&mut types,*v) else {
+                        continue;
+                    };
+
+                    for e in errs {
+                        reporter.report_type_error(&program,&types,&e)?;
+                    }
                 }
             }
             Err(err) => {

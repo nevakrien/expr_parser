@@ -241,6 +241,10 @@ impl TypeStore {
         matches!(self.as_builtin(t), Some(F32 | F64))
     }
 
+    #[inline(always)]
+    pub fn get_bad_type_string(&self, t: BadTypeId) -> String {
+        self.get_type_string(t.0)
+    }
     pub fn get_type_string(&self, t: TypeId) -> String {
         self.get_type_string_nested(t, 0)
     }
