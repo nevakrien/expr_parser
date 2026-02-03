@@ -59,11 +59,8 @@ pub struct Program {
     // pub type_store: TypeStore,
     values: Vec<Value>,
     patterns: Vec<Pattern>,
-    arms: Vec<MatchArm>,
-    name_ids: Vec<NameId>,
     value_locs: Vec<Loc>,
     pattern_locs: Vec<Loc>,
-    arm_locs: Vec<Loc>,
 
     names_strs: Vec<StrId>,
     pub str_intern: StringInterner,
@@ -85,11 +82,8 @@ impl Program {
             // type_store: TypeStore::new(),
             values: Vec::new(),
             patterns: Vec::new(),
-            arms: Vec::new(),
-            name_ids: Vec::new(),
             value_locs: Vec::new(),
             pattern_locs: Vec::new(),
-            arm_locs: Vec::new(),
 
             names_strs: Vec::new(),
             str_intern: StringInterner::new(),
@@ -122,25 +116,7 @@ impl Program {
         id
     }
 
-    pub fn push_match_arm(&mut self, loc: Loc, arm: MatchArm) -> ArmId {
-        let id = ArmId(self.arms.len());
-        self.arms.push(arm);
-        self.arm_locs.push(loc);
-        id
-    }
-
-    pub fn start_arm_span(&self) -> ArmId {
-        ArmId(self.arms.len())
-    }
-
-    pub fn start_name_span(&self) -> usize {
-        self.name_ids.len()
-    }
-
-    pub fn push_name_id(&mut self, id: NameId) {
-        self.name_ids.push(id);
-    }
-
+   
     pub fn reserve_value_span(&mut self, count: usize) -> ValueSpan {
         let start = ValId(self.values.len());
         for _ in 0..count {
@@ -177,10 +153,7 @@ impl Program {
         self.patterns[id.0]
     }
 
-    pub fn arm(&self, id: ArmId) -> MatchArm {
-        self.arms[id.0]
-    }
-
+    
     pub fn value_loc(&self, v: ValId) -> Loc {
         self.value_locs[v.0].clone()
     }
@@ -189,9 +162,6 @@ impl Program {
         self.pattern_locs[p.0].clone()
     }
 
-    pub fn arm_loc(&self, a: ArmId) -> Loc {
-        self.arm_locs[a.0].clone()
-    }
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {

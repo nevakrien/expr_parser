@@ -54,17 +54,8 @@ pub struct PatternSpan {
     _count: usize,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct MatchArmSpan {
-    _start: ArmId,
-    _count: usize,
-}
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NameSpan {
-    _start: usize,
-    _count: usize,
-}
+
 
 impl ValueSpan {
     #[inline]
@@ -128,67 +119,7 @@ impl PatternSpan {
     }
 }
 
-impl MatchArmSpan {
-    #[inline]
-    pub fn new(start: ArmId, count: usize) -> Self {
-        Self {
-            _start: start,
-            _count: count,
-        }
-    }
 
-    #[inline]
-    pub fn start(&self) -> ArmId {
-        self._start
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self._count
-    }
-
-    #[inline]
-    pub fn at(&self, index: usize) -> ArmId {
-        debug_assert!(index < self._count, "MatchArmSpan index out of bounds");
-        ArmId(self._start.0 + index)
-    }
-
-    #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = ArmId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(ArmId)
-    }
-}
-
-impl NameSpan {
-    #[inline]
-    pub fn new(start: usize, count: usize) -> Self {
-        Self {
-            _start: start,
-            _count: count,
-        }
-    }
-
-    #[inline]
-    pub fn start(&self) -> usize {
-        self._start
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self._count
-    }
-
-    #[inline]
-    pub fn at(&self, index: usize) -> usize {
-        debug_assert!(index < self._count, "NameSpan index out of bounds");
-        self._start + index
-    }
-
-    #[inline]
-    pub fn ids(&self) -> impl Iterator<Item = usize> + '_ {
-        self._start..self._start + self._count
-    }
-}
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -410,7 +341,7 @@ pub enum Value {
 
     /// Function literal
     Func {
-        generics: NameSpan,
+        generics: PatternSpan,
         params: PatternSpan,
         output_type: Option<ValId>,
         body: ValId,
@@ -425,8 +356,9 @@ pub enum Value {
     /// Pattern match
     Match {
         value: ValId,
-        arms: MatchArmSpan,
+        arms: ValueSpan,
     },
+    MatchArm(MatchArm)
 }
 
 /// Patterns used for:
@@ -680,16 +612,14 @@ impl Program {
         let mut items = items;
         let value = self.lower_value(items.remove(0))?;
 
-        let arms_start = self.start_arm_span();
-        let mut arms_count = 0;
-        for arm_expr in items {
-            let arm_loc = arm_expr.loc.clone();
+        let arms = self.reserve_value_span(items.len());
+
+        for (arm_expr,id) in items.into_iter().zip(arms.ids()) {
+            let loc = arm_expr.loc.clone();
             let arm = self.lower_match_arm(arm_expr)?;
-            self.push_match_arm(arm_loc, arm);
-            arms_count += 1;
+            self.set_value(id,loc,Value::MatchArm(arm));
         }
 
-        let arms = MatchArmSpan::new(arms_start, arms_count);
 
         let _ = loc;
         Ok(Value::Match { value, arms })
@@ -795,34 +725,26 @@ impl Program {
         debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
         self.with_scope(|p| {
-            let generics_start = p.start_name_span();
-            let mut generics_count = 0;
-            if let Some(gen_expr) = generics_expr {
-                let Expr::Prefix(open, items) = gen_expr.value else {
+            let generics = match generics_expr {
+                Some(gen_expr)=>{
+                    let Expr::Prefix(open, items) = gen_expr.value else {
                     debug_assert!(false, "fn generics must use brackets");
                     unreachable!();
-                };
-                debug_assert!(open.value == "[", "fn generics must use brackets");
+                    };
+                    debug_assert!(open.value == "[", "fn generics must use brackets");
 
-                for item in items {
-                    match item.value {
-                        Expr::Atom(Token::Ident(name)) => {
-                            let name = p.str_intern.intern(&name);
-                            let id = p.insert_value_in_current_scope(name);
-                            p.push_name_id(id);
-                            generics_count += 1;
-                        }
-                        _ => {
-                            return Err(CompileError::SimpleError {
-                                loc: item.loc,
-                                s: ERR_EXPECTED_GEN_NAME,
-                            });
-                        }
+                    let ans = p.reserve_pattern_span(items.len());
+                    for (index,expr) in items.into_iter().enumerate() {
+                        let target = ans.at(index);
+                        p.lower_pattern_into(target, expr)?;
+
                     }
+                    ans
+                },
+                None=>{
+                    p.reserve_pattern_span(0)
                 }
-            }
-
-            let generics = NameSpan::new(generics_start, generics_count);
+            };
 
             let params_span = p.reserve_pattern_span(param_items.len());
             for (index, param) in param_items.into_iter().enumerate() {
@@ -1356,7 +1278,9 @@ mod lowering_tests {
         }
 
         assert_eq!(arms.len(), 1);
-        let arm = program.arm(arms.at(0));
+        let Value::MatchArm(arm) = program.value(arms.at(0)) else{
+            panic!("expected match arm")
+        };
         match program.pattern(arm.pat) {
             Pattern::Wildcard => {}
             _ => panic!("expected wildcard pattern"),
