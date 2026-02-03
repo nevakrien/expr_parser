@@ -492,7 +492,7 @@ struct InferState<'a> {
 #[derive(Debug)]
 struct Cluster {
     state: ResolveKind,
-    
+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1004,47 +1004,33 @@ fn extract_bad_type(
 // Constraint gathering (alias where possible)
 // ===================================
 
-///this enum is just for initial gathering
-///the main point is we can constant fold literals
-///howver non literals are kinda tricky and should be avoided for agressive merges
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InferStyle {
-    ///can merge super agressively
-    Literal,
 
-    LocalVar,
 
-    ///these are implictly generic in some ways which is trick
-    LocalFunc,
-
-    StructName,
-}
-
-fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
+fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_int_like(v);
             ctx.bind_val(v, c);
-            (c, InferStyle::Literal)
+            c
         }
 
         Value::Literal(Literal::Float(_)) => {
             let c = ctx.new_float_like(v);
             ctx.bind_val(v, c);
-            (c, InferStyle::Literal)
+            c
         }
 
         Value::Literal(Literal::Str(_)) => {
             let c = ctx.new_solved(BuiltinType::Str.into());
 
             ctx.bind_val(v, c);
-            (c, InferStyle::Literal)
+            c
         }
 
         Value::Literal(Literal::Void) => {
             let c = ctx.new_solved(BuiltinType::Void.into());
             ctx.bind_val(v, c);
-            (c, InferStyle::Literal)
+            c
         }
 
         Value::NameRef(n) => {
@@ -1052,7 +1038,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
                 //names might refer to something that us generic in the local scope...
                 //so this here is actually wrong for when users define local genric stuff
                 ctx.bind_val(v, c);
-                return (c, InferStyle::LocalVar);
+                return c;
             }
 
             if ctx.program.definitions.contains_key(&n) {
@@ -1063,7 +1049,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let (rhs_cluster, style) = gather_constraints(ctx, value);
+            let rhs_cluster = gather_constraints(ctx, value);
             let ann_ty = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(rhs_cluster, ann_ty) {
@@ -1076,7 +1062,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
 
             // Annotation does not introduce a new type identity: alias to the value
             ctx.bind_val(v, rhs_cluster);
-            (rhs_cluster, style)
+            rhs_cluster
         }
 
         Value::Cast { value, ty } => {
@@ -1084,7 +1070,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty);
             ctx.bind_val(v, c);
-            (c, InferStyle::LocalVar)
+            c
         }
 
         Value::Let {
@@ -1093,7 +1079,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             else_part,
         } => {
             let lhs = gather_pattern_constraints(ctx, pat);
-            let (rhs, _) = gather_constraints(ctx, value);
+            let rhs = gather_constraints(ctx, value);
 
 
             if let Err(clash) = ctx.unify(rhs,lhs) {
@@ -1107,7 +1093,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             }
 
             if let Some(e) = else_part {
-                let (ec, _) = gather_constraints(ctx, e);
+                let ec = gather_constraints(ctx, e);
                 if let Err(clash) = ctx.unify(ec, lhs) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason:
@@ -1122,7 +1108,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
 
             // let-expr evaluates to the bound pattern value => alias
             ctx.bind_val(v, lhs);
-            (lhs, InferStyle::LocalVar)
+            lhs
         }
 
         Value::Block {
@@ -1134,132 +1120,67 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             }
 
             // block aliases its return value cluster (or void)
-            let (c, style) = match return_value {
+            let c = match return_value {
                 Some(r) => gather_constraints(ctx, r),
                 None => {
-                    let c = ctx.new_solved(BuiltinType::Void.into());
-                    (c, InferStyle::LocalVar)
+                    ctx.new_solved(BuiltinType::Void.into())
                 }
             };
 
             ctx.bind_val(v, c);
-            (c, style)
+            c
         }
 
         Value::BinOp { op, values } => {
             let (lhs, rhs) = values;
 
-            let (lc, ls) = gather_constraints(ctx, lhs);
-            let (rc, rs) = gather_constraints(ctx, rhs);
+            let lc = gather_constraints(ctx, lhs);
+            let rc = gather_constraints(ctx, rhs);
 
-            let (style, _is_trivial) = match (ls, rs) {
-                (InferStyle::Literal, InferStyle::Literal) => (InferStyle::Literal, true),
-                _ => (InferStyle::LocalVar, false),
+
+            let output = match op {
+                //there is no legitmate reason to overload != == to have a diffrent signature
+                //because of this we just hard assume this
+                //we might take out Lt Gt later if thats a thing we need to handle it at resolve_operators
+                BinOp::Eq | BinOp::Ne | BinOp::Le | BinOp::Ge | BinOp::Gt | BinOp::Lt => {
+                    if let Err(clash) = ctx.unify(lc, rc) {
+                        ctx.push_error(TypeError::ValuesContradict {
+                            expectation_reason: "comparison operands must have the same type",
+                            site: v,
+                            found: lhs,
+                            expected_place: rhs,
+                            clash,
+                        });
+                    }
+                    ctx.new_solved(BuiltinType::Bool.into())
+                }
+
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Mod
+                | BinOp::BitAnd
+                | BinOp::BitOr
+                | BinOp::BitXor
+                | BinOp::Shl
+                | BinOp::Shr => ctx.new_cluster(),
             };
 
-            // if !is_trivial {
-                let output = match op {
-                    //there is no legitmate reason to overload != == to have a diffrent signature
-                    //because of this we just hard assume this
-                    //we might take out Lt Gt later if thats a thing we need to handle it at resolve_operators
-                    BinOp::Eq | BinOp::Ne | BinOp::Le | BinOp::Ge | BinOp::Gt | BinOp::Lt => {
-                        if let Err(clash) = ctx.unify(lc, rc) {
-                            ctx.push_error(TypeError::ValuesContradict {
-                                expectation_reason: "comparison operands must have the same type",
-                                site: v,
-                                found: lhs,
-                                expected_place: rhs,
-                                clash,
-                            });
-                        }
-                        ctx.new_solved(BuiltinType::Bool.into())
-                    }
+            ctx.bind_val(v, output);
+            ctx.op_sites.push(OpSite {
+                loc: v,
+                op,
+                lhs_val: lhs,
+                rhs_val: rhs,
+                lhs: lc,
+                rhs: rc,
+                output,
+                had_error: false,
+            });
+            return output;
 
-                    BinOp::Add
-                    | BinOp::Sub
-                    | BinOp::Mul
-                    | BinOp::Div
-                    | BinOp::Mod
-                    | BinOp::BitAnd
-                    | BinOp::BitOr
-                    | BinOp::BitXor
-                    | BinOp::Shl
-                    | BinOp::Shr => ctx.new_cluster(),
-                };
-
-                ctx.bind_val(v, output);
-                ctx.op_sites.push(OpSite {
-                    loc: v,
-                    op,
-                    lhs_val: lhs,
-                    rhs_val: rhs,
-                    lhs: lc,
-                    rhs: rc,
-                    output,
-                    had_error: false,
-                });
-                return (output, style);
-            // }
-
-            // // Result cluster:
-            // // - comparisons always produce bool
-            // // - arithmetic / bitwise produce a value cluster
-            // match op {
-            //     // ======================
-            //     // Comparisons: bool
-            //     // ======================
-            //     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-            //         // operands must be comparable -> same cluster
-            //         if let Err(clash) = ctx.unify(lc, rc) {
-            //             ctx.push_error(TypeError::ValuesContradict {
-            //                 expectation_reason: "comparison operands must have the same type",
-            //                 site: v,
-            //                 found: lhs,
-            //                 expected_place: rhs,
-            //                 clash,
-            //             });
-            //         }
-
-            //         let c = ctx.new_solved(BuiltinType::Bool.into());
-            //         ctx.bind_val(v, c);
-            //         (c, InferStyle::Literal)
-            //     }
-
-            //     // ======================
-            //     // Arithmetic / bitwise
-            //     // ======================
-            //     BinOp::Add
-            //     | BinOp::Sub
-            //     | BinOp::Mul
-            //     | BinOp::Div
-            //     | BinOp::Mod
-            //     | BinOp::BitAnd
-            //     | BinOp::BitOr
-            //     | BinOp::BitXor
-            //     | BinOp::Shl
-            //     | BinOp::Shr => {
-            //         // First, operands must have the same type
-            //         let root = match ctx.unify(lc, rc) {
-            //             Ok(r) => r,
-            //             Err(clash) => {
-            //                 ctx.push_error(TypeError::ValuesContradict {
-            //                     expectation_reason:
-            //                         "binary operator requires operands of the same type",
-            //                     site: v,
-            //                     found: lhs,
-            //                     expected_place: rhs,
-            //                     clash,
-            //                 });
-            //                 lc
-            //             }
-            //         };
-
-            //         // Now: literal handling (currently a no op)
-            //         // when we add overloading we need to check here that we actualyl merge literals explictly
-            //         ctx.bind_val(v, root);
-            //         (root, style)
-            //     }
-            // }
+           
         }
         Value::While { cond: _, body: _ } => {
             todo!()
@@ -1299,7 +1220,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             });
             ctx.bind_val(v, f);
 
-            let (body_cluster, _) = gather_constraints(ctx, body);
+            let body_cluster = gather_constraints(ctx, body);
 
             if let Err(clash) = ctx.unify(body_cluster, output) {
                 ctx.push_error(TypeError::ValuesContradict {
@@ -1315,7 +1236,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             //this might need to be done ahead of time globaly for all funcs
             //so that we can have weird type recursions
             //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
-            (f, InferStyle::LocalFunc)
+            f
         }
         _ => panic!("more expressions {:?}", ctx.program.value(v)),
     }
