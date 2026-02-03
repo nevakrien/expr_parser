@@ -1138,12 +1138,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             let (lc, ls) = gather_constraints(ctx, lhs);
             let (rc, rs) = gather_constraints(ctx, rhs);
 
-            let (style, is_trivial) = match (ls, rs) {
+            let (style, _is_trivial) = match (ls, rs) {
                 (InferStyle::Literal, InferStyle::Literal) => (InferStyle::Literal, true),
                 _ => (InferStyle::LocalVar, false),
             };
 
-            if !is_trivial {
+            // if !is_trivial {
                 let output = match op {
                     //there is no legitmate reason to overload != == to have a diffrent signature
                     //because of this we just hard assume this
@@ -1185,67 +1185,67 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
                     had_error: false,
                 });
                 return (output, style);
-            }
+            // }
 
-            // Result cluster:
-            // - comparisons always produce bool
-            // - arithmetic / bitwise produce a value cluster
-            match op {
-                // ======================
-                // Comparisons: bool
-                // ======================
-                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    // operands must be comparable -> same cluster
-                    if let Err(clash) = ctx.unify(lc, rc) {
-                        ctx.push_error(TypeError::ValuesContradict {
-                            expectation_reason: "comparison operands must have the same type",
-                            site: v,
-                            found: lhs,
-                            expected_place: rhs,
-                            clash,
-                        });
-                    }
+            // // Result cluster:
+            // // - comparisons always produce bool
+            // // - arithmetic / bitwise produce a value cluster
+            // match op {
+            //     // ======================
+            //     // Comparisons: bool
+            //     // ======================
+            //     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            //         // operands must be comparable -> same cluster
+            //         if let Err(clash) = ctx.unify(lc, rc) {
+            //             ctx.push_error(TypeError::ValuesContradict {
+            //                 expectation_reason: "comparison operands must have the same type",
+            //                 site: v,
+            //                 found: lhs,
+            //                 expected_place: rhs,
+            //                 clash,
+            //             });
+            //         }
 
-                    let c = ctx.new_solved(BuiltinType::Bool.into());
-                    ctx.bind_val(v, c);
-                    (c, InferStyle::Literal)
-                }
+            //         let c = ctx.new_solved(BuiltinType::Bool.into());
+            //         ctx.bind_val(v, c);
+            //         (c, InferStyle::Literal)
+            //     }
 
-                // ======================
-                // Arithmetic / bitwise
-                // ======================
-                BinOp::Add
-                | BinOp::Sub
-                | BinOp::Mul
-                | BinOp::Div
-                | BinOp::Mod
-                | BinOp::BitAnd
-                | BinOp::BitOr
-                | BinOp::BitXor
-                | BinOp::Shl
-                | BinOp::Shr => {
-                    // First, operands must have the same type
-                    let root = match ctx.unify(lc, rc) {
-                        Ok(r) => r,
-                        Err(clash) => {
-                            ctx.push_error(TypeError::ValuesContradict {
-                                expectation_reason:
-                                    "binary operator requires operands of the same type",
-                                site: v,
-                                found: lhs,
-                                expected_place: rhs,
-                                clash,
-                            });
-                            lc
-                        }
-                    };
+            //     // ======================
+            //     // Arithmetic / bitwise
+            //     // ======================
+            //     BinOp::Add
+            //     | BinOp::Sub
+            //     | BinOp::Mul
+            //     | BinOp::Div
+            //     | BinOp::Mod
+            //     | BinOp::BitAnd
+            //     | BinOp::BitOr
+            //     | BinOp::BitXor
+            //     | BinOp::Shl
+            //     | BinOp::Shr => {
+            //         // First, operands must have the same type
+            //         let root = match ctx.unify(lc, rc) {
+            //             Ok(r) => r,
+            //             Err(clash) => {
+            //                 ctx.push_error(TypeError::ValuesContradict {
+            //                     expectation_reason:
+            //                         "binary operator requires operands of the same type",
+            //                     site: v,
+            //                     found: lhs,
+            //                     expected_place: rhs,
+            //                     clash,
+            //                 });
+            //                 lc
+            //             }
+            //         };
 
-                    // Now: literal handling (currently a no op)
-                    // when we add overloading we need to check here that we actualyl merge literals explictly
-                    ctx.bind_val(v, root);
-                    (root, style)
-                }
-            }
+            //         // Now: literal handling (currently a no op)
+            //         // when we add overloading we need to check here that we actualyl merge literals explictly
+            //         ctx.bind_val(v, root);
+            //         (root, style)
+            //     }
+            // }
         }
         Value::While { cond: _, body: _ } => {
             todo!()
