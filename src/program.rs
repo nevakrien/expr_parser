@@ -1,7 +1,7 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
-use crate::macros::{Macro, expand_macros_recursive};
+use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
@@ -35,6 +35,13 @@ pub enum CompileError {
         message: &'static str,
     },
 
+    #[error("repeated global assignment to `{name}`")]
+    RepeatedGlobalAssignment {
+        name: String,
+        existing: Loc,
+        new: Loc,
+    },
+
     #[error(transparent)]
     Parse(#[from] crate::parsing::ParseError),
 }
@@ -53,6 +60,7 @@ pub enum Defined {
 #[derive(Debug)]
 pub struct Program {
     pub definitions: IdHashMap<NameId, Defined>,
+    definition_locs: IdHashMap<NameId, Loc>,
     // pub current_infrence: Vec<TypeInfo>,
     // pub type_store: TypeStore,
     values: Vec<Value>,
@@ -77,6 +85,7 @@ impl Program {
     pub fn new() -> Self {
         let mut program = Self {
             definitions: IdHashMap::default(),
+            definition_locs: IdHashMap::default(),
             // type_store: TypeStore::new(),
             values: Vec::new(),
             patterns: Vec::new(),
@@ -93,7 +102,7 @@ impl Program {
         program
     }
 
-    fn placeholder_loc() -> Loc {
+    pub(crate) fn placeholder_loc() -> Loc {
         Loc {
             range: 0..0,
             file: 0,
@@ -195,6 +204,23 @@ impl Program {
         let id = NameId(self.names_strs.len());
         self.names_strs.push(s);
         id
+    }
+
+    fn definition_loc(&self, id: NameId) -> Option<Loc> {
+        if let Some(loc) = self.definition_locs.get(&id) {
+            return Some(loc.clone());
+        }
+
+        match self.definitions.get(&id) {
+            Some(Defined::Value(val)) => Some(self.value_loc(*val)),
+            Some(Defined::Raw(expr)) => Some(expr.loc.clone()),
+            Some(Defined::Type { val, .. }) => Some(self.value_loc(*val)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn set_definition_loc(&mut self, id: NameId, loc: Loc) {
+        self.definition_locs.insert(id, loc);
     }
 
     pub fn get_macro(&mut self, name: &str) -> Option<&Macro> {
@@ -320,12 +346,14 @@ impl Program {
     }
 
     fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) -> CResult<()> {
+        let lhs_loc = lhs.loc.clone();
         let Located {
             loc: rhs_loc,
             value: rhs_value,
         } = rhs;
 
-        let (_, name) = match lhs.value {
+        let in_global_scope = self.scopes.len() == 1;
+        let (name_str, name_id) = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
                 if let Some(id) = self
@@ -336,6 +364,15 @@ impl Program {
                 {
                     if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
                         (name, id)
+                    } else if in_global_scope {
+                        let existing_loc =
+                            self.definition_loc(id).unwrap_or_else(|| lhs_loc.clone());
+                        let name_string = self.str_intern.resolve(name).to_string();
+                        return Err(CompileError::RepeatedGlobalAssignment {
+                            name: name_string,
+                            existing: existing_loc,
+                            new: lhs_loc.clone(),
+                        });
                     } else {
                         (name, self.insert_value_in_current_scope(name))
                     }
@@ -351,7 +388,7 @@ impl Program {
             }
         };
 
-        self.pending_names.remove(&name);
+        self.pending_names.remove(&name_id);
 
         let def: Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
@@ -383,7 +420,8 @@ impl Program {
             }
         };
 
-        self.definitions.insert(name, def);
+        self.definitions.insert(name_id, def);
+        self.set_definition_loc(name_id, lhs_loc);
 
         Ok(())
     }

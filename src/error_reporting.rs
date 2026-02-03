@@ -14,15 +14,10 @@ pub struct ErrorReporter {
 impl<'a> Cache<usize> for &'a ErrorReporter {
     type Storage = String;
 
-    fn fetch(
-        &mut self,
-        id: &usize,
-    ) -> Result<&Source<String>, Box<dyn std::fmt::Debug + '_>> {
+    fn fetch(&mut self, id: &usize) -> Result<&Source<String>, Box<dyn std::fmt::Debug + '_>> {
         self.sources
             .get(id)
-            .ok_or_else(|| {
-                panic!("missing source for file {id}")
-            })
+            .ok_or_else(|| panic!("missing source for file {id}"))
     }
 
     fn display<'b>(&self, id: &'b usize) -> Option<Box<dyn std::fmt::Display + 'b>> {
@@ -176,6 +171,26 @@ impl ErrorReporter {
                 }
 
                 self.print_report(loc.file, report.finish())
+            }
+            CompileError::RepeatedGlobalAssignment {
+                name,
+                existing,
+                new,
+            } => {
+                let report = Report::build(ReportKind::Error, new.file, new.range.start)
+                    .with_message(format!("repeated global assignment to `{name}`"))
+                    .with_label(
+                        Label::new((new.file, new.range.clone()))
+                            .with_message("reassigned here")
+                            .with_color(Color::Red),
+                    )
+                    .with_label(
+                        Label::new((existing.file, existing.range.clone()))
+                            .with_message("previous assignment here")
+                            .with_color(Color::Yellow),
+                    );
+
+                self.print_report(new.file, report.finish())
             }
             CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
         }
