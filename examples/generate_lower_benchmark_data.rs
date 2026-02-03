@@ -276,7 +276,7 @@ fn main() {
 
     for idx in 0..function_count {
         let arity = 1 + rng.range(3) as usize;
-        let name = format!("f{}", idx);
+        let name = format!("f_{}", idx);
         functions.push(FunctionDef { name, arity });
     }
 
