@@ -1038,7 +1038,7 @@ impl<'a> Parser<'a> {
                 }
                 if op == "[" {
                     self.next_token()?.unwrap();
-                    return self.parse_bracket_list(start,op_s).map(Some);
+                    return self.parse_bracket_list(start, op_s).map(Some);
                 }
 
                 // control keywords
@@ -1289,9 +1289,8 @@ impl<'a> Parser<'a> {
             parts.push(generics);
         }
 
-
         let mut fields = Vec::new();
-        
+
         let mark = self.expr_start();
         let open = self.expect_operator("{")?;
         while self.try_operator("}")?.is_none() {
@@ -1306,9 +1305,9 @@ impl<'a> Parser<'a> {
                 self.next_token()?;
             }
         }
-        parts.push(Located{
-            loc:self.produce_loc(mark),
-            value:Expr::Prefix(open,fields)
+        parts.push(Located {
+            loc: self.produce_loc(mark),
+            value: Expr::Prefix(open, fields),
         });
 
         Ok(Located {
@@ -2167,7 +2166,7 @@ mod parse_tests {
                         assert_eq!(struct_kw.value, "struct");
                         assert_eq!(parts.len(), 1);
 
-                        let Expr::Prefix(_,ref fields) = parts[0].value else{
+                        let Expr::Prefix(_, ref fields) = parts[0].value else {
                             panic!()
                         };
 

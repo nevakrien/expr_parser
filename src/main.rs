@@ -1,9 +1,9 @@
-use expr_parser::program::Defined;
-use expr_parser::type_inference::TypeStore;
-use expr_parser::type_inference::infer_value_internals;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::{Expr, LExpr, Parser, Token};
+use expr_parser::program::Defined;
 use expr_parser::program::Program;
+use expr_parser::type_inference::TypeStore;
+use expr_parser::type_inference::infer_value_internals;
 use std::io::{self, Write};
 
 fn pretty_print_token(token: &Token) -> String {
@@ -123,17 +123,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
 
                 let mut types = TypeStore::new();
-                for (_,def) in program.definitions.iter(){
+                for (_, def) in program.definitions.iter() {
                     let Defined::Value(v) = def else {
                         continue;
-
                     };
-                    let Err(errs) = infer_value_internals(&program,&mut types,*v) else {
+                    let Err(errs) = infer_value_internals(&program, &mut types, *v) else {
                         continue;
                     };
 
                     for e in errs {
-                        reporter.report_type_error(&program,&types,&e)?;
+                        reporter.report_type_error(&program, &types, &e)?;
                     }
                 }
             }

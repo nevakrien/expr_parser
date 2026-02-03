@@ -1,8 +1,6 @@
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::identity_hasher::IdHashMap;
-use crate::ir::{
-    ArmId, Literal, MatchArm, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan,
-};
+use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
@@ -116,7 +114,6 @@ impl Program {
         id
     }
 
-   
     pub fn reserve_value_span(&mut self, count: usize) -> ValueSpan {
         let start = ValId(self.values.len());
         for _ in 0..count {
@@ -153,7 +150,6 @@ impl Program {
         self.patterns[id.0]
     }
 
-    
     pub fn value_loc(&self, v: ValId) -> Loc {
         self.value_locs[v.0].clone()
     }
@@ -161,7 +157,6 @@ impl Program {
     pub fn pattern_loc(&self, p: PatId) -> Loc {
         self.pattern_locs[p.0].clone()
     }
-
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {

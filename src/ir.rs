@@ -8,9 +8,8 @@
  * - Allow linear passes over IR
  */
 use crate::error_messages::{
-    ERR_ACCESS_EXPECTS_NAME, ERR_EXPECTED_GEN_NAME, ERR_INVALID_MATCH_ARM,
-    ERR_INVALID_MATCH_ARM_GUARD, ERR_MATCH_ARM_NEEDS_VALUE, ERR_UNSUPPORTED_EXPRESSION,
-    ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
+    ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
+    ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
 };
 use crate::parsing::{Expr, LExpr, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
@@ -54,9 +53,6 @@ pub struct PatternSpan {
     _count: usize,
 }
 
-
-
-
 impl ValueSpan {
     #[inline]
     pub fn new(start: ValId, count: usize) -> Self {
@@ -74,6 +70,11 @@ impl ValueSpan {
     #[inline]
     pub fn len(&self) -> usize {
         self._count
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self._count==0
     }
 
     #[inline]
@@ -108,6 +109,11 @@ impl PatternSpan {
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self._count==0
+    }
+
+    #[inline]
     pub fn at(&self, index: usize) -> PatId {
         debug_assert!(index < self._count, "PatternSpan index out of bounds");
         PatId(self._start.0 + index)
@@ -118,8 +124,6 @@ impl PatternSpan {
         (self._start.0..self._start.0 + self._count).map(PatId)
     }
 }
-
-
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -248,8 +252,6 @@ pub enum Value {
     // Enum(StructLike),
     // Struct(StructLike),
     // Union(StructLike),
-
-
     /// Pure binary operation
     BinOp {
         op: BinOp,
@@ -358,7 +360,7 @@ pub enum Value {
         value: ValId,
         arms: ValueSpan,
     },
-    MatchArm(MatchArm)
+    MatchArm(MatchArm),
 }
 
 /// Patterns used for:
@@ -572,9 +574,8 @@ impl Program {
     fn lower_call_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(!items.is_empty(), "call expression missing callee");
 
-        let args_span = self.reserve_value_span(items.len()-1);
+        let args_span = self.reserve_value_span(items.len() - 1);
         let mut items = items.into_iter();
-
 
         let callee = self.lower_value(items.next().unwrap())?;
         for (index, arg) in items.enumerate() {
@@ -621,12 +622,11 @@ impl Program {
         let value = self.lower_value(items.next().unwrap())?;
 
         let arms = self.reserve_value_span(items.len());
-        for (id,arm_expr) in arms.ids().zip(items){
+        for (id, arm_expr) in arms.ids().zip(items) {
             let loc = arm_expr.loc.clone();
             let arm = self.lower_match_arm(arm_expr)?;
-            self.set_value(id,loc,Value::MatchArm(arm));
+            self.set_value(id, loc, Value::MatchArm(arm));
         }
-        
 
         Ok(Value::Match { value, arms })
     }
@@ -727,24 +727,21 @@ impl Program {
 
         self.with_scope(|p| {
             let generics = match generics_expr {
-                Some(gen_expr)=>{
+                Some(gen_expr) => {
                     let Expr::Prefix(open, items) = gen_expr.value else {
-                    debug_assert!(false, "fn generics must use brackets");
-                    unreachable!();
+                        debug_assert!(false, "fn generics must use brackets");
+                        unreachable!();
                     };
                     debug_assert!(open.value == "[", "fn generics must use brackets");
 
                     let ans = p.reserve_pattern_span(items.len());
-                    for (index,expr) in items.into_iter().enumerate() {
+                    for (index, expr) in items.into_iter().enumerate() {
                         let target = ans.at(index);
                         p.lower_pattern_into(target, expr)?;
-
                     }
                     ans
-                },
-                None=>{
-                    p.reserve_pattern_span(0)
                 }
+                None => p.reserve_pattern_span(0),
             };
 
             let params_span = p.reserve_pattern_span(param_items.len());
@@ -1279,7 +1276,7 @@ mod lowering_tests {
         }
 
         assert_eq!(arms.len(), 1);
-        let Value::MatchArm(arm) = program.value(arms.at(0)) else{
+        let Value::MatchArm(arm) = program.value(arms.at(0)) else {
             panic!("expected match arm")
         };
         match program.pattern(arm.pat) {

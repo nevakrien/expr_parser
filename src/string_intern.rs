@@ -81,6 +81,11 @@ impl StringInterner {
     }
 
     #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len()==0
+    }
+
+    #[inline]
     fn bucket_index(&self, hash: u64) -> usize {
         hash as usize & (self.table.len() - 1)
     }
