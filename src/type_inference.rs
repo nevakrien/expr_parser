@@ -1260,11 +1260,15 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let body_cluster = gather_constraints(ctx, body);
 
             if let Err(clash) = ctx.unify(body_cluster, output) {
+                let found = match ctx.program.value(body) {
+                    Value::Block { statements: _, return_value:Some(x) }=>x,
+                    _ => body,
+                };
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "function body must match return type",
                     site: v,
-                    found: body,
-                    expected_place: v,
+                    found,
+                    expected_place: found,
                     clash,
                 });
             }
