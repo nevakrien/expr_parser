@@ -1,0 +1,5 @@
+f=fn(){
+	let x = 2;
+	let y = x;
+	let z = 2;
+}

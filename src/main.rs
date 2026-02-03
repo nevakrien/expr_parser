@@ -1,9 +1,11 @@
 use expr_parser::error_reporting::ErrorReporter;
-use expr_parser::parsing::{Expr, LExpr, Parser, Token};
+use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
+use expr_parser::program::CompileError;
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_inference::TypeStore;
 use expr_parser::type_inference::infer_value_internals;
+use expr_parser::type_inference::TypeStore;
+use std::fs;
 use std::io::{self, Write};
 
 fn pretty_print_token(token: &Token) -> String {
@@ -57,84 +59,190 @@ where
     result
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut reporter = ErrorReporter::new();
-    let mut input = String::new();
+enum ReplInput {
+    Quit,
+    Reset,
+    Load(Vec<String>),
+    Code(String),
+}
 
-    println!("Expression Parser REPL");
-    println!("Type expressions to parse, or 'quit' to exit");
+fn is_incomplete_error(error: &ParseError) -> bool {
+    match error {
+        ParseError::UnterminatedString { .. } => true,
+        ParseError::ExpectedExpr { got } | ParseError::ExpectedToken { got, .. } => {
+            got.value.is_none()
+        }
+        ParseError::OpenDelimiter { got, .. } => got.value.is_none(),
+        ParseError::UnexpectedChar { .. } => false,
+    }
+}
+
+fn needs_more_input(input: &str) -> bool {
+    let mut parser = Parser::new(input, 0);
+
+    while !parser.is_empty() {
+        match parser.parse_stmt() {
+            Ok(Some(_)) => {}
+            Ok(None) => break,
+            Err(err) => return is_incomplete_error(&err),
+        }
+    }
+
+    false
+}
+
+fn read_repl_input() -> io::Result<ReplInput> {
+    let mut input = String::new();
+    let mut line = String::new();
+    let mut first = true;
 
     loop {
-        print!("> ");
+        if first {
+            print!("> ");
+        } else {
+            print!("... ");
+        }
         io::stdout().flush().unwrap();
 
-        input.clear();
-        match io::stdin().read_line(&mut input) {
-            Ok(0) => break, // EOF
-            Ok(_) => {
-                let input = input.trim();
-                if input.is_empty() {
+        line.clear();
+        let bytes = io::stdin().read_line(&mut line)?;
+        if bytes == 0 {
+            return Ok(ReplInput::Quit);
+        }
+
+        let trimmed = line.trim();
+        if first {
+            if trimmed.is_empty() {
+                continue;
+            }
+            if trimmed == "quit" || trimmed == "exit" {
+                return Ok(ReplInput::Quit);
+            }
+            if trimmed == ":reset" {
+                return Ok(ReplInput::Reset);
+            }
+            if trimmed.starts_with(":load") {
+                let args = trimmed.split_whitespace().skip(1);
+                return Ok(ReplInput::Load(args.map(String::from).collect()));
+            }
+        }
+
+        input.push_str(&line);
+        if !needs_more_input(&input) {
+            return Ok(ReplInput::Code(input));
+        }
+
+        first = false;
+    }
+}
+
+fn parse_source(program: &mut Program, input: &str, file_id: usize) -> Result<usize, CompileError> {
+    let mut parser = Parser::new(input, file_id);
+    let mut expr_count = 0;
+
+    while !parser.is_empty() {
+        match parser.parse_with_macros(program)? {
+            None => break,
+            Some(expr) => {
+                println!(
+                    "Expr {}: [{}..{}]",
+                    expr_count + 1,
+                    expr.loc.range.start,
+                    expr.loc.range.end
+                );
+                println!("{}", pretty_print_expr(&expr, 0));
+                expr_count += 1;
+                program.gather_definition(expr)?;
+            }
+        }
+    }
+
+    Ok(expr_count)
+}
+
+fn finalize_program(
+    reporter: &mut ErrorReporter,
+    program: &mut Program,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Err(err) = program.check_pending_names() {
+        reporter.report_compile_error(&err)?;
+        return Ok(());
+    }
+
+    let mut types = TypeStore::new();
+    for (_, def) in program.definitions.iter() {
+        let Defined::Value(v) = def else {
+            continue;
+        };
+        let Err(errs) = infer_value_internals(program, &mut types, *v) else {
+            continue;
+        };
+
+        for e in errs {
+            reporter.report_type_error(program, &types, &e)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut reporter = ErrorReporter::new();
+    let mut program = Program::new();
+    let mut next_file_id = 0usize;
+
+    println!("Expression Parser REPL");
+    println!("Enter expressions; REPL waits for complete input.");
+    println!("Commands: :load <path...>, :reset, quit, exit");
+
+    loop {
+        match read_repl_input() {
+            Ok(ReplInput::Quit) => break,
+            Ok(ReplInput::Reset) => {
+                program = Program::new();
+                println!("REPL state cleared.");
+            }
+            Ok(ReplInput::Load(paths)) => {
+                if paths.is_empty() {
+                    eprintln!("Usage: :load <path...>");
                     continue;
                 }
-                if input == "quit" || input == "exit" {
-                    break;
-                }
 
-                reporter.add_source(0, input.to_string());
-                let mut parser = Parser::new(input, 0);
-                let mut expr_count = 0;
-                let mut compile_error = None;
-                let mut program = Program::new();
+                let mut had_error = false;
+                for path in paths {
+                    match fs::read_to_string(&path) {
+                        Ok(contents) => {
+                            let file_id = next_file_id;
+                            next_file_id += 1;
+                            reporter.add_source(file_id, contents.clone());
 
-                while !parser.is_empty() {
-                    match parser.parse_with_macros(&mut program) {
-                        Ok(None) => break,
-                        Ok(Some(expr)) => {
-                            println!(
-                                "Expr {}: [{}..{}]",
-                                expr_count + 1,
-                                expr.loc.range.start,
-                                expr.loc.range.end
-                            );
-                            println!("{}", pretty_print_expr(&expr, 0));
-                            expr_count += 1;
-
-                            if let Err(err) = program.gather_definition(expr) {
-                                compile_error = Some(err);
+                            if let Err(err) = parse_source(&mut program, &contents, file_id) {
+                                reporter.report_compile_error(&err)?;
+                                had_error = true;
                                 break;
                             }
                         }
                         Err(err) => {
-                            compile_error = Some(err);
+                            eprintln!("Error reading {path}: {err}");
+                            had_error = true;
                             break;
                         }
                     }
                 }
 
-                if compile_error.is_none()
-                    && let Err(err) = program.check_pending_names()
-                {
-                    compile_error = Some(err);
+                if !had_error {
+                    finalize_program(&mut reporter, &mut program)?;
                 }
-
-                if let Some(err) = compile_error {
+            }
+            Ok(ReplInput::Code(input)) => {
+                let file_id = next_file_id;
+                next_file_id += 1;
+                reporter.add_source(file_id, input.clone());
+                if let Err(err) = parse_source(&mut program, &input, file_id) {
                     reporter.report_compile_error(&err)?;
                     continue;
                 }
-
-                let mut types = TypeStore::new();
-                for (_, def) in program.definitions.iter() {
-                    let Defined::Value(v) = def else {
-                        continue;
-                    };
-                    let Err(errs) = infer_value_internals(&program, &mut types, *v) else {
-                        continue;
-                    };
-
-                    for e in errs {
-                        reporter.report_type_error(&program, &types, &e)?;
-                    }
-                }
+                finalize_program(&mut reporter, &mut program)?;
             }
             Err(err) => {
                 eprintln!("Error reading input: {}", err);
