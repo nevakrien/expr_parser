@@ -1258,11 +1258,14 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
             todo!()
         }
         Value::Func {
-            generics: _,
+            generics,
             params,
             output_type,
             body,
         } => {
+            for g in generics.ids() {
+                gather_pattern_constraints(ctx,g);
+            }
             let inputs = params
                 .ids()
                 .map(|pat| gather_pattern_constraints(ctx, pat))
@@ -1304,6 +1307,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> (CId, InferStyle) {
 
 fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
     match ctx.program.pattern(p) {
+        Pattern::Wildcard=>{
+            let c = ctx.new_cluster();
+            ctx.bind_pat(p, c);
+            c
+        }
         Pattern::Bind(n) => {
             let c = ctx.new_cluster();
             ctx.names.insert(n, c);
