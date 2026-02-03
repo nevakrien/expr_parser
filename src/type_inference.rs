@@ -654,7 +654,7 @@ fn unify_clusters(
     }
 
     // Try found <- wanted
-    if try_absorb(store, parent, cluster, call_sites, rw, rf)? {
+    if _try_absorb(store, parent, cluster, call_sites, rw, rf)? {
         if rf != parent[rf]{
             todo!()
         }
@@ -664,7 +664,7 @@ fn unify_clusters(
     }
 
     // Otherwise try wanted <- found
-    if try_absorb(store, parent, cluster, call_sites, rf, rw)? {
+    if _try_absorb(store, parent, cluster, call_sites, rf, rw)? {
         if rw != parent[rw]{
             todo!()
         }
@@ -680,7 +680,8 @@ fn unify_clusters(
     })
 }
 
-fn try_absorb(
+#[inline(always)]
+fn _try_absorb(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
@@ -1838,8 +1839,42 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn unresolved_clusters_report_once_and_stable() {
+    fn unresolved_clusters_report_once() {
         let src = "f = fn(){ let x = 2; let y = x; let z = 2; }";
+        let program = gather_program(src);
+        let f = extract_single_fn(&program);
+        let body = match program.value(f) {
+            Value::Func { body, .. } => body,
+            _ => panic!("expected function value"),
+        };
+
+
+        let mut store = TypeStore::new();
+        let errs = match infer_value_internals(&program, &mut store, body) {
+            Ok(_) => panic!("expected type errors"),
+            Err(errs) => errs,
+        };
+
+        let unresolved_locs = errs
+            .iter()
+            .filter_map(|err| match err {
+                TypeError::Unresolved { value } => Some(program.value_loc(*value)),
+                TypeError::UnresolvedPattern { pattern } => Some(program.pattern_loc(*pattern)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        let unique = unresolved_locs.iter().cloned().collect::<HashSet<_>>();
+        
+
+        assert_eq!(errs.len(), 2);
+        assert_eq!(unresolved_locs.len(), 2);
+        assert_eq!(unique.len(), 2);
+    }
+
+    #[test]
+    fn unresolved_clusters_report_on_first_let() {
+        let src = "f = fn(){ let x = 2; let y = x;}";
         let program = gather_program(src);
         let f = extract_single_fn(&program);
         let body = match program.value(f) {
@@ -1870,25 +1905,14 @@ mod type_infer_tests {
             Err(errs) => errs,
         };
 
-        let unresolved_locs = errs
-            .iter()
-            .filter_map(|err| match err {
-                TypeError::Unresolved { value } => Some(program.value_loc(*value)),
-                TypeError::UnresolvedPattern { pattern } => Some(program.pattern_loc(*pattern)),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
 
-        let unique = unresolved_locs.iter().cloned().collect::<HashSet<_>>();
         let has_let_x = errs.iter().any(|err| match err {
             // TypeError::UnresolvedPattern { pattern } => program.pattern_loc(*pattern) == pat_x_loc,
             TypeError::Unresolved { value } => program.value_loc(*value) == let_x_loc,
             _ => false,
         });
 
-        assert_eq!(errs.len(), 2);
-        assert_eq!(unresolved_locs.len(), 2);
-        assert_eq!(unique.len(), 2);
+        assert_eq!(errs.len(), 1);
         assert!(has_let_x);
     }
 
