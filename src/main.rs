@@ -169,6 +169,15 @@ fn finalize_program(
         return Ok(());
     }
 
+    run_typechecker(program, reporter)?;
+
+    Ok(())
+}
+
+fn run_typechecker(
+    program: &Program,
+    reporter: &mut ErrorReporter,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut types = TypeStore::new();
     for (_, def) in program.definitions.iter() {
         let Defined::Value(v) = def else {
