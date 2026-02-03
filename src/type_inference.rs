@@ -473,8 +473,8 @@ struct InferState<'a> {
     program: &'a Program,
 
     //ir -> cid
-    val_cluster: IdHashMap<ValId, CId>,
-    pat_cluster: IdHashMap<PatId, CId>,
+    val_cluster: Vec<(ValId, CId)>,
+    pat_cluster: Vec<(PatId, CId)>,
     names: IdHashMap<NameId, CId>,
 
     // unify-find
@@ -538,8 +538,8 @@ impl<'a> InferState<'a> {
         Self {
             store,
             program,
-            val_cluster: IdHashMap::default(),
-            pat_cluster: IdHashMap::default(),
+            val_cluster: Vec::default(),
+            pat_cluster: Vec::default(),
             names: IdHashMap::default(),
             parent: ClusterVec::new(),
             cluster: ClusterVec::new(),
@@ -588,11 +588,11 @@ impl<'a> InferState<'a> {
     }
 
     fn bind_val(&mut self, v: ValId, c: CId) {
-        self.val_cluster.insert(v, c);
+        self.val_cluster.push((v, c));
     }
 
     fn bind_pat(&mut self, p: PatId, c: CId) {
-        self.pat_cluster.insert(p, c);
+        self.pat_cluster.push((p, c));
     }
 
     fn push_error(&mut self, err: TypeError) {
@@ -694,6 +694,14 @@ fn try_absorb(
     let src_state = cluster[src].state;
 
     match (dst_state, src_state) {
+        // =====================================================
+        // this is a hack for making literals not apear in errors as much
+        // =====================================================
+        (Nothing, IntLike)|(Nothing, FloatLike) => {
+            cluster[dst].state=cluster[src].state;
+            Ok(true)
+        },
+
         // =====================================================
         // src has no information → always safe to absorb
         // =====================================================
@@ -1591,25 +1599,37 @@ fn finalize(ctx: &mut InferState) -> LocalTypes {
         &mut ctx.errors,
     );
 
+    let mut reported = IdHashMap::default();
     let mut ans = LocalTypes::new();
-    for (p, c) in pat_cluster.iter() {
-        let root = find_root(parent, *c);
-        if let ResolveKind::Solved(t) = cluster[root].state {
-            ans.pat_types.insert(*p, t);
-        } else if *c == root {
-            errors.push(TypeError::UnresolvedPattern { pattern: *p });
-        }
-    }
     for (v, c) in val_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
             ans.val_types.insert(*v, t);
         } else if *c == root {
             errors.push(TypeError::Unresolved { value: *v });
+            reported.insert(c,());
+        }
+    }
+    for (p, c) in pat_cluster.iter() {
+        let root = find_root(parent, *c);
+        if let ResolveKind::Solved(t) = cluster[root].state {
+            ans.pat_types.insert(*p, t);
+        } else if *c == root &&reported.get(c).is_none(){
+            errors.push(TypeError::UnresolvedPattern { pattern: *p });
         }
     }
     ans
 }
+
+// fn report_unresolved(ctx: &mut InferState){
+//     let mut roots = Vec::with_capacity(ctx.cluster.len());
+//     for i in 0..ctx.cluster.len(){
+//         let c = CId(i);
+//         if c==find_root(&mut ctx.parent,c){
+//             roots.push(c);
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod type_infer_tests {
