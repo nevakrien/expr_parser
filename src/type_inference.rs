@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::ir::TypeExpr;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AssignOp;
 use crate::ir::{NameId, PatId, TExpId, ValId};
@@ -324,6 +325,7 @@ impl TypeStore {
 
 pub struct LocalTypes {
     pub val_types: IdHashMap<ValId, TypeId>,
+    pub typedef_types: IdHashMap<ValId, TypeId>,
     pub pat_types: IdHashMap<PatId, TypeId>,
 }
 
@@ -337,6 +339,7 @@ impl LocalTypes {
     pub fn new() -> Self {
         Self {
             pat_types: IdHashMap::default(),
+            typedef_types: IdHashMap::default(),
             val_types: IdHashMap::default(),
         }
     }
@@ -487,6 +490,8 @@ struct InferState<'a> {
     //ir -> cid
     val_cluster: Vec<(ValId, CId)>,
     pat_cluster: Vec<(PatId, CId)>,
+    typedef_cluster: Vec<(ValId, CId)>,
+    local_types:IdHashMap<NameId,CId>,
     names: IdHashMap<NameId, CId>,
 
     // unify-find
@@ -553,6 +558,8 @@ impl<'a> InferState<'a> {
             program,
             val_cluster: Vec::default(),
             pat_cluster: Vec::default(),
+            typedef_cluster:Vec::default(),
+            local_types:IdHashMap::default(),
             names: IdHashMap::default(),
             parent: ClusterVec::new(),
             cluster: ClusterVec::new(),
@@ -1095,6 +1102,20 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             c
         }
 
+        Value::TypeDef { pat, ty }=>{
+            let (p,n) = gather_pattern_constraints_and_name(ctx,pat);
+            if let Err(_clash) = ctx.force_type(p,BuiltinType::Type.into()){
+                todo!()
+
+            }
+            let t = compile_type_expr(ctx,ty);
+            ctx.typedef_cluster.push((v,t));
+            if let Some(n)=n{
+                ctx.local_types.insert(n,t);
+            }
+            p
+        }
+
         Value::Assign {
             op: AssignOp::Nothing(value),
             target,
@@ -1283,22 +1304,27 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
     }
 }
 
-fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
+#[inline(always)]
+fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId{
+    let (x,_) = gather_pattern_constraints_and_name(ctx,p);
+    x
+}
+fn gather_pattern_constraints_and_name(ctx: &mut InferState, p: PatId) -> (CId,Option<NameId>) {
     match ctx.program.pattern(p) {
         Pattern::Wildcard => {
             let c = ctx.new_cluster();
             ctx.bind_pat(p, c);
-            c
+            (c,None)
         }
         Pattern::Bind(n) => {
             let c = ctx.new_cluster();
             ctx.names.insert(n, c);
             ctx.bind_pat(p, c);
-            c
+            (c,Some(n))
         }
 
         Pattern::TypeAnnotation { pat, ty } => {
-            let c = gather_pattern_constraints(ctx, pat);
+            let (c,n) = gather_pattern_constraints_and_name(ctx, pat);
             let t = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(c, t) {
@@ -1310,7 +1336,7 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
             }
 
             ctx.bind_pat(p, c);
-            c
+            (c,n)
         }
 
         _ => todo!(),
@@ -1337,11 +1363,15 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
 
 fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
     match ctx.program.type_expr(texpr) {
-        crate::ir::TypeExpr::NameRef(n) => {
+        TypeExpr::NameRef(n) => {
             let t = match ctx.program.definitions.get(&n) {
                 Some(Defined::BuildinType(b)) => ctx.store.intern(b.clone()),
                 Some(Defined::Type { ty, .. }) => *ty,
                 _ => {
+                    if let Some(ans)=ctx.local_types.get(&n){
+                        return *ans;
+                    }
+
                     let c = ctx.new_cluster();
                     ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
                     return c;
@@ -1350,7 +1380,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
 
             ctx.new_solved(t)
         }
-        crate::ir::TypeExpr::Wildcard => ctx.new_cluster(),
+        TypeExpr::Wildcard => ctx.new_cluster(),
         _ => {
             let c = ctx.new_cluster();
             ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
@@ -1627,11 +1657,21 @@ fn finalize(ctx: &mut InferState) -> LocalTypes {
 
     let mut reported = IdHashMap::default();
     let mut ans = LocalTypes::new();
+    for (v, c) in ctx.typedef_cluster.iter() {
+        let root = find_root(parent, *c);
+        if let ResolveKind::Solved(t) = cluster[root].state {
+            ans.typedef_types.insert(*v, t);
+        } else if *c == root {
+            errors.push(TypeError::Unresolved { value: *v });
+            reported.insert(c, ());
+        }
+    }
+
     for (v, c) in val_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
             ans.val_types.insert(*v, t);
-        } else if *c == root {
+        } else if *c == root && !reported.contains_key(c){
             errors.push(TypeError::Unresolved { value: *v });
             reported.insert(c, ());
         }
