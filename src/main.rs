@@ -1,3 +1,4 @@
+use expr_parser::type_inference::infer_global_types;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::CompileError;
@@ -179,6 +180,17 @@ fn run_typechecker(
     reporter: &mut ErrorReporter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut types = TypeStore::new();
+
+
+    if let Err(errs) = infer_global_types(program, &mut types){
+        for e in errs {
+            reporter.report_type_error(program, &types, &e)?;
+        }
+
+        return Ok(())
+    }
+
+        
     for (_, def) in program.definitions.iter() {
         let Defined::Value(v) = def else {
             continue;

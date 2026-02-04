@@ -200,12 +200,7 @@ pub struct AccessName {
 //     pub ty: Option<IValue>,
 // }
 
-/// Single variant within an enum declaration
-#[derive(Debug, Clone, PartialEq)]
-pub struct EnumVariant {
-    pub name: LName,
-    pub fields: PatternSpan,
-}
+
 /// Pure binary operations.
 ///
 /// Invariant:

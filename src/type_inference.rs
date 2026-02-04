@@ -322,7 +322,7 @@ impl TypeStore {
 
 pub struct LocalTypes {
     pub val_types: IdHashMap<ValId, TypeId>,
-    pub typedef_types: IdHashMap<ValId, TypeId>,
+    pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: IdHashMap<PatId, TypeId>,
 }
 
@@ -358,6 +358,10 @@ pub enum TypeError {
     },
     UnresolvedPattern {
         pattern: PatId,
+    },
+
+    UnresolvedTypeExpr {
+        expr: TExpId,
     },
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
@@ -415,8 +419,27 @@ impl TypeClash {
 }
 
 // ===================================
-// Entry point
+// Entry points
 // ===================================
+pub fn infer_global_types(
+    program: &Program,
+    store: &mut TypeStore,
+) -> Result<LocalTypes, Vec<TypeError>> {
+    let mut ctx = InferState::new(store, program);
+
+    for (n,def) in program.definitions.iter(){
+        let Defined::Type(texp)=def else {
+            continue;
+        };
+
+        let t = compile_type_expr(&mut ctx,*texp);
+        ctx.local_types.insert(*n,t);
+        ctx.typedef_cluster.push((*texp,t));
+    }
+
+
+    main_solver(ctx)
+}
 
 pub fn infer_value_internals(
     program: &Program,
@@ -427,6 +450,12 @@ pub fn infer_value_internals(
 
     let _root = gather_constraints(&mut ctx, value);
 
+    main_solver(ctx)
+}
+
+fn main_solver(
+    mut ctx:InferState,
+)-> Result<LocalTypes, Vec<TypeError>>{
     loop {
         let mut progress = false;
         progress |= resolve_operator_types(&mut ctx);
@@ -446,6 +475,7 @@ pub fn infer_value_internals(
     } else {
         Err(ctx.errors)
     }
+
 }
 
 // ===================================
@@ -487,7 +517,7 @@ struct InferState<'a> {
     //ir -> cid
     val_cluster: Vec<(ValId, CId)>,
     pat_cluster: Vec<(PatId, CId)>,
-    typedef_cluster: Vec<(ValId, CId)>,
+    typedef_cluster: Vec<(TExpId, CId)>,
     local_types: IdHashMap<NameId, CId>,
     names: IdHashMap<NameId, CId>,
 
@@ -1106,7 +1136,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
 
             }
             let t = compile_type_expr(ctx,ty);
-            ctx.typedef_cluster.push((v,t));
+            ctx.typedef_cluster.push((ty,t));
             if let Some(n)=n{
                 ctx.local_types.insert(n,t);
             }
@@ -1363,7 +1393,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
         TypeExpr::NameRef(n) => {
             let t = match ctx.program.definitions.get(&n) {
                 Some(Defined::BuildinType(b)) => ctx.store.intern(b.clone()),
-                Some(Defined::Type { ty, .. }) => *ty,
+                Some(Defined::Type(_texp)) => todo!(),
                 _ => {
                     if let Some(ans)=ctx.local_types.get(&n){
                         return *ans;
@@ -1654,12 +1684,12 @@ fn finalize(ctx: &mut InferState) -> LocalTypes {
 
     let mut reported = IdHashMap::default();
     let mut ans = LocalTypes::new();
-    for (v, c) in ctx.typedef_cluster.iter() {
+    for (e, c) in ctx.typedef_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
-            ans.typedef_types.insert(*v, t);
+            ans.typedef_types.insert(*e, t);
         } else if *c == root {
-            errors.push(TypeError::Unresolved { value: *v });
+            errors.push(TypeError::UnresolvedTypeExpr { expr: *e });
             reported.insert(c, ());
         }
     }
