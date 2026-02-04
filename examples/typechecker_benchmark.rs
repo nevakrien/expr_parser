@@ -1,3 +1,4 @@
+use expr_parser::type_inference::infer_global_types;
 use expr_parser::parsing::Parser;
 use expr_parser::program::{Defined, Program};
 use expr_parser::type_inference::{infer_value_internals, TypeStore};
@@ -34,7 +35,11 @@ fn main() {
             let Defined::Value(v) = def else {
                 continue;
             };
-            match infer_value_internals(&program, &mut types, *v) {
+            let Ok(globals) = infer_global_types(&program,&mut types) else {
+                error_count += 1;
+                continue;
+            };
+            match infer_value_internals(&globals,&program, &mut types, *v) {
                 Ok(_) => ok_count += 1,
                 Err(_) => error_count += 1,
             }

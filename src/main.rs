@@ -181,21 +181,23 @@ fn run_typechecker(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut types = TypeStore::new();
 
+    let globals = match infer_global_types(program, &mut types){
+        Err(errs) => {
+            for e in errs {
+                reporter.report_type_error(program, &types, &e)?;
+            }
 
-    if let Err(errs) = infer_global_types(program, &mut types){
-        for e in errs {
-            reporter.report_type_error(program, &types, &e)?;
+            return Ok(())
         }
-
-        return Ok(())
-    }
+        Ok(x)=>x
+    };
 
         
     for (_, def) in program.definitions.iter() {
         let Defined::Value(v) = def else {
             continue;
         };
-        let Err(errs) = infer_value_internals(program, &mut types, *v) else {
+        let Err(errs) = infer_value_internals(&globals,program, &mut types, *v) else {
             continue;
         };
 

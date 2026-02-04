@@ -320,19 +320,19 @@ impl TypeStore {
     }
 }
 
-pub struct LocalTypes {
+pub struct SolvedTypes {
     pub val_types: IdHashMap<ValId, TypeId>,
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: IdHashMap<PatId, TypeId>,
 }
 
-impl Default for LocalTypes {
+impl Default for SolvedTypes {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LocalTypes {
+impl SolvedTypes {
     pub fn new() -> Self {
         Self {
             pat_types: IdHashMap::default(),
@@ -363,6 +363,13 @@ pub enum TypeError {
     UnresolvedTypeExpr {
         expr: TExpId,
     },
+
+    TypeClashBeforeMentioned {
+        name: NameId,
+        expr: TExpId,
+        clash: TypeClash,
+    },
+
 
     /// Type expression (the RHS of `:` / `as`) wasn't a valid type
     ExpectedTypeExpr {
@@ -424,8 +431,8 @@ impl TypeClash {
 pub fn infer_global_types(
     program: &Program,
     store: &mut TypeStore,
-) -> Result<LocalTypes, Vec<TypeError>> {
-    let mut ctx = InferState::new(store, program);
+) -> Result<SolvedTypes, Vec<TypeError>> {
+    let mut ctx = InferState::new(store, program,());
 
     for (n,def) in program.definitions.iter(){
         let Defined::Type(texp)=def else {
@@ -433,7 +440,16 @@ pub fn infer_global_types(
         };
 
         let t = compile_type_expr(&mut ctx,*texp);
-        ctx.local_types.insert(*n,t);
+        if let Some(previous) = ctx.local_types.insert(*n,t) {
+            if let Err(clash) = ctx.unify(previous,t){
+                ctx.errors.push(TypeError::TypeClashBeforeMentioned {
+                    name: *n,
+                    expr: *texp,
+                    clash,
+                });
+
+            }
+        }
         ctx.typedef_cluster.push((*texp,t));
     }
 
@@ -442,20 +458,21 @@ pub fn infer_global_types(
 }
 
 pub fn infer_value_internals(
+    global_types:&SolvedTypes,
     program: &Program,
     store: &mut TypeStore,
     value: ValId,
-) -> Result<LocalTypes, Vec<TypeError>> {
-    let mut ctx = InferState::new(store, program);
+) -> Result<SolvedTypes, Vec<TypeError>> {
+    let mut ctx = InferState::new(store, program,global_types);
 
     let _root = gather_constraints(&mut ctx, value);
 
     main_solver(ctx)
 }
 
-fn main_solver(
-    mut ctx:InferState,
-)-> Result<LocalTypes, Vec<TypeError>>{
+fn main_solver<G:GlobalHandler>(
+    mut ctx:InferState<G>,
+)-> Result<SolvedTypes, Vec<TypeError>>{
     loop {
         let mut progress = false;
         progress |= resolve_operator_types(&mut ctx);
@@ -510,9 +527,68 @@ impl<T> IndexMut<CId> for ClusterVec<T> {
     }
 }
 
-struct InferState<'a> {
+/// depending on if we check global types
+/// or if we check a specific function
+/// we wana handle refrnces to global typedefs diffrently
+trait GlobalHandler {
+    fn handle_global(
+        &mut self,
+        name:NameId,
+        local_types:&mut IdHashMap<NameId, CId>,
+        expr:TExpId,
+        parent: &mut ClusterVec<CId>,
+        cluster: &mut ClusterVec<Cluster>,
+    )->CId;
+}
+
+
+impl<'a> GlobalHandler for &'a SolvedTypes{
+fn handle_global(
+        &mut self,
+        _name:NameId,
+        _local_types:&mut IdHashMap<NameId, CId>,
+        expr:TExpId,
+        parent: &mut ClusterVec<CId>,
+        cluster: &mut ClusterVec<Cluster>,
+    )->CId{
+        let t = self.typedef_types[&expr];
+        let id = CId(parent.len());
+        parent.0.push(id);
+        cluster.0.push(Cluster {
+            state: ResolveKind::Solved(t),
+        });
+        id
+    }
+}
+
+
+impl GlobalHandler for () {
+    fn handle_global(
+        &mut self,
+        name:NameId,
+        local_types:&mut IdHashMap<NameId, CId>,
+        _expr:TExpId,
+        parent: &mut ClusterVec<CId>,
+        cluster: &mut ClusterVec<Cluster>,
+    )->CId{
+        let id = CId(parent.len());
+        parent.0.push(id);
+        cluster.0.push(Cluster {
+            state: ResolveKind::Nothing,
+        });
+        //we would later need this unification
+        local_types.insert(name,id);
+        id
+    }
+
+}
+
+type LocalInfer<'a>=InferState<'a,&'a SolvedTypes>;
+
+struct InferState<'a,G:GlobalHandler> {
     store: &'a mut TypeStore,
     program: &'a Program,
+    global_types:G,
 
     //ir -> cid
     val_cluster: Vec<(ValId, CId)>,
@@ -578,11 +654,12 @@ struct OpSite {
     had_error: bool,
 }
 
-impl<'a> InferState<'a> {
-    fn new(store: &'a mut TypeStore, program: &'a Program) -> Self {
+impl<'a, G:GlobalHandler> InferState<'a, G> {
+    fn new(store: &'a mut TypeStore, program: &'a Program,global_types:G) -> Self {
         Self {
             store,
             program,
+            global_types,
             val_cluster: Vec::default(),
             pat_cluster: Vec::default(),
             typedef_cluster: Vec::default(),
@@ -606,6 +683,8 @@ impl<'a> InferState<'a> {
     }
 
     fn new_solved(&mut self, t: TypeId) -> CId {
+        //duplicated in Handeler
+
         let id = CId(self.parent.len());
         self.parent.0.push(id);
         self.cluster.0.push(Cluster {
@@ -1062,7 +1141,7 @@ fn extract_bad_type(
 // Constraint gathering (alias where possible)
 // ===================================
 
-fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
+fn gather_constraints<G:GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CId {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_int_like(v);
@@ -1332,11 +1411,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
 }
 
 #[inline(always)]
-fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId{
+fn gather_pattern_constraints<G:GlobalHandler>(ctx: &mut InferState<G>, p: PatId) -> CId{
     let (x,_) = gather_pattern_constraints_and_name(ctx,p);
     x
 }
-fn gather_pattern_constraints_and_name(ctx: &mut InferState, p: PatId) -> (CId,Option<NameId>) {
+fn gather_pattern_constraints_and_name<G:GlobalHandler>(ctx: &mut InferState<G>, p: PatId) -> (CId,Option<NameId>) {
     match ctx.program.pattern(p) {
         Pattern::Wildcard => {
             let c = ctx.new_cluster();
@@ -1374,7 +1453,7 @@ fn gather_pattern_constraints_and_name(ctx: &mut InferState, p: PatId) -> (CId,O
 ///currently when compiling type expressions we give them a type other the Type::Type
 ///we dont have a good destinction between the type of THE VALUE ITSELF and the type IT REFERS TO
 ///and this means that fn[T](){let x=T;} is technically legal and x has type Generic(0).
-fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId {
+fn gather_generic_constraints<G:GlobalHandler>(ctx: &mut InferState<G>, p: PatId, id: GenId) -> CId {
     match ctx.program.pattern(p) {
         Pattern::Bind(n) => {
             let t = ctx.store.intern(TypeValue::Generic(id));
@@ -1388,17 +1467,18 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
+fn compile_type_expr<G:GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) -> CId {
     match ctx.program.type_expr(texpr) {
         TypeExpr::NameRef(n) => {
+            if let Some(ans)=ctx.local_types.get(&n){
+                return *ans;
+            }
             let t = match ctx.program.definitions.get(&n) {
                 Some(Defined::BuildinType(b)) => ctx.store.intern(b.clone()),
-                Some(Defined::Type(_texp)) => todo!(),
+                Some(Defined::Type(texp)) => {
+                    return ctx.global_types.handle_global(n,&mut ctx.local_types,*texp,&mut ctx.parent,&mut ctx.cluster)
+                },
                 _ => {
-                    if let Some(ans)=ctx.local_types.get(&n){
-                        return *ans;
-                    }
-
                     let c = ctx.new_cluster();
                     ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
                     return c;
@@ -1506,7 +1586,7 @@ fn unify_if_distinct(
 }
 
 #[inline(always)]
-fn resolve_operator_types(ctx: &mut InferState) -> bool {
+fn resolve_operator_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     use BinOp::*;
 
     let mut progress = false;
@@ -1653,7 +1733,7 @@ fn try_resolve_func_type(
 }
 
 #[inline(always)]
-fn resolve_func_types(ctx: &mut InferState) -> bool {
+fn resolve_func_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     let mut change = false;
     for cid in (0..ctx.cluster.len()).map(CId) {
         if let ResolveKind::Func(call) = ctx.cluster[cid].state
@@ -1673,7 +1753,7 @@ fn resolve_func_types(ctx: &mut InferState) -> bool {
 }
 
 #[inline(always)]
-fn finalize(ctx: &mut InferState) -> LocalTypes {
+fn finalize<G:GlobalHandler>(ctx: &mut InferState<G>) -> SolvedTypes {
     let (val_cluster, pat_cluster, parent, cluster, errors) = (
         &ctx.val_cluster,
         &ctx.pat_cluster,
@@ -1683,7 +1763,7 @@ fn finalize(ctx: &mut InferState) -> LocalTypes {
     );
 
     let mut reported = IdHashMap::default();
-    let mut ans = LocalTypes::new();
+    let mut ans = SolvedTypes::new();
     for (e, c) in ctx.typedef_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
@@ -1772,26 +1852,29 @@ mod type_infer_tests {
     /// Run inference on a single function body.
     fn infer_fn(src: &str, store: &mut TypeStore) -> Result<TypeId, Vec<TypeError>> {
         let program = gather_program(src);
+        let globals = infer_global_types(&program,store)?;
         let f = extract_single_fn(&program);
         let body = match program.value(f) {
             Value::Func { body, .. } => body,
             _ => panic!("expected function value"),
         };
 
-        let types = infer_value_internals(&program, store, f)?;
+        let types = infer_value_internals(&globals,&program, store, f)?;
         Ok(types.type_of(body).unwrap())
     }
 
     //this is a hack for just testing
     fn infer_fn_body(src: &str, store: &mut TypeStore) -> Result<TypeId, Vec<TypeError>> {
         let program = gather_program(src);
+        let globals = infer_global_types(&program,store)?;
+
         let f = extract_single_fn(&program);
         let body = match program.value(f) {
             Value::Func { body, .. } => body,
             _ => panic!("expected function value"),
         };
 
-        let types = infer_value_internals(&program, store, body)?;
+        let types = infer_value_internals(&globals,&program, store, body)?;
         Ok(types.type_of(body).unwrap())
     }
 
@@ -1942,7 +2025,8 @@ mod type_infer_tests {
         };
 
         let mut store = TypeStore::new();
-        let errs = match infer_value_internals(&program, &mut store, body) {
+        let globals = infer_global_types(&program,&mut store).unwrap();
+        let errs = match infer_value_internals(&globals,&program, &mut store, body) {
             Ok(_) => panic!("expected type errors"),
             Err(errs) => errs,
         };
@@ -2017,7 +2101,8 @@ mod type_infer_tests {
         };
 
         let mut store = TypeStore::new();
-        let errs = match infer_value_internals(&program, &mut store, body) {
+        let globals = infer_global_types(&program,&mut store).unwrap();
+        let errs = match infer_value_internals(&globals,&program, &mut store, body) {
             Ok(_) => panic!("expected type errors"),
             Err(errs) => errs,
         };

@@ -231,6 +231,10 @@ impl Program {
         id
     }
 
+    pub fn name_string(&self,n:NameId)->&str{
+        self.str_intern.resolve(self.names_strs[n.0])
+    }
+
     /// Generate a fresh unique name ID
     fn fresh_name_id(&mut self, s: StrId) -> NameId {
         let id = NameId(self.names_strs.len());

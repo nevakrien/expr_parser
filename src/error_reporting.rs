@@ -344,6 +344,36 @@ impl ErrorReporter {
 
                 self.print_report(ann_loc.file, report.finish())
             },
+
+            TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
+                let loc = program.type_expr_loc(*expr);
+                let (found_msg, expected_msg) = clash_messages(store, *clash);
+
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!(
+                        "could not infer type of `{}`",
+                        program.name_string(*name)
+                    ))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(format!(
+                                "{} (this type was infered as)",
+                                found_msg
+                            ))
+                            .with_color(Color::Red),
+                    )
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(format!(
+                                "{} but was defined as",
+                                expected_msg
+                            ))
+                            .with_color(Color::Cyan),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+
         }
     }
 }
