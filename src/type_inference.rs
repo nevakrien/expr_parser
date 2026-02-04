@@ -1990,6 +1990,17 @@ mod type_infer_tests {
         infer_fn("f=fn(){}", &mut store).unwrap();
     }
 
+    #[test]
+    fn typedef_used_in_function_return() {
+        let mut store = TypeStore::new();
+        let ty = infer_fn("type i = int; f = fn() -> i { 2 }", &mut store).unwrap();
+        match store.type_value(ty) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
+            other => panic!("expected builtin type, got {:?}", other),
+        }
+    }
+
+
     /* ------------------------------------------------------------
      * Error cases
      * ------------------------------------------------------------ */
@@ -2046,6 +2057,9 @@ mod type_infer_tests {
         assert_eq!(unresolved_locs.len(), 2);
         assert_eq!(unique.len(), 2);
     }
+
+
+
 
     // #[test]
     // fn unresolved_clusters_report_on_first_let() {
