@@ -118,7 +118,7 @@ fn read_repl_input() -> io::Result<ReplInput> {
             if trimmed == "quit" || trimmed == "exit" {
                 return Ok(ReplInput::Quit);
             }
-            if trimmed == ":reset" {
+            if trimmed == ":reset" || trimmed == ":clear" || trimmed == ":c" || trimmed == ":r" {
                 return Ok(ReplInput::Reset);
             }
             if trimmed.starts_with(":load") {

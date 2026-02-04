@@ -386,7 +386,7 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
-        let (name_str, name_id) = match lhs.value {
+        let (_name_str, name_id) = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
                 if let Some(id) = self
