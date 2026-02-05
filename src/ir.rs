@@ -1524,6 +1524,19 @@ mod lowering_tests {
         (program, ir)
     }
 
+    fn assert_labeled_num(program: &Program, id: ValId, name: &str, value: u64) {
+        match program.value(id) {
+            Value::Labeled { name: labeled, value: val } => {
+                assert_eq!(program.str_intern.resolve(labeled), name);
+                match program.value(val) {
+                    Value::Literal(Literal::Num(num)) => assert_eq!(num, value),
+                    other => panic!("expected labeled literal num, got {other:?}"),
+                }
+            }
+            other => panic!("expected labeled arg, got {other:?}"),
+        }
+    }
+
     fn bound_id(program: &Program, stmt: ValId) -> NameId {
         match program.value(stmt) {
             Value::Let { pat, .. } => match program.pattern(pat) {
@@ -1583,6 +1596,43 @@ mod lowering_tests {
             Value::Literal(Literal::Num(4)) => {}
             _ => panic!("expected literal index arg"),
         }
+    }
+
+    #[test]
+    fn lowers_labeled_args_for_call_index_and_construct() {
+        let src = "{ let f = 1; let x = 2; let t = 3; f(x, a = 4); x[a = 5]; t{a = 6}; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 6);
+
+        let call_args = match program.value(statements[3]) {
+            Value::Call { args, .. } => args.ids().collect::<Vec<_>>(),
+            _ => panic!("expected call expression"),
+        };
+        assert_eq!(call_args.len(), 2);
+        match program.value(call_args[0]) {
+            Value::NameRef(_) => {}
+            _ => panic!("expected first call arg to be name"),
+        }
+        assert_labeled_num(&program, call_args[1], "a", 4);
+
+        let index_args = match program.value(statements[4]) {
+            Value::Index { args, .. } => args.ids().collect::<Vec<_>>(),
+            _ => panic!("expected index expression"),
+        };
+        assert_eq!(index_args.len(), 1);
+        assert_labeled_num(&program, index_args[0], "a", 5);
+
+        let construct_args = match program.value(statements[5]) {
+            Value::Construct { args, .. } => args.ids().collect::<Vec<_>>(),
+            _ => panic!("expected construct expression"),
+        };
+        assert_eq!(construct_args.len(), 1);
+        assert_labeled_num(&program, construct_args[0], "a", 6);
     }
 
     #[test]
