@@ -2115,6 +2115,63 @@ mod type_infer_tests {
         }
     }
 
+    #[test]
+    fn recursive_struct_typedef_self_reference() {
+        let src = r#"
+            type s = struct { next: s }
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+
+        let solved = infer_global_types(&program, &mut store)
+            .expect("recursive struct typedef should typecheck");
+
+        // Find the typedef for `s` via program.definitions
+        let (_name, texp) = program
+            .definitions
+            .iter()
+            .find_map(|(name, def)| match def {
+                Defined::Type(texp) => {
+                    let name_str = program.name_string(*name);
+                    if name_str == "s" {
+                        Some((*name, *texp))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .expect("typedef `s` not found");
+
+        // Get resolved TypeId
+        let ty = solved
+            .typedef_types
+            .get(&texp)
+            .copied()
+            .expect("typedef did not resolve");
+
+        // Ensure it resolved to a struct
+        let sid = match store.type_value(ty) {
+            TypeValue::Struct(sid) => *sid,
+            other => panic!("expected struct type, got {:?}", other),
+        };
+
+        let rep = store.struct_value(sid);
+
+        // Must have exactly one field
+        assert_eq!(rep.0.len(), 1);
+
+        let (_field_name, field_ty) = rep.0[0];
+
+        // Critical check: field points back to the struct type itself
+        assert_eq!(
+            field_ty, ty,
+            "recursive field should point to the struct type itself"
+        );
+    }
+
+
 
     /* ------------------------------------------------------------
      * Error cases
