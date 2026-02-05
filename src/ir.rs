@@ -7,6 +7,9 @@
  * - Avoid solver needing to rediscover operands
  * - Allow linear passes over IR
  */
+
+use std::ops::Index;
+
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
     ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
@@ -268,7 +271,23 @@ pub enum LogicOp {
 pub struct Call {
     pub base: ValId,
     pub args: ValueSpan,
-    pub named_args: ValueSpan,
+    pub named_args_start: usize,
+}
+
+impl Call {
+    pub fn pos_args(&self)->ValueSpan {
+        ValueSpan{
+            _start:self.args._start,
+            _count:self.named_args_start,
+        }
+    }
+
+    pub fn named_args(&self)->ValueSpan {
+        ValueSpan{
+            _start:ValId(self.args._start.0+self.named_args_start),
+            _count:self.args._count-self.named_args_start,
+        }
+    }
 }
 
 /// Runtime IR values.
@@ -495,6 +514,31 @@ impl Program {
         Ok(target)
     }
 
+    #[inline]
+    fn lower_value_into_labeled(&mut self, target: ValId, expr: LExpr) -> CResult<bool> {
+        let loc = expr.loc.clone();
+        match expr.value{
+            Expr::Bin(op, pair) if op.value=="=" =>{
+                if let Expr::Atom(Token::Ident(n))=pair.0.value{
+                    let value = self.lower_value(pair.1)?;
+                    let name = self.str_intern.intern(&n);
+                    self.set_value(target, loc, Value::Labeled{
+                        name,value
+                    });
+                    Ok(true)
+                }else{
+                    self.lower_value_into(target,loc.with(Expr::Bin(op,pair)))?;
+                    Ok(false)
+                }
+            }
+            _=>{
+                self.lower_value_into(target,expr)?;
+                Ok(false)
+            }
+        }
+        
+    }
+
 
     fn lower_value_inner(&mut self, expr: LExpr) -> CResult<Value> {
         match expr.value {
@@ -685,56 +729,25 @@ impl Program {
 
 
     #[inline(always)]
-    fn lower_call_like_expr(&mut self,_loc:Loc, mut items: Vec<LExpr>) -> CResult<Call> {
+    fn lower_call_like_expr(&mut self,_loc:Loc,  items: Vec<LExpr>) -> CResult<Call> {
         debug_assert!(!items.is_empty(), "call expression missing base");
-
-        //first gather all the named args
-        let mut named_args_parts = Vec::new();
-        let mut idx = -1;
-        items.retain_mut(|expr|{
-            idx+=1;
-            if idx==0 {
-                return true;
-            }
-
-            let Expr::Bin(op,pair) =  &mut expr.value else {
-                return true;
-            };
-
-            if op.value != "="{
-                return true;
-            }
-
-            let Expr::Atom(Token::Ident(ref n)) = pair.0.value else {
-                return true;
-            };
-            let name = self.str_intern.intern(n);
-
-            let mut take = Program::placeholder_loc().with(Expr::Atom(Token::Operator("")));
-            std::mem::swap(&mut take,&mut pair.1);
-
-            named_args_parts.push((expr.loc.clone(),name,take));
-            false
-        });
 
         let mut items = items.into_iter();
         let base = self.lower_value(items.next().unwrap())?;
 
         let args = self.reserve_value_span(items.len());
+        let mut named_args_start = args.len();
         for (index, arg) in items.enumerate() {
             let target = args.at(index);
-            self.lower_value_into(target, arg)?;
+            if self.lower_value_into_labeled(target, arg)?{
+                if named_args_start!=args.len(){
+                    todo!()
+                }
+                named_args_start=index;
+            }
         }
 
-        let named_args = self.reserve_value_span(named_args_parts.len());
-        for ((loc,name,expr),target) in named_args_parts.into_iter().zip(named_args.ids()){
-            let value = self.lower_value(expr)?;
-            self.set_value(target, loc, Value::Labeled{
-                value,name
-            });
-        }
-
-        Ok(Call { base, args,named_args })
+        Ok(Call { base, args,named_args_start })
     }
 
     #[inline(always)]
@@ -1531,35 +1544,32 @@ mod lowering_tests {
         let f_id = bound_id(&program, statements[0]);
         let a_id = bound_id(&program, statements[1]);
 
-        let (base, index_args, index_named_args) = match program.value(statements[2]) {
-            Value::Index(Call { base, args, named_args }) => (base, args, named_args),
-            _ => panic!("expected index expression"),
+        let Value::Index(index_call) = program.value(statements[2]) else {
+            panic!("expected index expression")
         };
 
-        let (callee, call_args, call_named_args) = match program.value(base) {
-            Value::Call(Call { base, args, named_args }) => (base, args, named_args),
-            _ => panic!("expected call base"),
+        let Value::Call(call_call) =  program.value(index_call.base) else {
+            panic!("expected call base");
         };
 
-        match program.value(callee) {
+        match program.value(call_call.base) {
             Value::NameRef(id) => assert_eq!(id, f_id),
             _ => panic!("expected callee to be name"),
         }
-        let call_args = call_args.ids().collect::<Vec<_>>();
-        assert_eq!(call_args.len(), 2);
-        assert!(call_named_args.is_empty());
-        match program.value(call_args[0]) {
+        assert_eq!(call_call.pos_args().len(), 2);
+        assert!(call_call.named_args().is_empty());
+        match program.value(call_call.args.at(0)) {
             Value::NameRef(id) => assert_eq!(id, a_id),
             _ => panic!("expected first call arg to be name"),
         }
-        match program.value(call_args[1]) {
+        match program.value(call_call.args.at(1)) {
             Value::Literal(Literal::Num(3)) => {}
             _ => panic!("expected literal call arg"),
         }
 
-        let index_args = index_args.ids().collect::<Vec<_>>();
+        let index_args = index_call.pos_args().ids().collect::<Vec<_>>();
         assert_eq!(index_args.len(), 2);
-        assert!(index_named_args.is_empty());
+        assert!(index_call.named_args().is_empty());
         match program.value(index_args[0]) {
             Value::NameRef(id) => assert_eq!(id, a_id),
             _ => panic!("expected first index arg to be name"),
@@ -1581,12 +1591,12 @@ mod lowering_tests {
         };
         assert_eq!(statements.len(), 6);
 
-        let (call_args, call_named_args) = match program.value(statements[3]) {
-            Value::Call(Call { args, named_args, .. }) => (args, named_args),
-            _ => panic!("expected call expression"),
+        let Value::Call(call) =  program.value(statements[3]) else {
+            panic!("expected call expression");
         };
-        let call_args = call_args.ids().collect::<Vec<_>>();
-        let call_named_args = call_named_args.ids().collect::<Vec<_>>();
+
+        let call_args = call.pos_args().ids().collect::<Vec<_>>();
+        let call_named_args = call.named_args().ids().collect::<Vec<_>>();
         assert_eq!(call_args.len(), 1);
         assert_eq!(call_named_args.len(), 1);
         match program.value(call_args[0]) {
@@ -1595,22 +1605,20 @@ mod lowering_tests {
         }
         assert_labeled_num(&program, call_named_args[0], "a", 4);
 
-        let (index_args, index_named_args) = match program.value(statements[4]) {
-            Value::Index(Call { args, named_args, .. }) => (args, named_args),
-            _ => panic!("expected index expression"),
+        let Value::Index(index) =  program.value(statements[4]) else {
+            panic!("expected index expression");
         };
-        let index_args = index_args.ids().collect::<Vec<_>>();
-        let index_named_args = index_named_args.ids().collect::<Vec<_>>();
+        let index_args = index.pos_args().ids().collect::<Vec<_>>();
+        let index_named_args = index.named_args().ids().collect::<Vec<_>>();
         assert_eq!(index_args.len(), 0);
         assert_eq!(index_named_args.len(), 1);
         assert_labeled_num(&program, index_named_args[0], "a", 5);
 
-        let (construct_args, construct_named_args) = match program.value(statements[5]) {
-            Value::Construct(Call { args, named_args, .. }) => (args, named_args),
-            _ => panic!("expected construct expression"),
+        let Value::Construct(construct) = program.value(statements[5]) else {
+            panic!("expected construct expression");
         };
-        let construct_args = construct_args.ids().collect::<Vec<_>>();
-        let construct_named_args = construct_named_args.ids().collect::<Vec<_>>();
+        let construct_args = construct.pos_args().ids().collect::<Vec<_>>();
+        let construct_named_args = construct.named_args().ids().collect::<Vec<_>>();
         assert_eq!(construct_args.len(), 0);
         assert_eq!(construct_named_args.len(), 1);
         assert_labeled_num(&program, construct_named_args[0], "a", 6);

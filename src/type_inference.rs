@@ -9,6 +9,8 @@
 //
 // ================================================================
 
+use crate::ir::StructLike;
+use crate::ir::Call;
 use crate::string_intern::StrId;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{
@@ -184,7 +186,13 @@ pub struct TypeStore {
 
 ///todo add actual fields
 #[derive(Debug)]
-pub struct StructRep;
+pub struct StructRep(Vec<(NameId,TypeId)>);
+
+impl StructRep {
+    fn new(names:impl Iterator<Item=NameId>)->Self{
+        Self(names.map(|x|{(x,UNKNOWN_TYPE)}).collect())
+    }
+}
 
 impl Default for TypeStore {
     fn default() -> Self {
@@ -630,11 +638,12 @@ struct InferState<'a,G:GlobalHandler> {
     parent: ClusterVec<CId>,
     cluster: ClusterVec<Cluster>,
 
-    //operators
+    //requirments
     op_sites: Vec<OpSite>,
-
     func_defs: Vec<FuncDef>,
+    struct_defs:Vec<StructDef>,
 
+    //errors
     errors: Vec<TypeError>,
 }
 
@@ -669,6 +678,15 @@ struct FuncDef {
     loc: ValId,
     inputs: Vec<CId>,
     output: CId,
+}
+
+#[derive(Debug)]
+struct StructDef {
+    #[allow(dead_code)]
+    loc: TExpId,
+    fields: Vec<(NameId,CId)>,
+    output: CId,
+    sid:StructId,
 }
 
 #[allow(dead_code)]
@@ -714,6 +732,7 @@ impl<'a, G:GlobalHandler> InferState<'a, G> {
             cluster: ClusterVec::new(),
             op_sites: Vec::new(),
             func_defs: Vec::new(),
+            struct_defs:Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -1493,6 +1512,7 @@ fn gather_pattern_constraints_and_name<G:GlobalHandler>(ctx: &mut InferState<G>,
     }
 }
 
+
 ///this method is kinda weird and ill formed
 ///currently when compiling type expressions we give them a type other the Type::Type
 ///we dont have a good destinction between the type of THE VALUE ITSELF and the type IT REFERS TO
@@ -1532,6 +1552,44 @@ fn compile_type_expr<G:GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) ->
             ctx.new_solved(t)
         }
         TypeExpr::Wildcard => ctx.new_cluster(),
+
+        TypeExpr::Struct(StructLike{generics,fields})=>{
+            for _g in generics.ids(){
+                todo!()
+            }
+
+            let mut field_info = Vec::with_capacity(fields.len());
+            for p in fields.ids() {
+                match ctx.program.pattern(p){
+                    Pattern::Bind(n)=>{
+                        let c = ctx.new_cluster();
+                        field_info.push((n,c));
+                    },
+                    Pattern::TypeAnnotation{pat,ty}=>{
+                            let Pattern::Bind(n) = ctx.program.pattern(pat) else {
+                                todo!()
+                            };
+                            let c = compile_type_expr(ctx, ty);
+                            field_info.push((n,c));
+
+                    }
+                    _ => todo!()
+                }
+            }
+
+            let rep = StructRep::new(field_info.iter().map(|(n,_)| *n));            
+            let (sid,t) = ctx.store.new_struct(rep);
+            let output = ctx.new_solved(t); 
+
+            ctx.struct_defs.push(StructDef{
+                loc:texpr,
+                fields:field_info,
+                sid,
+                output
+            });
+            output
+
+        }
         _ => {
             let c = ctx.new_cluster();
             ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
@@ -1815,6 +1873,19 @@ fn finalize<G:GlobalHandler>(ctx: &mut InferState<G>) -> SolvedTypes {
         } else if *c == root {
             errors.push(TypeError::UnresolvedTypeExpr { expr: *e });
             reported.insert(c, ());
+        }
+    }
+
+    for sdef in ctx.struct_defs.iter() {
+        for (i,(_n,c)) in sdef.fields.iter().enumerate(){
+            let root = find_root(parent, *c);
+            if let ResolveKind::Solved(t) = cluster[root].state {
+                ctx.store.structs[sdef.sid.0].0[i].1=t;
+            } else if *c == root {
+                errors.push(todo!());
+                reported.insert(c, ());
+            }
+
         }
     }
 
