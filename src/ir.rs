@@ -528,15 +528,6 @@ impl Program {
                 self.lower_block_expr(expr.loc, items)
             }
 
-            // let <pat> = <value>
-            Expr::Prefix(open, items) if open.value == "let" => {
-                self.lower_let_expr(expr.loc, items)
-            }
-
-            Expr::Prefix(open, items) if open.value == "type" => {
-                self.lower_typedef_expr(expr.loc, items)
-            }
-
             Expr::Prefix(open, items) if open.value == "(" || open.value=="[" => {
                 self.lower_tuple_expr(expr.loc, items,open.value)
             }
@@ -552,7 +543,25 @@ impl Program {
                 })
             }
 
+            // assignment
+            Expr::Bin(op, pair) if op.value == "=" => self.lower_assign_expr(expr.loc, *pair),
+            Expr::Bin(op, pair) if (op.value == "as" || op.value == ":") => {
+                self.lower_cast_expr(expr.loc, op, *pair)
+            }
+            Expr::Bin(op, pair) if matches!(op.value, "." | "::" | "->") => {
+                let (lhs, rhs) = *pair;
+                self.lower_access_expr(expr.loc, op, lhs, rhs)
+            }
 
+
+            // let <pat> = <value>
+            Expr::Prefix(open, items) if open.value == "let" => {
+                self.lower_let_expr(expr.loc, items)
+            }
+
+            Expr::Prefix(open, items) if open.value == "type" => {
+                self.lower_typedef_expr(expr.loc, items)
+            }
 
             // match <value> { arms... }
             Expr::Prefix(open, items) if open.value == "match" => {
@@ -565,21 +574,12 @@ impl Program {
                 self.lower_while_expr(expr.loc, items)
             }
 
-            // assignment
-            Expr::Bin(op, pair) if op.value == "=" => self.lower_assign_expr(expr.loc, *pair),
+            
 
             // fn (sig) body
             Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
 
-            Expr::Bin(op, pair) if (op.value == "as" || op.value == ":") => {
-                self.lower_cast_expr(expr.loc, op, *pair)
-            }
-
-            Expr::Bin(op, pair) if matches!(op.value, "." | "::" | "->") => {
-                let (lhs, rhs) = *pair;
-                self.lower_access_expr(expr.loc, op, lhs, rhs)
-            }
-
+            
             //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
             Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
@@ -963,15 +963,6 @@ impl Program {
                 Ok(Pattern::Bind(id))
             }
 
-            Expr::Prefix(open, items) if open.value == "(" => {
-                let span = self.reserve_pattern_span(items.len());
-                for (index, item) in items.into_iter().enumerate() {
-                    let target = span.at(index);
-                    self.lower_pattern_into(target, item)?;
-                }
-                Ok(Pattern::Tuple(span))
-            }
-
             // Pattern with type annotation: x:T
             Expr::Bin(op, pair) if op.value == ":" => {
                 let (pat_expr, ty_expr) = *pair;
@@ -990,6 +981,15 @@ impl Program {
                 message: ERR_UNSUPPORTED_PATTERN,
             }),
 
+            Expr::Prefix(open, items) if open.value == "(" => {
+                let span = self.reserve_pattern_span(items.len());
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = span.at(index);
+                    self.lower_pattern_into(target, item)?;
+                }
+                Ok(Pattern::Tuple(span))
+            }
+
             Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
@@ -997,7 +997,7 @@ impl Program {
                 message: ERR_UNSUPPORTED_PATTERN,
             }),
 
-            _ => Err(CompileError::UnsupportedForm {
+            Expr::Atom(_) => Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: None,
                 op: None,
