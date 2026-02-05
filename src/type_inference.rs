@@ -39,6 +39,9 @@ pub struct BadTypeId(pub TypeId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenId(pub usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructId(pub usize);
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuiltinType {
@@ -123,6 +126,8 @@ pub enum TypeValue {
         body: TypeId,
     },
     Generic(GenId),
+
+    Struct(StructId),
 }
 
 impl Program {
@@ -172,7 +177,13 @@ pub struct TypeStore {
     values: Vec<TypeValue>,
     intern: HashMap<TypeValue, TypeId>,
     global_types: IdHashMap<ValId, TypeId>,
+
+    structs:Vec<StructRep>,
 }
+
+///todo add actual fields
+#[derive(Debug)]
+pub struct StructRep;
 
 impl Default for TypeStore {
     fn default() -> Self {
@@ -186,6 +197,8 @@ impl TypeStore {
             values: Vec::new(),
             intern: HashMap::new(),
             global_types: IdHashMap::default(),
+
+            structs:Vec::new(),
         };
 
         for i in 0.. {
@@ -216,6 +229,19 @@ impl TypeStore {
         self.values.push(ty.clone());
         self.intern.insert(ty, id);
         id
+    }
+
+    #[inline]
+    pub fn new_struct(&mut self,rep:StructRep)->(StructId,TypeId){
+        let sid = StructId(self.structs.len());
+        self.structs.push(rep);
+        let tid = self.intern(TypeValue::Struct(sid));
+        (sid,tid)
+    }
+
+    #[inline(always)]
+    pub fn struct_value(&self,id:StructId)->&StructRep{
+        &self.structs[id.0]
     }
 
     #[inline]
@@ -316,6 +342,9 @@ impl TypeStore {
                 )
             }
             TypeValue::Generic(g) => format!("T{}", g.0),
+            
+            //TODO cover cases where we do know the name
+            TypeValue::Struct(s) => format!("UnamedStruct({})", s.0),
         }
     }
 }

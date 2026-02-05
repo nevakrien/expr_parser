@@ -188,10 +188,6 @@ pub enum AccessKind {
     Ptr,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct AccessName {
-    pub name: StrId,
-}
 
 // /// Function parameter declaration
 // #[derive(Debug, Clone, PartialEq)]
@@ -279,6 +275,13 @@ pub enum Value {
     /// Reference to a resolved name
     NameRef(NameId),
 
+    /// things like struct arguments and function name arguments 
+    /// can be refered to by name as name=x
+    Labeled{
+        name:StrId,
+        value:ValId
+    },
+
     /// Literal constant
     Literal(Literal),
 
@@ -286,6 +289,7 @@ pub enum Value {
     Wildcard,
 
     Tuple(ValueSpan),
+    Array(ValueSpan),
 
     /// Pure binary operation
     BinOp {
@@ -297,6 +301,11 @@ pub enum Value {
     UnOp {
         op: UnOp,
         value: ValId,
+    },
+
+    Construct{
+        base:ValId,
+        args:ValueSpan
     },
 
     //===== TYPES =====
@@ -343,7 +352,7 @@ pub enum Value {
     /// Field/type access with deferred name resolution
     Access {
         base: ValId,
-        name: AccessName,
+        name: StrId,
         kind: AccessKind,
     },
 
@@ -480,11 +489,37 @@ impl Program {
         Ok(self.id_value(loc, value))
     }
 
+    #[inline]
     fn lower_value_into(&mut self, target: ValId, expr: LExpr) -> CResult<ValId> {
         let loc = expr.loc.clone();
         let value = self.lower_value_inner(expr)?;
         self.set_value(target, loc, value);
         Ok(target)
+    }
+
+    #[inline]
+    fn lower_value_into_with_labeled(&mut self, target: ValId, expr: LExpr) -> CResult<ValId> {
+        let loc = expr.loc.clone();
+        let value = self.lower_value_inner_with_labeled(expr)?;
+        self.set_value(target, loc, value);
+        Ok(target)
+    }
+
+    fn lower_value_inner_with_labeled(&mut self, expr: LExpr) -> CResult<Value>{
+        match expr.value {
+            Expr::Bin(op, pair) if op.value == "="  => {
+                if let Expr::Atom(Token::Ident(n)) = pair.0.value{
+                    let name = self.str_intern.intern(&n);
+                    let value = self.lower_value(pair.1)?;
+                    return Ok(Value::Labeled{
+                        name,value
+                    })
+                };
+                self.lower_value_inner(expr.loc.with(Expr::Bin(op, pair)))
+            },
+            _=>self.lower_value_inner(expr)
+        }
+        
     }
 
     fn lower_value_inner(&mut self, expr: LExpr) -> CResult<Value> {
@@ -505,6 +540,10 @@ impl Program {
                 self.lower_typedef_expr(expr.loc, items)
             }
 
+            Expr::Prefix(open, items) if open.value == "(" || open.value=="[" => {
+                self.lower_tuple_expr(expr.loc, items,open.value)
+            }
+
             // call: <callee>(args...)
             Expr::Postfix(open, items) if open.value == "(" => {
                 self.lower_call_expr(expr.loc, items)
@@ -513,6 +552,10 @@ impl Program {
             // index: <base>[args...]
             Expr::Postfix(open, items) if open.value == "[" => {
                 self.lower_index_expr(expr.loc, items)
+            }
+
+            Expr::Postfix(open, items) if open.value == "{" => {
+                self.lower_construct_expr(expr.loc, items)
             }
 
             // match <value> { arms... }
@@ -650,21 +693,39 @@ impl Program {
     }
 
     #[inline(always)]
+    fn lower_tuple_expr(&mut self, _loc: Loc, items: Vec<LExpr>,open:&'static str) -> CResult<Value> {
+        let parts = self.reserve_value_span(items.len());
+
+        for (index, arg) in items.into_iter().enumerate() {
+            let target = parts.at(index);
+            self.lower_value_into(target, arg)?;
+        }
+
+        Ok(match open {
+            "("=> Value::Tuple(parts),
+            "["=> Value::Array(parts),
+            _=>unreachable!()
+        })
+
+        
+    }
+
+    #[inline(always)]
     fn lower_call_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(!items.is_empty(), "call expression missing callee");
 
-        let args_span = self.reserve_value_span(items.len() - 1);
+        let args = self.reserve_value_span(items.len() - 1);
         let mut items = items.into_iter();
 
         let callee = self.lower_value(items.next().unwrap())?;
         for (index, arg) in items.enumerate() {
-            let target = args_span.at(index);
-            self.lower_value_into(target, arg)?;
+            let target = args.at(index);
+            self.lower_value_into_with_labeled(target, arg)?;
         }
 
         Ok(Value::Call {
             callee,
-            args: args_span,
+            args,
         })
     }
 
@@ -673,18 +734,36 @@ impl Program {
         debug_assert!(!items.is_empty(), "index expression missing base");
 
         let mut items = items.into_iter();
-        //TODO this can actually be a generic so a pattern
         let base = self.lower_value(items.next().unwrap())?;
 
-        let args_span = self.reserve_value_span(items.len());
+        let args = self.reserve_value_span(items.len());
         for (index, arg) in items.enumerate() {
-            let target = args_span.at(index);
-            self.lower_value_into(target, arg)?;
+            let target = args.at(index);
+            self.lower_value_into_with_labeled(target, arg)?;
         }
 
         Ok(Value::Index {
             base,
-            args: args_span,
+            args,
+        })
+    }
+
+    #[inline(always)]
+    fn lower_construct_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
+        debug_assert!(!items.is_empty(), "index expression missing base");
+
+        let mut items = items.into_iter();
+        let base = self.lower_value(items.next().unwrap())?;
+
+        let args = self.reserve_value_span(items.len());
+        for (index, arg) in items.enumerate() {
+            let target = args.at(index);
+            self.lower_value_into_with_labeled(target, arg)?;
+        }
+
+        Ok(Value::Construct {
+            base,
+            args,
         })
     }
 
@@ -883,8 +962,7 @@ impl Program {
         let base = self.lower_value(lhs)?;
         let name = match rhs.value {
             Expr::Atom(Token::Ident(name)) => {
-                let name = self.str_intern.intern(&name);
-                AccessName { name }
+                self.str_intern.intern(&name)
             }
             _ => {
                 return Err(CompileError::SimpleError {
@@ -1596,7 +1674,7 @@ mod lowering_tests {
                     Value::NameRef(id) => assert_eq!(id, a_id),
                     _ => panic!("expected dot base name"),
                 }
-                assert_eq!(program.str_intern.resolve(name.name), "b");
+                assert_eq!(program.str_intern.resolve(name), "b");
             }
             _ => panic!("expected dot access"),
         }
@@ -1608,7 +1686,7 @@ mod lowering_tests {
                     Value::NameRef(id) => assert_eq!(id, t_id),
                     _ => panic!("expected type base name"),
                 }
-                assert_eq!(program.str_intern.resolve(name.name), "c");
+                assert_eq!(program.str_intern.resolve(name), "c");
             }
             _ => panic!("expected type access"),
         }

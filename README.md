@@ -71,9 +71,10 @@ Point = struct[f] {x:f b};
 
 construction of a struct/union can be done like so
 ```
-Point(4,y=2)
-Union(float=2.1)
+Point{4,y=2}
+Union{float=2.1}
 ```
+note that when using a call/constructor name=x expressions are interpeted as passing arguments by name.
 
 defining dot methods destructors and constructors are viewed as just operator overloading.
 so constructing a class for point would look like
@@ -84,7 +85,7 @@ Point.dist = fn(self,other:Point)->float {
 	sqrt(dx*dx+dy*dy)
 }
 drop(Point) = fn(self) {}
-Point() = fn()->Point {Point(0,0)}
+Point() = fn()->Point {Point{0,0}}
 ```
 
 # Performance
