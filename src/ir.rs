@@ -264,6 +264,12 @@ pub enum LogicOp {
     Or,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct Call {
+    pub base: ValId,
+    pub args: ValueSpan,
+}
+
 /// Runtime IR values.
 ///
 /// This IR is *expression-oriented* but *effect-explicit*:
@@ -303,10 +309,7 @@ pub enum Value {
         value: ValId,
     },
 
-    Construct{
-        base:ValId,
-        args:ValueSpan
-    },
+    Construct(Call),
 
     //===== TYPES =====
     /// Explicit type cast
@@ -328,10 +331,7 @@ pub enum Value {
 
     //==== MUTATION GATES =====
     /// Function or callable invocation
-    Call {
-        callee: ValId,
-        args: ValueSpan,
-    },
+    Call(Call),
 
     /// Assignment with explicit sequencing.
     ///
@@ -344,10 +344,7 @@ pub enum Value {
     },
 
     /// Indexing or specialization
-    Index {
-        base: ValId,
-        args: ValueSpan,
-    },
+    Index(Call),
 
     /// Field/type access with deferred name resolution
     Access {
@@ -544,19 +541,18 @@ impl Program {
                 self.lower_tuple_expr(expr.loc, items,open.value)
             }
 
-            // call: <callee>(args...)
-            Expr::Postfix(open, items) if open.value == "(" => {
-                self.lower_call_expr(expr.loc, items)
+            // call: <base>(args...)
+            Expr::Postfix(open, items) if matches!(open.value,"("|"["|"{") => {
+                let call=self.lower_call_like_expr(expr.loc, items)?;
+                Ok(match open.value{
+                    "("=>Value::Call(call),
+                    "["=>Value::Index(call),
+                    "{"=>Value::Construct(call),
+                    _=>unreachable!()
+                })
             }
 
-            // index: <base>[args...]
-            Expr::Postfix(open, items) if open.value == "[" => {
-                self.lower_index_expr(expr.loc, items)
-            }
 
-            Expr::Postfix(open, items) if open.value == "{" => {
-                self.lower_construct_expr(expr.loc, items)
-            }
 
             // match <value> { arms... }
             Expr::Prefix(open, items) if open.value == "match" => {
@@ -710,61 +706,21 @@ impl Program {
         
     }
 
+
     #[inline(always)]
-    fn lower_call_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
-        debug_assert!(!items.is_empty(), "call expression missing callee");
+    fn lower_call_like_expr(&mut self,_loc:Loc, items: Vec<LExpr>) -> CResult<Call> {
+        debug_assert!(!items.is_empty(), "call expression missing base");
 
         let args = self.reserve_value_span(items.len() - 1);
         let mut items = items.into_iter();
-
-        let callee = self.lower_value(items.next().unwrap())?;
-        for (index, arg) in items.enumerate() {
-            let target = args.at(index);
-            self.lower_value_into_with_labeled(target, arg)?;
-        }
-
-        Ok(Value::Call {
-            callee,
-            args,
-        })
-    }
-
-    #[inline(always)]
-    fn lower_index_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
-        debug_assert!(!items.is_empty(), "index expression missing base");
-
-        let mut items = items.into_iter();
         let base = self.lower_value(items.next().unwrap())?;
 
-        let args = self.reserve_value_span(items.len());
         for (index, arg) in items.enumerate() {
             let target = args.at(index);
             self.lower_value_into_with_labeled(target, arg)?;
         }
 
-        Ok(Value::Index {
-            base,
-            args,
-        })
-    }
-
-    #[inline(always)]
-    fn lower_construct_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
-        debug_assert!(!items.is_empty(), "index expression missing base");
-
-        let mut items = items.into_iter();
-        let base = self.lower_value(items.next().unwrap())?;
-
-        let args = self.reserve_value_span(items.len());
-        for (index, arg) in items.enumerate() {
-            let target = args.at(index);
-            self.lower_value_into_with_labeled(target, arg)?;
-        }
-
-        Ok(Value::Construct {
-            base,
-            args,
-        })
+        Ok(Call { base, args })
     }
 
     #[inline(always)]
@@ -1562,12 +1518,12 @@ mod lowering_tests {
         let a_id = bound_id(&program, statements[1]);
 
         let (base, index_args) = match program.value(statements[2]) {
-            Value::Index { base, args } => (base, args),
+            Value::Index(Call { base, args }) => (base, args),
             _ => panic!("expected index expression"),
         };
 
         let (callee, call_args) = match program.value(base) {
-            Value::Call { callee, args } => (callee, args),
+            Value::Call(Call { base, args }) => (base, args),
             _ => panic!("expected call base"),
         };
 
@@ -1610,7 +1566,7 @@ mod lowering_tests {
         assert_eq!(statements.len(), 6);
 
         let call_args = match program.value(statements[3]) {
-            Value::Call { args, .. } => args.ids().collect::<Vec<_>>(),
+            Value::Call(Call { args, .. }) => args.ids().collect::<Vec<_>>(),
             _ => panic!("expected call expression"),
         };
         assert_eq!(call_args.len(), 2);
@@ -1621,14 +1577,14 @@ mod lowering_tests {
         assert_labeled_num(&program, call_args[1], "a", 4);
 
         let index_args = match program.value(statements[4]) {
-            Value::Index { args, .. } => args.ids().collect::<Vec<_>>(),
+            Value::Index(Call { args, .. }) => args.ids().collect::<Vec<_>>(),
             _ => panic!("expected index expression"),
         };
         assert_eq!(index_args.len(), 1);
         assert_labeled_num(&program, index_args[0], "a", 5);
 
         let construct_args = match program.value(statements[5]) {
-            Value::Construct { args, .. } => args.ids().collect::<Vec<_>>(),
+            Value::Construct(Call { args, .. }) => args.ids().collect::<Vec<_>>(),
             _ => panic!("expected construct expression"),
         };
         assert_eq!(construct_args.len(), 1);
@@ -1813,22 +1769,22 @@ mod lowering_tests {
         };
 
         let f_call = match program.value(f_body) {
-            Value::Call { callee, .. } => callee,
+            Value::Call(Call { base, .. }) => base,
             Value::Block { return_value, .. } => return_value
                 .as_ref()
                 .map(|value| match program.value(*value) {
-                    Value::Call { callee, .. } => callee,
+                    Value::Call(Call { base, .. }) => base,
                     _ => panic!("expected f return to be a call"),
                 })
                 .expect("expected f to return a call"),
             _ => panic!("expected f body to be a call or block"),
         };
         let g_call = match program.value(g_body) {
-            Value::Call { callee, .. } => callee,
+            Value::Call(Call { base, .. }) => base,
             Value::Block { return_value, .. } => return_value
                 .as_ref()
                 .map(|value| match program.value(*value) {
-                    Value::Call { callee, .. } => callee,
+                    Value::Call(Call { base, .. }) => base,
                     _ => panic!("expected g return to be a call"),
                 })
                 .expect("expected g to return a call"),

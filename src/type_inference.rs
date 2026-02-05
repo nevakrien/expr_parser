@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::string_intern::StrId;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{
     AssignOp, BinOp, Literal, NameId, PatId, Pattern, TExpId, TypeExpr, ValId, Value,
@@ -612,7 +613,6 @@ impl GlobalHandler for () {
 
 }
 
-type LocalInfer<'a>=InferState<'a,&'a SolvedTypes>;
 
 struct InferState<'a,G:GlobalHandler> {
     store: &'a mut TypeStore,
@@ -633,7 +633,7 @@ struct InferState<'a,G:GlobalHandler> {
     //operators
     op_sites: Vec<OpSite>,
 
-    call_sites: Vec<CallSite>,
+    func_defs: Vec<FuncDef>,
 
     errors: Vec<TypeError>,
 }
@@ -644,14 +644,14 @@ struct Cluster {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CallSiteId(usize);
+struct FuncDefId(usize);
 
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 enum ResolveKind {
     Solved(TypeId),
     Nothing,
     ///internal refs are going to always share the cluster with their source
+    #[allow(dead_code)]
     ExternRef(NameId),
 
     ///the val is the last entity easily considered a lit like (2+1+3) in (let y = let x = 2+1+3)
@@ -660,16 +660,32 @@ enum ResolveKind {
     ///same as intlike but for float
     FloatLike,
     ///not all functions are like this but if something is declared as a function its this
-    Func(CallSiteId),
+    Func(FuncDefId),
 }
 
 #[derive(Debug)]
-struct CallSite {
+struct FuncDef {
     #[allow(dead_code)]
     loc: ValId,
     inputs: Vec<CId>,
     output: CId,
 }
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct ComplexCallSite {
+    loc: ValId,
+    loc_called:ValId,
+
+    called:CId,
+    position_args: Vec<CId>,
+    ///the strid can only be resolved once we know what we call;
+    /// for structs thats just the type extra info
+    /// for functions we need to know the actual specific one (which is a dependent type)
+    named_args:Vec<(StrId,CId)>,
+    output: CId,
+}
+
 
 #[derive(Debug, Clone, Copy)]
 struct OpSite {
@@ -697,7 +713,7 @@ impl<'a, G:GlobalHandler> InferState<'a, G> {
             parent: ClusterVec::new(),
             cluster: ClusterVec::new(),
             op_sites: Vec::new(),
-            call_sites: Vec::new(),
+            func_defs: Vec::new(),
             errors: Vec::new(),
         }
     }
@@ -734,9 +750,9 @@ impl<'a, G:GlobalHandler> InferState<'a, G> {
         id
     }
 
-    fn new_func(&mut self, call: CallSite) -> CId {
-        let call_id = CallSiteId(self.call_sites.len());
-        self.call_sites.push(call);
+    fn new_func(&mut self, call: FuncDef) -> CId {
+        let call_id = FuncDefId(self.func_defs.len());
+        self.func_defs.push(call);
         let id = self.new_cluster();
         self.cluster[id].state = ResolveKind::Func(call_id);
         id
@@ -759,19 +775,18 @@ impl<'a, G:GlobalHandler> InferState<'a, G> {
             self.store,
             &mut self.parent,
             &mut self.cluster,
-            &mut self.call_sites,
+            &mut self.func_defs,
             a,
             b,
         )
     }
 
-    #[allow(dead_code)]
     fn force_type(&mut self, a: CId, t: TypeId) -> Result<(), TypeClash> {
         force_type(
             self.store,
             &mut self.parent,
             &mut self.cluster,
-            &mut self.call_sites,
+            &mut self.func_defs,
             a,
             t,
         )
@@ -799,7 +814,7 @@ fn unify_clusters(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    call_sites: &mut Vec<CallSite>,
+    func_defs: &mut Vec<FuncDef>,
     found: CId,
     wanted: CId,
 ) -> Result<CId, TypeClash> {
@@ -810,7 +825,7 @@ fn unify_clusters(
     }
 
     // Try found <- wanted
-    if _try_absorb(store, parent, cluster, call_sites, rw, rf)? {
+    if _try_absorb(store, parent, cluster, func_defs, rw, rf)? {
         if rf != parent[rf] {
             todo!()
         }
@@ -820,7 +835,7 @@ fn unify_clusters(
     }
 
     // Otherwise try wanted <- found
-    if _try_absorb(store, parent, cluster, call_sites, rf, rw).map_err(TypeClash::swap)? {
+    if _try_absorb(store, parent, cluster, func_defs, rf, rw).map_err(TypeClash::swap)? {
         if rw != parent[rw] {
             todo!()
         }
@@ -831,8 +846,8 @@ fn unify_clusters(
 
     // Neither direction worked → real contradiction
     Err(TypeClash {
-        found: extract_bad_type(store, parent, cluster, call_sites, found),
-        wanted: extract_bad_type(store, parent, cluster, call_sites, wanted),
+        found: extract_bad_type(store, parent, cluster, func_defs, found),
+        wanted: extract_bad_type(store, parent, cluster, func_defs, wanted),
     })
 }
 
@@ -841,7 +856,7 @@ fn _try_absorb(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    call_sites: &mut Vec<CallSite>,
+    func_defs: &mut Vec<FuncDef>,
     dst: CId,
     src: CId,
 ) -> Result<bool, TypeClash> {
@@ -911,47 +926,47 @@ fn _try_absorb(
         // =====================================================
         (Func(dst_call), Func(src_call)) => {
             let (dst_len, src_len) = {
-                let dst_call = &call_sites[dst_call.0];
-                let src_call = &call_sites[src_call.0];
+                let dst_call = &func_defs[dst_call.0];
+                let src_call = &func_defs[src_call.0];
                 (dst_call.inputs.len(), src_call.inputs.len())
             };
             if dst_len != src_len {
                 return Err(func_call_clash(
-                    store, parent, cluster, call_sites, dst_call, src_call,
+                    store, parent, cluster, func_defs, dst_call, src_call,
                 ));
             }
 
             for i in 0..dst_len {
                 let (a, b) = {
-                    let dst_call = &call_sites[dst_call.0];
-                    let src_call = &call_sites[src_call.0];
+                    let dst_call = &func_defs[dst_call.0];
+                    let src_call = &func_defs[src_call.0];
                     (dst_call.inputs[i], src_call.inputs[i])
                 };
-                if unify_clusters(store, parent, cluster, call_sites, a, b).is_err() {
+                if unify_clusters(store, parent, cluster, func_defs, a, b).is_err() {
                     return Err(func_call_clash(
-                        store, parent, cluster, call_sites, dst_call, src_call,
+                        store, parent, cluster, func_defs, dst_call, src_call,
                     ));
                 }
             }
             let (dst_out, src_out) = {
-                let dst_call = &call_sites[dst_call.0];
-                let src_call = &call_sites[src_call.0];
+                let dst_call = &func_defs[dst_call.0];
+                let src_call = &func_defs[src_call.0];
                 (dst_call.output, src_call.output)
             };
-            if unify_clusters(store, parent, cluster, call_sites, dst_out, src_out).is_err() {
+            if unify_clusters(store, parent, cluster, func_defs, dst_out, src_out).is_err() {
                 return Err(func_call_clash(
-                    store, parent, cluster, call_sites, dst_call, src_call,
+                    store, parent, cluster, func_defs, dst_call, src_call,
                 ));
             }
 
-            if let Some(t) = try_resolve_func_type(store, parent, cluster, call_sites, dst_call) {
+            if let Some(t) = try_resolve_func_type(store, parent, cluster, func_defs, dst_call) {
                 cluster[dst].state = Solved(t);
             }
             Ok(true)
         }
 
         (Solved(t), Func(call)) => {
-            unify_func_with_type(store, parent, cluster, call_sites, call, t)?;
+            unify_func_with_type(store, parent, cluster, func_defs, call, t)?;
             Ok(true)
         }
 
@@ -971,7 +986,7 @@ fn force_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    call_sites: &mut Vec<CallSite>,
+    func_defs: &mut Vec<FuncDef>,
     target: CId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -1005,7 +1020,7 @@ fn force_type(
             Ok(())
         }
         ResolveKind::Func(call) => {
-            unify_func_with_type(store, parent, cluster, call_sites, call, ty)?;
+            unify_func_with_type(store, parent, cluster, func_defs, call, ty)?;
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
@@ -1020,8 +1035,8 @@ fn unify_func_with_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    call_sites: &mut Vec<CallSite>,
-    call: CallSiteId,
+    func_defs: &mut Vec<FuncDef>,
+    call: FuncDefId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let (params, ret) = match store.type_value(ty) {
@@ -1034,7 +1049,7 @@ fn unify_func_with_type(
         }
     };
 
-    let input_len = call_sites[call.0].inputs.len();
+    let input_len = func_defs[call.0].inputs.len();
     if params.len() != input_len {
         return Err(TypeClash {
             found: Some(BadTypeId(ty)),
@@ -1043,7 +1058,7 @@ fn unify_func_with_type(
     }
 
     for i in 0..input_len {
-        let input = call_sites[call.0].inputs[i];
+        let input = func_defs[call.0].inputs[i];
 
         //TODO (maybe): we constantly take the params again from the spot because borrow checker
         //              technically the Vec params points to never reallocs
@@ -1052,11 +1067,11 @@ fn unify_func_with_type(
             TypeValue::Func { params, ret: _ } => params[i],
             _ => unreachable!(),
         };
-        force_type(store, parent, cluster, call_sites, input, param_ty)?;
+        force_type(store, parent, cluster, func_defs, input, param_ty)?;
     }
 
-    let output = call_sites[call.0].output;
-    force_type(store, parent, cluster, call_sites, output, ret)?;
+    let output = func_defs[call.0].output;
+    force_type(store, parent, cluster, func_defs, output, ret)?;
 
     Ok(())
 }
@@ -1074,7 +1089,7 @@ fn mock_type_from_cluster(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    call_sites: &Vec<CallSite>,
+    func_defs: &Vec<FuncDef>,
     cid: CId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -1088,7 +1103,7 @@ fn mock_type_from_cluster(
         ResolveKind::IntLike => UNKNOWN_INT_SIZE,
         ResolveKind::FloatLike => UNKNOWN_FLOAT_SIZE,
         ResolveKind::Func(call) => {
-            make_func_mock_inner(store, parent, cluster, call_sites, call, visiting)
+            make_func_mock_inner(store, parent, cluster, func_defs, call, visiting)
         }
         ResolveKind::Nothing | ResolveKind::ExternRef(_) => UNKNOWN_TYPE,
     };
@@ -1101,17 +1116,17 @@ fn make_func_mock_inner(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    call_sites: &Vec<CallSite>,
-    call: CallSiteId,
+    func_defs: &Vec<FuncDef>,
+    call: FuncDefId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
-    let site = &call_sites[call.0];
+    let site = &func_defs[call.0];
     let params = site
         .inputs
         .iter()
-        .map(|&input| mock_type_from_cluster(store, parent, cluster, call_sites, input, visiting))
+        .map(|&input| mock_type_from_cluster(store, parent, cluster, func_defs, input, visiting))
         .collect::<Vec<_>>();
-    let ret = mock_type_from_cluster(store, parent, cluster, call_sites, site.output, visiting);
+    let ret = mock_type_from_cluster(store, parent, cluster, func_defs, site.output, visiting);
 
     store.intern(TypeValue::Func { params, ret })
 }
@@ -1120,27 +1135,27 @@ fn make_func_mock(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    call_sites: &Vec<CallSite>,
-    call: CallSiteId,
+    func_defs: &Vec<FuncDef>,
+    call: FuncDefId,
 ) -> TypeId {
     let mut visiting = std::collections::HashSet::new();
-    make_func_mock_inner(store, parent, cluster, call_sites, call, &mut visiting)
+    make_func_mock_inner(store, parent, cluster, func_defs, call, &mut visiting)
 }
 
 fn func_call_clash(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    call_sites: &Vec<CallSite>,
-    dst_call: CallSiteId,
-    src_call: CallSiteId,
+    func_defs: &Vec<FuncDef>,
+    dst_call: FuncDefId,
+    src_call: FuncDefId,
 ) -> TypeClash {
     TypeClash {
         found: Some(BadTypeId(make_func_mock(
-            store, parent, cluster, call_sites, src_call,
+            store, parent, cluster, func_defs, src_call,
         ))),
         wanted: Some(BadTypeId(make_func_mock(
-            store, parent, cluster, call_sites, dst_call,
+            store, parent, cluster, func_defs, dst_call,
         ))),
     }
 }
@@ -1149,7 +1164,7 @@ fn extract_bad_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    call_sites: &Vec<CallSite>,
+    func_defs: &Vec<FuncDef>,
     cid: CId,
 ) -> Option<BadTypeId> {
     let root = find_root(parent, cid);
@@ -1158,7 +1173,7 @@ fn extract_bad_type(
         ResolveKind::Nothing => None,
         ResolveKind::ExternRef(_) => None,
         ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(
-            store, parent, cluster, call_sites, call,
+            store, parent, cluster, func_defs, call,
         ))),
 
         ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
@@ -1406,7 +1421,7 @@ fn gather_constraints<G:GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CId
             } else {
                 ctx.new_solved(BuiltinType::Void.into())
             };
-            let f = ctx.new_func(CallSite {
+            let f = ctx.new_func(FuncDef {
                 inputs,
                 output,
                 loc: v,
@@ -1601,7 +1616,7 @@ fn unify_if_distinct(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    call_sites: &mut Vec<CallSite>,
+    func_defs: &mut Vec<FuncDef>,
     a: CId,
     b: CId,
 ) -> Result<bool, TypeClash> {
@@ -1610,7 +1625,7 @@ fn unify_if_distinct(
     if ra == rb {
         return Ok(false);
     }
-    unify_clusters(store, parent, cluster, call_sites, ra, rb)?;
+    unify_clusters(store, parent, cluster, func_defs, ra, rb)?;
     Ok(true)
 }
 
@@ -1619,11 +1634,11 @@ fn resolve_operator_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     use BinOp::*;
 
     let mut progress = false;
-    let (store, parent, cluster, call_sites, op_sites, errors) = (
+    let (store, parent, cluster, func_defs, op_sites, errors) = (
         &mut ctx.store,
         &mut ctx.parent,
         &mut ctx.cluster,
-        &mut ctx.call_sites,
+        &mut ctx.func_defs,
         &mut ctx.op_sites,
         &mut ctx.errors,
     );
@@ -1651,8 +1666,8 @@ fn resolve_operator_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
                 found: site.lhs_val,
                 expected_place: site.rhs_val,
                 clash: TypeClash {
-                    found: extract_bad_type(store, parent, cluster, call_sites, lhs),
-                    wanted: extract_bad_type(store, parent, cluster, call_sites, rhs),
+                    found: extract_bad_type(store, parent, cluster, func_defs, lhs),
+                    wanted: extract_bad_type(store, parent, cluster, func_defs, rhs),
                 },
             });
             site.had_error = true;
@@ -1695,7 +1710,7 @@ fn resolve_operator_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
         }
 
         // (a) unify operands
-        match unify_if_distinct(store, parent, cluster, call_sites, lhs, rhs) {
+        match unify_if_distinct(store, parent, cluster, func_defs, lhs, rhs) {
             Ok(changed) => progress |= changed,
             Err(clash) => {
                 errors.push(TypeError::ValuesContradict {
@@ -1713,7 +1728,7 @@ fn resolve_operator_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
         let operand = find_root(parent, lhs);
 
         // (b) unify output with operand
-        match unify_if_distinct(store, parent, cluster, call_sites, out, operand) {
+        match unify_if_distinct(store, parent, cluster, func_defs, out, operand) {
             Ok(changed) => progress |= changed,
             Err(clash) => {
                 errors.push(TypeError::ValuesContradict {
@@ -1736,23 +1751,23 @@ fn try_resolve_func_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    call_sites: &mut [CallSite],
-    call: CallSiteId,
+    func_defs: &mut [FuncDef],
+    call: FuncDefId,
 ) -> Option<TypeId> {
-    let mut params = Vec::with_capacity(call_sites[call.0].inputs.len());
-    for i in 0..call_sites[call.0].inputs.len() {
-        let input = call_sites[call.0].inputs[i];
+    let mut params = Vec::with_capacity(func_defs[call.0].inputs.len());
+    for i in 0..func_defs[call.0].inputs.len() {
+        let input = func_defs[call.0].inputs[i];
         let root = find_root(parent, input);
-        call_sites[call.0].inputs[i] = root;
+        func_defs[call.0].inputs[i] = root;
         match cluster[root].state {
             ResolveKind::Solved(t) => params.push(t),
             _ => return None,
         }
     }
 
-    let output = call_sites[call.0].output;
+    let output = func_defs[call.0].output;
     let root = find_root(parent, output);
-    call_sites[call.0].output = root;
+    func_defs[call.0].output = root;
     let ret = match cluster[root].state {
         ResolveKind::Solved(t) => t,
         _ => return None,
@@ -1770,7 +1785,7 @@ fn resolve_func_types<G:GlobalHandler>(ctx: &mut InferState<G>) -> bool {
                 ctx.store,
                 &mut ctx.parent,
                 &mut ctx.cluster,
-                &mut ctx.call_sites,
+                &mut ctx.func_defs,
                 call,
             )
         {
