@@ -922,19 +922,6 @@ fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
     parent[x]
 }
 
-fn get_base_type(
-    cluster: &ClusterVec<Cluster>,
-    parent: &mut ClusterVec<CId>,
-    x: CId,
-) -> Option<TypeId> {
-    let r = find_root(parent, x);
-    match cluster[r].state {
-        ResolveKind::Solved(t) => Some(t),
-        //when we add generics that starts to matter here
-        _ => None,
-    }
-}
-
 ///tries to combine 2 clusters
 ///on fail produces a type_clash and keeps the 2 seprate
 ///infrence can continye with the 2 types seperated for the purpose of gathering more errors (obviously not Unresolved style errors)
@@ -1588,10 +1575,37 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
             f
         }
+        Value::Call(call) => {
+            if call.named_args().is_empty() {
+                //we can try derive the type of base directly
+                //this makes life SOOOO much easier for everyone
+                
+                let _base = gather_constraints(ctx,call.base);
+                let _args :Vec<_>= call.args.ids().map(|a|{
+                    gather_constraints(ctx,a)
+                }).collect();
+                todo!("we can actually just put it into some sort of calls buffer and solve directly")
+            }else{
+                //we have to get exact function here because we need to figure out arg order
+                if let Some(_n) = try_get_name(ctx,call.base){
+                    todo!("easy case not a member function")
+                }
+                else{
+                    //CAN  be a member function. 
+                    //we need the thing calling its member function
+                    //and we need the functions value
+
+
+                    //we might also just have a closure being called immidiatly
+                    //or maybe a function returned from somewhere
+                    //if thats the case thats an error as we dont permit named args there
+                    todo!()
+                }   
+            }
+        }
 
         Value::Construct(cons) => {
             //we dont gather the base because we just care about the name
-
             let Some(base_name) = try_get_name(ctx, cons.base) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
@@ -1767,6 +1781,19 @@ fn try_get_name<G:GlobalHandler>(ctx: &mut InferState<G>, v: ValId)->Option<Name
         }
     }
 }
+
+// ///this tries to resolve specifically a from a module.
+// ///if what we have is a member of a struct it wont give a name
+// fn try_func_and_member<G:GlobalHandler>(ctx: &mut InferState<G>, v: ValId)->(CId,NameId){
+//     match ctx.program.value(v){
+//         Value::NameRef(n)=>Some(n),
+//         Value::Access { base: _, name: _, kind: _ }=>todo!{},
+//         _ => {
+//             None
+//         }
+//     }
+// }
+
 
 
 #[inline(always)]

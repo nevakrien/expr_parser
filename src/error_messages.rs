@@ -14,3 +14,6 @@ pub const ERR_EXPECTED_DEFINITION_VALUE: &str =
     "Expected function, macro, struct, enum, or union definition";
 pub const ERR_EXPECTED_GEN_NAME: &str = "Expected single identifier for generic name";
 pub const ERR_ACCESS_EXPECTS_NAME: &str = "Access expects a name";
+pub const ERR_POS_ARG_AFTER_NAMED: &str = "Positional arguments must come before named arguments";
+pub const ERR_FN_BODY_REQUIRED: &str = "Function literal requires a body";
+pub const ERR_PIPE_REQUIRES_CALL: &str = "Pipe expects a call on the right-hand side";

@@ -9,6 +9,7 @@
  */
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
+    ERR_FN_BODY_REQUIRED, ERR_PIPE_REQUIRES_CALL, ERR_POS_ARG_AFTER_NAMED,
     ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
     ERR_UNSUPPORTED_TYPE_EXPR,
 };
@@ -728,13 +729,18 @@ impl Program {
         let mut named_args_start = args.len();
         for (index, arg) in items.enumerate() {
             let target = args.at(index);
+            let arg_loc = arg.loc.clone();
             if self.lower_value_into_labeled(target, arg)? {
                 if named_args_start == args.len() {
                     named_args_start = index;
                 }
-            }else{
+            } else {
                 if named_args_start != args.len() {
-                    todo!("report pos arg after named")
+                    // Positional arguments after named ones break the contiguous split.
+                    return Err(CompileError::SimpleError {
+                        loc: arg_loc,
+                        s: ERR_POS_ARG_AFTER_NAMED,
+                    });
                 }
             }
         }
@@ -897,7 +903,13 @@ impl Program {
 
             let body_expr = match body_expr {
                 Some(expr) => expr,
-                None => todo!(),
+                None => {
+                    // Function literals must have a body to define their behavior.
+                    return Err(CompileError::SimpleError {
+                        loc,
+                        s: ERR_FN_BODY_REQUIRED,
+                    });
+                }
             };
             let body = p.lower_value(body_expr)?;
 
@@ -1165,6 +1177,10 @@ impl Program {
         lhs: LExpr,
         rhs: LExpr,
     ) -> CResult<Value> {
+        if op.value == "|>" {
+            return self.lower_pipe_expr(loc, lhs, rhs);
+        }
+
         if let Some(assign_op) = match op.value {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
@@ -1245,6 +1261,29 @@ impl Program {
             op: binop,
             values: (left, right),
         })
+    }
+
+    #[inline(always)]
+    fn lower_pipe_expr(&mut self, _loc: Loc, lhs: LExpr, rhs: LExpr) -> CResult<Value> {
+        let Located { loc, value } = rhs;
+        match value {
+            Expr::Postfix(open, mut items) if open.value == "(" => {
+                if items.is_empty() {
+                    return Err(CompileError::SimpleError {
+                        loc,
+                        s: ERR_PIPE_REQUIRES_CALL,
+                    });
+                }
+
+                items.insert(1, lhs);
+                let call = self.lower_call_like_expr(loc.clone(), items)?;
+                Ok(Value::Call(call))
+            }
+            _ => Err(CompileError::SimpleError {
+                loc,
+                s: ERR_PIPE_REQUIRES_CALL,
+            }),
+        }
     }
 
     pub fn lower_type_expr(&mut self, expr: LExpr) -> CResult<TExpId> {
@@ -1529,7 +1568,7 @@ mod lowering_tests {
 
     #[test]
     fn lowers_call_and_index_with_bound_names() {
-        let src = "{ let f = 1; let a = 2; f(a, 3)[a, 4]; }";
+        let src = "{ let f = 1; let a = 2; (a |> f(3))[a, 4]; }";
         let (program, ir) = lower_block(src);
 
         let statements = match program.value(ir) {
