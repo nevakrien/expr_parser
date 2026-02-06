@@ -522,6 +522,12 @@ pub enum TypeError {
         constrained: PatId,
         clash: TypeClash,
     },
+
+    /// Type definition pattern must be a type name.
+    TypeDefPatternMismatch {
+        pattern: PatId,
+        clash: TypeClash,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1532,8 +1538,11 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
 
         Value::TypeDef { pat, ty } => {
             let (p, n) = gather_pattern_constraints_and_name(ctx, pat);
-            if let Err(_clash) = ctx.force_type(p, BuiltinType::Type.into()) {
-                todo!()
+            if let Err(clash) = ctx.force_type(p, BuiltinType::Type.into()) {
+                ctx.push_error(TypeError::TypeDefPatternMismatch {
+                    pattern: pat,
+                    clash,
+                });
             }
             let t = compile_type_expr(ctx, ty);
             ctx.typedef_cluster.push((ty, t));

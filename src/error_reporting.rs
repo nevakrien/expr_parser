@@ -486,6 +486,26 @@ impl ErrorReporter {
                 self.print_report(ann_loc.file, report.finish())
             }
 
+            TypeError::TypeDefPatternMismatch { pattern, clash } => {
+                let loc = program.pattern_loc(*pattern);
+                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message("type definition name must be a type")
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(found_msg)
+                            .with_color(Color::Yellow),
+                    )
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(expected_msg)
+                            .with_color(Color::Cyan),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+
             TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
                 let loc = program.type_expr_loc(*expr);
                 let (found_msg, expected_msg) = clash_messages(program, store, *clash);
