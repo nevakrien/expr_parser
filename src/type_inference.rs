@@ -568,7 +568,49 @@ pub fn infer_global_types(
         ctx.typedef_cluster.push((*texp, t));
     }
 
-    main_solver(ctx)
+    main_solver(&mut ctx);
+    if !ctx.errors.is_empty() {
+        return Err(ctx.errors);
+    } 
+
+    for (_n, def) in program.definitions.iter() {
+        let Defined::Value(v) = def else {
+            continue;
+        };
+
+        match ctx.program.value(*v){
+            Value::Func { generics, params, output_type, body: _ } => {
+                for (i, pat) in generics.ids().enumerate() {
+                    //TODO:actually use this for typing
+                    gather_generic_constraints(&mut ctx, pat, GenId(i));
+                }
+                let inputs = params
+                    .ids()
+                    .map(|pat| gather_pattern_constraints(&mut ctx, pat))
+                    .collect::<Vec<_>>();
+
+                let output = if let Some(x) = output_type {
+                    compile_type_expr(&mut ctx, x)
+                } else {
+                    ctx.new_solved(BuiltinType::Void.into())
+                };
+                let f = ctx.new_func(FuncInfer {
+                    inputs,
+                    output,
+                    loc: *v,
+                });
+                ctx.bind_val(*v, f);
+            },
+            _ => {gather_constraints(&mut ctx,*v);}
+        };
+    }
+    main_solver(&mut ctx);
+
+    if ctx.errors.is_empty() {
+        Ok(ctx.ans)
+    } else {
+        Err(ctx.errors)
+    }
 }
 
 pub fn infer_value_internals(
@@ -581,29 +623,30 @@ pub fn infer_value_internals(
 
     let _root = gather_constraints(&mut ctx, value);
 
-    main_solver(ctx)
+    main_solver(&mut ctx);
+    if ctx.errors.is_empty() {
+        Ok(ctx.ans)
+    } else {
+        Err(ctx.errors)
+    }
 }
 
-fn main_solver<G: GlobalHandler>(mut ctx: InferState<G>) -> Result<SolvedTypes, Vec<TypeError>> {
+fn main_solver<G: GlobalHandler>(ctx:&mut InferState<G>)  {
     loop {
         let mut progress = false;
-        progress |= resolve_operator_types(&mut ctx);
-        progress |= resolve_func_types(&mut ctx);
+        progress |= resolve_operator_types(ctx);
+        progress |= resolve_func_types(ctx);
         if !progress {
             break;
         }
     }
 
     if !ctx.errors.is_empty() {
-        return Err(ctx.errors);
+        return;
     }
 
-    let types = finalize(&mut ctx);
-    if ctx.errors.is_empty() {
-        Ok(types)
-    } else {
-        Err(ctx.errors)
-    }
+    finalize(ctx);
+    
 }
 
 // ===================================
@@ -653,6 +696,9 @@ trait GlobalHandler {
 
     ///this method should not be called in something visible from infer_global_types
     fn solved_global(&self,t:TExpId)->Option<TypeId>;
+
+    ///this method should not be called in something visible from infer_global_types
+    fn global_val_type(&self,v:ValId)->Option<TypeId>;
 }
 
 impl<'a> GlobalHandler for &'a SolvedTypes {
@@ -667,8 +713,14 @@ impl<'a> GlobalHandler for &'a SolvedTypes {
         let t = self.typedef_types[&expr];
         new_solved(parent,cluster,t)
     }
+    #[inline(always)]
     fn solved_global(&self,t:TExpId)->Option<TypeId>{
         self.typedef_types.get(&t).copied()
+    }
+
+    #[inline(always)]
+    fn global_val_type(&self,v:ValId)->Option<TypeId>{
+        self.val_types.get(&v).copied()
     }
 }
 
@@ -695,6 +747,11 @@ impl GlobalHandler for () {
         debug_assert!(false,"tried getting a solved global type while solving them");
         None
     }
+
+    fn global_val_type(&self,_v:ValId)->Option<TypeId>{
+        debug_assert!(false,"tried getting a solved global type while solving them");
+        None
+    }
 }
 
 struct InferState<'a, G: GlobalHandler> {
@@ -718,8 +775,9 @@ struct InferState<'a, G: GlobalHandler> {
     func_defs: Vec<FuncInfer>,
     struct_defs: Vec<StructDef>,
 
-    //errors
+    //result
     errors: Vec<TypeError>,
+    ans:SolvedTypes
 }
 
 #[derive(Debug)]
@@ -837,6 +895,45 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             func_defs: Vec::new(),
             struct_defs: Vec::new(),
             errors: Vec::new(),
+            ans: SolvedTypes::new(),
+        }
+    }
+
+    fn map_global<G2: GlobalHandler>(self, global_types: G2) -> InferState<'a, G2> {
+        let InferState {
+            store,
+            program,
+            global_types: _,
+            val_cluster,
+            pat_cluster,
+            typedef_cluster,
+            local_types,
+            names,
+            parent,
+            cluster,
+            op_sites,
+            func_defs,
+            struct_defs,
+            errors,
+            ans,
+        } = self;
+
+        InferState {
+            store,
+            program,
+            global_types,
+            val_cluster,
+            pat_cluster,
+            typedef_cluster,
+            local_types,
+            names,
+            parent,
+            cluster,
+            op_sites,
+            func_defs,
+            struct_defs,
+            errors,
+            ans,
         }
     }
 
@@ -1344,6 +1441,23 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                     let ans = new_solved(&mut ctx.parent,&mut ctx.cluster,BuiltinType::Type.into());
                     bind_val(&mut ctx.val_cluster,v,ans);
                     ans
+                }
+                Defined::Value(v)=>{
+                    let Some(t) = ctx.global_types.global_val_type(*v) else {
+                        todo!()
+                    };
+
+                    //TODO this check is actually non exustive
+                    //we wana make sure that we add a good way to run this
+                    //would be done as some normlization function we introduce here
+                    if let TypeValue::Specialized { base: _, parts: _ } = ctx.store.type_value(t){
+                        todo!("we need to make a thing that is an instance of this")
+                    }else{
+                        let ans = new_solved(&mut ctx.parent,&mut ctx.cluster,t);
+                        bind_val(&mut ctx.val_cluster,*v,ans);
+                        ans
+                    }
+
                 }
                 _=>todo!("global name resolution / overload sets")
             }
@@ -2204,17 +2318,17 @@ fn resolve_func_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
 }
 
 #[inline(always)]
-fn finalize<G: GlobalHandler>(ctx: &mut InferState<G>) -> SolvedTypes {
-    let (val_cluster, pat_cluster, parent, cluster, errors) = (
+fn finalize<G: GlobalHandler>(ctx: &mut InferState<G>)  {
+    let (val_cluster, pat_cluster, parent, cluster, errors,ans) = (
         &ctx.val_cluster,
         &ctx.pat_cluster,
         &mut ctx.parent,
         &ctx.cluster,
         &mut ctx.errors,
+        &mut ctx.ans,
     );
 
     let mut reported = IdHashMap::default();
-    let mut ans = SolvedTypes::new();
     for (e, c) in ctx.typedef_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
@@ -2264,7 +2378,6 @@ fn finalize<G: GlobalHandler>(ctx: &mut InferState<G>) -> SolvedTypes {
             errors.push(TypeError::UnresolvedPattern { pattern: *p });
         }
     }
-    ans
 }
 
 // fn report_unresolved(ctx: &mut InferState){
@@ -2539,6 +2652,12 @@ mod type_infer_tests {
     fn calling_a_closure() {
         let mut store = TypeStore::new();
         infer_fn("f=fn()->int{(fn(x)->_{x})(2)}", &mut store).unwrap();
+    }
+
+    #[test]
+    fn calling_a_function() {
+        let mut store = TypeStore::new();
+        infer_fn("type S = struct{}; f=fn()->S S{}; g=fn()->S{f()}", &mut store).unwrap();
     }
 
     /* ------------------------------------------------------------
