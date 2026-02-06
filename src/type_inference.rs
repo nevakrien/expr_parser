@@ -619,9 +619,43 @@ pub fn infer_value_internals(
     store: &mut TypeStore,
     value: ValId,
 ) -> Result<SolvedTypes, Vec<TypeError>> {
+    let known = global_types.val_types[&value];
     let mut ctx = InferState::new(store, program, global_types);
 
-    let _root = gather_constraints(&mut ctx, value);
+    let found = gather_constraints(&mut ctx, value);
+    let known = ctx.new_solved(known);
+
+    if let Err(clash) = ctx.unify(found,known) {
+        ctx.push_error(TypeError::ValuesContradict{
+            expectation_reason: "expected value signature to match global signature (this is likely ALSO an internal bug in error reporting)",
+            site:value,
+            found:value,
+            expected_place:value,
+            clash,
+        })
+    }
+
+    main_solver(&mut ctx);
+    if ctx.errors.is_empty() {
+        Ok(ctx.ans)
+    } else {
+        Err(ctx.errors)
+    }
+}
+
+
+///this is just for tests we PURPOSFULLY ignore the global sig resolution
+fn _infer_value_hacky(
+    global_types: &SolvedTypes,
+    program: &Program,
+    store: &mut TypeStore,
+    value: ValId,
+) -> Result<SolvedTypes, Vec<TypeError>> {
+    let mut ctx = InferState::new(store, program, global_types);
+
+    gather_constraints(&mut ctx, value);
+
+
 
     main_solver(&mut ctx);
     if ctx.errors.is_empty() {
@@ -2460,7 +2494,7 @@ mod type_infer_tests {
             _ => panic!("expected function value"),
         };
 
-        let types = infer_value_internals(&globals, &program, store, body)?;
+        let types = _infer_value_hacky(&globals, &program, store, body)?;
         Ok(types.type_of(body).unwrap())
     }
 
@@ -2689,14 +2723,11 @@ mod type_infer_tests {
         let src = "f = fn(){ let x = 2; let y = x; let z = 2; }";
         let program = gather_program(src);
         let f = extract_single_fn(&program);
-        let body = match program.value(f) {
-            Value::Func { body, .. } => body,
-            _ => panic!("expected function value"),
-        };
+
 
         let mut store = TypeStore::new();
         let globals = infer_global_types(&program, &mut store).unwrap();
-        let errs = match infer_value_internals(&globals, &program, &mut store, body) {
+        let errs = match infer_value_internals(&globals, &program, &mut store, f) {
             Ok(_) => panic!("expected type errors"),
             Err(errs) => errs,
         };
@@ -2765,14 +2796,11 @@ mod type_infer_tests {
         let src = "f = fn(){ let x:float = 2:int; let y:int = 2 + x; }";
         let program = gather_program(src);
         let f = extract_single_fn(&program);
-        let body = match program.value(f) {
-            Value::Func { body, .. } => body,
-            _ => panic!("expected function value"),
-        };
+        
 
         let mut store = TypeStore::new();
         let globals = infer_global_types(&program, &mut store).unwrap();
-        let errs = match infer_value_internals(&globals, &program, &mut store, body) {
+        let errs = match infer_value_internals(&globals, &program, &mut store, f) {
             Ok(_) => panic!("expected type errors"),
             Err(errs) => errs,
         };
