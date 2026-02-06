@@ -86,7 +86,7 @@ impl fmt::Display for Token {
 // Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
     "let", "var", "const", "mut", "type", "struct", "union", "enum", "fn", "cfn", "macro", "if",
-    "else", "while", "for", "match", "return", "break", "continue", "as",
+    "else", "while", "for", "match", "return", "break", "continue", "as", "true", "false",
 ];
 
 ///greedy match
@@ -100,28 +100,6 @@ pub const OPERATORS: &[&str] = &[
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
 
-#[repr(C, align(8))]
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct Pack8(pub [u8; 8]);
-
-#[inline(always)]
-pub const fn pack8(s: &str) -> Pack8 {
-    let b = s.as_bytes();
-
-    // Too long => sentinel that can't match any ASCII keyword
-    if b.len() > 8 {
-        return Pack8([0; 8]);
-    }
-
-    let mut out = [0u8; 8];
-    let mut i = 0usize;
-    while i < b.len() {
-        out[i] = b[i];
-        i += 1;
-    }
-
-    Pack8(out)
-}
 
 #[inline(always)]
 const fn match_operator(input: &str) -> Option<&'static str> {
@@ -231,6 +209,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"type" => Some("type"),
             b"else" => Some("else"),
             b"enum" => Some("enum"),
+            b"true" => Some("true"),
             _ => None,
         },
 
@@ -241,6 +220,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"union" => Some("union"),
             b"macro" => Some("macro"),
             b"break" => Some("break"),
+            b"false" => Some("false"),
 
             _ => None,
         },
@@ -1033,6 +1013,14 @@ impl<'a> Parser<'a> {
                 //its actually slower hence why we do this
                 let op_s = tok.with(op);
 
+                if op == "true" || op == "false" {
+                    let tok = self.next_token()?.unwrap();
+                    return Ok(Some(Located {
+                        loc: self.produce_loc(start),
+                        value: Expr::Atom(tok.value),
+                    }));
+                }
+
                 // grouping / blocks
                 if op == "(" {
                     self.next_token()?.unwrap();
@@ -1411,6 +1399,20 @@ mod lex_tests {
                 "op(match)",
             ]
         );
+    }
+
+    #[test]
+    fn bool_keywords_are_operators() {
+        let src = "true false";
+        let mut lex = Parser::new(src, 0);
+
+        let t0 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t0.value, Token::Operator("true"));
+
+        let t1 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t1.value, Token::Operator("false"));
+
+        assert_eq!(lex.next_token().unwrap(), None);
     }
 
     /* =========================================
