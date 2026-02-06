@@ -352,13 +352,37 @@ impl ErrorReporter {
 
                 self.print_report(loc.file, report.finish())
             }
-            TypeError::ConstructorBaseMismatch { site, found } => {
+            TypeError::ConstructorBaseNotGlobal { site } => {
+                let loc = program.value_loc(*site);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message("constructor base must be a global type name")
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("not a global name")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::ConstructorBaseNotTypeName { site } => {
+                let loc = program.value_loc(*site);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message("constructor base must be a type name")
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("not a type")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::ConstructorBaseNotStruct { site, found } => {
                 let loc = program.value_loc(*site);
                 let found_msg = found
                     .map(|t| format!("found {}", store.get_bad_type_string(program, t)))
                     .unwrap_or_else(|| "found unknown".to_string());
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-                    .with_message("constructor base must be a struct name")
+                    .with_message("constructor base must be a struct type")
                     .with_label(
                         Label::new((loc.file, loc.range.clone()))
                             .with_message(found_msg)

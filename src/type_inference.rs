@@ -132,7 +132,6 @@ pub enum TypeValue {
     },
 
     Struct(StructId),
-    StructName(StructId),
 }
 
 impl Program {
@@ -359,7 +358,6 @@ impl TypeStore {
 
             //TODO cover cases where we do know the name
             TypeValue::Struct(s) => self.format_struct_display(program, *s),
-            TypeValue::StructName(s) => format!("\'{}\'", self.format_struct_display(program, *s)),
             TypeValue::Specialized { .. } => todo!(),
         }
     }
@@ -468,7 +466,15 @@ pub enum TypeError {
         clash: TypeClash,
     },
 
-    ConstructorBaseMismatch {
+    ConstructorBaseNotGlobal {
+        site: ValId,
+    },
+
+    ConstructorBaseNotTypeName {
+        site: ValId,
+    },
+
+    ConstructorBaseNotStruct {
         site: ValId,
         found: Option<BadTypeId>,
     },
@@ -1347,19 +1353,10 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             };
 
             match def {
-                Defined::Type(t)=>{
-                    let Some(t) = ctx.global_types.solved_global(*t) else {
-                        todo!()
-                    };
-                    match ctx.store.type_value(t){
-                        TypeValue::Struct(s)=>{
-                            let sn = ctx.store.intern(TypeValue::StructName(*s));
-                            let ans = new_solved(&mut ctx.parent,&mut ctx.cluster,sn);
-                            bind_val(&mut ctx.val_cluster,v,ans);
-                            ans
-                        },
-                        _ => todo!()
-                    }
+                Defined::Type(_t)=>{
+                    let ans = new_solved(&mut ctx.parent,&mut ctx.cluster,BuiltinType::Type.into());
+                    bind_val(&mut ctx.val_cluster,v,ans);
+                    ans
                 }
                 _=>todo!("global name resolution / overload sets")
             }
@@ -1593,20 +1590,39 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
         }
 
         Value::Construct(cons) => {
-            //no point to type modules as we go. so no call to gather
-            let base = gather_constraints(ctx, cons.base);
-            let Some(base_type) = get_base_type(&ctx.cluster, &mut ctx.parent, base) else {
-                let found = extract_bad_type(
-                    ctx.store,
-                    &mut ctx.parent,
-                    &ctx.cluster,
-                    &ctx.func_defs,
-                    base,
-                );
-                ctx.push_error(TypeError::ConstructorBaseMismatch {
-                    site: cons.base,
-                    found,
-                });
+            //we dont gather the base because we just care about the name
+
+            let Some(base_name) = try_get_name(ctx, cons.base) else {
+                ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
+                for arg in cons.args.ids() {
+                    gather_constraints(ctx, arg);
+                }
+                let ans = ctx.new_cluster();
+                ctx.bind_val(v, ans);
+                return ans;
+            };
+            let Some(def) = ctx.program.definitions.get(&base_name) else {
+                ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
+                for arg in cons.args.ids() {
+                    gather_constraints(ctx, arg);
+                }
+                let ans = ctx.new_cluster();
+                ctx.bind_val(v, ans);
+                return ans;
+            };
+
+            let Defined::Type(texp) = def else {
+                ctx.push_error(TypeError::ConstructorBaseNotTypeName { site: cons.base });
+                for arg in cons.args.ids() {
+                    gather_constraints(ctx, arg);
+                }
+                let ans = ctx.new_cluster();
+                ctx.bind_val(v, ans);
+                return ans;
+            };
+
+            let Some(base_type) = ctx.global_types.solved_global(*texp) else {
+                ctx.push_error(TypeError::UnresolvedTypeExpr { expr: *texp });
                 for arg in cons.args.ids() {
                     gather_constraints(ctx, arg);
                 }
@@ -1616,12 +1632,12 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             };
 
             let sid = match ctx.store.type_value(base_type) {
-                TypeValue::StructName(sid) => *sid,
+                TypeValue::Struct(sid) => *sid,
                 TypeValue::Specialized { base, .. } => {
                     match ctx.store.type_value(*base) {
-                        TypeValue::StructName(sid) => *sid,
+                        TypeValue::Struct(sid) => *sid,
                         _ => {
-                            ctx.push_error(TypeError::ConstructorBaseMismatch {
+                            ctx.push_error(TypeError::ConstructorBaseNotStruct {
                                 site: cons.base,
                                 found: Some(BadTypeId(*base)),
                             });
@@ -1635,7 +1651,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                     }
                 }
                 _ => {
-                    ctx.push_error(TypeError::ConstructorBaseMismatch {
+                    ctx.push_error(TypeError::ConstructorBaseNotStruct {
                         site: cons.base,
                         found: Some(BadTypeId(base_type)),
                     });
@@ -1739,6 +1755,19 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
         _ => panic!("more expressions {:?}", ctx.program.value(v)),
     }
 }
+
+///this tries to resolve specifically a from a module.
+///if what we have is a member of a struct it wont give a name
+fn try_get_name<G:GlobalHandler>(ctx: &mut InferState<G>, v: ValId)->Option<NameId>{
+    match ctx.program.value(v){
+        Value::NameRef(n)=>Some(n),
+        Value::Access { base: _, name: _, kind: _ }=>todo!{},
+        _ => {
+            None
+        }
+    }
+}
+
 
 #[inline(always)]
 fn gather_pattern_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, p: PatId) -> CId {
