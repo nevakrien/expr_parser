@@ -2,7 +2,7 @@ use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_N
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
-use crate::macros::{expand_macros_recursive, Macro};
+use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
@@ -231,8 +231,12 @@ impl Program {
         id
     }
 
-    pub fn name_string(&self,n:NameId)->&str{
+    pub fn name_string(&self, n: NameId) -> &str {
         self.str_intern.resolve(self.names_strs[n.0])
+    }
+
+    pub fn name_str_id(&self, n: NameId) -> StrId {
+        self.names_strs[n.0]
     }
 
     /// Generate a fresh unique name ID
@@ -334,13 +338,12 @@ impl Program {
             }
 
             Expr::Prefix(open, mut items) if open.value == "type" => {
-                debug_assert!(items.len()==2);
+                debug_assert!(items.len() == 2);
                 let rhs = items.pop().unwrap();
                 let lhs = items.pop().unwrap();
 
                 let name = self.get_ident_for_global(lhs)?;
-                let def = self 
-                    .with_scope(|prog| {
+                let def = self.with_scope(|prog| {
                     let v = prog.lower_type_expr(Located {
                         loc: rhs.loc,
                         value: rhs.value,
@@ -348,7 +351,7 @@ impl Program {
                     Ok(Defined::Type(v))
                 })?;
 
-                self.definitions.insert(name,def);
+                self.definitions.insert(name, def);
                 Ok(())
             }
             _ => {
@@ -400,7 +403,7 @@ impl Program {
         Ok(()) //should never get here
     }
 
-    fn get_ident_for_global(&mut self,lhs: LExpr)->CResult<NameId>{
+    fn get_ident_for_global(&mut self, lhs: LExpr) -> CResult<NameId> {
         let ans = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
@@ -412,7 +415,7 @@ impl Program {
                 {
                     if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
                         id
-                    } else  {
+                    } else {
                         let existing_loc = self.definition_loc(id);
                         let name_string = self.str_intern.resolve(name).to_string();
                         return Err(CompileError::RepeatedGlobalAssignment {
@@ -433,7 +436,6 @@ impl Program {
             }
         };
 
-
         self.set_definition_loc(ans, lhs.loc);
         self.pending_names.remove(&ans);
         Ok(ans)
@@ -447,7 +449,6 @@ impl Program {
 
         let name_id = self.get_ident_for_global(lhs)?;
 
-        
         // println!("defining {}",self.str_intern.resolve(self.names_strs[name_id.0]));
 
         let def: Defined = match rhs_value {
@@ -465,14 +466,16 @@ impl Program {
                 })?,
 
             Expr::Prefix(ref kw, _)
-                if kw.value == "struct" || kw.value == "enum" || kw.value == "union"  => self 
-                    .with_scope(|prog| {
+                if kw.value == "struct" || kw.value == "enum" || kw.value == "union" =>
+            {
+                self.with_scope(|prog| {
                     let v = prog.lower_type_expr(Located {
                         loc: rhs_loc,
                         value: rhs_value,
                     })?;
                     Ok(Defined::Type(v))
-                })?,
+                })?
+            }
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: rhs_loc,

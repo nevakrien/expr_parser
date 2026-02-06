@@ -7,9 +7,6 @@
  * - Avoid solver needing to rediscover operands
  * - Allow linear passes over IR
  */
-
-use std::ops::Index;
-
 use crate::error_messages::{
     ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
     ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
@@ -191,14 +188,12 @@ pub enum AccessKind {
     Ptr,
 }
 
-
 // /// Function parameter declaration
 // #[derive(Debug, Clone, PartialEq)]
 // pub struct Param {
 //     pub pat: IPattern,
 //     pub ty: Option<IValue>,
 // }
-
 
 /// Pure binary operations.
 ///
@@ -275,17 +270,17 @@ pub struct Call {
 }
 
 impl Call {
-    pub fn pos_args(&self)->ValueSpan {
-        ValueSpan{
-            _start:self.args._start,
-            _count:self.named_args_start,
+    pub fn pos_args(&self) -> ValueSpan {
+        ValueSpan {
+            _start: self.args._start,
+            _count: self.named_args_start,
         }
     }
 
-    pub fn named_args(&self)->ValueSpan {
-        ValueSpan{
-            _start:ValId(self.args._start.0+self.named_args_start),
-            _count:self.args._count-self.named_args_start,
+    pub fn named_args(&self) -> ValueSpan {
+        ValueSpan {
+            _start: ValId(self.args._start.0 + self.named_args_start),
+            _count: self.args._count - self.named_args_start,
         }
     }
 }
@@ -301,11 +296,11 @@ pub enum Value {
     /// Reference to a resolved name
     NameRef(NameId),
 
-    /// things like struct arguments and function name arguments 
+    /// things like struct arguments and function name arguments
     /// can be refered to by name as name=x
-    Labeled{
-        name:StrId,
-        value:ValId
+    Labeled {
+        name: StrId,
+        value: ValId,
     },
 
     /// Literal constant
@@ -517,28 +512,24 @@ impl Program {
     #[inline]
     fn lower_value_into_labeled(&mut self, target: ValId, expr: LExpr) -> CResult<bool> {
         let loc = expr.loc.clone();
-        match expr.value{
-            Expr::Bin(op, pair) if op.value=="=" =>{
-                if let Expr::Atom(Token::Ident(n))=pair.0.value{
+        match expr.value {
+            Expr::Bin(op, pair) if op.value == "=" => {
+                if let Expr::Atom(Token::Ident(n)) = pair.0.value {
                     let value = self.lower_value(pair.1)?;
                     let name = self.str_intern.intern(&n);
-                    self.set_value(target, loc, Value::Labeled{
-                        name,value
-                    });
+                    self.set_value(target, loc, Value::Labeled { name, value });
                     Ok(true)
-                }else{
-                    self.lower_value_into(target,loc.with(Expr::Bin(op,pair)))?;
+                } else {
+                    self.lower_value_into(target, loc.with(Expr::Bin(op, pair)))?;
                     Ok(false)
                 }
             }
-            _=>{
-                self.lower_value_into(target,expr)?;
+            _ => {
+                self.lower_value_into(target, expr)?;
                 Ok(false)
             }
         }
-        
     }
-
 
     fn lower_value_inner(&mut self, expr: LExpr) -> CResult<Value> {
         match expr.value {
@@ -549,18 +540,18 @@ impl Program {
                 self.lower_block_expr(expr.loc, items)
             }
 
-            Expr::Prefix(open, items) if open.value == "(" || open.value=="[" => {
-                self.lower_tuple_expr(expr.loc, items,open.value)
+            Expr::Prefix(open, items) if open.value == "(" || open.value == "[" => {
+                self.lower_tuple_expr(expr.loc, items, open.value)
             }
 
             // call: <base>(args...)
-            Expr::Postfix(open, items) if matches!(open.value,"("|"["|"{") => {
-                let call=self.lower_call_like_expr(expr.loc, items)?;
-                Ok(match open.value{
-                    "("=>Value::Call(call),
-                    "["=>Value::Index(call),
-                    "{"=>Value::Construct(call),
-                    _=>unreachable!()
+            Expr::Postfix(open, items) if matches!(open.value, "(" | "[" | "{") => {
+                let call = self.lower_call_like_expr(expr.loc, items)?;
+                Ok(match open.value {
+                    "(" => Value::Call(call),
+                    "[" => Value::Index(call),
+                    "{" => Value::Construct(call),
+                    _ => unreachable!(),
                 })
             }
 
@@ -573,7 +564,6 @@ impl Program {
                 let (lhs, rhs) = *pair;
                 self.lower_access_expr(expr.loc, op, lhs, rhs)
             }
-
 
             // let <pat> = <value>
             Expr::Prefix(open, items) if open.value == "let" => {
@@ -595,12 +585,9 @@ impl Program {
                 self.lower_while_expr(expr.loc, items)
             }
 
-            
-
             // fn (sig) body
             Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
 
-            
             //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
             Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
@@ -710,7 +697,12 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_tuple_expr(&mut self, _loc: Loc, items: Vec<LExpr>,open:&'static str) -> CResult<Value> {
+    fn lower_tuple_expr(
+        &mut self,
+        _loc: Loc,
+        items: Vec<LExpr>,
+        open: &'static str,
+    ) -> CResult<Value> {
         let parts = self.reserve_value_span(items.len());
 
         for (index, arg) in items.into_iter().enumerate() {
@@ -719,17 +711,14 @@ impl Program {
         }
 
         Ok(match open {
-            "("=> Value::Tuple(parts),
-            "["=> Value::Array(parts),
-            _=>unreachable!()
+            "(" => Value::Tuple(parts),
+            "[" => Value::Array(parts),
+            _ => unreachable!(),
         })
-
-        
     }
 
-
     #[inline(always)]
-    fn lower_call_like_expr(&mut self,_loc:Loc,  items: Vec<LExpr>) -> CResult<Call> {
+    fn lower_call_like_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Call> {
         debug_assert!(!items.is_empty(), "call expression missing base");
 
         let mut items = items.into_iter();
@@ -739,15 +728,22 @@ impl Program {
         let mut named_args_start = args.len();
         for (index, arg) in items.enumerate() {
             let target = args.at(index);
-            if self.lower_value_into_labeled(target, arg)?{
-                if named_args_start!=args.len(){
-                    todo!()
+            if self.lower_value_into_labeled(target, arg)? {
+                if named_args_start == args.len() {
+                    named_args_start = index;
                 }
-                named_args_start=index;
+            }else{
+                if named_args_start != args.len() {
+                    todo!("report pos arg after named")
+                }
             }
         }
 
-        Ok(Call { base, args,named_args_start })
+        Ok(Call {
+            base,
+            args,
+            named_args_start,
+        })
     }
 
     #[inline(always)]
@@ -944,9 +940,7 @@ impl Program {
     ) -> CResult<Value> {
         let base = self.lower_value(lhs)?;
         let name = match rhs.value {
-            Expr::Atom(Token::Ident(name)) => {
-                self.str_intern.intern(&name)
-            }
+            Expr::Atom(Token::Ident(name)) => self.str_intern.intern(&name),
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: rhs.loc,
@@ -1509,7 +1503,10 @@ mod lowering_tests {
 
     fn assert_labeled_num(program: &Program, id: ValId, name: &str, value: u64) {
         match program.value(id) {
-            Value::Labeled { name: labeled, value: val } => {
+            Value::Labeled {
+                name: labeled,
+                value: val,
+            } => {
                 assert_eq!(program.str_intern.resolve(labeled), name);
                 match program.value(val) {
                     Value::Literal(Literal::Num(num)) => assert_eq!(num, value),
@@ -1548,7 +1545,7 @@ mod lowering_tests {
             panic!("expected index expression")
         };
 
-        let Value::Call(call_call) =  program.value(index_call.base) else {
+        let Value::Call(call_call) = program.value(index_call.base) else {
             panic!("expected call base");
         };
 
@@ -1591,7 +1588,7 @@ mod lowering_tests {
         };
         assert_eq!(statements.len(), 6);
 
-        let Value::Call(call) =  program.value(statements[3]) else {
+        let Value::Call(call) = program.value(statements[3]) else {
             panic!("expected call expression");
         };
 
@@ -1605,7 +1602,7 @@ mod lowering_tests {
         }
         assert_labeled_num(&program, call_named_args[0], "a", 4);
 
-        let Value::Index(index) =  program.value(statements[4]) else {
+        let Value::Index(index) = program.value(statements[4]) else {
             panic!("expected index expression");
         };
         let index_args = index.pos_args().ids().collect::<Vec<_>>();

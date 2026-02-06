@@ -349,7 +349,7 @@ fn postfix_bp(op: &str) -> Option<u32> {
     Some(match op {
         "++" | "--" => BP_POSTFIX_INC,
         "(" | "[" => BP_CALL,
-        "{"=>BP_CONSTRUCT,
+        "{" => BP_CONSTRUCT,
         _ => return None,
     })
 }
@@ -1071,12 +1071,12 @@ impl<'a> Parser<'a> {
                     return self.parse_after_struct(start, op_s).map(Some);
                 }
 
-                if op == "let" || op == "var"  {
+                if op == "let" || op == "var" {
                     self.next_token()?.unwrap();
                     return self.parse_after_let(start, op_s).map(Some);
                 }
 
-                if op=="type"{
+                if op == "type" {
                     self.next_token()?.unwrap();
                     return self.parse_after_type(start, op_s).map(Some);
                 }
@@ -1177,7 +1177,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_if(&mut self, start: usize, if_tok: LFixed) -> PResult<LExpr> {
-        let cond = self.consume_expr_bp(BP_CONSTRUCT+1)?;
+        let cond = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
         let then_expr = self.consume_stmt()?;
 
         let mut args = vec![cond, then_expr];
@@ -1195,7 +1195,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_while(&mut self, start: usize, w: LFixed) -> PResult<LExpr> {
-        let cond = self.consume_expr_bp(BP_CONSTRUCT+1)?;
+        let cond = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
         let body = self.consume_stmt()?;
 
         let loc = self.produce_loc(start);
@@ -1207,7 +1207,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_match(&mut self, start: usize, m: LFixed) -> PResult<LExpr> {
-        let subject = self.consume_expr_bp(BP_CONSTRUCT+1)?;
+        let subject = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
         let open = self.expect_operator("{")?;
         let mut args = vec![subject];
 
@@ -1264,7 +1264,7 @@ impl<'a> Parser<'a> {
         };
 
         if let Some(arrow) = self.try_operator("->")? {
-            let output = self.consume_expr_bp(BP_CONSTRUCT+1)?;
+            let output = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
             sig = Located {
                 loc: self.produce_loc(paren_start),
                 value: Expr::Bin(arrow, Box::new((sig, output))),

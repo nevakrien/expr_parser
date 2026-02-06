@@ -119,16 +119,19 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report =
-                    Report::build(ReportKind::Error, primary.file, primary.range.start)
-                        .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
-                            format!("Unresolved name '{name}'")
-                        } else {
-                            format!(
+                let mut report = Report::build(
+                    ReportKind::Error,
+                    primary.file,
+                    primary.range.start,
+                )
+                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                    format!("Unresolved name '{name}'")
+                } else {
+                    format!(
                         "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
                         locs.len()
                     )
-                        });
+                });
 
                 for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
@@ -174,7 +177,7 @@ impl ErrorReporter {
             }
             CompileError::RepeatedGlobalAssignment {
                 name,
-                existing:Some(existing),
+                existing: Some(existing),
                 new,
             } => {
                 let report = Report::build(ReportKind::Error, new.file, new.range.start)
@@ -195,7 +198,7 @@ impl ErrorReporter {
 
             CompileError::RepeatedGlobalAssignment {
                 name,
-                existing:None,
+                existing: None,
                 new,
             } => {
                 let report = Report::build(ReportKind::Error, new.file, new.range.start)
@@ -208,7 +211,6 @@ impl ErrorReporter {
 
                 self.print_report(new.file, report.finish())
             }
-
 
             CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
         }
@@ -243,13 +245,13 @@ impl ErrorReporter {
 
                 self.print_report(loc.file, report.finish())
             }
-            TypeError::UnresolvedTypeExpr { expr} => {
+            TypeError::UnresolvedTypeExpr { expr } => {
                 let loc = program.type_expr_loc(*expr);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("could not infer state type");
-                    
+
                 self.print_report(loc.file, report.finish())
-            } 
+            }
             TypeError::ExpectedTypeExpr { type_expr } => {
                 let loc = program.type_expr_loc(*type_expr);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
@@ -343,7 +345,7 @@ impl ErrorReporter {
                     );
 
                 self.print_report(ann_loc.file, report.finish())
-            },
+            }
 
             TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
                 let loc = program.type_expr_loc(*expr);
@@ -356,24 +358,17 @@ impl ErrorReporter {
                     ))
                     .with_label(
                         Label::new((loc.file, loc.range.clone()))
-                            .with_message(format!(
-                                "{} (this type was infered as)",
-                                found_msg
-                            ))
+                            .with_message(format!("{} (this type was infered as)", found_msg))
                             .with_color(Color::Red),
                     )
                     .with_label(
                         Label::new((loc.file, loc.range.clone()))
-                            .with_message(format!(
-                                "{} but was defined as",
-                                expected_msg
-                            ))
+                            .with_message(format!("{} but was defined as", expected_msg))
                             .with_color(Color::Cyan),
                     );
 
                 self.print_report(loc.file, report.finish())
             }
-
         }
     }
 }
