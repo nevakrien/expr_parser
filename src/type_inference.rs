@@ -120,14 +120,13 @@ pub enum TypeValue {
         ret: TypeId,
     },
     Ptr(TypeId),
-    Type, //meta programing
     WithGenerics {
         count: usize,
         ///note that the body can refer to external generics
         body: TypeId,
     },
     Generic(GenId),
-    Specnlized {
+    Specialized {
         base: TypeId,
         parts: Vec<TypeId>,
     },
@@ -281,13 +280,13 @@ impl TypeStore {
     }
 
     #[inline(always)]
-    pub fn get_bad_type_string(&self, t: BadTypeId) -> String {
-        self.get_type_string(t.0)
+    pub fn get_bad_type_string(&self, program: &Program, t: BadTypeId) -> String {
+        self.get_type_string(program, t.0)
     }
-    pub fn get_type_string(&self, t: TypeId) -> String {
-        self.get_type_string_nested(t, 0)
+    pub fn get_type_string(&self, program: &Program, t: TypeId) -> String {
+        self.get_type_string_nested(program, t, 0)
     }
-    pub fn get_type_string_nested(&self, t: TypeId, gen_count: usize) -> String {
+    pub fn get_type_string_nested(&self, program: &Program, t: TypeId, gen_count: usize) -> String {
         if t == UNKNOWN_TYPE {
             return "_".to_string();
         }
@@ -324,7 +323,7 @@ impl TypeStore {
             TypeValue::Tuple(items) => {
                 let inner = items
                     .iter()
-                    .map(|id| self.get_type_string_nested(*id, gen_count))
+                    .map(|id| self.get_type_string_nested(program, *id, gen_count))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("({})", inner)
@@ -332,17 +331,19 @@ impl TypeStore {
             TypeValue::Func { params, ret } => {
                 let params = params
                     .iter()
-                    .map(|id| self.get_type_string_nested(*id, gen_count))
+                    .map(|id| self.get_type_string_nested(program, *id, gen_count))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
                     "fn({}) -> {}",
                     params,
-                    self.get_type_string_nested(*ret, gen_count)
+                    self.get_type_string_nested(program, *ret, gen_count)
                 )
             }
-            TypeValue::Ptr(inner) => format!("*{}", self.get_type_string_nested(*inner, gen_count)),
-            TypeValue::Type => "Type".to_string(),
+            TypeValue::Ptr(inner) => {
+                format!("*{}", self.get_type_string_nested(program, *inner, gen_count))
+            }
+            // TypeValue::Type => "Type".to_string(),
             TypeValue::WithGenerics { count, body } => {
                 let new_count = gen_count + count;
                 let pars = (gen_count..new_count)
@@ -351,17 +352,40 @@ impl TypeStore {
                     .join(", ");
                 format!(
                     "for<{pars}> {}",
-                    self.get_type_string_nested(*body, new_count)
+                    self.get_type_string_nested(program, *body, new_count)
                 )
             }
             TypeValue::Generic(g) => format!("T{}", g.0),
 
             //TODO cover cases where we do know the name
-            TypeValue::Struct(s) => format!("UnamedStruct({})", s.0),
-            TypeValue::StructName(s) => format!("\'UnamedStruct({})\'", s.0),
-            TypeValue::Specnlized { .. } => todo!(),
+            TypeValue::Struct(s) => self.format_struct_display(program, *s),
+            TypeValue::StructName(s) => format!("\'{}\'", self.format_struct_display(program, *s)),
+            TypeValue::Specialized { .. } => todo!(),
         }
     }
+
+    fn format_struct_display(&self, program: &Program, sid: StructId) -> String {
+        let base = match self.struct_value(sid).name {
+            Some(name) => program.name_string(name).to_string(),
+            None => "UnamedStruct".to_string(),
+        };
+        format!("{}{}", base, subscript_id(sid.0))
+    }
+}
+
+fn subscript_id(id: usize) -> String {
+    const SUBS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
+    if id == 0 {
+        return SUBS[0].to_string();
+    }
+    let mut digits = Vec::new();
+    let mut n = id;
+    while n > 0 {
+        digits.push(SUBS[n % 10]);
+        n /= 10;
+    }
+    digits.reverse();
+    digits.into_iter().collect()
 }
 
 pub struct SolvedTypes {
@@ -397,6 +421,10 @@ impl SolvedTypes {
 
 #[derive(Debug)]
 pub enum TypeError {
+    Simple {
+        loc: Loc,
+        message: &'static str,
+    },
     Unresolved {
         value: ValId,
     },
@@ -406,6 +434,43 @@ pub enum TypeError {
 
     UnresolvedTypeExpr {
         expr: TExpId,
+    },
+
+    UnknownField {
+        field: StrId,
+        site: ValId,
+    },
+
+    DuplicateField {
+        field: StrId,
+        site: ValId,
+    },
+
+    FieldAlreadyPositional {
+        field: StrId,
+        site: ValId,
+    },
+
+    MissingField {
+        field: NameId,
+        site: ValId,
+    },
+
+    TooManyArguments {
+        site: ValId,
+        expected: usize,
+        found: usize,
+    },
+
+    FieldTypeMismatch {
+        field: StrId,
+        value: ValId,
+        clash: TypeClash,
+    },
+
+    ConstructorBaseMismatch {
+        site: ValId,
+        found: Option<BadTypeId>,
     },
 
     TypeClashBeforeMentioned {
@@ -667,7 +732,7 @@ enum ResolveKind {
     #[allow(dead_code)]
     ExternRef(NameId),
 
-    // Specnlized(SpecilizeId),
+    // Specialized(SpecilizeId),
     ///the val is the last entity easily considered a lit like (2+1+3) in (let y = let x = 2+1+3)
     ///these lits can be used for error reporting
     IntLike,
@@ -696,7 +761,7 @@ struct StructDef {
 
 #[allow(dead_code)]
 #[derive(Debug)]
-struct Specilized {
+struct Specialized {
     loc: Loc,
     base: CId,
     fields: Vec<CId>,
@@ -1529,67 +1594,128 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
 
         Value::Construct(cons) => {
             //no point to type modules as we go. so no call to gather
-            let b = gather_constraints(ctx, cons.base);
-            let Some(t) = get_base_type(&ctx.cluster, &mut ctx.parent, b) else {
-                todo!("emit some error on struct names having to be obvious")
+            let base = gather_constraints(ctx, cons.base);
+            let Some(base_type) = get_base_type(&ctx.cluster, &mut ctx.parent, base) else {
+                let found = extract_bad_type(
+                    ctx.store,
+                    &mut ctx.parent,
+                    &ctx.cluster,
+                    &ctx.func_defs,
+                    base,
+                );
+                ctx.push_error(TypeError::ConstructorBaseMismatch {
+                    site: cons.base,
+                    found,
+                });
+                for arg in cons.args.ids() {
+                    gather_constraints(ctx, arg);
+                }
+                let ans = ctx.new_cluster();
+                ctx.bind_val(v, ans);
+                return ans;
             };
-            let TypeValue::StructName(sid) = ctx.store.type_value(t) else {
-                todo!("emit some error on mismatch");
+
+            let sid = match ctx.store.type_value(base_type) {
+                TypeValue::StructName(sid) => *sid,
+                TypeValue::Specialized { base, .. } => {
+                    match ctx.store.type_value(*base) {
+                        TypeValue::StructName(sid) => *sid,
+                        _ => {
+                            ctx.push_error(TypeError::ConstructorBaseMismatch {
+                                site: cons.base,
+                                found: Some(BadTypeId(*base)),
+                            });
+                            for arg in cons.args.ids() {
+                                gather_constraints(ctx, arg);
+                            }
+                            let ans = ctx.new_cluster();
+                            ctx.bind_val(v, ans);
+                            return ans;
+                        }
+                    }
+                }
+                _ => {
+                    ctx.push_error(TypeError::ConstructorBaseMismatch {
+                        site: cons.base,
+                        found: Some(BadTypeId(base_type)),
+                    });
+                    for arg in cons.args.ids() {
+                        gather_constraints(ctx, arg);
+                    }
+                    let ans = ctx.new_cluster();
+                    ctx.bind_val(v, ans);
+                    return ans;
+                }
             };
-            let sid = *sid;
 
-            let known_len =  ctx.store.struct_value(sid).fields.len();
+            // let fields = &ctx.store.struct_value(sid).fields;
+            let expected = ctx.store.struct_value(sid).fields.len();
+            let provided = cons.args.len();
+            if provided > expected {
+                ctx.push_error(TypeError::TooManyArguments {
+                    site: v,
+                    expected,
+                    found: provided,
+                });
+            }
 
-            let mut args = Vec::with_capacity(cons.args.len().max(known_len));
-            for a in cons.pos_args().ids() {
-                args.push(gather_constraints(ctx, a))
+            let missing = CId(usize::MAX);
+            let mut args = Vec::with_capacity(expected.max(provided));
+            for (i,a) in cons.pos_args().ids().enumerate() {
+                let c = gather_constraints(ctx, a);
+                args.push(c);
+
             }
 
             //add a place for all the named args to go
-            args.extend(cons.named_args().ids().map(|_| CId(usize::MAX)));
+            args.extend(cons.named_args().ids().map(|_| missing));
+            if args.len() < expected {
+                args.resize(expected, missing);
+            }
 
             for na in cons.named_args().ids() {
                 let Value::Labeled { name, value } = ctx.program.value(na) else {
                     unreachable!()
                 };
 
-                let value_c = gather_constraints(ctx,value);
+                let value_c = gather_constraints(ctx, value);
 
-                let info = ctx.store.struct_value(sid);
-                let spot = info
-                    .fields
+                let spot = ctx.store.struct_value(sid).fields
                     .iter()
                     .enumerate()
                     .rev()
                     .find(|(_i, (n, _t))| ctx.program.name_str_id(*n) == name);
 
                 let Some((i,(_n,t))) = spot else {
-                    todo!("report some error on name not being in function")
+                    ctx.push_error(TypeError::UnknownField { field: name, site: na });
+                    continue;
                 };
 
                 if i < cons.pos_args().len() {
-                    todo!("report on i being passed as positional")
+                    ctx.push_error(TypeError::FieldAlreadyPositional { field: name, site: na });
+                    continue;
                 }
-                if args[i]!=CId(usize::MAX) {
-                    todo!("run a linear scan on pos_args to find the previous instance")
+                if args[i] != missing {
+                    ctx.push_error(TypeError::DuplicateField { field: name, site: na });
+                    continue;
                 }
 
-                args[i]=value_c;
+                args[i] = value_c;
 
-                debug_assert!(*t!=UNKNOWN_TYPE);
-                if let Err(_e) = ctx.force_type(value_c,*t) {
-                    todo!()
+                debug_assert!(*t != UNKNOWN_TYPE);
+                if let Err(clash) = ctx.force_type(value_c, *t) {
+                    ctx.push_error(TypeError::FieldTypeMismatch {
+                        field: name,
+                        value,
+                        clash,
+                    });
                 }
             }
 
-            let info = ctx.store.struct_value(sid);
-            if args.len()>info.fields.len(){
-                todo!("report to many arguments")
-            }
-
-            for (_s,c) in info.fields.iter().zip(args.iter()){
-                if *c == CId(usize::MAX) {
-                    todo!("report that the arg s is missing")
+            let fields = &ctx.store.struct_value(sid).fields;
+            for ((field, _t), c) in fields.iter().zip(args.iter()) {
+                if *c == missing {
+                    ctx.errors.push(TypeError::MissingField { field: *field, site: v });
                 }
             }
 
@@ -2017,6 +2143,16 @@ fn finalize<G: GlobalHandler>(ctx: &mut InferState<G>) -> SolvedTypes {
     }
 
     for sdef in ctx.struct_defs.iter() {
+        if ctx.store.structs[sdef.sid.0].name.is_none() {
+            if let Some((name, _)) = ctx
+                .program
+                .definitions
+                .iter()
+                .find(|(_, def)| matches!(def, Defined::Type(texp) if *texp == sdef.loc))
+            {
+                ctx.store.structs[sdef.sid.0].name = Some(*name);
+            }
+        }
         for (i, (_n, c)) in sdef.fields.iter().enumerate() {
             let root = find_root(parent, *c);
             if let ResolveKind::Solved(t) = cluster[root].state {
@@ -2308,6 +2444,12 @@ mod type_infer_tests {
             field_ty, ty,
             "recursive field should point to the struct type itself"
         );
+    }
+
+    #[test]
+    fn infer_construct() {
+        let mut store = TypeStore::new();
+        infer_fn("type S = struct{a:int,b:float,c:int} f=fn(){S{1,c=1,b=2.0}; S{1,2.1,3};}", &mut store).unwrap();
     }
 
     /* ------------------------------------------------------------

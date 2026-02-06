@@ -119,19 +119,16 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report = Report::build(
-                    ReportKind::Error,
-                    primary.file,
-                    primary.range.start,
-                )
-                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
-                    format!("Unresolved name '{name}'")
-                } else {
-                    format!(
+                let mut report =
+                    Report::build(ReportKind::Error, primary.file, primary.range.start)
+                        .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                            format!("Unresolved name '{name}'")
+                        } else {
+                            format!(
                         "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
                         locs.len()
                     )
-                });
+                        });
 
                 for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
@@ -223,6 +220,13 @@ impl ErrorReporter {
         error: &TypeError,
     ) -> io::Result<()> {
         match error {
+            TypeError::Simple { loc, message } => {
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(*message)
+                    .with_label(Label::new((loc.file, loc.range.clone())).with_message("here"));
+
+                self.print_report(loc.file, report.finish())
+            }
             TypeError::Unresolved { value } => {
                 let loc = program.value_loc(*value);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
@@ -252,6 +256,117 @@ impl ErrorReporter {
 
                 self.print_report(loc.file, report.finish())
             }
+            TypeError::UnknownField { field, site } => {
+                let loc = program.value_loc(*site);
+                let field_name = program.str_intern.resolve(*field);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!("unknown field `{}`", field_name))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("field not in struct")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::DuplicateField { field, site } => {
+                let loc = program.value_loc(*site);
+                let field_name = program.str_intern.resolve(*field);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!("field `{}` specified more than once", field_name))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("duplicate field")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::FieldAlreadyPositional { field, site } => {
+                let loc = program.value_loc(*site);
+                let field_name = program.str_intern.resolve(*field);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!(
+                        "field `{}` was already provided positionally",
+                        field_name
+                    ))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("field already set")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::MissingField { field, site } => {
+                let loc = program.value_loc(*site);
+                let field_name = program.name_string(*field);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!("missing field `{}`", field_name))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("field required")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::TooManyArguments {
+                site,
+                expected,
+                found,
+            } => {
+                let loc = program.value_loc(*site);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!(
+                        "too many arguments (expected {expected}, found {found})"
+                    ))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("extra argument")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::FieldTypeMismatch {
+                field,
+                value,
+                clash,
+            } => {
+                let loc = program.value_loc(*value);
+                let field_name = program.str_intern.resolve(*field);
+                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!("field `{}` type mismatch", field_name))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(found_msg)
+                            .with_color(Color::Yellow),
+                    )
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(expected_msg)
+                            .with_color(Color::Cyan),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
+            TypeError::ConstructorBaseMismatch { site, found } => {
+                let loc = program.value_loc(*site);
+                let found_msg = found
+                    .map(|t| format!("found {}", store.get_bad_type_string(program, t)))
+                    .unwrap_or_else(|| "found unknown".to_string());
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message("constructor base must be a struct name")
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(found_msg)
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
             TypeError::ExpectedTypeExpr { type_expr } => {
                 let loc = program.type_expr_loc(*type_expr);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
@@ -273,7 +388,7 @@ impl ErrorReporter {
                 let site_loc = program.value_loc(*site);
                 let found_loc = program.value_loc(*found);
                 let expected_loc = program.value_loc(*expected_place);
-                let (found_msg, expected_msg) = clash_messages(store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
 
                 let mut report =
                     Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
@@ -305,7 +420,7 @@ impl ErrorReporter {
             } => {
                 let ann_loc = program.value_loc(*annotation);
                 let constrained_loc = program.value_loc(*constrained);
-                let (found_msg, expected_msg) = clash_messages(store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
 
                 let report = Report::build(ReportKind::Error, ann_loc.file, ann_loc.range.start)
                     .with_message("type annotation mismatch")
@@ -329,7 +444,7 @@ impl ErrorReporter {
             } => {
                 let ann_loc = program.pattern_loc(*annotation);
                 let constrained_loc = program.pattern_loc(*constrained);
-                let (found_msg, expected_msg) = clash_messages(store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
 
                 let report = Report::build(ReportKind::Error, ann_loc.file, ann_loc.range.start)
                     .with_message("pattern annotation mismatch")
@@ -349,7 +464,7 @@ impl ErrorReporter {
 
             TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
                 let loc = program.type_expr_loc(*expr);
-                let (found_msg, expected_msg) = clash_messages(store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
 
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message(format!(
@@ -373,14 +488,14 @@ impl ErrorReporter {
     }
 }
 
-fn clash_messages(store: &TypeStore, clash: TypeClash) -> (String, String) {
-    let found = type_string(store, clash.found).unwrap_or_else(|| "unknown".to_string());
-    let wanted = type_string(store, clash.wanted).unwrap_or_else(|| "unknown".to_string());
+fn clash_messages(program: &Program, store: &TypeStore, clash: TypeClash) -> (String, String) {
+    let found = type_string(program, store, clash.found).unwrap_or_else(|| "unknown".to_string());
+    let wanted = type_string(program, store, clash.wanted).unwrap_or_else(|| "unknown".to_string());
     (format!("found {found}"), format!("expected {wanted}"))
 }
 
-fn type_string(store: &TypeStore, ty: Option<BadTypeId>) -> Option<String> {
-    ty.map(|t| store.get_bad_type_string(t))
+fn type_string(program: &Program, store: &TypeStore, ty: Option<BadTypeId>) -> Option<String> {
+    ty.map(|t| store.get_bad_type_string(program, t))
 }
 
 impl Default for ErrorReporter {
