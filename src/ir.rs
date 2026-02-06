@@ -1177,10 +1177,6 @@ impl Program {
         lhs: LExpr,
         rhs: LExpr,
     ) -> CResult<Value> {
-        if op.value == "|>" {
-            return self.lower_pipe_expr(loc, lhs, rhs);
-        }
-
         if let Some(assign_op) = match op.value {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
@@ -1242,6 +1238,10 @@ impl Program {
             "<=" => BinOp::Le,
             ">" => BinOp::Gt,
             ">=" => BinOp::Ge,
+
+            "|>"=>{
+                return self.lower_pipe_expr(loc, lhs, rhs);
+            }
 
             _ => {
                 return Err(CompileError::UnsupportedForm {
