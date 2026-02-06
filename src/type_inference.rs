@@ -715,7 +715,7 @@ struct InferState<'a, G: GlobalHandler> {
 
     //requirments
     op_sites: Vec<OpSite>,
-    func_defs: Vec<FuncDef>,
+    func_defs: Vec<FuncInfer>,
     struct_defs: Vec<StructDef>,
 
     //errors
@@ -728,7 +728,7 @@ struct Cluster {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct FuncDefId(usize);
+struct FuncInferId(usize);
 
 #[derive(Debug, Clone, Copy)]
 enum ResolveKind {
@@ -745,11 +745,11 @@ enum ResolveKind {
     ///same as intlike but for float
     FloatLike,
     ///not all functions are like this but if something is declared as a function its this
-    Func(FuncDefId),
+    Func(FuncInferId),
 }
 
 #[derive(Debug)]
-struct FuncDef {
+struct FuncInfer {
     #[allow(dead_code)]
     loc: ValId,
     inputs: Vec<CId>,
@@ -865,8 +865,8 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
         id
     }
 
-    fn new_func(&mut self, call: FuncDef) -> CId {
-        let call_id = FuncDefId(self.func_defs.len());
+    fn new_func(&mut self, call: FuncInfer) -> CId {
+        let call_id = FuncInferId(self.func_defs.len());
         self.func_defs.push(call);
         let id = self.new_cluster();
         self.cluster[id].state = ResolveKind::Func(call_id);
@@ -929,7 +929,7 @@ fn unify_clusters(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    func_defs: &mut Vec<FuncDef>,
+    func_defs: &mut Vec<FuncInfer>,
     found: CId,
     wanted: CId,
 ) -> Result<CId, TypeClash> {
@@ -971,7 +971,7 @@ fn _try_absorb(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    func_defs: &mut Vec<FuncDef>,
+    func_defs: &mut Vec<FuncInfer>,
     dst: CId,
     src: CId,
 ) -> Result<bool, TypeClash> {
@@ -1101,7 +1101,7 @@ fn force_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    func_defs: &mut Vec<FuncDef>,
+    func_defs: &mut Vec<FuncInfer>,
     target: CId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -1150,8 +1150,8 @@ fn unify_func_with_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    func_defs: &mut Vec<FuncDef>,
-    call: FuncDefId,
+    func_defs: &mut Vec<FuncInfer>,
+    call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let (params, ret) = match store.type_value(ty) {
@@ -1204,7 +1204,7 @@ fn mock_type_from_cluster(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    func_defs: &Vec<FuncDef>,
+    func_defs: &Vec<FuncInfer>,
     cid: CId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -1231,8 +1231,8 @@ fn make_func_mock_inner(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    func_defs: &Vec<FuncDef>,
-    call: FuncDefId,
+    func_defs: &Vec<FuncInfer>,
+    call: FuncInferId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
     let site = &func_defs[call.0];
@@ -1250,8 +1250,8 @@ fn make_func_mock(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    func_defs: &Vec<FuncDef>,
-    call: FuncDefId,
+    func_defs: &Vec<FuncInfer>,
+    call: FuncInferId,
 ) -> TypeId {
     let mut visiting = std::collections::HashSet::new();
     make_func_mock_inner(store, parent, cluster, func_defs, call, &mut visiting)
@@ -1261,9 +1261,9 @@ fn func_call_clash(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    func_defs: &Vec<FuncDef>,
-    dst_call: FuncDefId,
-    src_call: FuncDefId,
+    func_defs: &Vec<FuncInfer>,
+    dst_call: FuncInferId,
+    src_call: FuncInferId,
 ) -> TypeClash {
     TypeClash {
         found: Some(BadTypeId(make_func_mock(
@@ -1279,7 +1279,7 @@ fn extract_bad_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
-    func_defs: &Vec<FuncDef>,
+    func_defs: &Vec<FuncInfer>,
     cid: CId,
 ) -> Option<BadTypeId> {
     let root = find_root(parent, cid);
@@ -1543,7 +1543,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             } else {
                 ctx.new_solved(BuiltinType::Void.into())
             };
-            let f = ctx.new_func(FuncDef {
+            let f = ctx.new_func(FuncInfer {
                 inputs,
                 output,
                 loc: v,
@@ -1578,13 +1578,29 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
         Value::Call(call) => {
             if call.named_args().is_empty() {
                 //we can try derive the type of base directly
-                //this makes life SOOOO much easier for everyone
-                
-                let _base = gather_constraints(ctx,call.base);
-                let _args :Vec<_>= call.args.ids().map(|a|{
+                //this makes life SOOOO much easier than named args
+
+                let base = gather_constraints(ctx,call.base);
+                let inputs :Vec<_>= call.args.ids().map(|a|{
                     gather_constraints(ctx,a)
                 }).collect();
-                todo!("we can actually just put it into some sort of calls buffer and solve directly")
+                let output = ctx.new_cluster();
+
+
+                let found = ctx.new_func(FuncInfer{
+                    loc:v,
+                    inputs,output
+                });
+                if let Err(clash) = ctx.unify(found,base){
+                    ctx.push_error(TypeError::ValuesContradict {
+                        expectation_reason: "called function with wrong signature",
+                        site: v,
+                        found:call.base,
+                        expected_place: v,
+                        clash,
+                    });
+                }
+                output
             }else{
                 //we have to get exact function here because we need to figure out arg order
                 if let Some(_n) = try_get_name(ctx,call.base){
@@ -1599,7 +1615,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                     //we might also just have a closure being called immidiatly
                     //or maybe a function returned from somewhere
                     //if thats the case thats an error as we dont permit named args there
-                    todo!()
+                    todo!("for now this isnt a thing since we dont do member functions yet in ir.rs")
                 }   
             }
         }
@@ -2007,7 +2023,7 @@ fn unify_if_distinct(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    func_defs: &mut Vec<FuncDef>,
+    func_defs: &mut Vec<FuncInfer>,
     a: CId,
     b: CId,
 ) -> Result<bool, TypeClash> {
@@ -2142,8 +2158,8 @@ fn try_resolve_func_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
-    func_defs: &mut [FuncDef],
-    call: FuncDefId,
+    func_defs: &mut [FuncInfer],
+    call: FuncInferId,
 ) -> Option<TypeId> {
     let mut params = Vec::with_capacity(func_defs[call.0].inputs.len());
     for i in 0..func_defs[call.0].inputs.len() {
@@ -2517,6 +2533,12 @@ mod type_infer_tests {
     fn infer_construct() {
         let mut store = TypeStore::new();
         infer_fn("type S = struct{a:int,b:float,c:int} f=fn(){S{1,c=1,b=2.0}; S{1,2.1,3};}", &mut store).unwrap();
+    }
+
+    #[test]
+    fn calling_a_closure() {
+        let mut store = TypeStore::new();
+        infer_fn("f=fn()->int{(fn(x)->_{x})(2)}", &mut store).unwrap();
     }
 
     /* ------------------------------------------------------------
