@@ -1452,6 +1452,13 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             c
         }
 
+        Value::Literal(Literal::Bool(_)) => {
+            let c = ctx.new_solved(BuiltinType::Bool.into());
+
+            ctx.bind_val(v, c);
+            c
+        }
+
         Value::Literal(Literal::Void) => {
             let c = ctx.new_solved(BuiltinType::Void.into());
             ctx.bind_val(v, c);
@@ -1661,15 +1668,56 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             });
             output
         }
-        Value::While { cond: _, body: _ } => {
-            todo!()
+        Value::While { cond, body } => {
+            let cond_cluster = gather_constraints(ctx, cond);
+            if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "while condition must be bool",
+                    site: v,
+                    found: cond,
+                    expected_place: cond,
+                    clash,
+                });
+            }
+
+            let _body_cluster = gather_constraints(ctx, body);
+
+            let output = ctx.new_solved(BuiltinType::Bool.into());
+            ctx.bind_val(v, output);
+            output
         }
-        Value::If {
-            cond: _,
-            then: _,
-            els: _,
-        } => {
-            todo!()
+        Value::If { cond, then, els } => {
+            let cond_cluster = gather_constraints(ctx, cond);
+            if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "if condition must be bool",
+                    site: v,
+                    found: cond,
+                    expected_place: cond,
+                    clash,
+                });
+            }
+
+            let then_cluster = gather_constraints(ctx, then);
+
+            let output = if let Some(els) = els {
+                let else_cluster = gather_constraints(ctx, els);
+                if let Err(clash) = ctx.unify(then_cluster, else_cluster) {
+                    ctx.push_error(TypeError::ValuesContradict {
+                        expectation_reason: "if branches must have the same type",
+                        site: v,
+                        found: then,
+                        expected_place: els,
+                        clash,
+                    });
+                }
+                then_cluster
+            } else {
+                ctx.new_solved(BuiltinType::Void.into())
+            };
+
+            ctx.bind_val(v, output);
+            output
         }
         Value::Func {
             generics,
@@ -2694,6 +2742,22 @@ mod type_infer_tests {
         infer_fn("type S = struct{}; f=fn()->S S{}; g=fn()->S{f()}", &mut store).unwrap();
     }
 
+    #[test]
+    fn if_inside_while_typechecks() {
+        assert_fn_type!(
+            r#"
+            f = fn() {
+                let z = 0:int;
+                let x: bool = true;
+                while x {
+                    z = z + if x { 1 } else { 2 }
+                }
+            }
+            "#,
+            BuiltinType::Bool
+        );
+    }
+
     /* ------------------------------------------------------------
      * Error cases
      * ------------------------------------------------------------ */
@@ -2805,6 +2869,37 @@ mod type_infer_tests {
             Err(errs) => errs,
         };
         assert_eq!(errs.len(), 2);
+    }
+
+    #[test]
+    fn if_condition_must_be_bool() {
+        let mut store = TypeStore::new();
+        let errs =
+            infer_fn_body("f = fn(){ if 1 { 2 } else { 3 } }", &mut store).unwrap_err();
+        assert!(errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "if condition must be bool",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn if_branches_must_match() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(
+            "f = fn(){ if true { 1 } else { 2.0 } }",
+            &mut store,
+        )
+        .unwrap_err();
+        assert!(errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "if branches must have the same type",
+                ..
+            }
+        )));
     }
 
     //  #[test]

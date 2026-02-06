@@ -178,6 +178,7 @@ impl TypeExprSpan {
 pub enum Literal {
     Num(u64),
     Float(f64),
+    Bool(bool),
     Str(StrId),
     Void,
 }
@@ -608,6 +609,8 @@ impl Program {
             Token::Operator("(") => Value::Literal(Literal::Void),
 
             Token::Ident(name) if name == "_" => Value::Wildcard,
+            Token::Ident(name) if name == "true" => Value::Literal(Literal::Bool(true)),
+            Token::Ident(name) if name == "false" => Value::Literal(Literal::Bool(false)),
             Token::Ident(name) => {
                 let id = self.resolve_name(loc, &name)?;
                 Value::NameRef(id)
