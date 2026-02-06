@@ -1665,6 +1665,17 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                 let c = gather_constraints(ctx, a);
                 args.push(c);
 
+                let (nid,t) = ctx.store.struct_value(sid).fields[i];
+                debug_assert!(t != UNKNOWN_TYPE);
+                if let Err(clash) = ctx.force_type(c, t) {
+                    let name = ctx.program.name_str_id(nid);
+                    ctx.push_error(TypeError::FieldTypeMismatch {
+                        field: name,
+                        value:a,
+                        clash,
+                    });
+                }
+
             }
 
             //add a place for all the named args to go
