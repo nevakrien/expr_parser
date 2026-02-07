@@ -116,6 +116,7 @@ impl TryFrom<TypeId> for BuiltinType {
 pub enum TypeValue {
     Builtin(BuiltinType),
     Tuple(Vec<TypeId>),
+    Array(TypeId,usize),
     Func {
         params: Vec<TypeId>,
         ret: TypeId,
@@ -351,6 +352,9 @@ impl TypeStore {
             }
             TypeValue::Ptr(inner) => {
                 format!("*{}", self.get_type_string_nested(program, *inner, gen_count))
+            }
+            TypeValue::Array(inner,n) => {
+                format!("[{};{n}]", self.get_type_string_nested(program, *inner, gen_count))
             }
             // TypeValue::Type => "Type".to_string(),
             TypeValue::WithGenerics { count, body } => {

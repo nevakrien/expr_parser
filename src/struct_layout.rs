@@ -232,6 +232,11 @@ impl<'a> LayoutComputer<'a> {
                     size: layout.size,
                     align: layout.align,
                 })
+            },
+            TypeValue::Array(t, n) => {
+                let mut base = self.layout_type_inner(*t,field)?;
+                base.size*=n;
+                Ok(base)
             }
         }
     }
