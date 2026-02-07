@@ -1,0 +1,442 @@
+use crate::ir::NameId;
+use crate::program::Program;
+use crate::type_inference::{
+    BuiltinType, StructId, TypeId, TypeStore, TypeValue, UNKNOWN_FLOAT_SIZE, UNKNOWN_INT_SIZE,
+    UNKNOWN_TYPE,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    pub size: usize,
+    pub align: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldLayout {
+    pub name: NameId,
+    pub offset: usize,
+    pub layout: Layout,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructLayout {
+    pub size: usize,
+    pub align: usize,
+    pub fields: Vec<FieldLayout>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TargetLayout {
+    pub pointer_size: usize,
+    pub pointer_align: usize,
+    pub int_size: usize,
+    pub int_align: usize,
+    pub uint_size: usize,
+    pub uint_align: usize,
+    pub str_size: usize,
+    pub str_align: usize,
+    pub fn_ptr_size: usize,
+    pub fn_ptr_align: usize,
+}
+
+impl TargetLayout {
+    pub fn native() -> Self {
+        let pointer_size = std::mem::size_of::<usize>();
+        let pointer_align = std::mem::align_of::<usize>();
+        let int_size = pointer_size;
+        let int_align = pointer_align;
+        let uint_size = pointer_size;
+        let uint_align = pointer_align;
+        let str_size = pointer_size * 2;
+        let str_align = pointer_align;
+        let fn_ptr_size = pointer_size;
+        let fn_ptr_align = pointer_align;
+
+        Self {
+            pointer_size,
+            pointer_align,
+            int_size,
+            int_align,
+            uint_size,
+            uint_align,
+            str_size,
+            str_align,
+            fn_ptr_size,
+            fn_ptr_align,
+        }
+    }
+
+    pub fn for_pointer_width(pointer_bits: usize) -> Option<Self> {
+        let pointer_size = match pointer_bits {
+            16 => 2,
+            32 => 4,
+            64 => 8,
+            128 => 16,
+            _ => return None,
+        };
+        let pointer_align = pointer_size;
+        let int_size = pointer_size;
+        let int_align = pointer_align;
+        let uint_size = pointer_size;
+        let uint_align = pointer_align;
+        let str_size = pointer_size * 2;
+        let str_align = pointer_align;
+        let fn_ptr_size = pointer_size;
+        let fn_ptr_align = pointer_align;
+
+        Some(Self {
+            pointer_size,
+            pointer_align,
+            int_size,
+            int_align,
+            uint_size,
+            uint_align,
+            str_size,
+            str_align,
+            fn_ptr_size,
+            fn_ptr_align,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum LayoutError {
+    RecursiveStruct {
+        struct_id: StructId,
+        field: Option<NameId>,
+        cycle: Vec<StructId>,
+    },
+    UnsupportedType {
+        type_id: TypeId,
+    },
+    UnknownType {
+        type_id: TypeId,
+    },
+}
+
+impl LayoutError {
+    pub fn message(&self, program: &Program, store: &TypeStore) -> String {
+        match self {
+            LayoutError::RecursiveStruct {
+                struct_id,
+                field,
+                cycle,
+            } => {
+                let struct_name = struct_label(program, store, *struct_id);
+                let field_label = field
+                    .map(|name| format!(" via field `{}`", program.name_string(name)))
+                    .unwrap_or_default();
+                let cycle_label = if cycle.is_empty() {
+                    String::new()
+                } else {
+                    let path = cycle
+                        .iter()
+                        .map(|sid| struct_label(program, store, *sid))
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    format!(" (cycle: {path})")
+                };
+
+                format!("recursive struct layout for `{struct_name}`{field_label}{cycle_label}")
+            }
+            LayoutError::UnsupportedType { type_id } => {
+                let ty = store.get_type_string(program, *type_id);
+                format!("cannot compute layout for unsupported type `{ty}`")
+            }
+            LayoutError::UnknownType { type_id } => {
+                if *type_id == UNKNOWN_TYPE {
+                    "cannot compute layout for unknown type".to_string()
+                } else if *type_id == UNKNOWN_INT_SIZE {
+                    "cannot compute layout for unknown int size".to_string()
+                } else if *type_id == UNKNOWN_FLOAT_SIZE {
+                    "cannot compute layout for unknown float size".to_string()
+                } else {
+                    "cannot compute layout for unknown type".to_string()
+                }
+            }
+        }
+    }
+}
+
+pub fn layout_type(
+    store: &TypeStore,
+    target: TargetLayout,
+    type_id: TypeId,
+) -> Result<Layout, LayoutError> {
+    LayoutComputer::new(store, target).layout_type(type_id)
+}
+
+pub fn layout_struct(
+    store: &TypeStore,
+    target: TargetLayout,
+    struct_id: StructId,
+) -> Result<StructLayout, LayoutError> {
+    LayoutComputer::new(store, target).layout_struct(struct_id)
+}
+
+struct LayoutComputer<'a> {
+    store: &'a TypeStore,
+    target: TargetLayout,
+    cache: Vec<Option<StructLayout>>,
+    visiting: Vec<StructId>,
+}
+
+impl<'a> LayoutComputer<'a> {
+    fn new(store: &'a TypeStore, target: TargetLayout) -> Self {
+        let cache = vec![None; store.structs.len()];
+        Self {
+            store,
+            target,
+            cache,
+            visiting: Vec::new(),
+        }
+    }
+
+    fn layout_type(&mut self, type_id: TypeId) -> Result<Layout, LayoutError> {
+        self.layout_type_inner(type_id, None)
+    }
+
+    fn layout_type_inner(
+        &mut self,
+        type_id: TypeId,
+        field: Option<NameId>,
+    ) -> Result<Layout, LayoutError> {
+        if type_id == UNKNOWN_TYPE || type_id == UNKNOWN_INT_SIZE || type_id == UNKNOWN_FLOAT_SIZE {
+            return Err(LayoutError::UnknownType { type_id });
+        }
+
+        match self.store.type_value(type_id) {
+            TypeValue::Builtin(builtin) => self.layout_builtin(*builtin),
+            TypeValue::Tuple(items) => self.layout_tuple(items),
+            TypeValue::Func { .. } => Ok(Layout {
+                size: self.target.fn_ptr_size,
+                align: self.target.fn_ptr_align,
+            }),
+            TypeValue::Ptr(_) => Ok(Layout {
+                size: self.target.pointer_size,
+                align: self.target.pointer_align,
+            }),
+            TypeValue::WithGenerics { .. }
+            | TypeValue::Generic(_)
+            | TypeValue::Specialized { .. } => Err(LayoutError::UnsupportedType { type_id }),
+            TypeValue::Struct(sid) => {
+                if self.visiting.contains(sid) {
+                    return Err(LayoutError::RecursiveStruct {
+                        struct_id: *sid,
+                        field,
+                        cycle: self.cycle_path(*sid),
+                    });
+                }
+                let layout = self.layout_struct(*sid)?;
+                Ok(Layout {
+                    size: layout.size,
+                    align: layout.align,
+                })
+            }
+        }
+    }
+
+    fn layout_struct(&mut self, struct_id: StructId) -> Result<StructLayout, LayoutError> {
+        if let Some(existing) = self.cache[struct_id.0].as_ref() {
+            return Ok(existing.clone());
+        }
+        if self.visiting.contains(&struct_id) {
+            return Err(LayoutError::RecursiveStruct {
+                struct_id,
+                field: None,
+                cycle: self.cycle_path(struct_id),
+            });
+        }
+
+        self.visiting.push(struct_id);
+        let rep = self.store.struct_value(struct_id);
+        let mut offset = 0usize;
+        let mut align = 1usize;
+        let mut fields_layout = Vec::with_capacity(rep.fields.len());
+
+        for (name, type_id) in rep.fields.iter() {
+            let field_layout = self.layout_type_inner(*type_id, Some(*name))?;
+            offset = align_up(offset, field_layout.align);
+            fields_layout.push(FieldLayout {
+                name: *name,
+                offset,
+                layout: field_layout,
+            });
+            offset = offset.saturating_add(field_layout.size);
+            align = align.max(field_layout.align);
+        }
+
+        let size = align_up(offset, align);
+        let layout = StructLayout {
+            size,
+            align,
+            fields: fields_layout,
+        };
+        self.visiting.pop();
+        self.cache[struct_id.0] = Some(layout.clone());
+        Ok(layout)
+    }
+
+    fn layout_tuple(&mut self, items: &[TypeId]) -> Result<Layout, LayoutError> {
+        let mut offset = 0usize;
+        let mut align = 1usize;
+        for item in items.iter().copied() {
+            let item_layout = self.layout_type_inner(item, None)?;
+            offset = align_up(offset, item_layout.align);
+            offset = offset.saturating_add(item_layout.size);
+            align = align.max(item_layout.align);
+        }
+        Ok(Layout {
+            size: align_up(offset, align),
+            align,
+        })
+    }
+
+    fn layout_builtin(&self, builtin: BuiltinType) -> Result<Layout, LayoutError> {
+        let layout = match builtin {
+            BuiltinType::Int => Layout {
+                size: self.target.int_size,
+                align: self.target.int_align,
+            },
+            BuiltinType::Uint => Layout {
+                size: self.target.uint_size,
+                align: self.target.uint_align,
+            },
+            BuiltinType::I8 | BuiltinType::U8 | BuiltinType::Bool => Layout { size: 1, align: 1 },
+            BuiltinType::I16 | BuiltinType::U16 => Layout { size: 2, align: 2 },
+            BuiltinType::I32 | BuiltinType::U32 | BuiltinType::F32 => Layout { size: 4, align: 4 },
+            BuiltinType::I64 | BuiltinType::U64 | BuiltinType::F64 => Layout { size: 8, align: 8 },
+            BuiltinType::I128 | BuiltinType::U128 => Layout {
+                size: 16,
+                align: 16,
+            },
+            BuiltinType::Isize | BuiltinType::Usize => Layout {
+                size: self.target.pointer_size,
+                align: self.target.pointer_align,
+            },
+            BuiltinType::Str => Layout {
+                size: self.target.str_size,
+                align: self.target.str_align,
+            },
+            BuiltinType::Void => Layout { size: 0, align: 1 },
+            BuiltinType::Type => {
+                return Err(LayoutError::UnsupportedType {
+                    type_id: BuiltinType::Type.into(),
+                })
+            }
+        };
+        Ok(layout)
+    }
+
+    fn cycle_path(&self, struct_id: StructId) -> Vec<StructId> {
+        if let Some(pos) = self.visiting.iter().position(|sid| *sid == struct_id) {
+            let mut path = self.visiting[pos..].to_vec();
+            path.push(struct_id);
+            path
+        } else {
+            vec![struct_id]
+        }
+    }
+}
+
+fn struct_label(program: &Program, store: &TypeStore, sid: StructId) -> String {
+    match store.struct_value(sid).name {
+        Some(name) => program.name_string(name).to_string(),
+        None => format!("struct#{}", sid.0),
+    }
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align <= 1 {
+        return value;
+    }
+    let mask = align - 1;
+    (value + mask) & !mask
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::program::Program;
+    use crate::type_inference::{StructRep, TypeStore, TypeValue};
+
+    fn name(program: &mut Program, text: &str) -> NameId {
+        let id = program.str_intern.intern(text);
+        program.insert_value_in_global_scope(id)
+    }
+
+    #[test]
+    fn layout_cycle_multi_element() {
+        let mut program = Program::new();
+        let mut store = TypeStore::new();
+
+        let a_b = name(&mut program, "b");
+        let a_x = name(&mut program, "x");
+        let b_c = name(&mut program, "c");
+        let c_a = name(&mut program, "a");
+
+        let (a_sid, a_tid) = store.new_struct(StructRep::with_fields(
+            None,
+            vec![(a_b, UNKNOWN_TYPE), (a_x, UNKNOWN_TYPE)],
+        ));
+        let (b_sid, b_tid) =
+            store.new_struct(StructRep::with_fields(None, vec![(b_c, UNKNOWN_TYPE)]));
+        let (c_sid, c_tid) =
+            store.new_struct(StructRep::with_fields(None, vec![(c_a, UNKNOWN_TYPE)]));
+
+        store.set_struct_fields(a_sid, vec![(a_b, b_tid), (a_x, BuiltinType::Int.into())]);
+        store.set_struct_fields(b_sid, vec![(b_c, c_tid)]);
+        store.set_struct_fields(c_sid, vec![(c_a, a_tid)]);
+
+        let target = TargetLayout::for_pointer_width(64).unwrap();
+        let err = layout_struct(&store, target, a_sid).unwrap_err();
+        match err {
+            LayoutError::RecursiveStruct {
+                struct_id,
+                field,
+                cycle,
+            } => {
+                assert_eq!(struct_id, a_sid);
+                assert_eq!(field, Some(c_a));
+                assert!(cycle.iter().any(|sid| *sid == a_sid));
+                assert!(cycle.iter().any(|sid| *sid == b_sid));
+                assert!(cycle.iter().any(|sid| *sid == c_sid));
+                assert!(cycle.len() >= 3);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layout_pointer_cycle_allowed() {
+        let mut program = Program::new();
+        let mut store = TypeStore::new();
+
+        let next = name(&mut program, "next");
+        let (a_sid, a_tid) =
+            store.new_struct(StructRep::with_fields(None, vec![(next, UNKNOWN_TYPE)]));
+
+        let ptr_a = store.intern(TypeValue::Ptr(a_tid));
+        store.set_struct_fields(a_sid, vec![(next, ptr_a)]);
+
+        let target = TargetLayout::for_pointer_width(64).unwrap();
+        let layout = layout_struct(&store, target, a_sid).unwrap();
+        assert_eq!(layout.size, 8);
+        assert_eq!(layout.align, 8);
+        assert_eq!(layout.fields.len(), 1);
+        assert_eq!(layout.fields[0].offset, 0);
+        assert_eq!(layout.fields[0].layout.size, 8);
+    }
+
+    #[test]
+    fn layout_zero_size_struct() {
+        let mut store = TypeStore::new();
+        let (sid, _tid) = store.new_struct(StructRep::with_fields(None, Vec::new()));
+
+        let target = TargetLayout::for_pointer_width(64).unwrap();
+        let layout = layout_struct(&store, target, sid).unwrap();
+        assert_eq!(layout.size, 0);
+        assert_eq!(layout.align, 1);
+        assert!(layout.fields.is_empty());
+    }
+}

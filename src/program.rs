@@ -1,3 +1,4 @@
+use crate::ir::VarKind;
 use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
@@ -138,7 +139,7 @@ impl Program {
     pub fn reserve_pattern_span(&mut self, count: usize) -> PatternSpan {
         let start = PatId(self.patterns.len());
         for _ in 0..count {
-            self.patterns.push(Pattern::Wildcard);
+            self.patterns.push(Pattern::Wildcard(VarKind::Const));
             self.pattern_locs.push(Self::placeholder_loc());
         }
         PatternSpan::new(start, count)

@@ -426,6 +426,12 @@ pub enum Value {
     MatchArm(MatchArm),
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum VarKind {
+    Mut,
+    Const,
+}
+
 /// Patterns used for:
 /// - Pattern matching (match expressions, function parameters)
 /// - Type annotations (e.g., Option[Result[T, E]])
@@ -436,9 +442,9 @@ pub enum Value {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Pattern {
     /// Bind a value to a name (variable binding)
-    Bind(NameId),
+    Bind(NameId,VarKind),
     /// Wildcard pattern that matches anything (_)
-    Wildcard,
+    Wildcard(VarKind),
     /// Tuple pattern with multiple sub-patterns
     Tuple(PatternSpan),
     /// Literal value pattern
@@ -569,7 +575,10 @@ impl Program {
 
             // let <pat> = <value>
             Expr::Prefix(open, items) if open.value == "let" => {
-                self.lower_let_expr(expr.loc, items)
+                self.lower_let_expr(expr.loc, items,VarKind::Const)
+            }
+            Expr::Prefix(open, items) if open.value == "var" => {
+                self.lower_let_expr(expr.loc, items,VarKind::Mut)
             }
 
             Expr::Prefix(open, items) if open.value == "type" => {
@@ -664,7 +673,7 @@ impl Program {
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
 
-        let pat = self.lower_pattern(pat_expr)?;
+        let pat = self.lower_pattern(pat_expr,VarKind::Const)?;
         let ty = self.lower_type_expr(value_expr)?;
 
         let _ = loc;
@@ -673,7 +682,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>,m:VarKind) -> CResult<Value> {
         debug_assert!(2 <= items.len() && items.len() <= 3);
 
         let else_exp = if items.len() == 3 { items.pop() } else { None };
@@ -682,7 +691,7 @@ impl Program {
         let pat_expr = items.pop().unwrap();
 
         let value = self.lower_value(value_expr)?;
-        let pat = self.lower_pattern(pat_expr)?;
+        let pat = self.lower_pattern(pat_expr,m)?;
 
         let else_part = if let Some(exp) = else_exp {
             let v = self.with_scope(|prog| prog.lower_value(exp))?;
@@ -885,7 +894,7 @@ impl Program {
                     let ans = p.reserve_pattern_span(items.len());
                     for (index, expr) in items.into_iter().enumerate() {
                         let target = ans.at(index);
-                        p.lower_pattern_into(target, expr)?;
+                        p.lower_pattern_into(target, expr,VarKind::Const)?;
                     }
                     ans
                 }
@@ -896,7 +905,7 @@ impl Program {
             for (index, param) in param_items.into_iter().enumerate() {
                 //TODO support type anotation
                 let target = params_span.at(index);
-                p.lower_pattern_into(target, param)?;
+                p.lower_pattern_into(target, param,VarKind::Const)?;
             }
 
             let output_type = match ret_expr {
@@ -975,34 +984,34 @@ impl Program {
         Ok(Value::Access { base, name, kind })
     }
 
-    pub fn lower_pattern(&mut self, expr: LExpr) -> CResult<PatId> {
+    pub fn lower_pattern(&mut self, expr: LExpr,m:VarKind) -> CResult<PatId> {
         let loc = expr.loc.clone();
-        let pattern = self.lower_pattern_inner(expr)?;
+        let pattern = self.lower_pattern_inner(expr,m)?;
         Ok(self.id_pattern(loc, pattern))
     }
 
-    fn lower_pattern_into(&mut self, target: PatId, expr: LExpr) -> CResult<PatId> {
+    fn lower_pattern_into(&mut self, target: PatId, expr: LExpr,m:VarKind) -> CResult<PatId> {
         let loc = expr.loc.clone();
-        let pattern = self.lower_pattern_inner(expr)?;
+        let pattern = self.lower_pattern_inner(expr,m)?;
         self.set_pattern(target, loc, pattern);
         Ok(target)
     }
 
-    fn lower_pattern_inner(&mut self, expr: LExpr) -> CResult<Pattern> {
+    fn lower_pattern_inner(&mut self, expr: LExpr,m:VarKind) -> CResult<Pattern> {
         let loc = expr.loc.clone();
         match expr.value {
-            Expr::Atom(Token::Ident(name)) if name == "_" => Ok(Pattern::Wildcard),
+            Expr::Atom(Token::Ident(name)) if name == "_" => Ok(Pattern::Wildcard(m)),
 
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
                 let id = self.insert_value_in_current_scope(name);
-                Ok(Pattern::Bind(id))
+                Ok(Pattern::Bind(id,m))
             }
 
             // Pattern with type annotation: x:T
             Expr::Bin(op, pair) if op.value == ":" => {
                 let (pat_expr, ty_expr) = *pair;
-                let pat = self.lower_pattern(pat_expr)?;
+                let pat = self.lower_pattern(pat_expr,m)?;
                 let ty = self.lower_type_expr(ty_expr)?;
 
                 // Create a type annotation pattern
@@ -1017,11 +1026,18 @@ impl Program {
                 message: ERR_UNSUPPORTED_PATTERN,
             }),
 
+            Expr::Prefix(open, mut items) if open.value == "mut" =>{
+                self.lower_pattern_inner(items.pop().unwrap(),VarKind::Mut)
+            }
+            Expr::Prefix(open, mut items) if open.value == "const" =>{
+                self.lower_pattern_inner(items.pop().unwrap(),VarKind::Const)
+            }
+
             Expr::Prefix(open, items) if open.value == "(" => {
                 let span = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_pattern_into(target, item)?;
+                    self.lower_pattern_into(target, item,m)?;
                 }
                 Ok(Pattern::Tuple(span))
             }
@@ -1047,7 +1063,7 @@ impl Program {
         match expr.value {
             Expr::Bin(op, pair) if op.value == "=>" => {
                 let (pat_expr, body_expr) = *pair;
-                let pat = self.lower_pattern(pat_expr)?;
+                let pat = self.lower_pattern(pat_expr,VarKind::Const)?;
                 let body = self.lower_value(body_expr)?;
                 Ok(MatchArm { pat, body })
             }
@@ -1428,7 +1444,7 @@ impl Program {
                 let span = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_pattern_into(target, item)?;
+                    self.lower_pattern_into(target, item,VarKind::Const)?;
                 }
                 span
             }
@@ -1440,7 +1456,7 @@ impl Program {
                 let span = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_pattern_into(target, item)?;
+                    self.lower_pattern_into(target, item,VarKind::Mut)?;
                 }
                 span
             }
@@ -1492,7 +1508,7 @@ mod var_scope_test {
             _ => panic!("expected outer let"),
         };
         let outer_id = match program.pattern(outer_pat) {
-            Pattern::Bind(id) => id,
+            Pattern::Bind(id, _) => id,
             _ => panic!("expected bind pattern"),
         };
         // Final name ref refers to outer
@@ -1512,7 +1528,7 @@ mod var_scope_test {
             _ => panic!("expected inner let"),
         };
         let inner_id = match program.pattern(inner_pat) {
-            Pattern::Bind(id) => id,
+            Pattern::Bind(id, _) => id,
             _ => panic!("expected bind pattern"),
         };
         let inner_ref = match program.value(inner_block[1]) {
@@ -1562,11 +1578,56 @@ mod lowering_tests {
     fn bound_id(program: &Program, stmt: ValId) -> NameId {
         match program.value(stmt) {
             Value::Let { pat, .. } => match program.pattern(pat) {
-                Pattern::Bind(id) => id,
+                Pattern::Bind(id, _) => id,
                 _ => panic!("expected bind pattern"),
             },
             _ => panic!("expected let statement"),
         }
+    }
+
+    fn tuple_bind_kinds(program: &Program, pat: PatId) -> Vec<VarKind> {
+        let Pattern::Tuple(span) = program.pattern(pat) else {
+            panic!("expected tuple pattern")
+        };
+        span.ids()
+            .map(|id| match program.pattern(id) {
+                Pattern::Bind(_, kind) => kind,
+                Pattern::Wildcard(kind) => kind,
+                other => panic!("expected bind or wildcard pattern, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tuple_pattern_mutability_is_per_binding_for_let_and_var() {
+        let src = "{ let (mut a, b, const mut c) = 2; var (const x, y, const mut z) = 3; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 2);
+
+        let let_pat = match program.value(statements[0]) {
+            Value::Let { pat, .. } => pat,
+            _ => panic!("expected let statement"),
+        };
+        let let_kinds = tuple_bind_kinds(&program, let_pat);
+        assert_eq!(
+            let_kinds,
+            vec![VarKind::Mut, VarKind::Const, VarKind::Mut]
+        );
+
+        let var_pat = match program.value(statements[1]) {
+            Value::Let { pat, .. } => pat,
+            _ => panic!("expected var statement"),
+        };
+        let var_kinds = tuple_bind_kinds(&program, var_pat);
+        assert_eq!(
+            var_kinds,
+            vec![VarKind::Const, VarKind::Mut, VarKind::Mut]
+        );
     }
 
     #[test]
@@ -1691,7 +1752,7 @@ mod lowering_tests {
             panic!("expected match arm")
         };
         match program.pattern(arm.pat) {
-            Pattern::Wildcard => {}
+            Pattern::Wildcard(_) => {}
             _ => panic!("expected wildcard pattern"),
         }
         match program.value(arm.body) {
@@ -2093,7 +2154,7 @@ mod lowering_tests {
                     Pattern::TypeAnnotation { pat: inner_pat, ty } => {
                         // The inner pattern should bind a new name 'x'
                         match program.pattern(inner_pat) {
-                            Pattern::Bind(_x_id) => {
+                            Pattern::Bind(_x_id, _) => {
                                 // Verify the value is the expected literal
                                 match program.value(value) {
                                     Value::Literal(Literal::Num(1)) => {}

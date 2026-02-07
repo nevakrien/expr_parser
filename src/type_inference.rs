@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::ir::VarKind;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::StructLike;
 use crate::ir::{AssignOp, BinOp, Literal, NameId, PatId, Pattern, TExpId, TypeExpr, ValId, Value};
@@ -178,17 +179,17 @@ impl Program {
 
 #[derive(Debug)]
 pub struct TypeStore {
-    values: Vec<TypeValue>,
-    intern: HashMap<TypeValue, TypeId>,
+    pub(crate) values: Vec<TypeValue>,
+    pub(crate) intern: HashMap<TypeValue, TypeId>,
 
-    structs: Vec<StructRep>,
+    pub(crate) structs: Vec<StructRep>,
 }
 
 ///todo add actual fields
 #[derive(Debug)]
 pub struct StructRep {
-    name: Option<NameId>,
-    fields: Vec<(NameId, TypeId)>,
+    pub name: Option<NameId>,
+    pub fields: Vec<(NameId, TypeId)>,
 }
 
 impl StructRep {
@@ -199,6 +200,10 @@ impl StructRep {
             name: None,
             fields: names.map(|x| (x, UNKNOWN_TYPE)).collect(),
         }
+    }
+
+    pub fn with_fields(name: Option<NameId>, fields: Vec<(NameId, TypeId)>) -> Self {
+        Self { name, fields }
     }
 }
 
@@ -253,6 +258,11 @@ impl TypeStore {
     #[inline(always)]
     pub fn struct_value(&self, id: StructId) -> &StructRep {
         &self.structs[id.0]
+    }
+
+    #[inline]
+    pub fn set_struct_fields(&mut self, id: StructId, fields: Vec<(NameId, TypeId)>) {
+        self.structs[id.0].fields = fields;
     }
 
     #[inline]
@@ -2027,12 +2037,12 @@ fn gather_pattern_constraints_and_name<G: GlobalHandler>(
     p: PatId,
 ) -> (CId, Option<NameId>) {
     match ctx.program.pattern(p) {
-        Pattern::Wildcard => {
+        Pattern::Wildcard(_) => {
             let c = ctx.new_cluster();
             ctx.bind_pat(p, c);
             (c, None)
         }
-        Pattern::Bind(n) => {
+        Pattern::Bind(n, _) => {
             let c = ctx.new_cluster();
             ctx.names.insert(n, c);
             ctx.bind_pat(p, c);
@@ -2069,7 +2079,10 @@ fn gather_generic_constraints<G: GlobalHandler>(
     id: GenId,
 ) -> CId {
     match ctx.program.pattern(p) {
-        Pattern::Bind(n) => {
+        Pattern::Bind(n, m) => {
+            if m!=VarKind::Const {
+                todo!()
+            }
             let t = ctx.store.intern(TypeValue::Generic(id));
             let c = ctx.new_solved(t);
             ctx.names.insert(n, c);
@@ -2117,12 +2130,12 @@ fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) -
             let mut field_info = Vec::with_capacity(fields.len());
             for p in fields.ids() {
                 match ctx.program.pattern(p) {
-                    Pattern::Bind(n) => {
+                    Pattern::Bind(n, _) => {
                         let c = ctx.new_cluster();
                         field_info.push((n, c));
                     }
                     Pattern::TypeAnnotation { pat, ty } => {
-                        let Pattern::Bind(n) = ctx.program.pattern(pat) else {
+                        let Pattern::Bind(n, _) = ctx.program.pattern(pat) else {
                             todo!()
                         };
                         let c = compile_type_expr(ctx, ty);

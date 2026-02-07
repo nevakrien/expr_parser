@@ -8,6 +8,7 @@
 - `src/macros.rs` implements unhygienic macro system with parameter substitution.
 - `src/program.rs` provides Program struct and high-level parsing with macro expansion.
 - `src/ir.rs` contains  first IR design (not full implemented yet).
+- `src/struct_layout.rs` calculates target-aware struct layouts from type info.
 - `src/string_intern.rs` implements the string interner.
 - `src/type_inference.rs` contains the type inference sketch and tests.
 - `src/lib.rs` is the library entry point.
@@ -28,4 +29,3 @@
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
-

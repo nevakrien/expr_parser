@@ -5,6 +5,7 @@ pub mod ir;
 pub mod macros;
 pub mod parsing;
 pub mod program;
+pub mod struct_layout;
 pub mod string_intern;
 pub mod type_inference;
 
