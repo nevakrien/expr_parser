@@ -1499,9 +1499,16 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                     bind_val(&mut ctx.val_cluster,v,ans);
                     ans
                 }
-                Defined::Value(v)=>{
-                    let Some(t) = ctx.global_types.global_val_type(*v) else {
-                        todo!()
+                Defined::Value(def_val)=>{
+                    let Some(t) = ctx.global_types.global_val_type(*def_val) else {
+                        let loc = ctx.program.value_loc(v);
+                        let c = ctx.new_cluster();
+                        ctx.errors.push(TypeError::Simple {
+                            loc,
+                            message: "global value has no inferred type",
+                        });
+                        ctx.bind_val(v, c);
+                        return c;
                     };
 
                     //TODO this check is actually non exustive
@@ -1511,7 +1518,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                         todo!("we need to make a thing that is an instance of this")
                     }else{
                         let ans = new_solved(&mut ctx.parent,&mut ctx.cluster,t);
-                        bind_val(&mut ctx.val_cluster,*v,ans);
+                        bind_val(&mut ctx.val_cluster,*def_val,ans);
                         ans
                     }
 
@@ -2081,7 +2088,11 @@ fn gather_generic_constraints<G: GlobalHandler>(
     match ctx.program.pattern(p) {
         Pattern::Bind(n, m) => {
             if m!=VarKind::Const {
-                todo!()
+                let loc = ctx.program.pattern_loc(p);
+                ctx.errors.push(TypeError::Simple {
+                    loc,
+                    message: "generic parameters must be const bindings",
+                });
             }
             let t = ctx.store.intern(TypeValue::Generic(id));
             let c = ctx.new_solved(t);
@@ -2123,7 +2134,9 @@ fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) -
         TypeExpr::Wildcard => ctx.new_cluster(),
 
         TypeExpr::Struct(StructLike { generics, fields }) => {
-            for _g in generics.ids() {
+            for (i,g) in generics.ids().enumerate() {
+                let gid = GenId(i);
+                let _c = gather_generic_constraints(ctx,g,gid);
                 todo!()
             }
 
@@ -2136,12 +2149,24 @@ fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) -
                     }
                     Pattern::TypeAnnotation { pat, ty } => {
                         let Pattern::Bind(n, _) = ctx.program.pattern(pat) else {
-                            todo!()
+                            let loc = ctx.program.pattern_loc(pat);
+                            ctx.errors.push(TypeError::Simple {
+                                loc,
+                                message: "struct field must be a named binding",
+                            });
+                            continue;
                         };
                         let c = compile_type_expr(ctx, ty);
                         field_info.push((n, c));
                     }
-                    _ => todo!(),
+                    _ => {
+                        let loc = ctx.program.pattern_loc(p);
+                        ctx.errors.push(TypeError::Simple {
+                            loc,
+                            message: "struct field must be a named binding",
+                        });
+                        continue;
+                    }
                 }
             }
 
@@ -2459,7 +2484,11 @@ fn finalize<G: GlobalHandler>(ctx: &mut InferState<G>)  {
             if let ResolveKind::Solved(t) = cluster[root].state {
                 ctx.store.structs[sdef.sid.0].fields[i].1 = t;
             } else if *c == root {
-                errors.push(todo!());
+                let loc = ctx.program.type_expr_loc(sdef.loc);
+                errors.push(TypeError::Simple {
+                    loc,
+                    message: "could not infer struct field type",
+                });
                 reported.insert(c, ());
             }
         }
