@@ -4,6 +4,7 @@ use crate::type_inference::{
     BuiltinType, StructId, TypeId, TypeStore, TypeValue, UNKNOWN_FLOAT_SIZE, UNKNOWN_INT_SIZE,
     UNKNOWN_TYPE,
 };
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Layout {
@@ -169,37 +170,37 @@ pub fn layout_type(
 pub fn layout_struct(
     store: &TypeStore,
     target: TargetLayout,
-    struct_id: StructId,
+    type_id: TypeId,
 ) -> Result<StructLayout, LayoutError> {
-    LayoutComputer::new(store, target).layout_struct(struct_id)
+    LayoutComputer::new(store, target).layout_struct(type_id)
 }
 
 struct LayoutComputer<'a> {
     store: &'a TypeStore,
     target: TargetLayout,
-    cache: Vec<Option<StructLayout>>,
-    visiting: Vec<StructId>,
+    cache: HashMap<TypeId, StructLayout>,
+    visiting: Vec<TypeId>,
 }
 
 impl<'a> LayoutComputer<'a> {
     fn new(store: &'a TypeStore, target: TargetLayout) -> Self {
-        let cache = vec![None; store.structs.len()];
         Self {
             store,
             target,
-            cache,
+            cache: HashMap::new(),
             visiting: Vec::new(),
         }
     }
 
     fn layout_type(&mut self, type_id: TypeId) -> Result<Layout, LayoutError> {
-        self.layout_type_inner(type_id, None)
+        self.layout_type_inner(type_id, None, &[])
     }
 
     fn layout_type_inner(
         &mut self,
         type_id: TypeId,
         field: Option<NameId>,
+        generics: &[TypeId],
     ) -> Result<Layout, LayoutError> {
         if type_id == UNKNOWN_TYPE || type_id == UNKNOWN_INT_SIZE || type_id == UNKNOWN_FLOAT_SIZE {
             return Err(LayoutError::UnknownType { type_id });
@@ -207,7 +208,7 @@ impl<'a> LayoutComputer<'a> {
 
         match self.store.type_value(type_id) {
             TypeValue::Builtin(builtin) => self.layout_builtin(*builtin),
-            TypeValue::Tuple(items) => self.layout_tuple(items),
+            TypeValue::Tuple(items) => self.layout_tuple(items, generics),
             TypeValue::Func { .. } => Ok(Layout {
                 size: self.target.fn_ptr_size,
                 align: self.target.fn_ptr_align,
@@ -216,51 +217,64 @@ impl<'a> LayoutComputer<'a> {
                 size: self.target.pointer_size,
                 align: self.target.pointer_align,
             }),
-            TypeValue::WithGenerics { .. }
-            | TypeValue::Generic(_)
-            | TypeValue::Specialized { .. } => Err(LayoutError::UnsupportedType { type_id }),
-            TypeValue::Struct(sid) => {
-                if self.visiting.contains(sid) {
-                    return Err(LayoutError::RecursiveStruct {
-                        struct_id: *sid,
-                        field,
-                        cycle: self.cycle_path(*sid),
-                    });
+            TypeValue::WithGenerics { .. } => Err(LayoutError::UnsupportedType { type_id }),
+            TypeValue::Generic(gid) => {
+                let Some(mapped) = generics.get(gid.0) else {
+                    return Err(LayoutError::UnsupportedType { type_id });
+                };
+                if *mapped == type_id {
+                    return Err(LayoutError::UnsupportedType { type_id });
                 }
-                let layout = self.layout_struct(*sid)?;
+                self.layout_type_inner(*mapped, field, generics)
+            }
+            TypeValue::Struct { .. } => {
+                let layout = self.layout_struct_with_field(type_id, field)?;
                 Ok(Layout {
                     size: layout.size,
                     align: layout.align,
                 })
-            },
+            }
             TypeValue::Array(t, n) => {
-                let mut base = self.layout_type_inner(*t,field)?;
-                base.size*=n;
+                let mut base = self.layout_type_inner(*t, field, generics)?;
+                base.size *= n;
                 Ok(base)
             }
         }
     }
 
-    fn layout_struct(&mut self, struct_id: StructId) -> Result<StructLayout, LayoutError> {
-        if let Some(existing) = self.cache[struct_id.0].as_ref() {
+    fn layout_struct(&mut self, type_id: TypeId) -> Result<StructLayout, LayoutError> {
+        self.layout_struct_with_field(type_id, None)
+    }
+
+    fn layout_struct_with_field(
+        &mut self,
+        type_id: TypeId,
+        field: Option<NameId>,
+    ) -> Result<StructLayout, LayoutError> {
+        let (struct_id, generics) = match self.store.type_value(type_id) {
+            TypeValue::Struct { id, generics } => (*id, generics.as_slice()),
+            _ => return Err(LayoutError::UnsupportedType { type_id }),
+        };
+
+        if let Some(existing) = self.cache.get(&type_id) {
             return Ok(existing.clone());
         }
-        if self.visiting.contains(&struct_id) {
+        if self.visiting.contains(&type_id) {
             return Err(LayoutError::RecursiveStruct {
                 struct_id,
-                field: None,
-                cycle: self.cycle_path(struct_id),
+                field,
+                cycle: self.cycle_path(type_id),
             });
         }
 
-        self.visiting.push(struct_id);
+        self.visiting.push(type_id);
         let rep = self.store.struct_value(struct_id);
         let mut offset = 0usize;
         let mut align = 1usize;
         let mut fields_layout = Vec::with_capacity(rep.fields.len());
 
         for (name, type_id) in rep.fields.iter() {
-            let field_layout = self.layout_type_inner(*type_id, Some(*name))?;
+            let field_layout = self.layout_type_inner(*type_id, Some(*name), generics)?;
             offset = align_up(offset, field_layout.align);
             fields_layout.push(FieldLayout {
                 name: *name,
@@ -278,15 +292,19 @@ impl<'a> LayoutComputer<'a> {
             fields: fields_layout,
         };
         self.visiting.pop();
-        self.cache[struct_id.0] = Some(layout.clone());
+        self.cache.insert(type_id, layout.clone());
         Ok(layout)
     }
 
-    fn layout_tuple(&mut self, items: &[TypeId]) -> Result<Layout, LayoutError> {
+    fn layout_tuple(
+        &mut self,
+        items: &[TypeId],
+        generics: &[TypeId],
+    ) -> Result<Layout, LayoutError> {
         let mut offset = 0usize;
         let mut align = 1usize;
         for item in items.iter().copied() {
-            let item_layout = self.layout_type_inner(item, None)?;
+            let item_layout = self.layout_type_inner(item, None, generics)?;
             offset = align_up(offset, item_layout.align);
             offset = offset.saturating_add(item_layout.size);
             align = align.max(item_layout.align);
@@ -333,9 +351,20 @@ impl<'a> LayoutComputer<'a> {
         Ok(layout)
     }
 
-    fn cycle_path(&self, struct_id: StructId) -> Vec<StructId> {
-        if let Some(pos) = self.visiting.iter().position(|sid| *sid == struct_id) {
-            let mut path = self.visiting[pos..].to_vec();
+    fn cycle_path(&self, type_id: TypeId) -> Vec<StructId> {
+        let struct_id = match self.store.type_value(type_id) {
+            TypeValue::Struct { id, .. } => *id,
+            _ => return Vec::new(),
+        };
+
+        if let Some(pos) = self.visiting.iter().position(|tid| *tid == type_id) {
+            let mut path = self.visiting[pos..]
+                .iter()
+                .filter_map(|tid| match self.store.type_value(*tid) {
+                    TypeValue::Struct { id, .. } => Some(*id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             path.push(struct_id);
             path
         } else {
@@ -363,7 +392,7 @@ fn align_up(value: usize, align: usize) -> usize {
 mod tests {
     use super::*;
     use crate::program::Program;
-    use crate::type_inference::{StructRep, TypeStore, TypeValue};
+    use crate::type_inference::{GenId, StructRep, TypeStore, TypeValue};
 
     fn name(program: &mut Program, text: &str) -> NameId {
         let id = program.str_intern.intern(text);
@@ -380,21 +409,17 @@ mod tests {
         let b_c = name(&mut program, "c");
         let c_a = name(&mut program, "a");
 
-        let (a_sid, a_tid) = store.new_struct(StructRep::with_fields(
-            None,
-            vec![(a_b, UNKNOWN_TYPE), (a_x, UNKNOWN_TYPE)],
-        ));
-        let (b_sid, b_tid) =
-            store.new_struct(StructRep::with_fields(None, vec![(b_c, UNKNOWN_TYPE)]));
-        let (c_sid, c_tid) =
-            store.new_struct(StructRep::with_fields(None, vec![(c_a, UNKNOWN_TYPE)]));
+        let (a_sid, a_tid) =
+            store.simple_struct(None, vec![(a_b, UNKNOWN_TYPE), (a_x, UNKNOWN_TYPE)]);
+        let (b_sid, b_tid) = store.simple_struct(None, vec![(b_c, UNKNOWN_TYPE)]);
+        let (c_sid, c_tid) = store.simple_struct(None, vec![(c_a, UNKNOWN_TYPE)]);
 
         store.set_struct_fields(a_sid, vec![(a_b, b_tid), (a_x, BuiltinType::Int.into())]);
         store.set_struct_fields(b_sid, vec![(b_c, c_tid)]);
         store.set_struct_fields(c_sid, vec![(c_a, a_tid)]);
 
         let target = TargetLayout::for_pointer_width(64).unwrap();
-        let err = layout_struct(&store, target, a_sid).unwrap_err();
+        let err = layout_struct(&store, target, a_tid).unwrap_err();
         match err {
             LayoutError::RecursiveStruct {
                 struct_id,
@@ -418,14 +443,13 @@ mod tests {
         let mut store = TypeStore::new();
 
         let next = name(&mut program, "next");
-        let (a_sid, a_tid) =
-            store.new_struct(StructRep::with_fields(None, vec![(next, UNKNOWN_TYPE)]));
+        let (a_sid, a_tid) = store.simple_struct(None, vec![(next, UNKNOWN_TYPE)]);
 
         let ptr_a = store.intern(TypeValue::Ptr(a_tid));
         store.set_struct_fields(a_sid, vec![(next, ptr_a)]);
 
         let target = TargetLayout::for_pointer_width(64).unwrap();
-        let layout = layout_struct(&store, target, a_sid).unwrap();
+        let layout = layout_struct(&store, target, a_tid).unwrap();
         assert_eq!(layout.size, 8);
         assert_eq!(layout.align, 8);
         assert_eq!(layout.fields.len(), 1);
@@ -436,12 +460,78 @@ mod tests {
     #[test]
     fn layout_zero_size_struct() {
         let mut store = TypeStore::new();
-        let (sid, _tid) = store.new_struct(StructRep::with_fields(None, Vec::new()));
+        let (_sid, tid) = store.simple_struct(None, Vec::new());
 
         let target = TargetLayout::for_pointer_width(64).unwrap();
-        let layout = layout_struct(&store, target, sid).unwrap();
+        let layout = layout_struct(&store, target, tid).unwrap();
         assert_eq!(layout.size, 0);
         assert_eq!(layout.align, 1);
         assert!(layout.fields.is_empty());
+    }
+
+    #[test]
+    fn layout_generic_struct_specialized() {
+        let mut program = Program::new();
+        let mut store = TypeStore::new();
+
+        let value = name(&mut program, "value");
+        let generic = store.intern(TypeValue::Generic(GenId(0)));
+        let rep = StructRep {
+            name: None,
+            fields: vec![(value, generic)],
+            gen_count: 1,
+        };
+        let sid = store.new_struct(rep);
+
+        let specialized = store.intern(TypeValue::Struct {
+            id: sid,
+            generics: vec![BuiltinType::I32.into()],
+        });
+
+        let target = TargetLayout::for_pointer_width(64).unwrap();
+        let layout = layout_struct(&store, target, specialized).unwrap();
+        assert_eq!(layout.size, 4);
+        assert_eq!(layout.align, 4);
+        assert_eq!(layout.fields.len(), 1);
+        assert_eq!(layout.fields[0].layout.size, 4);
+    }
+
+    #[test]
+    fn layout_generic_specialization_cycle() {
+        let mut program = Program::new();
+        let mut store = TypeStore::new();
+
+        let value = name(&mut program, "value");
+        let generic = store.intern(TypeValue::Generic(GenId(0)));
+        let rep = StructRep {
+            name: None,
+            fields: vec![(value, generic)],
+            gen_count: 1,
+        };
+        let sid = store.new_struct(rep);
+
+        let self_ty = store.intern(TypeValue::Struct {
+            id: sid,
+            generics: Vec::new(),
+        });
+        store.values[self_ty.0] = TypeValue::Struct {
+            id: sid,
+            generics: vec![self_ty],
+        };
+
+        let target = TargetLayout::for_pointer_width(64).unwrap();
+        let err = layout_struct(&store, target, self_ty).unwrap_err();
+        match err {
+            LayoutError::RecursiveStruct {
+                struct_id,
+                field,
+                cycle,
+            } => {
+                assert_eq!(struct_id, sid);
+                assert_eq!(field, Some(value));
+                assert!(cycle.iter().any(|cycle_id| *cycle_id == sid));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

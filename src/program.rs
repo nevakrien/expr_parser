@@ -51,6 +51,7 @@ pub enum CompileError {
 pub enum Defined {
     ToBeDefined,
     Value(ValId),
+    // MemberMethod(NameId,ValId),
     Type(TExpId),
     // TypeRef(TypeId),
     BuildinType(TypeValue),
