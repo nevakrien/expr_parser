@@ -670,34 +670,44 @@ pub fn infer_value_internals(
     let mut ctx = InferState::new(store, program, global_types);
     let mut gens = Gens(0);
 
-    let found = match ctx.program.value(value) {
+    match ctx.program.value(value) {
         Value::Func {
             generics,
             params,
             output_type,
             body,
-        } => gather_func_constraints::<true, _>(
-            &mut ctx,
-            &mut gens,
-            value,
-            generics,
-            params,
-            output_type,
-            body,
-        ),
-        _ => gather_constraints(&mut ctx,&mut gens, value),
-    };
-    let known = ctx.new_solved(known);
+        } => {
+            gather_func_constraints::<true, _>(
+                &mut ctx,
+                &mut gens,
+                value,
+                generics,
+                params,
+                output_type,
+                body,
+            );
+            //this case we have a fully known type so no unify.
+            //further a unify here is wrong
+            //this is because we solved this as Func<> but its actually a WithGenrics
+            //this is fine for our local work as we pretend that generics are concrete
+        },
+        _ => {
+            let found = gather_constraints(&mut ctx,&mut gens, value);
+            let known = ctx.new_solved(known);
 
-    if let Err(clash) = ctx.unify(found,known) {
-        ctx.push_error(TypeError::ValuesContradict{
-            expectation_reason: "expected value signature to match global signature (this is likely ALSO an internal bug in error reporting)",
-            site:value,
-            found:value,
-            expected_place:value,
-            clash,
-        })
-    }
+            if let Err(clash) = ctx.unify(found,known) {
+                ctx.push_error(TypeError::ValuesContradict{
+                    expectation_reason: "expected value signature to match global signature (this is likely ALSO an internal bug in error reporting)",
+                    site:value,
+                    found:value,
+                    expected_place:value,
+                    clash,
+                })
+            }
+        },
+    };
+
+    
 
     main_solver(&mut ctx);
     if ctx.errors.is_empty() {
@@ -755,6 +765,7 @@ fn main_solver<G: GlobalHandler>(ctx:&mut InferState<G>)  {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
         progress |= resolve_func_types(ctx);
+        progress |= resolve_struct_types(ctx);
         if !progress {
             break;
         }
@@ -893,6 +904,7 @@ struct InferState<'a, G: GlobalHandler> {
     op_sites: Vec<OpSite>,
     func_defs: Vec<FuncInfer>,
     struct_defs: Vec<StructDef>,
+    struct_infers: Vec<StructInfer>,
     generic_func_values: Vec<(ValId, usize)>,
 
     //result
@@ -908,6 +920,9 @@ struct Cluster {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct FuncInferId(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct StructInferId(usize);
+
 #[derive(Debug, Clone, Copy)]
 enum ResolveKind {
     Solved(TypeId),
@@ -922,6 +937,7 @@ enum ResolveKind {
     FloatLike,
     ///not all functions are like this but if something is declared as a function its this
     Func(FuncInferId),
+    Struct(StructInferId),
 }
 
 #[derive(Debug)]
@@ -930,6 +946,12 @@ struct FuncInfer {
     loc: ValId,
     inputs: Vec<CId>,
     output: CId,
+}
+
+#[derive(Debug)]
+struct StructInfer {
+    sid: StructId,
+    generics: Vec<CId>,
 }
 
 #[derive(Debug)]
@@ -1012,6 +1034,7 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             op_sites: Vec::new(),
             func_defs: Vec::new(),
             struct_defs: Vec::new(),
+            struct_infers: Vec::new(),
             generic_func_values: Vec::new(),
             errors: Vec::new(),
             ans: SolvedTypes::new(),
@@ -1033,6 +1056,7 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             op_sites,
             func_defs,
             struct_defs,
+            struct_infers,
             generic_func_values,
             errors,
             ans,
@@ -1052,6 +1076,7 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             op_sites,
             func_defs,
             struct_defs,
+            struct_infers,
             generic_func_values,
             errors,
             ans,
@@ -1091,6 +1116,14 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
         id
     }
 
+    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>) -> CId {
+        let call_id = StructInferId(self.struct_infers.len());
+        self.struct_infers.push(StructInfer { sid, generics });
+        let id = self.new_cluster();
+        self.cluster[id].state = ResolveKind::Struct(call_id);
+        id
+    }
+
     fn bind_val(&mut self, v: ValId, c: CId) {
         bind_val(&mut self.val_cluster,v,c);
     }
@@ -1109,6 +1142,7 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             &mut self.parent,
             &mut self.cluster,
             &mut self.func_defs,
+            &mut self.struct_infers,
             a,
             b,
         )
@@ -1120,6 +1154,7 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             &mut self.parent,
             &mut self.cluster,
             &mut self.func_defs,
+            &mut self.struct_infers,
             a,
             t,
         )
@@ -1148,6 +1183,7 @@ fn unify_clusters(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
     found: CId,
     wanted: CId,
 ) -> Result<CId, TypeClash> {
@@ -1158,7 +1194,7 @@ fn unify_clusters(
     }
 
     // Try found <- wanted
-    if _try_absorb(store, parent, cluster, func_defs, rw, rf)? {
+    if _try_absorb(store, parent, cluster, func_defs, struct_infers, rw, rf)? {
         if rf != parent[rf] {
             todo!()
         }
@@ -1168,7 +1204,9 @@ fn unify_clusters(
     }
 
     // Otherwise try wanted <- found
-    if _try_absorb(store, parent, cluster, func_defs, rf, rw).map_err(TypeClash::swap)? {
+    if _try_absorb(store, parent, cluster, func_defs, struct_infers, rf, rw)
+        .map_err(TypeClash::swap)?
+    {
         if rw != parent[rw] {
             todo!()
         }
@@ -1179,8 +1217,8 @@ fn unify_clusters(
 
     // Neither direction worked → real contradiction
     Err(TypeClash {
-        found: extract_bad_type(store, parent, cluster, func_defs, found),
-        wanted: extract_bad_type(store, parent, cluster, func_defs, wanted),
+        found: extract_bad_type(store, parent, cluster, func_defs, struct_infers, found),
+        wanted: extract_bad_type(store, parent, cluster, func_defs, struct_infers, wanted),
     })
 }
 
@@ -1190,6 +1228,7 @@ fn _try_absorb(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
     dst: CId,
     src: CId,
 ) -> Result<bool, TypeClash> {
@@ -1265,7 +1304,7 @@ fn _try_absorb(
             };
             if dst_len != src_len {
                 return Err(func_call_clash(
-                    store, parent, cluster, func_defs, dst_call, src_call,
+                    store, parent, cluster, func_defs, struct_infers, dst_call, src_call,
                 ));
             }
 
@@ -1275,9 +1314,9 @@ fn _try_absorb(
                     let src_call = &func_defs[src_call.0];
                     (dst_call.inputs[i], src_call.inputs[i])
                 };
-                if unify_clusters(store, parent, cluster, func_defs, a, b).is_err() {
+                if unify_clusters(store, parent, cluster, func_defs, struct_infers, a, b).is_err() {
                     return Err(func_call_clash(
-                        store, parent, cluster, func_defs, dst_call, src_call,
+                        store, parent, cluster, func_defs, struct_infers, dst_call, src_call,
                     ));
                 }
             }
@@ -1286,9 +1325,11 @@ fn _try_absorb(
                 let src_call = &func_defs[src_call.0];
                 (dst_call.output, src_call.output)
             };
-            if unify_clusters(store, parent, cluster, func_defs, dst_out, src_out).is_err() {
+            if unify_clusters(store, parent, cluster, func_defs, struct_infers, dst_out, src_out)
+                .is_err()
+            {
                 return Err(func_call_clash(
-                    store, parent, cluster, func_defs, dst_call, src_call,
+                    store, parent, cluster, func_defs, struct_infers, dst_call, src_call,
                 ));
             }
 
@@ -1299,7 +1340,60 @@ fn _try_absorb(
         }
 
         (Solved(t), Func(call)) => {
-            unify_func_with_type(store, parent, cluster, func_defs, call, t)?;
+            unify_func_with_type(store, parent, cluster, func_defs, struct_infers, call, t)?;
+            Ok(true)
+        }
+
+        (Struct(dst_call), Struct(src_call)) => {
+            let (dst_sid, src_sid) = {
+                let dst_call = &struct_infers[dst_call.0];
+                let src_call = &struct_infers[src_call.0];
+                (dst_call.sid, src_call.sid)
+            };
+            if dst_sid != src_sid {
+                return Err(struct_call_clash(
+                    store, parent, cluster, func_defs, struct_infers, dst_call, src_call,
+                ));
+            }
+
+            let (dst_len, src_len) = {
+                let dst_call = &struct_infers[dst_call.0];
+                let src_call = &struct_infers[src_call.0];
+                (dst_call.generics.len(), src_call.generics.len())
+            };
+            if dst_len != src_len {
+                return Err(struct_call_clash(
+                    store, parent, cluster, func_defs, struct_infers, dst_call, src_call,
+                ));
+            }
+
+            for i in 0..dst_len {
+                let (a, b) = {
+                    let dst_call = &struct_infers[dst_call.0];
+                    let src_call = &struct_infers[src_call.0];
+                    (dst_call.generics[i], src_call.generics[i])
+                };
+                if unify_clusters(store, parent, cluster, func_defs, struct_infers, a, b).is_err() {
+                    return Err(struct_call_clash(
+                        store, parent, cluster, func_defs, struct_infers, dst_call, src_call,
+                    ));
+                }
+            }
+
+            if let Some(t) = try_resolve_struct_type(
+                store,
+                parent,
+                cluster,
+                struct_infers,
+                dst_call,
+            ) {
+                cluster[dst].state = Solved(t);
+            }
+            Ok(true)
+        }
+
+        (Solved(t), Struct(call)) => {
+            unify_struct_with_type(store, parent, cluster, func_defs, struct_infers, call, t)?;
             Ok(true)
         }
 
@@ -1316,6 +1410,7 @@ fn force_type(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
     target: CId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -1349,7 +1444,12 @@ fn force_type(
             Ok(())
         }
         ResolveKind::Func(call) => {
-            unify_func_with_type(store, parent, cluster, func_defs, call, ty)?;
+            unify_func_with_type(store, parent, cluster, func_defs, struct_infers, call, ty)?;
+            cluster[root].state = ResolveKind::Solved(ty);
+            Ok(())
+        }
+        ResolveKind::Struct(call) => {
+            unify_struct_with_type(store, parent, cluster, func_defs, struct_infers, call, ty)?;
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
@@ -1362,6 +1462,7 @@ fn unify_func_with_type(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
     call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -1393,11 +1494,50 @@ fn unify_func_with_type(
             TypeValue::Func { params, ret: _ } => params[i],
             _ => unreachable!(),
         };
-        force_type(store, parent, cluster, func_defs, input, param_ty)?;
+        force_type(store, parent, cluster, func_defs, struct_infers, input, param_ty)?;
     }
 
     let output = func_defs[call.0].output;
-    force_type(store, parent, cluster, func_defs, output, ret)?;
+    force_type(store, parent, cluster, func_defs, struct_infers, output, ret)?;
+
+    Ok(())
+}
+
+fn unify_struct_with_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    call: StructInferId,
+    ty: TypeId,
+) -> Result<(), TypeClash> {
+    let (sid, glen) = match store.type_value(ty) {
+        TypeValue::Struct { id, generics } => (*id, generics.len()),
+        _ => {
+            return Err(TypeClash {
+                found: Some(BadTypeId(ty)),
+                wanted: None,
+            });
+        }
+    };
+
+    let call_sid = struct_infers[call.0].sid;
+    if call_sid != sid || struct_infers[call.0].generics.len() != glen {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: None,
+        });
+    }
+
+    for i in 0..glen {
+        let input = struct_infers[call.0].generics[i];
+        let TypeValue::Struct{id:_,generics} = store.type_value(ty) else {
+            unreachable!();
+        };
+        let t = generics[i];
+        force_type(store, parent, cluster, func_defs, struct_infers, input, t)?;
+    }
 
     Ok(())
 }
@@ -1416,6 +1556,7 @@ fn mock_type_from_cluster(
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
     cid: CId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -1429,8 +1570,25 @@ fn mock_type_from_cluster(
         ResolveKind::IntLike => UNKNOWN_INT_SIZE,
         ResolveKind::FloatLike => UNKNOWN_FLOAT_SIZE,
         ResolveKind::Func(call) => {
-            make_func_mock_inner(store, parent, cluster, func_defs, call, visiting)
+            make_func_mock_inner(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                call,
+                visiting,
+            )
         }
+        ResolveKind::Struct(call) => make_struct_mock_inner(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            call,
+            visiting,
+        ),
         ResolveKind::Nothing => UNKNOWN_TYPE,
     };
 
@@ -1443,6 +1601,7 @@ fn make_func_mock_inner(
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
     call: FuncInferId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -1450,9 +1609,27 @@ fn make_func_mock_inner(
     let params = site
         .inputs
         .iter()
-        .map(|&input| mock_type_from_cluster(store, parent, cluster, func_defs, input, visiting))
+        .map(|&input| {
+            mock_type_from_cluster(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                input,
+                visiting,
+            )
+        })
         .collect::<Vec<_>>();
-    let ret = mock_type_from_cluster(store, parent, cluster, func_defs, site.output, visiting);
+    let ret = mock_type_from_cluster(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        site.output,
+        visiting,
+    );
 
     store.intern(TypeValue::Func { params, ret })
 }
@@ -1462,10 +1639,70 @@ fn make_func_mock(
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
     call: FuncInferId,
 ) -> TypeId {
     let mut visiting = std::collections::HashSet::new();
-    make_func_mock_inner(store, parent, cluster, func_defs, call, &mut visiting)
+    make_func_mock_inner(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        call,
+        &mut visiting,
+    )
+}
+
+fn make_struct_mock_inner(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    call: StructInferId,
+    visiting: &mut std::collections::HashSet<CId>,
+) -> TypeId {
+    let site = &struct_infers[call.0];
+    let generics = site
+        .generics
+        .iter()
+        .map(|&input| {
+            mock_type_from_cluster(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                input,
+                visiting,
+            )
+        })
+        .collect::<Vec<_>>();
+    store.intern(TypeValue::Struct {
+        id: site.sid,
+        generics,
+    })
+}
+
+fn make_struct_mock(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    call: StructInferId,
+) -> TypeId {
+    let mut visiting = std::collections::HashSet::new();
+    make_struct_mock_inner(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        call,
+        &mut visiting,
+    )
 }
 
 fn func_call_clash(
@@ -1473,15 +1710,35 @@ fn func_call_clash(
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
     dst_call: FuncInferId,
     src_call: FuncInferId,
 ) -> TypeClash {
     TypeClash {
         found: Some(BadTypeId(make_func_mock(
-            store, parent, cluster, func_defs, src_call,
+            store, parent, cluster, func_defs, struct_infers, src_call,
         ))),
         wanted: Some(BadTypeId(make_func_mock(
-            store, parent, cluster, func_defs, dst_call,
+            store, parent, cluster, func_defs, struct_infers, dst_call,
+        ))),
+    }
+}
+
+fn struct_call_clash(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    dst_call: StructInferId,
+    src_call: StructInferId,
+) -> TypeClash {
+    TypeClash {
+        found: Some(BadTypeId(make_struct_mock(
+            store, parent, cluster, func_defs, struct_infers, src_call,
+        ))),
+        wanted: Some(BadTypeId(make_struct_mock(
+            store, parent, cluster, func_defs, struct_infers, dst_call,
         ))),
     }
 }
@@ -1491,6 +1748,7 @@ fn extract_bad_type(
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
     cid: CId,
 ) -> Option<BadTypeId> {
     let root = find_root(parent, cid);
@@ -1498,7 +1756,10 @@ fn extract_bad_type(
         ResolveKind::Solved(t) => Some(BadTypeId(t)),
         ResolveKind::Nothing => None,
         ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(
-            store, parent, cluster, func_defs, call,
+            store, parent, cluster, func_defs, struct_infers, call,
+        ))),
+        ResolveKind::Struct(call) => Some(BadTypeId(make_struct_mock(
+            store, parent, cluster, func_defs, struct_infers, call,
         ))),
 
         ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
@@ -1513,6 +1774,55 @@ impl Gens {
         let ans = GenId(self.0);
         self.0+=1;
         ans
+    }
+}
+
+fn specialize_type<G: GlobalHandler>(
+    ctx: &mut InferState<G>,
+    ty: TypeId,
+    generics: &[CId],
+    loc: ValId,
+) -> CId {
+    match ctx.store.type_value(ty) {
+        TypeValue::Generic(id) => generics.get(id.0).copied().unwrap_or_else(|| ctx.new_solved(ty)),
+        TypeValue::Func { params, ret } => {
+            let ret = *ret;
+            let plen = params.len();
+            let inputs = (0..plen)
+                .map(|i| {
+                    let TypeValue::Func{params,..} = ctx.store.type_value(ty) else {
+                        unreachable!()
+                    };
+                    let t = params[i];
+                    specialize_type(ctx, t, generics, loc)
+                } )
+                .collect::<Vec<_>>();
+            let output = specialize_type(ctx, ret, generics, loc);
+            ctx.new_func(FuncInfer {
+                inputs,
+                output,
+                loc,
+            })
+        }
+        TypeValue::Struct { id, generics: parts } => {
+            if parts.is_empty() {
+                return ctx.new_solved(ty);
+            }
+            let id = *id;
+            let glen = parts.len();
+
+            let resolved = (0..glen)
+                .map(|i| {
+                    let TypeValue::Struct{id:_,generics: parts} = ctx.store.type_value(ty)  else {
+                        unreachable!();
+                    };
+                    let t = parts[i];
+                    specialize_type(ctx, t, generics, loc)
+                })
+                .collect::<Vec<_>>();
+            ctx.new_struct_instance(id, resolved)
+        }
+        _ => ctx.new_solved(ty),
     }
 }
 
@@ -1588,9 +1898,12 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                     //we wana make sure that we add a good way to run this
                     //would be done as some normlization function somewhere
                     //structs especially are weird with this
-                    if let TypeValue::WithGenerics { count: _, body: _ } = ctx.store.type_value(t){
-                        todo!("we need to make a thing that is an instance of this")
-                    }else{
+                    if let TypeValue::WithGenerics { count, body } = *ctx.store.type_value(t){
+                        let gens:Vec<_> = (0..count).map(|_| ctx.new_cluster()).collect();
+                        let ans = specialize_type(ctx, body, &gens, v);
+                        ctx.bind_val(v, ans);
+                        return ans;
+                    } else {
                         let ans = new_solved(&mut ctx.parent,&mut ctx.cluster,t);
                         bind_val(&mut ctx.val_cluster,*def_val,ans);
                         ans
@@ -1963,6 +2276,28 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                 });
             }
 
+            let TypeValue::Struct{id:_,generics}=ctx.store.type_value(base_type) else {
+                unreachable!("verified above");
+            };
+
+            let glen = generics.len();
+
+            let mut generic_clusters = Vec::new();
+            let mut field_type_clusters = None;
+            if glen!=0 {
+                generic_clusters = (0..glen).map(|_| ctx.new_cluster()).collect();
+                let flen = ctx.store.struct_value(sid).fields.len();
+
+                field_type_clusters = Some(
+                    (0..flen)
+                        .map(|f| {
+                            let (_,t) = ctx.store.struct_value(sid).fields[f];
+                            specialize_type(ctx, t, &generic_clusters, v)
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            }
+
             let missing = CId(usize::MAX);
             let mut args = Vec::with_capacity(expected.max(provided));
             for (i,a) in cons.pos_args().ids().enumerate() {
@@ -1971,7 +2306,17 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
 
                 let (nid,t) = ctx.store.struct_value(sid).fields[i];
                 debug_assert!(t != UNKNOWN_TYPE);
-                if let Err(clash) = ctx.force_type(c, t) {
+                if let Some(field_types) = &field_type_clusters {
+                    let expected = field_types[i];
+                    if let Err(clash) = ctx.unify(c, expected) {
+                        let name = ctx.program.name_str_id(nid);
+                        ctx.push_error(TypeError::FieldTypeMismatch {
+                            field: name,
+                            value:a,
+                            clash,
+                        });
+                    }
+                } else if let Err(clash) = ctx.force_type(c, t) {
                     let name = ctx.program.name_str_id(nid);
                     ctx.push_error(TypeError::FieldTypeMismatch {
                         field: name,
@@ -2018,7 +2363,16 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                 args[i] = value_c;
 
                 debug_assert!(*t != UNKNOWN_TYPE);
-                if let Err(clash) = ctx.force_type(value_c, *t) {
+                if let Some(field_types) = &field_type_clusters {
+                    let expected = field_types[i];
+                    if let Err(clash) = ctx.unify(value_c, expected) {
+                        ctx.push_error(TypeError::FieldTypeMismatch {
+                            field: name,
+                            value,
+                            clash,
+                        });
+                    }
+                } else if let Err(clash) = ctx.force_type(value_c, *t) {
                     ctx.push_error(TypeError::FieldTypeMismatch {
                         field: name,
                         value,
@@ -2034,18 +2388,16 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                 }
             }
 
-            let TypeValue::Struct{id:_,generics}=ctx.store.type_value(base_type) else {
-                unreachable!("verified above");
-            };
-
-            if !generics.is_empty(){
-                todo!()
+            if glen==0{
+                let t = ctx.store.intern(TypeValue::Struct{id:sid,generics:Vec::new()});
+                let ans = ctx.new_solved(t);
+                ctx.bind_val(v,ans);
+                return ans;
             }
 
-            let t = ctx.store.intern(TypeValue::Struct{id:sid,generics:Vec::new()});
-            let ans = ctx.new_solved(t);
+            let ans = ctx.new_struct_instance(sid, generic_clusters);
             ctx.bind_val(v,ans);
-            ans
+            return ans;
 
         }
         _ => panic!("more expressions {:?}", ctx.program.value(v)),
@@ -2391,6 +2743,7 @@ fn cluster_is_int_like(
         ResolveKind::IntLike => Some(true),
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
+        ResolveKind::Struct(_) => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -2408,6 +2761,7 @@ fn cluster_is_float_like(
         ResolveKind::FloatLike => Some(true),
         ResolveKind::IntLike => Some(false),
         ResolveKind::Func(_) => Some(false),
+        ResolveKind::Struct(_) => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -2451,6 +2805,7 @@ fn unify_if_distinct(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
     a: CId,
     b: CId,
 ) -> Result<bool, TypeClash> {
@@ -2459,7 +2814,7 @@ fn unify_if_distinct(
     if ra == rb {
         return Ok(false);
     }
-    unify_clusters(store, parent, cluster, func_defs, ra, rb)?;
+    unify_clusters(store, parent, cluster, func_defs, struct_infers, ra, rb)?;
     Ok(true)
 }
 
@@ -2468,11 +2823,12 @@ fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     use BinOp::*;
 
     let mut progress = false;
-    let (store, parent, cluster, func_defs, op_sites, errors) = (
+    let (store, parent, cluster, func_defs, struct_infers, op_sites, errors) = (
         &mut ctx.store,
         &mut ctx.parent,
         &mut ctx.cluster,
         &mut ctx.func_defs,
+        &mut ctx.struct_infers,
         &mut ctx.op_sites,
         &mut ctx.errors,
     );
@@ -2497,13 +2853,13 @@ fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
             errors.push(TypeError::ValuesContradict {
                 expectation_reason: "operator cannot apply to this type",
                 site: site.loc,
-                found: site.lhs_val,
-                expected_place: site.rhs_val,
-                clash: TypeClash {
-                    found: extract_bad_type(store, parent, cluster, func_defs, lhs),
-                    wanted: extract_bad_type(store, parent, cluster, func_defs, rhs),
-                },
-            });
+                    found: site.lhs_val,
+                    expected_place: site.rhs_val,
+                    clash: TypeClash {
+                        found: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
+                        wanted: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
+                    },
+                });
             site.had_error = true;
             continue;
         }
@@ -2544,7 +2900,7 @@ fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
         }
 
         // (a) unify operands
-        match unify_if_distinct(store, parent, cluster, func_defs, lhs, rhs) {
+        match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, lhs, rhs) {
             Ok(changed) => progress |= changed,
             Err(clash) => {
                 errors.push(TypeError::ValuesContradict {
@@ -2562,7 +2918,7 @@ fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
         let operand = find_root(parent, lhs);
 
         // (b) unify output with operand
-        match unify_if_distinct(store, parent, cluster, func_defs, out, operand) {
+        match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, operand) {
             Ok(changed) => progress |= changed,
             Err(clash) => {
                 errors.push(TypeError::ValuesContradict {
@@ -2610,6 +2966,28 @@ fn try_resolve_func_type(
     Some(store.intern(TypeValue::Func { params, ret }))
 }
 
+fn try_resolve_struct_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    struct_infers: &mut [StructInfer],
+    call: StructInferId,
+) -> Option<TypeId> {
+    let mut generics = Vec::with_capacity(struct_infers[call.0].generics.len());
+    for i in 0..struct_infers[call.0].generics.len() {
+        let input = struct_infers[call.0].generics[i];
+        let root = find_root(parent, input);
+        struct_infers[call.0].generics[i] = root;
+        match cluster[root].state {
+            ResolveKind::Solved(t) => generics.push(t),
+            _ => return None,
+        }
+    }
+
+    let sid = struct_infers[call.0].sid;
+    Some(store.intern(TypeValue::Struct { id: sid, generics }))
+}
+
 #[inline(always)]
 fn resolve_func_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     let mut change = false;
@@ -2620,6 +2998,26 @@ fn resolve_func_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
                 &mut ctx.parent,
                 &mut ctx.cluster,
                 &mut ctx.func_defs,
+                call,
+            )
+        {
+            ctx.cluster[cid].state = ResolveKind::Solved(t);
+            change = true;
+        }
+    }
+    change
+}
+
+#[inline(always)]
+fn resolve_struct_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
+    let mut change = false;
+    for cid in (0..ctx.cluster.len()).map(CId) {
+        if let ResolveKind::Struct(call) = ctx.cluster[cid].state
+            && let Some(t) = try_resolve_struct_type(
+                ctx.store,
+                &mut ctx.parent,
+                &mut ctx.cluster,
+                &mut ctx.struct_infers,
                 call,
             )
         {
@@ -2689,7 +3087,7 @@ fn finalize<G: GlobalHandler>(ctx: &mut InferState<G>)  {
     }
     for (v, count) in ctx.generic_func_values.iter() {
         let Some(spot) = ans.val_types.get_mut(v) else {
-            continue;
+            unreachable!("bug func value not also a value");
         };
         let body = *spot;
         *spot = ctx.store.intern(TypeValue::WithGenerics{body,count:*count});
@@ -2757,6 +3155,59 @@ mod type_infer_tests {
                 _ => None,
             })
             .expect("expected a function definition")
+    }
+
+    fn find_value_by_name(program: &Program, name: &str) -> ValId {
+        *program
+            .definitions
+            .iter()
+            .find_map(|(n, def)| match def {
+                Defined::Value(v) if program.name_string(*n) == name => Some(v),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("value `{}` not found", name))
+    }
+
+    fn extract_bind_name(program: &Program, pat: PatId) -> Option<NameId> {
+        match program.pattern(pat) {
+            Pattern::Bind(n, _) => Some(n),
+            Pattern::TypeAnnotation { pat, ty: _ } => extract_bind_name(program, pat),
+            _ => None,
+        }
+    }
+
+    fn find_let_stmt_type(
+        program: &Program,
+        solved: &SolvedTypes,
+        func: ValId,
+        name: &str,
+    ) -> TypeId {
+        let Value::Func { body, .. } = program.value(func) else {
+            panic!("expected function value")
+        };
+        let Value::Block {
+            statements,
+            return_value: _,
+        } = program.value(body) else {
+            panic!("expected block body")
+        };
+
+        for stmt in statements.ids() {
+            let Value::Let { pat, .. } = program.value(stmt) else {
+                continue;
+            };
+            let Some(n) = extract_bind_name(program, pat) else {
+                continue;
+            };
+            if program.name_string(n) == name {
+                return *solved
+                    .val_types
+                    .get(&stmt)
+                    .unwrap_or_else(|| panic!("missing type for let `{}`", name));
+            }
+        }
+
+        panic!("let binding `{}` not found", name)
     }
 
     /// Run inference on a single function body.
@@ -2925,6 +3376,78 @@ mod type_infer_tests {
                 }
             }
             other => panic!("expected WithGenerics, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generic_function_specializes_on_use() {
+        let src = r#"
+            f = fn[T](x:T)->T { x }
+            g = fn() {
+                let a = f(1:int);
+                let b = f(2.0:float);
+            }
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let globals = infer_global_types(&program, &mut store).unwrap();
+        let g = find_value_by_name(&program, "g");
+        let solved = infer_value_internals(&globals, &program, &mut store, g).unwrap();
+
+        let a_ty = find_let_stmt_type(&program, &solved, g, "a");
+        let b_ty = find_let_stmt_type(&program, &solved, g, "b");
+
+        match store.type_value(a_ty) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
+            other => panic!("expected int type, got {:?}", other),
+        }
+        match store.type_value(b_ty) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::F64),
+            other => panic!("expected float type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn generic_struct_specializes_on_construction() {
+        let src = r#"
+            type Point = struct[T] { x:T }
+            g = fn() {
+                let a = Point{ x = 1:int };
+                let b = Point{ x = 2.0:float };
+            }
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let globals = infer_global_types(&program, &mut store).unwrap();
+        let g = find_value_by_name(&program, "g");
+        let solved = infer_value_internals(&globals, &program, &mut store, g).unwrap();
+
+        let a_ty = find_let_stmt_type(&program, &solved, g, "a");
+        let b_ty = find_let_stmt_type(&program, &solved, g, "b");
+
+        let (a_generics, b_generics) = match (store.type_value(a_ty), store.type_value(b_ty)) {
+            (
+                TypeValue::Struct { id: a_id, generics: a_generics },
+                TypeValue::Struct { id: b_id, generics: b_generics },
+            ) => {
+                assert_eq!(a_id, b_id);
+                (a_generics, b_generics)
+            }
+            (other, _) => panic!("expected struct type, got {:?}", other),
+        };
+
+        assert_eq!(a_generics.len(), 1);
+        assert_eq!(b_generics.len(), 1);
+
+        match store.type_value(a_generics[0]) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
+            other => panic!("expected int generic, got {:?}", other),
+        }
+        match store.type_value(b_generics[0]) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::F64),
+            other => panic!("expected float generic, got {:?}", other),
         }
     }
 
