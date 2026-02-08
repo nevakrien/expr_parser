@@ -477,7 +477,7 @@ impl Program {
             let methods = self
                 .member_methods
                 .entry(struct_name_id)
-                .or_insert_with(IdHashMap::default);
+                .or_default();
             match methods.entry(method_name) {
                 std::collections::hash_map::Entry::Occupied(_) => {
                     return Err(CompileError::SimpleError {

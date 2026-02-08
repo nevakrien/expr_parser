@@ -394,10 +394,10 @@ impl ErrorReporter {
             TypeError::ExpectedTypeExpr { type_expr } => {
                 let loc = program.type_expr_loc(*type_expr);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-                    .with_message("expected a type expression")
+                    .with_message("unknown type expression")
                     .with_label(
                         Label::new((loc.file, loc.range.clone()))
-                            .with_message("this is not a type"),
+                            .with_message("is this a type?"),
                     );
 
                 self.print_report(loc.file, report.finish())

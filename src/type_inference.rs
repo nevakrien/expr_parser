@@ -595,12 +595,11 @@ pub fn infer_global_types(
             continue;
         };
 
-        let mut gens = Gens(0);
         let t = match ctx.program.type_expr(*texp) {
             TypeExpr::Struct(def) => {
-                compile_struct_type::<true, _>(&mut ctx,&mut gens, *texp, def)
+                compile_struct_type::<true, _>(&mut ctx, *texp, def)
             }
-            _ => compile_type_expr(&mut ctx,&mut gens, *texp),
+            _ => compile_type_expr(&mut ctx, *texp),
         };
         if let Some(previous) = ctx.local_types.insert(*n, t) {
             if let Err(clash) = ctx.unify(previous, t) {
@@ -627,12 +626,10 @@ pub fn infer_global_types(
         //each function must solve by itself.
         //since there isnt a body its fine to solve in order
         //note that namespace on generics gurntees this works for the most outer scope
-        let mut gens = Gens(0);
         match ctx.program.value(*v){
             Value::Func { generics, params, output_type, body: _ } => {
                 let _ = gather_func_signature::<true, _>(
                     &mut ctx,
-                    &mut gens,
                     *v,
                     generics,
                     params,
@@ -642,7 +639,7 @@ pub fn infer_global_types(
             _ => {
                 //there arent any other value types
                 //if there were constants then potnetially doing them after functions might make sense
-                gather_constraints(&mut ctx,&mut gens,*v);
+                gather_constraints(&mut ctx,*v);
             }
         };
 
@@ -668,7 +665,6 @@ pub fn infer_value_internals(
 ) -> Result<SolvedTypes, Vec<TypeError>> {
     let known = global_types.val_types[&value];
     let mut ctx = InferState::new(store, program, global_types);
-    let mut gens = Gens(0);
 
     match ctx.program.value(value) {
         Value::Func {
@@ -679,7 +675,6 @@ pub fn infer_value_internals(
         } => {
             gather_func_constraints::<true, _>(
                 &mut ctx,
-                &mut gens,
                 value,
                 generics,
                 params,
@@ -692,7 +687,7 @@ pub fn infer_value_internals(
             //this is fine for our local work as we pretend that generics are concrete
         },
         _ => {
-            let found = gather_constraints(&mut ctx,&mut gens, value);
+            let found = gather_constraints(&mut ctx, value);
             let known = ctx.new_solved(known);
 
             if let Err(clash) = ctx.unify(found,known) {
@@ -726,7 +721,6 @@ fn _infer_value_hacky(
     value: ValId,
 ) -> Result<SolvedTypes, Vec<TypeError>> {
     let mut ctx = InferState::new(store, program, global_types);
-    let mut gens = Gens(0);
 
     match ctx.program.value(value) {
         Value::Func {
@@ -737,7 +731,6 @@ fn _infer_value_hacky(
         } => {
             let _ = gather_func_constraints::<true, _>(
                 &mut ctx,
-                &mut gens,
                 value,
                 generics,
                 params,
@@ -746,7 +739,7 @@ fn _infer_value_hacky(
             );
         }
         _ => {
-            gather_constraints(&mut ctx,&mut gens, value);
+            gather_constraints(&mut ctx, value);
         }
     }
 
@@ -1767,15 +1760,7 @@ fn extract_bad_type(
     }
 }
 
-#[derive(Debug,Clone)]
-struct Gens(usize);
-impl Gens {
-    pub fn next_gen(&mut self)->GenId{
-        let ans = GenId(self.0);
-        self.0+=1;
-        ans
-    }
-}
+
 
 fn specialize_type<G: GlobalHandler>(
     ctx: &mut InferState<G>,
@@ -1830,7 +1815,7 @@ fn specialize_type<G: GlobalHandler>(
 // Constraint gathering (alias where possible)
 // ===================================
 
-fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, v: ValId) -> CId {
+fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CId {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_int_like(v);
@@ -1916,8 +1901,8 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let rhs_cluster = gather_constraints(ctx,gens, value);
-            let ann_ty = compile_type_expr(ctx,gens, ty);
+            let rhs_cluster = gather_constraints(ctx, value);
+            let ann_ty = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(rhs_cluster, ann_ty) {
                 ctx.push_error(TypeError::AnnotationMismatch {
@@ -1933,22 +1918,22 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
         }
 
         Value::Cast { value, ty } => {
-            let _ = gather_constraints(ctx,gens, value);
+            let _ = gather_constraints(ctx, value);
             // Cast produces a new type identity: the target type
-            let c = compile_type_expr(ctx,gens, ty);
+            let c = compile_type_expr(ctx, ty);
             ctx.bind_val(v, c);
             c
         }
 
         Value::TypeDef { pat, ty } => {
-            let (p, n) = gather_pattern_constraints_and_name(ctx,gens, pat);
+            let (p, n) = gather_pattern_constraints_and_name(ctx, pat);
             if let Err(clash) = ctx.force_type(p, BuiltinType::Type.into()) {
                 ctx.push_error(TypeError::TypeDefPatternMismatch {
                     pattern: pat,
                     clash,
                 });
             }
-            let t = compile_type_expr(ctx,gens, ty);
+            let t = compile_type_expr(ctx, ty);
             ctx.typedef_cluster.push((ty, t));
             if let Some(n) = n {
                 ctx.local_types.insert(n, t);
@@ -1960,10 +1945,10 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             op: AssignOp::Nothing(value),
             target,
         } => {
-            let lhs = gather_constraints(ctx,gens, target);
+            let lhs = gather_constraints(ctx, target);
             ctx.bind_val(v, lhs);
 
-            let rhs = gather_constraints(ctx,gens, value);
+            let rhs = gather_constraints(ctx, value);
             if let Err(clash) = ctx.unify(rhs, lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "assignment requires both sides match",
@@ -1982,11 +1967,11 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             value,
             else_part,
         } => {
-            let lhs = gather_pattern_constraints(ctx,gens, pat);
+            let lhs = gather_pattern_constraints(ctx, pat);
             // let-expr evaluates to the bound pattern value => alias
             ctx.bind_val(v, lhs);
 
-            let rhs = gather_constraints(ctx,gens, value);
+            let rhs = gather_constraints(ctx, value);
 
             if let Err(clash) = ctx.unify(rhs, lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
@@ -1999,7 +1984,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             }
 
             if let Some(e) = else_part {
-                let ec = gather_constraints(ctx,gens, e);
+                let ec = gather_constraints(ctx, e);
                 if let Err(clash) = ctx.unify(ec, lhs) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason:
@@ -2020,12 +2005,12 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             return_value,
         } => {
             for s in statements.ids() {
-                gather_constraints(ctx,gens, s);
+                gather_constraints(ctx, s);
             }
 
             // block aliases its return value cluster (or void)
             let c = match return_value {
-                Some(r) => gather_constraints(ctx,gens, r),
+                Some(r) => gather_constraints(ctx, r),
                 None => ctx.new_solved(BuiltinType::Void.into()),
             };
 
@@ -2036,8 +2021,8 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
         Value::BinOp { op, values } => {
             let (lhs, rhs) = values;
 
-            let lc = gather_constraints(ctx,gens, lhs);
-            let rc = gather_constraints(ctx,gens, rhs);
+            let lc = gather_constraints(ctx, lhs);
+            let rc = gather_constraints(ctx, rhs);
 
             let output = match op {
                 //there is no legitmate reason to overload != == to have a diffrent signature
@@ -2082,7 +2067,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             output
         }
         Value::While { cond, body } => {
-            let cond_cluster = gather_constraints(ctx,gens, cond);
+            let cond_cluster = gather_constraints(ctx, cond);
             if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "while condition must be bool",
@@ -2093,14 +2078,14 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                 });
             }
 
-            let _body_cluster = gather_constraints(ctx,gens, body);
+            let _body_cluster = gather_constraints(ctx, body);
 
             let output = ctx.new_solved(BuiltinType::Bool.into());
             ctx.bind_val(v, output);
             output
         }
         Value::If { cond, then, els } => {
-            let cond_cluster = gather_constraints(ctx,gens, cond);
+            let cond_cluster = gather_constraints(ctx, cond);
             if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "if condition must be bool",
@@ -2111,10 +2096,10 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                 });
             }
 
-            let then_cluster = gather_constraints(ctx,gens, then);
+            let then_cluster = gather_constraints(ctx, then);
 
             let output = if let Some(els) = els {
-                let else_cluster = gather_constraints(ctx,gens, els);
+                let else_cluster = gather_constraints(ctx, els);
                 if let Err(clash) = ctx.unify(then_cluster, else_cluster) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason: "if branches must have the same type",
@@ -2139,7 +2124,6 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             body,
         } => gather_func_constraints::<false, _>(
             ctx,
-            gens,
             v,
             generics,
             params,
@@ -2151,9 +2135,9 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                 //we can try derive the type of base directly
                 //this makes life SOOOO much easier than named args
 
-                let base = gather_constraints(ctx,gens,call.base);
+                let base = gather_constraints(ctx,call.base);
                 let inputs :Vec<_>= call.args.ids().map(|a|{
-                    gather_constraints(ctx,gens,a)
+                    gather_constraints(ctx,a)
                 }).collect();
                 let output = ctx.new_cluster();
 
@@ -2196,7 +2180,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             let Some(base_name) = try_get_name(ctx, cons.base) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx,gens, arg);
+                    gather_constraints(ctx, arg);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -2205,7 +2189,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             let Some(def) = ctx.program.definitions.get(&base_name) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx,gens, arg);
+                    gather_constraints(ctx, arg);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -2215,7 +2199,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             let Defined::Type(texp) = def else {
                 ctx.push_error(TypeError::ConstructorBaseNotTypeName { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx,gens, arg);
+                    gather_constraints(ctx, arg);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -2225,7 +2209,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             let Some(base_type) = ctx.global_types.solved_global(*texp) else {
                 ctx.push_error(TypeError::UnresolvedTypeExpr { expr: *texp });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx,gens, arg);
+                    gather_constraints(ctx, arg);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -2257,7 +2241,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                         found: Some(BadTypeId(base_type)),
                     });
                     for arg in cons.args.ids() {
-                        gather_constraints(ctx,gens, arg);
+                        gather_constraints(ctx, arg);
                     }
                     let ans = ctx.new_cluster();
                     ctx.bind_val(v, ans);
@@ -2301,7 +2285,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
             let missing = CId(usize::MAX);
             let mut args = Vec::with_capacity(expected.max(provided));
             for (i,a) in cons.pos_args().ids().enumerate() {
-                let c = gather_constraints(ctx,gens, a);
+                let c = gather_constraints(ctx, a);
                 args.push(c);
 
                 let (nid,t) = ctx.store.struct_value(sid).fields[i];
@@ -2338,7 +2322,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, 
                     unreachable!()
                 };
 
-                let value_c = gather_constraints(ctx,gens, value);
+                let value_c = gather_constraints(ctx, value);
 
                 let spot = ctx.store.struct_value(sid).fields
                     .iter()
@@ -2431,33 +2415,30 @@ fn try_get_name<G:GlobalHandler>(ctx: &mut InferState<G>, v: ValId)->Option<Name
 
 
 #[inline(always)]
-fn gather_pattern_constraints<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, p: PatId) -> CId {
-    gather_pattern_constraints_with_generics::<false, G>(ctx,gens, p)
+fn gather_pattern_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, p: PatId) -> CId {
+    gather_pattern_constraints_with_generics::<false, G>(ctx, p)
 }
 
 #[inline(always)]
 fn gather_pattern_constraints_and_name<G: GlobalHandler>(
     ctx: &mut InferState<G>,
-    gens:&mut Gens,
     p: PatId,
 ) -> (CId, Option<NameId>) {
-    gather_pattern_constraints_and_name_with_generics::<false, G>(ctx,gens, p)
+    gather_pattern_constraints_and_name_with_generics::<false, G>(ctx, p)
 }
 
 #[inline(always)]
 fn gather_pattern_constraints_with_generics<const ALLOW_GENERICS: bool, G: GlobalHandler>(
     ctx: &mut InferState<G>,
-    gens:&mut Gens,
     p: PatId,
 ) -> CId {
     let (x, _) =
-        gather_pattern_constraints_and_name_with_generics::<ALLOW_GENERICS, G>(ctx,gens, p);
+        gather_pattern_constraints_and_name_with_generics::<ALLOW_GENERICS, G>(ctx, p);
     x
 }
 
 fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool, G: GlobalHandler>(
     ctx: &mut InferState<G>,
-    gens:&mut Gens,
     p: PatId,
 ) -> (CId, Option<NameId>) {
     match ctx.program.pattern(p) {
@@ -2475,8 +2456,8 @@ fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool,
 
         Pattern::TypeAnnotation { pat, ty } => {
             let (c, n) =
-                gather_pattern_constraints_and_name_with_generics::<ALLOW_GENERICS, G>(ctx,gens, pat);
-            let t = compile_type_expr(ctx,gens, ty);
+                gather_pattern_constraints_and_name_with_generics::<ALLOW_GENERICS, G>(ctx, pat);
+            let t = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(c, t) {
                 ctx.push_error(TypeError::PatternAnnotationMismatch {
@@ -2526,7 +2507,6 @@ fn gather_generic_constraints<G: GlobalHandler>(
 
 fn compile_struct_type<const ALLOW_GENERICS: bool, G: GlobalHandler>(
     ctx: &mut InferState<G>,
-    gens:&mut Gens,
     texpr: TExpId,
     StructLike { generics, fields }: StructLike,
 ) -> CId {
@@ -2565,7 +2545,7 @@ fn compile_struct_type<const ALLOW_GENERICS: bool, G: GlobalHandler>(
                     });
                     continue;
                 };
-                let c = compile_type_expr(ctx,gens, ty);
+                let c = compile_type_expr(ctx, ty);
                 field_info.push((n, c));
             }
             _ => {
@@ -2594,7 +2574,7 @@ fn compile_struct_type<const ALLOW_GENERICS: bool, G: GlobalHandler>(
     output
 }
 
-fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, texpr: TExpId) -> CId {
+fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) -> CId {
     match ctx.program.type_expr(texpr) {
         TypeExpr::NameRef(n) => {
             if let Some(ans) = ctx.local_types.get(&n) {
@@ -2622,7 +2602,7 @@ fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, t
         }
         TypeExpr::Wildcard => ctx.new_cluster(),
 
-        TypeExpr::Struct(def) => compile_struct_type::<false, G>(ctx,gens, texpr, def),
+        TypeExpr::Struct(def) => compile_struct_type::<false, G>(ctx, texpr, def),
         _ => {
             let c = ctx.new_cluster();
             ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
@@ -2633,14 +2613,11 @@ fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>,gens:&mut Gens, t
 
 fn gather_func_signature<const ALLOW_GENERICS: bool, G: GlobalHandler>(
     ctx: &mut InferState<G>,
-    gens:&mut Gens,
     v: ValId,
     generics: PatternSpan,
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
-    let mut local_gens = Gens(0);
-    let gens = if ALLOW_GENERICS { gens } else { &mut local_gens };
 
     if !ALLOW_GENERICS && !generics.is_empty() {
         let loc = generics
@@ -2654,8 +2631,8 @@ fn gather_func_signature<const ALLOW_GENERICS: bool, G: GlobalHandler>(
         });
     }
 
-    for pat in generics.ids() {
-        gather_generic_constraints(ctx, pat, gens.next_gen());
+    for (i,pat) in generics.ids().enumerate() {
+        gather_generic_constraints(ctx, pat, GenId(i));
     }
 
     if ALLOW_GENERICS && !generics.is_empty() {
@@ -2664,11 +2641,11 @@ fn gather_func_signature<const ALLOW_GENERICS: bool, G: GlobalHandler>(
 
     let inputs = params
         .ids()
-        .map(|pat| gather_pattern_constraints_with_generics::<ALLOW_GENERICS, G>(ctx,gens, pat))
+        .map(|pat| gather_pattern_constraints_with_generics::<ALLOW_GENERICS, G>(ctx, pat))
         .collect::<Vec<_>>();
 
     let output = if let Some(x) = output_type {
-        compile_type_expr(ctx,gens, x)
+        compile_type_expr(ctx, x)
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
@@ -2684,7 +2661,6 @@ fn gather_func_signature<const ALLOW_GENERICS: bool, G: GlobalHandler>(
 
 fn gather_func_constraints<const ALLOW_GENERICS: bool, G: GlobalHandler>(
     ctx: &mut InferState<G>,
-    gens:&mut Gens,
     v: ValId,
     generics: PatternSpan,
     params: PatternSpan,
@@ -2693,14 +2669,13 @@ fn gather_func_constraints<const ALLOW_GENERICS: bool, G: GlobalHandler>(
 ) -> CId {
     let (f, output) = gather_func_signature::<ALLOW_GENERICS, G>(
         ctx,
-        gens,
         v,
         generics,
         params,
         output_type,
     );
 
-    let body_cluster = gather_constraints(ctx,gens, body);
+    let body_cluster = gather_constraints(ctx, body);
 
     if let Err(clash) = ctx.unify(body_cluster, output) {
         let found = match ctx.program.value(body) {
