@@ -147,6 +147,7 @@ impl Program {
         // Note: `"float"` is an alias for `f64` in this sketch.
         const BUILTINS: &[(&str, BuiltinType)] = &[
             ("int", Int),
+            ("uint", Uint),
             ("i8", I8),
             ("i16", I16),
             ("i32", I32),
