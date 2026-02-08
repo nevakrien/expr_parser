@@ -1547,7 +1547,7 @@ mod var_scope_test {
 #[cfg(test)]
 mod lowering_tests {
     use super::*;
-    use crate::error_messages::ERR_ACCESS_EXPECTS_NAME;
+    use crate::error_messages::{ERR_ACCESS_EXPECTS_NAME, ERR_MEMBER_METHOD_NAME_COLLISION};
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
@@ -1628,6 +1628,57 @@ mod lowering_tests {
             var_kinds,
             vec![VarKind::Const, VarKind::Mut, VarKind::Mut]
         );
+    }
+
+    #[test]
+    fn member_method_duplicate_definition_errors_and_preserves_first() {
+        let src = "type S = struct { a: int }; S.foo = fn(x){ x }; S.foo = fn(x, y){ x };";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+
+        let expr = parser
+            .parse_with_macros(&mut program)
+            .expect("failed to parse type")
+            .expect("missing type expr");
+        program.gather_definition(expr).expect("type def failed");
+
+        let expr = parser
+            .parse_with_macros(&mut program)
+            .expect("failed to parse first method")
+            .expect("missing first method expr");
+        program
+            .gather_definition(expr)
+            .expect("first method should lower");
+
+        let expr = parser
+            .parse_with_macros(&mut program)
+            .expect("failed to parse second method")
+            .expect("missing second method expr");
+        let err = program.gather_definition(expr).unwrap_err();
+        match err {
+            CompileError::SimpleError { s, .. } => {
+                assert_eq!(s, ERR_MEMBER_METHOD_NAME_COLLISION);
+            }
+            other => panic!("expected simple error, got {other:?}"),
+        }
+
+        let struct_name = program.str_intern.intern("S");
+        let struct_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get(&struct_name))
+            .expect("missing struct name");
+        let method_name = program.str_intern.intern("foo");
+        let method_id = program
+            .member_methods
+            .get(&struct_id)
+            .and_then(|methods| methods.get(&method_name))
+            .copied()
+            .expect("missing foo method");
+        let Value::Func { params, .. } = program.value(method_id) else {
+            panic!("expected foo to be a function");
+        };
+        assert_eq!(params.len(), 1);
     }
 
     #[test]

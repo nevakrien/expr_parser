@@ -29,3 +29,8 @@
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
+
+## TODO
+- Member methods: parse `StructName.method = fn ...` in `src/ir.rs` and represent as syntax-level member method definitions (no type checks yet); document parse rules and expected AST/IR shape.
+- Pointer/reference types + mutability: add syntax for `*T`, `&T`, `&mut T` and ensure mutability is represented; document how these are parsed and surfaced in IR. note that we already have the start of mutability on variables, and its purposfully not tested yet as that goes into borrow_checking and not general type chekc. however &const x vs &mut x vs &x is a diffrent story. we currently just have address_of and not more info than that.
+- Member access + member calls: support `value.field` and `value.method(...)` in typecheck. we need to resolve MemberAccess nodes properly. this is especially tricky with methods as those would have to be added later. it should be possible to save methods into the SolvedTypes and use that. or even have them in TypeStore somewhere maybe in StructRep or a similar struct related field there.

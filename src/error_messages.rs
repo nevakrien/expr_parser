@@ -17,3 +17,7 @@ pub const ERR_ACCESS_EXPECTS_NAME: &str = "Access expects a name";
 pub const ERR_POS_ARG_AFTER_NAMED: &str = "Positional arguments must come before named arguments";
 pub const ERR_FN_BODY_REQUIRED: &str = "Function literal requires a body";
 pub const ERR_PIPE_REQUIRES_CALL: &str = "Pipe expects a call on the right-hand side";
+pub const ERR_MEMBER_METHOD_REQUIRES_STRUCT: &str = "Member method requires a struct type name";
+pub const ERR_MEMBER_METHOD_REQUIRES_FN: &str = "Member method requires a function value";
+pub const ERR_MEMBER_METHOD_NAME_COLLISION: &str =
+    "Member method name collides with existing struct field or method";

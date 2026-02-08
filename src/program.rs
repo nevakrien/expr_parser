@@ -1,9 +1,12 @@
-use crate::ir::VarKind;
-use crate::error_messages::{ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME};
+use crate::error_messages::{
+    ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME, ERR_MEMBER_METHOD_NAME_COLLISION,
+    ERR_MEMBER_METHOD_REQUIRES_FN, ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+};
 use crate::identity_hasher::IdHashMap;
+use crate::ir::VarKind;
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
-use crate::macros::{Macro, expand_macros_recursive};
+use crate::macros::{expand_macros_recursive, Macro};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
@@ -51,9 +54,7 @@ pub enum CompileError {
 pub enum Defined {
     ToBeDefined,
     Value(ValId),
-    // MemberMethod(NameId,ValId),
     Type(TExpId),
-    // TypeRef(TypeId),
     BuildinType(TypeValue),
     Macro(Macro),
 }
@@ -76,6 +77,7 @@ pub struct Program {
 
     pub scopes: Vec<IdHashMap<StrId, NameId>>,
     pub pending_names: IdHashMap<NameId, Vec<Loc>>,
+    pub member_methods: IdHashMap<NameId, IdHashMap<StrId, ValId>>,
 }
 
 impl Default for Program {
@@ -102,6 +104,7 @@ impl Program {
 
             scopes: vec![IdHashMap::default()],
             pending_names: IdHashMap::default(),
+            member_methods: IdHashMap::default(),
         };
         program.insert_builtin_types();
         program
@@ -449,6 +452,46 @@ impl Program {
             value: rhs_value,
         } = rhs;
 
+        if let Some((struct_name_id, method_name)) = self.try_member_method_lhs(&lhs)? {
+            let Expr::Prefix(fn_kw, _) = &rhs_value else {
+                return Err(CompileError::SimpleError {
+                    loc: rhs_loc,
+                    s: ERR_MEMBER_METHOD_REQUIRES_FN,
+                });
+            };
+            if fn_kw.value != "fn" {
+                return Err(CompileError::SimpleError {
+                    loc: rhs_loc,
+                    s: ERR_MEMBER_METHOD_REQUIRES_FN,
+                });
+            }
+
+            let def_value = self.with_scope(|prog| {
+                let v = prog.lower_value(Located {
+                    loc: rhs_loc.clone(),
+                    value: rhs_value,
+                })?;
+                Ok(v)
+            })?;
+
+            let methods = self
+                .member_methods
+                .entry(struct_name_id)
+                .or_insert_with(IdHashMap::default);
+            match methods.entry(method_name) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    return Err(CompileError::SimpleError {
+                        loc: rhs_loc,
+                        s: ERR_MEMBER_METHOD_NAME_COLLISION,
+                    })
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(def_value);
+                }
+            }
+            return Ok(());
+        }
+
         let name_id = self.get_ident_for_global(lhs)?;
 
         // println!("defining {}",self.str_intern.resolve(self.names_strs[name_id.0]));
@@ -489,5 +532,71 @@ impl Program {
         self.definitions.insert(name_id, def);
 
         Ok(())
+    }
+
+    fn try_member_method_lhs(&mut self, lhs: &LExpr) -> CResult<Option<(NameId, StrId)>> {
+        let Expr::Bin(op, pair) = &lhs.value else {
+            return Ok(None);
+        };
+        if op.value != "." {
+            return Ok(None);
+        }
+
+        let (base, method) = pair.as_ref();
+        let (Expr::Atom(Token::Ident(struct_name)), Expr::Atom(Token::Ident(method_name))) =
+            (&base.value, &method.value)
+        else {
+            return Ok(None);
+        };
+
+        let struct_name_id = self
+            .scopes
+            .first()
+            .and_then(|scope| scope.get(&self.str_intern.intern(struct_name)))
+            .copied()
+            .ok_or_else(|| CompileError::SimpleError {
+                loc: base.loc.clone(),
+                s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+            })?;
+
+        let texp = match self.definitions.get(&struct_name_id) {
+            Some(Defined::Type(texp)) => *texp,
+            _ => {
+                return Err(CompileError::SimpleError {
+                    loc: base.loc.clone(),
+                    s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+                })
+            }
+        };
+
+        let TypeExpr::Struct(def) = self.type_expr(texp) else {
+            return Err(CompileError::SimpleError {
+                loc: base.loc.clone(),
+                s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+            });
+        };
+
+        let method_name = self.str_intern.intern(method_name);
+
+        for field in def.fields.ids() {
+            if let Some(field_name) = self.field_name(field) {
+                if field_name == method_name {
+                    return Err(CompileError::SimpleError {
+                        loc: method.loc.clone(),
+                        s: ERR_MEMBER_METHOD_NAME_COLLISION,
+                    });
+                }
+            }
+        }
+
+        Ok(Some((struct_name_id, method_name)))
+    }
+
+    fn field_name(&self, pat: PatId) -> Option<StrId> {
+        match self.pattern(pat) {
+            Pattern::Bind(id, _) => Some(self.name_str_id(id)),
+            Pattern::TypeAnnotation { pat, .. } => self.field_name(pat),
+            _ => None,
+        }
     }
 }
