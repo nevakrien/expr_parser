@@ -6,7 +6,7 @@ use crate::identity_hasher::IdHashMap;
 use crate::ir::VarKind;
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
-use crate::macros::{expand_macros_recursive, Macro};
+use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
@@ -474,16 +474,13 @@ impl Program {
                 Ok(v)
             })?;
 
-            let methods = self
-                .member_methods
-                .entry(struct_name_id)
-                .or_default();
+            let methods = self.member_methods.entry(struct_name_id).or_default();
             match methods.entry(method_name) {
                 std::collections::hash_map::Entry::Occupied(_) => {
                     return Err(CompileError::SimpleError {
                         loc: rhs_loc,
                         s: ERR_MEMBER_METHOD_NAME_COLLISION,
-                    })
+                    });
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(def_value);
@@ -565,7 +562,7 @@ impl Program {
                 return Err(CompileError::SimpleError {
                     loc: base.loc.clone(),
                     s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
-                })
+                });
             }
         };
 

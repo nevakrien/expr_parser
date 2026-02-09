@@ -1,3 +1,5 @@
+use crate::parsing::KEYWORDS;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct StrId(usize);
 
@@ -14,6 +16,85 @@ struct Entry {
     hash: u64,
     id: StrId,
 }
+
+pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
+    "__free", "__deref", "__add", "__sub", "__mul", "__div", "__mod", "__bitand", "__bitor",
+    "__bitxor", "__shl", "__shr", "__eq", "__ne", "__lt", "__le", "__gt", "__ge", "__neg", "__not",
+    "__bitnot", "__addr",
+];
+
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+
+    if a_bytes.len() != b_bytes.len() {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < a_bytes.len() {
+        if a_bytes[i] != b_bytes[i] {
+            return false;
+        }
+        i += 1;
+    }
+
+    true
+}
+
+//hard rely on this
+pub const fn get_known_strid(s: &str) -> StrId {
+    let mut i = 0;
+
+    while i < KEYWORDS.len() {
+        if const_str_eq(KEYWORDS[i], s) {
+            return StrId(i);
+        }
+        i += 1;
+    }
+
+    let mut j = 0;
+    while j < EXTRA_HARD_CODED_NAMES.len() {
+        if const_str_eq(EXTRA_HARD_CODED_NAMES[j], s) {
+            return StrId(KEYWORDS.len() + j);
+        }
+        j += 1;
+    }
+
+    panic!("not a known keyword");
+}
+
+#[test]
+fn known_stuff_works() {
+    let mut intern = StringInterner::new();
+    for k in KEYWORDS.iter().chain(EXTRA_HARD_CODED_NAMES.iter()) {
+        let i = intern.intern(k);
+        assert_eq!(i, get_known_strid(k));
+        assert_eq!(*k, intern.resolve(i));
+    }
+}
+
+pub const ADD_STR: StrId = get_known_strid("__add");
+pub const DEREF_STR: StrId = get_known_strid("__deref");
+pub const SUB_STR: StrId = get_known_strid("__sub");
+pub const MUL_STR: StrId = get_known_strid("__mul");
+pub const DIV_STR: StrId = get_known_strid("__div");
+pub const MOD_STR: StrId = get_known_strid("__mod");
+pub const BITAND_STR: StrId = get_known_strid("__bitand");
+pub const BITOR_STR: StrId = get_known_strid("__bitor");
+pub const BITXOR_STR: StrId = get_known_strid("__bitxor");
+pub const SHL_STR: StrId = get_known_strid("__shl");
+pub const SHR_STR: StrId = get_known_strid("__shr");
+pub const EQ_STR: StrId = get_known_strid("__eq");
+pub const NE_STR: StrId = get_known_strid("__ne");
+pub const LT_STR: StrId = get_known_strid("__lt");
+pub const LE_STR: StrId = get_known_strid("__le");
+pub const GT_STR: StrId = get_known_strid("__gt");
+pub const GE_STR: StrId = get_known_strid("__ge");
+pub const NEG_STR: StrId = get_known_strid("__neg");
+pub const NOT_STR: StrId = get_known_strid("__not");
+pub const BITNOT_STR: StrId = get_known_strid("__bitnot");
+pub const ADDR_STR: StrId = get_known_strid("__addr");
 
 #[derive(Debug)]
 pub struct StringInterner {
@@ -39,6 +120,16 @@ impl StringInterner {
     }
 
     pub fn with_buckets(bucket_count: usize) -> Self {
+        let mut ans = Self::__no_defualts_with_buckets(bucket_count);
+
+        for k in KEYWORDS.iter().chain(EXTRA_HARD_CODED_NAMES.iter()) {
+            ans.intern(k);
+        }
+
+        ans
+    }
+
+    fn __no_defualts_with_buckets(bucket_count: usize) -> Self {
         assert!(bucket_count.is_power_of_two());
 
         Self {
@@ -216,7 +307,11 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 #[inline]
 fn scrub_hash(h: u64) -> u64 {
-    if h == 0 { 1 } else { h }
+    if h == 0 {
+        1
+    } else {
+        h
+    }
 }
 
 #[cfg(test)]
@@ -225,7 +320,7 @@ mod tests {
 
     #[test]
     fn same_string_same_id() {
-        let mut i = StringInterner::new();
+        let mut i = StringInterner::__no_defualts_with_buckets(DEFAULT_BUCKETS);
 
         let a = i.intern("hello");
         let b = i.intern("hello");
@@ -237,7 +332,7 @@ mod tests {
 
     #[test]
     fn different_strings_different_ids() {
-        let mut i = StringInterner::new();
+        let mut i = StringInterner::__no_defualts_with_buckets(DEFAULT_BUCKETS);
 
         let a = i.intern("hello");
         let b = i.intern("world");
@@ -248,7 +343,7 @@ mod tests {
 
     #[test]
     fn forced_single_bucket_collision() {
-        let mut i = StringInterner::with_buckets(1);
+        let mut i = StringInterner::__no_defualts_with_buckets(1);
 
         let a = i.intern("foo");
         let b = i.intern("bar");
@@ -263,7 +358,7 @@ mod tests {
 
     #[test]
     fn growth_preserves_ids() {
-        let mut i = StringInterner::with_buckets(1);
+        let mut i = StringInterner::__no_defualts_with_buckets(1);
 
         let mut ids = Vec::new();
         for n in 0..100 {

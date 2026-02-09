@@ -100,7 +100,6 @@ pub const OPERATORS: &[&str] = &[
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
 
-
 #[inline(always)]
 const fn match_operator(input: &str) -> Option<&'static str> {
     let b = input.as_bytes();
@@ -266,7 +265,7 @@ pub enum ParseError {
 }
 
 const BP_ASSIGN: u32 = 100;
-const BP_CONSTRUCT: u32 = 80;
+const BP_CONSTRUCT: u32 = 750;
 
 const BP_MATCH_ARM: u32 = 90;
 const BP_PATTERN: u32 = 110;

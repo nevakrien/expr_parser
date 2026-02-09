@@ -1,3 +1,4 @@
+use crate::ir::{BinOp, UnOp, VarKind};
 use crate::parsing::{OTok, ParseError};
 use crate::program::{CompileError, Program};
 use crate::type_inference::{BadTypeId, TypeClash, TypeError, TypeStore};
@@ -119,16 +120,19 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report =
-                    Report::build(ReportKind::Error, primary.file, primary.range.start)
-                        .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
-                            format!("Unresolved name '{name}'")
-                        } else {
-                            format!(
+                let mut report = Report::build(
+                    ReportKind::Error,
+                    primary.file,
+                    primary.range.start,
+                )
+                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                    format!("Unresolved name '{name}'")
+                } else {
+                    format!(
                         "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
                         locs.len()
                     )
-                        });
+                });
 
                 for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
@@ -396,8 +400,7 @@ impl ErrorReporter {
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("unknown type expression")
                     .with_label(
-                        Label::new((loc.file, loc.range.clone()))
-                            .with_message("is this a type?"),
+                        Label::new((loc.file, loc.range.clone())).with_message("is this a type?"),
                     );
 
                 self.print_report(loc.file, report.finish())
@@ -433,6 +436,70 @@ impl ErrorReporter {
                     Label::new((expected_loc.file, expected_loc.range.clone()))
                         .with_message(expected_msg)
                         .with_color(Color::Cyan),
+                );
+
+                self.print_report(site_loc.file, report.finish())
+            }
+            TypeError::BinOpOverloadNotFound {
+                site,
+                op,
+                lhs,
+                rhs,
+                lhs_type,
+                rhs_type,
+            } => {
+                let site_loc = program.value_loc(*site);
+                let lhs_loc = program.value_loc(*lhs);
+                let rhs_loc = program.value_loc(*rhs);
+                let lhs_msg = operand_type_message(program, store, "left operand", *lhs_type);
+                let rhs_msg = operand_type_message(program, store, "right operand", *rhs_type);
+
+                let mut report =
+                    Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
+                        .with_message(format!("no overload for operator `{}`", bin_op_symbol(*op)))
+                        .with_label(
+                            Label::new((site_loc.file, site_loc.range.clone()))
+                                .with_message("operator used here")
+                                .with_color(Color::Red),
+                        );
+
+                report = report.with_label(
+                    Label::new((lhs_loc.file, lhs_loc.range.clone()))
+                        .with_message(lhs_msg)
+                        .with_color(Color::Yellow),
+                );
+
+                report = report.with_label(
+                    Label::new((rhs_loc.file, rhs_loc.range.clone()))
+                        .with_message(rhs_msg)
+                        .with_color(Color::Cyan),
+                );
+
+                self.print_report(site_loc.file, report.finish())
+            }
+            TypeError::UnOpOverloadNotFound {
+                site,
+                op,
+                operand,
+                operand_type,
+            } => {
+                let site_loc = program.value_loc(*site);
+                let operand_loc = program.value_loc(*operand);
+                let operand_msg = operand_type_message(program, store, "operand", *operand_type);
+
+                let mut report =
+                    Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
+                        .with_message(format!("no overload for operator `{}`", un_op_symbol(*op)))
+                        .with_label(
+                            Label::new((site_loc.file, site_loc.range.clone()))
+                                .with_message("operator used here")
+                                .with_color(Color::Red),
+                        );
+
+                report = report.with_label(
+                    Label::new((operand_loc.file, operand_loc.range.clone()))
+                        .with_message(operand_msg)
+                        .with_color(Color::Yellow),
                 );
 
                 self.print_report(site_loc.file, report.finish())
@@ -536,6 +603,51 @@ fn clash_messages(program: &Program, store: &TypeStore, clash: TypeClash) -> (St
     let found = type_string(program, store, clash.found).unwrap_or_else(|| "unknown".to_string());
     let wanted = type_string(program, store, clash.wanted).unwrap_or_else(|| "unknown".to_string());
     (format!("found {found}"), format!("expected {wanted}"))
+}
+
+fn operand_type_message(
+    program: &Program,
+    store: &TypeStore,
+    label: &str,
+    ty: Option<BadTypeId>,
+) -> String {
+    match type_string(program, store, ty) {
+        Some(ty) => format!("{label} has type {ty}"),
+        None => format!("{label} type is unknown"),
+    }
+}
+
+fn bin_op_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::BitAnd => "&",
+        BinOp::BitOr => "|",
+        BinOp::BitXor => "^",
+        BinOp::Shl => "<<",
+        BinOp::Shr => ">>",
+        BinOp::Eq => "==",
+        BinOp::Ne => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
+    }
+}
+
+fn un_op_symbol(op: UnOp) -> &'static str {
+    match op {
+        UnOp::Neg => "-",
+        UnOp::Not => "!",
+        UnOp::BitNot => "~",
+        UnOp::Deref => "*",
+        UnOp::AddrOf(None) => "&",
+        UnOp::AddrOf(Some(VarKind::Mut)) => "&mut",
+        UnOp::AddrOf(Some(VarKind::Const)) => "&const",
+    }
 }
 
 fn type_string(program: &Program, store: &TypeStore, ty: Option<BadTypeId>) -> Option<String> {
