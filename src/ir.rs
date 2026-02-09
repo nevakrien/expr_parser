@@ -1905,7 +1905,7 @@ mod lowering_tests {
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
-            Defined::Value(value) => match program.value(*value) {
+            Defined::Func(value) => match program.value(*value) {
                 Value::Func { generics, .. } => assert_eq!(generics.len(), 1),
                 _ => panic!("expected function value"),
             },
@@ -1944,7 +1944,7 @@ mod lowering_tests {
             .expect("missing g definition");
 
         let f_body = match f_def {
-            Defined::Value(value) => match program.value(*value) {
+            Defined::Func(value) => match program.value(*value) {
                 Value::Func { body, .. } => body,
                 _ => panic!("expected f to be a function"),
             },
@@ -1952,7 +1952,7 @@ mod lowering_tests {
         };
 
         let g_body = match g_def {
-            Defined::Value(value) => match program.value(*value) {
+            Defined::Func(value) => match program.value(*value) {
                 Value::Func { body, .. } => body,
                 _ => panic!("expected g to be a function"),
             },

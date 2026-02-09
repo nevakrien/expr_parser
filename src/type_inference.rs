@@ -671,7 +671,7 @@ pub fn infer_global_types(
     }
 
     for (_n, def) in program.definitions.iter() {
-        let Defined::Value(v) = def else {
+        let Defined::Func(v) = def else {
             continue;
         };
 
@@ -689,9 +689,7 @@ pub fn infer_global_types(
                     gather_func_signature::<true, _>(&mut ctx, *v, generics, params, output_type);
             }
             _ => {
-                //there arent any other value types
-                //if there were constants then potnetially doing them after functions might make sense
-                gather_constraints(&mut ctx, *v);
+
             }
         };
 
@@ -2018,7 +2016,7 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                     bind_val(&mut ctx.val_cluster, v, ans);
                     ans
                 }
-                Defined::Value(def_val) => {
+                Defined::Func(def_val) => {
                     let Some(t) = ctx.global_types.global_val_type(*def_val) else {
                         let loc = ctx.program.value_loc(v);
                         let c = ctx.new_cluster();
@@ -3684,7 +3682,7 @@ mod type_infer_tests {
             .definitions
             .iter()
             .find_map(|(_, def)| match def {
-                Defined::Value(v) => Some(v),
+                Defined::Func(v) => Some(v),
                 _ => None,
             })
             .expect("expected a function definition")
@@ -3695,7 +3693,7 @@ mod type_infer_tests {
             .definitions
             .iter()
             .find_map(|(n, def)| match def {
-                Defined::Value(v) if program.name_string(*n) == name => Some(v),
+                Defined::Func(v) if program.name_string(*n) == name => Some(v),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("value `{}` not found", name))

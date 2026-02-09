@@ -32,7 +32,7 @@ fn main() {
 
         let mut types = TypeStore::new();
         for (_, def) in program.definitions.iter() {
-            let Defined::Value(v) = def else {
+            let Defined::Func(v) = def else {
                 continue;
             };
             let Ok(globals) = infer_global_types(&program, &mut types) else {

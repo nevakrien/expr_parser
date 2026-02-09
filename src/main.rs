@@ -193,7 +193,7 @@ fn run_typechecker(
     };
 
     for (_, def) in program.definitions.iter() {
-        let Defined::Value(v) = def else {
+        let Defined::Func(v) = def else {
             continue;
         };
         let Err(errs) = infer_value_internals(&globals, program, &mut types, *v) else {

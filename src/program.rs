@@ -53,7 +53,8 @@ pub enum CompileError {
 #[derive(Debug)]
 pub enum Defined {
     ToBeDefined,
-    Value(ValId),
+    // Value(ValId),
+    Func(ValId),
     Type(TExpId),
     BuildinType(TypeValue),
     Macro(Macro),
@@ -257,10 +258,13 @@ impl Program {
         }
 
         match self.definitions.get(&id) {
-            Some(Defined::Value(val)) => Some(self.value_loc(*val)),
+            Some(Defined::Func(val)) => Some(self.value_loc(*val)),
             // Some(Defined::Raw(expr)) => Some(expr.loc.clone()),
             Some(Defined::Type(expr)) => Some(self.type_expr_loc(*expr)),
-            _ => None,
+            // Macro(Macro),
+            Some(Defined::Macro(m)) => Some(m.loc.clone()),
+            
+            Some(Defined::BuildinType(..)|Defined::ToBeDefined) | None=>None,
         }
     }
 
@@ -504,7 +508,7 @@ impl Program {
                         loc: rhs_loc,
                         value: rhs_value,
                     })?;
-                    Ok(Defined::Value(v))
+                    Ok(Defined::Func(v))
                 })?,
 
             Expr::Prefix(ref kw, _)

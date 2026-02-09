@@ -6,6 +6,7 @@ use crate::program::{CResult, CompileError, Program};
 
 #[derive(Debug)]
 pub struct Macro {
+    pub(crate) loc:Loc,
     vars: Vec<String>,
     body: Expr,
 }
@@ -48,6 +49,7 @@ impl Macro {
         };
 
         Ok(Self {
+            loc,
             vars: params,
             body: body_expr.value,
         })
