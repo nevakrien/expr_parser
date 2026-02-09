@@ -1,7 +1,8 @@
 use expr_parser::parsing::Parser;
 use expr_parser::program::{Defined, Program};
-use expr_parser::type_inference::infer_global_types;
-use expr_parser::type_inference::{TypeStore, infer_value_internals};
+use expr_parser::type_inference::{
+    infer_global_types, infer_value_internals, InferState, TypeStore,
+};
 use std::time::Instant;
 
 const ITERATIONS: usize = 40000;
@@ -31,15 +32,17 @@ fn main() {
         }
 
         let mut types = TypeStore::new();
+        let mut ctx = InferState::new(&mut types, &program, ());
+        let Ok(globals) = infer_global_types(&mut ctx) else {
+            error_count += 1;
+            continue;
+        };
+        let mut ctx = ctx.map_global(&globals);
         for (_, def) in program.definitions.iter() {
             let Defined::Func(v) = def else {
                 continue;
             };
-            let Ok(globals) = infer_global_types(&program, &mut types) else {
-                error_count += 1;
-                continue;
-            };
-            match infer_value_internals(&globals, &program, &mut types, *v) {
+            match infer_value_internals(&mut ctx, *v) {
                 Ok(_) => ok_count += 1,
                 Err(_) => error_count += 1,
             }

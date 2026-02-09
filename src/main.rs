@@ -3,9 +3,9 @@ use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::CompileError;
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_inference::TypeStore;
-use expr_parser::type_inference::infer_global_types;
-use expr_parser::type_inference::infer_value_internals;
+use expr_parser::type_inference::{
+    infer_global_types, infer_value_internals, InferState, TypeStore,
+};
 use std::fs;
 use std::io::{self, Write};
 
@@ -180,11 +180,12 @@ fn run_typechecker(
     reporter: &mut ErrorReporter,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut types = TypeStore::new();
+    let mut ctx = InferState::new(&mut types, program, ());
 
-    let globals = match infer_global_types(program, &mut types) {
+    let globals = match infer_global_types(&mut ctx) {
         Err(errs) => {
             for e in errs {
-                reporter.report_type_error(program, &types, &e)?;
+                reporter.report_type_error(program, ctx.store(), &e)?;
             }
 
             return Ok(());
@@ -192,16 +193,18 @@ fn run_typechecker(
         Ok(x) => x,
     };
 
+    let mut ctx = ctx.map_global(&globals);
+
     for (_, def) in program.definitions.iter() {
         let Defined::Func(v) = def else {
             continue;
         };
-        let Err(errs) = infer_value_internals(&globals, program, &mut types, *v) else {
+        let Err(errs) = infer_value_internals(&mut ctx, *v) else {
             continue;
         };
 
         for e in errs {
-            reporter.report_type_error(program, &types, &e)?;
+            reporter.report_type_error(program, ctx.store(), &e)?;
         }
     }
 
