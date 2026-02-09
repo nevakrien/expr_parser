@@ -2054,16 +2054,38 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
             };
 
             ctx.bind_val(v, output);
-            ctx.op_sites.push(OpSite {
-                loc: v,
-                op,
-                lhs_val: lhs,
-                rhs_val: rhs,
-                lhs: lc,
-                rhs: rc,
-                output,
-                had_error: false,
-            });
+            {
+                let (store, parent, cluster, func_defs, struct_infers, op_sites, errors) = (
+                    &mut ctx.store,
+                    &mut ctx.parent,
+                    &mut ctx.cluster,
+                    &mut ctx.func_defs,
+                    &mut ctx.struct_infers,
+                    &mut ctx.op_sites,
+                    &mut ctx.errors,
+                );
+                op_sites.push(OpSite {
+                    loc: v,
+                    op,
+                    lhs_val: lhs,
+                    rhs_val: rhs,
+                    lhs: lc,
+                    rhs: rc,
+                    output,
+                    had_error: false,
+                });
+                if let Some(site) = op_sites.last_mut() {
+                    let _ = resolve_operator_site(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        errors,
+                        site,
+                    );
+                }
+            }
             output
         }
         Value::While { cond, body } => {
@@ -2794,9 +2816,117 @@ fn unify_if_distinct(
 }
 
 #[inline(always)]
-fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
+fn resolve_operator_site(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    errors: &mut Vec<TypeError>,
+    site: &mut OpSite,
+) -> bool {
     use BinOp::*;
 
+    if site.had_error {
+        return false;
+    }
+
+    let mut progress = false;
+    let lhs = find_root(parent, site.lhs);
+    let rhs = find_root(parent, site.rhs);
+    let out = find_root(parent, site.output);
+    let op = site.op;
+
+    // ----------------------------------------------------
+    // 1) Early legality rejection (single helper)
+    // ----------------------------------------------------
+
+    let lhs_ok = cluster_operator_applicable(store, parent, cluster, op, lhs);
+    let rhs_ok = cluster_operator_applicable(store, parent, cluster, op, rhs);
+
+    if lhs_ok == Some(false) || rhs_ok == Some(false) {
+        errors.push(TypeError::ValuesContradict {
+            expectation_reason: "operator cannot apply to this type",
+            site: site.loc,
+            found: site.lhs_val,
+            expected_place: site.rhs_val,
+            clash: TypeClash {
+                found: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
+                wanted: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
+            },
+        });
+        site.had_error = true;
+        return false;
+    }
+
+    // ----------------------------------------------------
+    // 2) Equality / comparisons
+    //
+    // NOTE:
+    // - operand equality is already enforced in gather
+    // - output = bool is already enforced in gather
+    // ----------------------------------------------------
+    if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
+        return false;
+    }
+
+    // ----------------------------------------------------
+    // 3) Arithmetic / bitwise
+    //
+    // - Only unify once both sides are known numeric
+    // - Pointer arithmetic intentionally deferred
+    // ----------------------------------------------------
+
+    let lhs_numeric = matches!(cluster_is_int_like(store, parent, cluster, lhs), Some(true))
+        || matches!(cluster_is_float_like(store, parent, cluster, lhs), Some(true));
+
+    let rhs_numeric = matches!(cluster_is_int_like(store, parent, cluster, rhs), Some(true))
+        || matches!(cluster_is_float_like(store, parent, cluster, rhs), Some(true));
+
+    if !(lhs_numeric && rhs_numeric) {
+        //TODO handle other cases
+        return false;
+    }
+
+    // (a) unify operands
+    match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, lhs, rhs) {
+        Ok(changed) => progress |= changed,
+        Err(clash) => {
+            errors.push(TypeError::ValuesContradict {
+                expectation_reason: "binary operator requires operands of the same type",
+                site: site.loc,
+                found: site.lhs_val,
+                expected_place: site.rhs_val,
+                clash,
+            });
+            site.had_error = true;
+            return false;
+        }
+    }
+
+    let operand = find_root(parent, lhs);
+
+    // (b) unify output with operand
+    match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, operand) {
+        Ok(changed) => progress |= changed,
+        Err(clash) => {
+            errors.push(TypeError::ValuesContradict {
+                expectation_reason: "operator result type must match operand type",
+                site: site.loc,
+                found: site.lhs_val,
+                expected_place: site.rhs_val,
+                clash,
+            });
+            site.had_error = true;
+            return false;
+        }
+    }
+
+    progress
+}
+
+#[inline(always)]
+fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     let mut progress = false;
     let (store, parent, cluster, func_defs, struct_infers, op_sites, errors) = (
         &mut ctx.store,
@@ -2809,104 +2939,15 @@ fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     );
 
     for site in op_sites.iter_mut() {
-        if site.had_error {
-            continue;
-        }
-        let lhs = find_root(parent, site.lhs);
-        let rhs = find_root(parent, site.rhs);
-        let out = find_root(parent, site.output);
-        let op = site.op;
-
-        // ----------------------------------------------------
-        // 1) Early legality rejection (single helper)
-        // ----------------------------------------------------
-
-        let lhs_ok = cluster_operator_applicable(store, parent, cluster, op, lhs);
-        let rhs_ok = cluster_operator_applicable(store, parent, cluster, op, rhs);
-
-        if lhs_ok == Some(false) || rhs_ok == Some(false) {
-            errors.push(TypeError::ValuesContradict {
-                expectation_reason: "operator cannot apply to this type",
-                site: site.loc,
-                    found: site.lhs_val,
-                    expected_place: site.rhs_val,
-                    clash: TypeClash {
-                        found: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
-                        wanted: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
-                    },
-                });
-            site.had_error = true;
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // 2) Equality / comparisons
-        //
-        // NOTE:
-        // - operand equality is already enforced in gather
-        // - output = bool is already enforced in gather
-        // ----------------------------------------------------
-        if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // 3) Arithmetic / bitwise
-        //
-        // - Only unify once both sides are known numeric
-        // - Pointer arithmetic intentionally deferred
-        // ----------------------------------------------------
-
-        let lhs_numeric = matches!(cluster_is_int_like(store, parent, cluster, lhs), Some(true))
-            || matches!(
-                cluster_is_float_like(store, parent, cluster, lhs),
-                Some(true)
-            );
-
-        let rhs_numeric = matches!(cluster_is_int_like(store, parent, cluster, rhs), Some(true))
-            || matches!(
-                cluster_is_float_like(store, parent, cluster, rhs),
-                Some(true)
-            );
-
-        if !(lhs_numeric && rhs_numeric) {
-            //TODO handle other cases
-            continue;
-        }
-
-        // (a) unify operands
-        match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, lhs, rhs) {
-            Ok(changed) => progress |= changed,
-            Err(clash) => {
-                errors.push(TypeError::ValuesContradict {
-                    expectation_reason: "binary operator requires operands of the same type",
-                    site: site.loc,
-                    found: site.lhs_val,
-                    expected_place: site.rhs_val,
-                    clash,
-                });
-                site.had_error = true;
-                continue;
-            }
-        }
-
-        let operand = find_root(parent, lhs);
-
-        // (b) unify output with operand
-        match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, operand) {
-            Ok(changed) => progress |= changed,
-            Err(clash) => {
-                errors.push(TypeError::ValuesContradict {
-                    expectation_reason: "operator result type must match operand type",
-                    site: site.loc,
-                    found: site.lhs_val,
-                    expected_place: site.rhs_val,
-                    clash,
-                });
-                site.had_error = true;
-                continue;
-            }
-        }
+        progress |= resolve_operator_site(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            errors,
+            site,
+        );
     }
 
     progress
