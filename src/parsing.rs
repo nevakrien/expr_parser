@@ -294,9 +294,7 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
         }
         "|>" => (120, 121),
 
-        // cast / annotation-ish
-        "as" => (200, 201),
-        ":" => (210, 211),
+
 
         // logical
         "||" => (300, 301),
@@ -316,6 +314,10 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
         // arithmetic
         "+" | "-" => (700, 701),
         "*" | "/" | "%" => (800, 801),
+
+        // cast / annotation-ish
+        "as" => (820, 821),
+        ":" => (830, 831),
 
         "." | "::" | "->" => (BP_PATH, BP_PATH + 1),
 

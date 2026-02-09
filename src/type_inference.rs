@@ -2829,12 +2829,72 @@ fn compile_type_expr<G: GlobalHandler>(ctx: &mut InferState<G>, texpr: TExpId) -
         TypeExpr::Wildcard => ctx.new_cluster(),
 
         TypeExpr::Struct(def) => compile_struct_type::<false, G>(ctx, texpr, def),
+        TypeExpr::Index { base, args } => {
+            let base_cluster = compile_type_expr(ctx, base);
+            let generics = args
+                .ids()
+                .map(|arg| compile_type_expr(ctx, arg))
+                .collect::<Vec<_>>();
+
+            let sid = resolve_struct_id_from_cluster(ctx, base_cluster).or_else(|| {
+                match ctx.program.type_expr(base) {
+                    TypeExpr::NameRef(name) => resolve_struct_id_from_name(ctx, name),
+                    _ => None,
+                }
+            });
+
+            let Some(sid) = sid else {
+                let loc = ctx.program.type_expr_loc(texpr);
+                ctx.errors.push(TypeError::Simple {
+                    loc,
+                    message: "type specialization expects a struct type",
+                });
+                return ctx.new_cluster();
+            };
+
+            let expected = ctx.store.struct_value(sid).gen_count;
+            if generics.len() != expected {
+                let loc = ctx.program.type_expr_loc(texpr);
+                ctx.errors.push(TypeError::Simple {
+                    loc,
+                    message: "wrong number of generic arguments for struct type",
+                });
+                return ctx.new_cluster();
+            }
+
+            ctx.new_struct_instance(sid, generics)
+        }
         _ => {
             let c = ctx.new_cluster();
             ctx.push_error(TypeError::ExpectedTypeExpr { type_expr: texpr });
             c
         }
     }
+}
+
+fn resolve_struct_id_from_cluster<G: GlobalHandler>(
+    ctx: &mut InferState<G>,
+    base: CId,
+) -> Option<StructId> {
+    let root = find_root(&mut ctx.parent, base);
+    match ctx.cluster[root].state {
+        ResolveKind::Solved(t) => match ctx.store.type_value(t) {
+            TypeValue::Struct { id, generics: _ } => Some(*id),
+            _ => None,
+        },
+        ResolveKind::Struct(call) => Some(ctx.struct_infers[call.0].sid),
+        _ => None,
+    }
+}
+
+fn resolve_struct_id_from_name<G: GlobalHandler>(ctx: &InferState<G>, name: NameId) -> Option<StructId> {
+    let Some(Defined::Type(texp)) = ctx.program.definitions.get(&name) else {
+        return None;
+    };
+    ctx.struct_defs
+        .iter()
+        .find(|def| def.loc == *texp)
+        .map(|def| def.sid)
 }
 
 fn gather_func_signature<const ALLOW_GENERICS: bool, G: GlobalHandler>(

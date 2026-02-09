@@ -210,3 +210,8 @@ the improvements are statistically significant with much tighter variance on the
 ### flattening the ir tree
 after flatterning the ir tree we cut from around 13-12 ms to 11-10 which is a semi signigicant imrpvoment. 
 this was while till keeping some heap
+
+
+### typechecker benchmarks
+cargo run --release --example generate_typecheck_benchmark_data -- typecheck_benchmark_data.txt 100000
+cargo run --release --example file_typecheck_benchmark -- typecheck_benchmark_data.txt
