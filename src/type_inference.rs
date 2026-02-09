@@ -13,7 +13,7 @@ use crate::ir::VarKind;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::StructLike;
 use crate::ir::{
-    AssignOp, BinOp, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, ValId,
+    AssignOp, BinOp,UnOp, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, ValId,
     Value,
 };
 use crate::parsing::Loc;
@@ -894,7 +894,8 @@ struct InferState<'a, G: GlobalHandler> {
     cluster: ClusterVec<Cluster>,
 
     //requirments
-    op_sites: Vec<OpSite>,
+    bin_op_sites: Vec<BinOpSite>,
+    un_op_sites: Vec<UnOpSite>,
     func_defs: Vec<FuncInfer>,
     struct_defs: Vec<StructDef>,
     struct_infers: Vec<StructInfer>,
@@ -981,7 +982,7 @@ struct ComplexCallSite {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct OpSite {
+struct BinOpSite {
     loc: ValId,
     op: BinOp,
     lhs_val: ValId,
@@ -991,6 +992,17 @@ struct OpSite {
     output: CId,
     had_error: bool,
 }
+
+#[derive(Debug, Clone, Copy)]
+struct UnOpSite {
+    loc: ValId,
+    op: UnOp,
+    val: ValId,
+    input: CId,
+    output: CId,
+    had_error: bool,
+}
+
 
 fn new_solved(
     parent: &mut ClusterVec<CId>,
@@ -1024,7 +1036,8 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             names: IdHashMap::default(),
             parent: ClusterVec::new(),
             cluster: ClusterVec::new(),
-            op_sites: Vec::new(),
+            bin_op_sites: Vec::new(),
+            un_op_sites: Vec::new(),
             func_defs: Vec::new(),
             struct_defs: Vec::new(),
             struct_infers: Vec::new(),
@@ -1046,7 +1059,8 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             names,
             parent,
             cluster,
-            op_sites,
+            bin_op_sites,
+            un_op_sites,
             func_defs,
             struct_defs,
             struct_infers,
@@ -1066,7 +1080,8 @@ impl<'a, G: GlobalHandler> InferState<'a, G> {
             names,
             parent,
             cluster,
-            op_sites,
+            bin_op_sites,
+            un_op_sites,
             func_defs,
             struct_defs,
             struct_infers,
@@ -2055,16 +2070,16 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
 
             ctx.bind_val(v, output);
             {
-                let (store, parent, cluster, func_defs, struct_infers, op_sites, errors) = (
+                let (store, parent, cluster, func_defs, struct_infers, bin_op_sites, errors) = (
                     &mut ctx.store,
                     &mut ctx.parent,
                     &mut ctx.cluster,
                     &mut ctx.func_defs,
                     &mut ctx.struct_infers,
-                    &mut ctx.op_sites,
+                    &mut ctx.bin_op_sites,
                     &mut ctx.errors,
                 );
-                op_sites.push(OpSite {
+                bin_op_sites.push(BinOpSite {
                     loc: v,
                     op,
                     lhs_val: lhs,
@@ -2074,8 +2089,48 @@ fn gather_constraints<G: GlobalHandler>(ctx: &mut InferState<G>, v: ValId) -> CI
                     output,
                     had_error: false,
                 });
-                if let Some(site) = op_sites.last_mut() {
+                if let Some(site) = bin_op_sites.last_mut() {
                     let _ = resolve_operator_site(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        errors,
+                        site,
+                    );
+                }
+            }
+            output
+        }
+        Value::UnOp { op, value } => {
+            let input = gather_constraints(ctx, value);
+            let output = match op {
+                UnOp::Not => ctx.new_solved(BuiltinType::Bool.into()),
+                _ => ctx.new_cluster(),
+            };
+
+            ctx.bind_val(v, output);
+            {
+                let (store, parent, cluster, func_defs, struct_infers, un_op_sites, errors) = (
+                    &mut ctx.store,
+                    &mut ctx.parent,
+                    &mut ctx.cluster,
+                    &mut ctx.func_defs,
+                    &mut ctx.struct_infers,
+                    &mut ctx.un_op_sites,
+                    &mut ctx.errors,
+                );
+                un_op_sites.push(UnOpSite {
+                    loc: v,
+                    op,
+                    val: value,
+                    input,
+                    output,
+                    had_error: false,
+                });
+                if let Some(site) = un_op_sites.last_mut() {
+                    let _ = resolve_unary_operator_site(
                         store,
                         parent,
                         cluster,
@@ -2763,6 +2818,24 @@ fn cluster_is_float_like(
     }
 }
 
+#[inline(always)]
+fn cluster_is_bool(
+    store: &TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    cid: CId,
+) -> Option<bool> {
+    let root = find_root(parent, cid);
+    match cluster[root].state {
+        ResolveKind::Solved(t) => Some(store.as_builtin(t) == Some(BuiltinType::Bool)),
+        ResolveKind::IntLike => Some(false),
+        ResolveKind::FloatLike => Some(false),
+        ResolveKind::Func(_) => Some(false),
+        ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Nothing => None,
+    }
+}
+
 /// Operator legality, tri-state:
 ///   Some(true)  = definitely allowed
 ///   Some(false) = definitely illegal
@@ -2823,7 +2896,7 @@ fn resolve_operator_site(
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
     errors: &mut Vec<TypeError>,
-    site: &mut OpSite,
+    site: &mut BinOpSite,
 ) -> bool {
     use BinOp::*;
 
@@ -2926,20 +2999,180 @@ fn resolve_operator_site(
 }
 
 #[inline(always)]
+fn resolve_unary_operator_site(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    errors: &mut Vec<TypeError>,
+    site: &mut UnOpSite,
+) -> bool {
+    use UnOp::*;
+
+    if site.had_error {
+        return false;
+    }
+
+    let mut progress = false;
+    let input = find_root(parent, site.input);
+    let out = find_root(parent, site.output);
+    let op = site.op;
+
+    match op {
+        Not => {
+            if let Some(false) = cluster_is_bool(store, parent, cluster, input) {
+                errors.push(TypeError::ValuesContradict {
+                    expectation_reason: "logical not requires a bool operand",
+                    site: site.loc,
+                    found: site.val,
+                    expected_place: site.loc,
+                    clash: TypeClash {
+                        found: extract_bad_type(store, parent, cluster, func_defs, struct_infers, input),
+                        wanted: Some(BadTypeId(BuiltinType::Bool.into())),
+                    },
+                });
+                site.had_error = true;
+                return false;
+            }
+            match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
+                Ok(changed) => progress |= changed,
+                Err(clash) => {
+                    errors.push(TypeError::ValuesContradict {
+                        expectation_reason: "logical not requires a bool operand",
+                        site: site.loc,
+                        found: site.val,
+                        expected_place: site.loc,
+                        clash,
+                    });
+                    site.had_error = true;
+                    return false;
+                }
+            }
+        }
+        Neg => {
+            match (
+                cluster_is_int_like(store, parent, cluster, input),
+                cluster_is_float_like(store, parent, cluster, input),
+            ) {
+                (Some(true), _) | (_, Some(true)) => {}
+                (Some(false), Some(false)) => {
+                    errors.push(TypeError::ValuesContradict {
+                        expectation_reason: "negation requires a numeric operand",
+                        site: site.loc,
+                        found: site.val,
+                        expected_place: site.loc,
+                        clash: TypeClash {
+                            found: extract_bad_type(
+                                store,
+                                parent,
+                                cluster,
+                                func_defs,
+                                struct_infers,
+                                input,
+                            ),
+                            wanted: None,
+                        },
+                    });
+                    site.had_error = true;
+                    return false;
+                }
+                _ => return false,
+            }
+
+            match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
+                Ok(changed) => progress |= changed,
+                Err(clash) => {
+                    errors.push(TypeError::ValuesContradict {
+                        expectation_reason: "negation requires operand and result types match",
+                        site: site.loc,
+                        found: site.val,
+                        expected_place: site.loc,
+                        clash,
+                    });
+                    site.had_error = true;
+                    return false;
+                }
+            }
+        }
+        BitNot => {
+            match cluster_is_int_like(store, parent, cluster, input) {
+                Some(true) => {}
+                Some(false) => {
+                    errors.push(TypeError::ValuesContradict {
+                        expectation_reason: "bitwise not requires an integer operand",
+                        site: site.loc,
+                        found: site.val,
+                        expected_place: site.loc,
+                        clash: TypeClash {
+                            found: extract_bad_type(
+                                store,
+                                parent,
+                                cluster,
+                                func_defs,
+                                struct_infers,
+                                input,
+                            ),
+                            wanted: None,
+                        },
+                    });
+                    site.had_error = true;
+                    return false;
+                }
+                None => return false,
+            }
+
+            match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
+                Ok(changed) => progress |= changed,
+                Err(clash) => {
+                    errors.push(TypeError::ValuesContradict {
+                        expectation_reason: "bitwise not requires operand and result types match",
+                        site: site.loc,
+                        found: site.val,
+                        expected_place: site.loc,
+                        clash,
+                    });
+                    site.had_error = true;
+                    return false;
+                }
+            }
+        }
+        Deref | AddrOf(_) => {
+            todo!("unary operator typing not implemented yet");
+        }
+    }
+
+    progress
+}
+
+#[inline(always)]
 fn resolve_operator_types<G: GlobalHandler>(ctx: &mut InferState<G>) -> bool {
     let mut progress = false;
-    let (store, parent, cluster, func_defs, struct_infers, op_sites, errors) = (
+    let (store, parent, cluster, func_defs, struct_infers, bin_op_sites, un_op_sites, errors) = (
         &mut ctx.store,
         &mut ctx.parent,
         &mut ctx.cluster,
         &mut ctx.func_defs,
         &mut ctx.struct_infers,
-        &mut ctx.op_sites,
+        &mut ctx.bin_op_sites,
+        &mut ctx.un_op_sites,
         &mut ctx.errors,
     );
 
-    for site in op_sites.iter_mut() {
+    for site in bin_op_sites.iter_mut() {
         progress |= resolve_operator_site(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            errors,
+            site,
+        );
+    }
+
+    for site in un_op_sites.iter_mut() {
+        progress |= resolve_unary_operator_site(
             store,
             parent,
             cluster,
