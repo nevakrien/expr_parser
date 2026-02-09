@@ -88,6 +88,36 @@ drop(Point) = fn(self) {}
 Point() = fn()->Point {Point{0,0}}
 ```
 
+# Type System
+currently we have basic generics and automatic infrence, and we would have some level of operator overloading.
+with everything being required to be monomorphic in the end so we can get C++/Rust level inlining everywhere.
+
+not all the features are implemented but we are slowly adding things to the languge.
+
+we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being infered.
+this keeps the system simple enough with union-find rules. for example all casts are assumed to always be legal for unioning purposes, and they are later verified to be what we think it should be.
+
+this already lets us have a smart pointer with something like this 
+```
+Box = struct[T]{ptr:*T};
+Box.__free = fn[T](b:&mut Box[T]){free(b->ptr as *void)}
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+```
+and we can do borrow checking on this and lower to something with destructive moves.
+
+we can even add proper full overloading to this using the ideas from https://dl.acm.org/doi/10.1145/3763168 
+which would boil down to making an empty type to throw at hindly miller. and then verifiying the overloads it could be later.
+
+also note that traits like things can potentially be implemented like C++ templates so for example.
+```
+clone=fn[T:_](x:&T)->T;
+clone=fn[int](x:&int)->int *x
+Vec.clone = fn[T:clone,Vec[T]](v:&Vec[T])->Vec[T]{...}
+```
+which because they all share the same generic signature. we can solve clone as if it works for all T.
+then later verify that clone indeed exists for the type we are cloning. and if it is not we emit a type error.
+
 # Performance
 this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.
 
