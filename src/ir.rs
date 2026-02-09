@@ -238,8 +238,6 @@ pub enum UnOp {
     Neg,                     // -x
     Not,                     // !x
     BitNot,                  // ~x
-    Deref,                   // *x
-    AddrOf(Option<VarKind>), // &x
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -325,6 +323,8 @@ pub enum Value {
         op: UnOp,
         value: ValId,
     },
+    Deref(ValId),                  // *x
+    AddrOf(ValId,Option<VarKind>), // &x
 
     Construct(Call),
 
@@ -1111,7 +1111,10 @@ impl Program {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
             "~" => UnOp::BitNot,
-            "*" => UnOp::Deref,
+            "*" => {
+                let rhs = self.lower_value(rhs_expr)?;
+                return Ok(Value::Deref(rhs))
+            },
             "&" => {
                 let mut kind = None;
                 if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value {
@@ -1127,7 +1130,9 @@ impl Program {
                         std::mem::swap(&mut rhs_expr, &mut inner);
                     }
                 }
-                UnOp::AddrOf(kind)
+
+                let rhs = self.lower_value(rhs_expr)?;
+                return Ok(Value::AddrOf(rhs, kind))
             }
 
             "++" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Inc), vec![rhs_expr]),

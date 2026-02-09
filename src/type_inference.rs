@@ -18,7 +18,7 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    StrId, ADDR_STR, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_STR, DIV_STR,
+    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR,
     EQ_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR,
     SHR_STR, SUB_STR,
 };
@@ -3075,8 +3075,6 @@ fn un_op_overload_name(op: UnOp) -> StrId {
         UnOp::Neg => NEG_STR,
         UnOp::Not => NOT_STR,
         UnOp::BitNot => BITNOT_STR,
-        UnOp::Deref => DEREF_STR,
-        UnOp::AddrOf(_) => ADDR_STR,
     }
 }
 
@@ -3413,9 +3411,6 @@ fn resolve_unary_operator_site(
                     return false;
                 }
             }
-        }
-        Deref | AddrOf(_) => {
-            todo!("unary operator typing not implemented yet");
         }
     }
 

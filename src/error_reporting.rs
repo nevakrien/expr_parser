@@ -643,10 +643,10 @@ fn un_op_symbol(op: UnOp) -> &'static str {
         UnOp::Neg => "-",
         UnOp::Not => "!",
         UnOp::BitNot => "~",
-        UnOp::Deref => "*",
-        UnOp::AddrOf(None) => "&",
-        UnOp::AddrOf(Some(VarKind::Mut)) => "&mut",
-        UnOp::AddrOf(Some(VarKind::Const)) => "&const",
+        // UnOp::Deref => "*",
+        // UnOp::AddrOf(None) => "&",
+        // UnOp::AddrOf(Some(VarKind::Mut)) => "&mut",
+        // UnOp::AddrOf(Some(VarKind::Const)) => "&const",
     }
 }
 
