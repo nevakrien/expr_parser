@@ -233,13 +233,13 @@ pub enum BinOp {
 /// Invariant:
 /// - No control flow
 /// - Operand is evaluated exactly once
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum UnOp {
     Neg,    // -x
     Not,    // !x
     BitNot, // ~x
     Deref,  // *x
-    AddrOf, // &x
+    AddrOf(Option<VarKind>), // &x
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -1102,15 +1102,37 @@ impl Program {
         op: Located<&'static str>,
         items: Vec<LExpr>,
     ) -> CResult<Value> {
+        if items.len() != 1 {
+            todo!("this should not be a hard error")
+        }
+
+        let mut rhs_expr = items.into_iter().next().unwrap();
         let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
             "~" => UnOp::BitNot,
             "*" => UnOp::Deref,
-            "&" => UnOp::AddrOf,
+            "&" => {
+                let mut kind = None;
+                if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value {
+                    if matches!(inner_op.value, "mut" | "const") {
+                        debug_assert_eq!(inner_items.len(),1); 
+                        kind = Some(if inner_op.value == "mut" {
+                            VarKind::Mut
+                        } else {
+                            VarKind::Const
+                        });
 
-            "++" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Inc), items),
-            "--" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Dec), items),
+                        let mut inner = inner_items.pop().unwrap();
+                        std::mem::swap(&mut rhs_expr,&mut inner);
+
+                    }
+                }
+                UnOp::AddrOf(kind)
+            }
+
+            "++" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Inc), vec![rhs_expr]),
+            "--" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Dec), vec![rhs_expr]),
 
             _ => {
                 return Err(CompileError::UnsupportedForm {
@@ -1122,11 +1144,7 @@ impl Program {
             }
         };
 
-        if items.len() != 1 {
-            panic!("prefix operator `{}` with {} operands", op, items.len());
-        }
-
-        let rhs = self.lower_value(items.into_iter().next().unwrap())?;
+        let rhs = self.lower_value(rhs_expr)?;
 
         let _ = loc;
         Ok(Value::UnOp {
@@ -1160,9 +1178,7 @@ impl Program {
 
     #[inline(always)]
     fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<Value> {
-        if items.len() != 1 {
-            panic!("prefix operator with {} operands", items.len());
-        }
+        debug_assert_eq!(items.len(),1);
 
         let target = self.lower_value(items.pop().unwrap())?;
 
@@ -1175,9 +1191,7 @@ impl Program {
 
     #[inline(always)]
     fn lower_inc_dec_postfix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<Value> {
-        if items.len() != 1 {
-            panic!("postfix operator with {} operands", items.len());
-        }
+        debug_assert_eq!(items.len(),1);
 
         let target = self.lower_value(items.pop().unwrap())?;
 
