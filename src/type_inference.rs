@@ -124,7 +124,7 @@ pub enum TypeValue {
         params: Vec<TypeId>,
         ret: TypeId,
     },
-    Ptr(TypeId),
+    Ptr{tgt:TypeId,raw:bool,mutable:bool},
     WithGenerics {
         count: usize,
         ///note that the body can refer to external generics
@@ -365,9 +365,17 @@ impl TypeStore {
                     self.get_type_string_nested(program, *ret, gen_count)
                 )
             }
-            TypeValue::Ptr(inner) => {
-                format!("*{}", self.get_type_string_nested(program, *inner, gen_count))
+            TypeValue::Ptr { tgt, raw, mutable } => {
+                let inner = self.get_type_string_nested(program, *tgt, gen_count);
+
+                match (*raw, *mutable) {
+                    (true, true) => format!("*mut {inner}"),
+                    (true, false) => format!("*{inner}"),
+                    (false, true) => format!("&mut {inner}"),
+                    (false, false) => format!("&{inner}"),
+                }
             }
+
             TypeValue::Array(inner,n) => {
                 format!("[{};{n}]", self.get_type_string_nested(program, *inner, gen_count))
             }

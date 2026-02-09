@@ -213,7 +213,7 @@ impl<'a> LayoutComputer<'a> {
                 size: self.target.fn_ptr_size,
                 align: self.target.fn_ptr_align,
             }),
-            TypeValue::Ptr(_) => Ok(Layout {
+            TypeValue::Ptr{..} => Ok(Layout {
                 size: self.target.pointer_size,
                 align: self.target.pointer_align,
             }),
@@ -445,7 +445,7 @@ mod tests {
         let next = name(&mut program, "next");
         let (a_sid, a_tid) = store.simple_struct(None, vec![(next, UNKNOWN_TYPE)]);
 
-        let ptr_a = store.intern(TypeValue::Ptr(a_tid));
+        let ptr_a = store.intern(TypeValue::Ptr{tgt:a_tid,raw:true,mutable:true});
         store.set_struct_fields(a_sid, vec![(next, ptr_a)]);
 
         let target = TargetLayout::for_pointer_width(64).unwrap();
