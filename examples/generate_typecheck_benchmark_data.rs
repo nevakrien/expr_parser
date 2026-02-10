@@ -60,10 +60,10 @@ fn write_int_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: &s
         line_count,
         &format!("{name} = fn(a:int, b:int)->int {{"),
     );
-    write_line(writer, line_count, "    let x:int = inc(a);");
-    write_line(writer, line_count, "    let y:int = bitmix(x, b);");
-    write_line(writer, line_count, "    let z:int = add(y, 3:int);");
-    write_line(writer, line_count, "    let w:bool = (z & 1:int) == 0:int;");
+    write_line(writer, line_count, "    let x = inc(a);");
+    write_line(writer, line_count, "    let y = bitmix(x, b);");
+    write_line(writer, line_count, "    let z = add(y, 3:int);");
+    write_line(writer, line_count, "    let w = (z & 1) == 0;");
     write_line(writer, line_count, "    if w { z } else { dec(z) }");
     write_line(writer, line_count, "};");
 }
@@ -74,10 +74,10 @@ fn write_float_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: 
         line_count,
         &format!("{name} = fn(a:float, b:float)->float {{"),
     );
-    write_line(writer, line_count, "    let x:float = add(a, b);");
-    write_line(writer, line_count, "    let y:float = mul(x, 1.25:float);");
-    write_line(writer, line_count, "    let z:int = to_int(y);");
-    write_line(writer, line_count, "    let w:float = to_float(z);");
+    write_line(writer, line_count, "    let x = add(a, b);");
+    write_line(writer, line_count, "    let y = mul(x, 1.25:float);");
+    write_line(writer, line_count, "    let z = to_int(y);");
+    write_line(writer, line_count, "    let w = to_float(z);");
     write_line(writer, line_count, "    add(w, y)");
     write_line(writer, line_count, "};");
 }
@@ -88,14 +88,14 @@ fn write_mixed_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: 
         line_count,
         &format!("{name} = fn(a:int, b:float)->float {{"),
     );
-    write_line(writer, line_count, "    let x:float = to_float(a);");
-    write_line(writer, line_count, "    let y:float = add(x, b);");
-    write_line(writer, line_count, "    let z:int = to_int(y);");
-    write_line(writer, line_count, "    let q:int = id(z);");
+    write_line(writer, line_count, "    let x = to_float(a);");
+    write_line(writer, line_count, "    let y = add(x, b);");
+    write_line(writer, line_count, "    let z = to_int(y);");
+    write_line(writer, line_count, "    let q = id(z);");
     write_line(
         writer,
         line_count,
-        "    let r:int = (fn(x:int)->int { x + 1:int })(q);",
+        "    let r = (fn(x)->int { x + 1 })(q);",
     );
     write_line(writer, line_count, "    to_float(r)");
     write_line(writer, line_count, "};");
@@ -116,7 +116,7 @@ fn write_pair_fn(writer: &mut BufWriter<File>, line_count: &mut usize, name: &st
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:int, b:float) {{"),
+        &format!("{name} = fn(a:int, b:float)->Pair[int,float] {{"),
     );
     write_line(writer, line_count, "    let p = Pair{ a = a, b = b };");
     write_line(writer, line_count, "    let _ = wrap(a);");
