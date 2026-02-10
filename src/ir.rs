@@ -186,7 +186,7 @@ pub enum Literal {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum AccessKind {
     Dot,
-    Type,
+    Static,
     Ptr,
 }
 
@@ -975,7 +975,7 @@ impl Program {
 
         let kind = match op.value {
             "." => AccessKind::Dot,
-            "::" => AccessKind::Type,
+            "::" => AccessKind::Static,
             "->" => AccessKind::Ptr,
             _ => panic!("unsupported access operator `{}`", op.value),
         };
@@ -1883,7 +1883,7 @@ mod lowering_tests {
 
         match program.value(statements[3]) {
             Value::Access { base, name, kind } => {
-                assert_eq!(kind, AccessKind::Type);
+                assert_eq!(kind, AccessKind::Static);
                 match program.value(base) {
                     Value::NameRef(id) => assert_eq!(id, t_id),
                     _ => panic!("expected type base name"),

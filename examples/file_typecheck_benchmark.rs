@@ -1,10 +1,7 @@
 use expr_parser::type_inference::run_typechecker;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
-use expr_parser::program::{Defined, Program};
-use expr_parser::type_inference::{
-    infer_global_types, infer_value_internals, SolvedTypes, TypeStore,
-};
+use expr_parser::program::Program;
 use std::time::Instant;
 
 mod mapped_file;

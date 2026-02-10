@@ -9,6 +9,8 @@
 //
 // ================================================================
 
+use std::arch::asm;
+use crate::ir::AccessKind;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::StructLike;
@@ -825,6 +827,7 @@ pub fn infer_global_types<'a>(
         Err(ctx.errors)
     }
 }
+
 
 pub fn infer_value_internals<'a>(
     program: &'a Program,
@@ -1968,6 +1971,33 @@ fn specialize_type(
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
+fn global_to_specilized_local(ctx: &mut InferState, def_val: &ValId,v:ValId)->CId{
+    let Some(t) = ctx.ans.type_of(*def_val) else {
+        let loc = ctx.program.value_loc(v);
+        let c = ctx.new_cluster();
+        ctx.errors.push(TypeError::Simple {
+            loc,
+            message: "global value has no inferred type",
+        });
+        ctx.bind_val(v, c);
+        return c;
+    };
+
+    //TODO this check is actually CURRENTLY non exustive
+    //we wana make sure that we add a good way to run this
+    //would be done as some normlization function somewhere
+    //structs especially are weird with this
+    if let TypeValue::WithGenerics { count, body } = *ctx.store.type_value(t) {
+        let gens: Vec<_> = (0..count).map(|_| ctx.new_cluster()).collect();
+        let ans = specialize_type(ctx, body, &gens, v);
+        ctx.bind_val(v, ans);
+        return ans;
+    } else {
+        let ans = new_solved(&mut ctx.parent, &mut ctx.cluster, t);
+        bind_val(&mut ctx.val_cluster, *def_val, ans);
+        ans
+    }
+}
 
 fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
     match ctx.program.value(v) {
@@ -2004,9 +2034,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         }
 
         Value::NameRef(n) => {
-            if let Some(&c) = ctx.names.get(&n) {
+            if let Some(base) = ctx.names.get_mut(&n) {
                 //names might refer to something that us generic in the local scope...
                 //so this here is actually wrong for when users define local genric stuff
+                let c = find_root(&mut ctx.parent,*base);
+                *base=c;
                 ctx.bind_val(v, c);
                 return c;
             }
@@ -2023,31 +2055,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     ans
                 }
                 Defined::Func(def_val) => {
-                    let Some(t) = ctx.ans.type_of(*def_val) else {
-                        let loc = ctx.program.value_loc(v);
-                        let c = ctx.new_cluster();
-                        ctx.errors.push(TypeError::Simple {
-                            loc,
-                            message: "global value has no inferred type",
-                        });
-                        ctx.bind_val(v, c);
-                        return c;
-                    };
-
-                    //TODO this check is actually CURRENTLY non exustive
-                    //we wana make sure that we add a good way to run this
-                    //would be done as some normlization function somewhere
-                    //structs especially are weird with this
-                    if let TypeValue::WithGenerics { count, body } = *ctx.store.type_value(t) {
-                        let gens: Vec<_> = (0..count).map(|_| ctx.new_cluster()).collect();
-                        let ans = specialize_type(ctx, body, &gens, v);
-                        ctx.bind_val(v, ans);
-                        return ans;
-                    } else {
-                        let ans = new_solved(&mut ctx.parent, &mut ctx.cluster, t);
-                        bind_val(&mut ctx.val_cluster, *def_val, ans);
-                        ans
-                    }
+                    global_to_specilized_local(ctx,def_val,v)
                 }
                 _ => todo!("global name resolution / overload sets"),
             }
@@ -2612,6 +2620,74 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let ans = ctx.new_struct_instance(sid, generic_clusters);
             ctx.bind_val(v, ans);
             return ans;
+        }
+
+        Value::Access { base, name, kind }=>{
+            let b = gather_constraints(ctx,base);
+            let b = find_root(&mut ctx.parent,b);
+
+            //TODO we currently just do structs
+            match ctx.cluster[b].state {
+                ResolveKind::Nothing=>{
+                    todo!("put access into some sort of queue which we later check for a solve")
+                },
+                ResolveKind::Solved(t)=>{
+                    let TypeValue::Struct { id, generics }=ctx.store.type_value(t) else {
+                        todo!()
+                    };
+                    let r = ctx.store.struct_value(*id);
+                    if let Some(&(ref _n,mut x)) = r.fields.iter().find(|(n,_x)| ctx.program.name_str_id(*n)==name){
+                        match kind {
+                            AccessKind::Dot | AccessKind::Ptr =>{}
+                            AccessKind::Static => todo!("some error on it not making sense"),
+                        }
+                        if let TypeValue::Generic(i) = ctx.store.type_value(x){
+                            x=generics[i.0];
+                        };
+                        let ans = ctx.new_solved(x);
+                        ctx.bind_val(v,ans);
+                        return ans;
+                    }
+
+                    let Some(sname) = r.name else {
+                        unreachable!("internal error unset structname")
+                    };
+                    let Some(method) = ctx.program.member_methods[&sname].get(&name) else {
+                        todo!()
+                    };
+
+                    let _method = global_to_specilized_local(ctx,method,v);
+
+                    //in the common case the signature is fn(self:&something S,...) and we need to
+                    //syntax sugar struct as the first argument by changing it to fn(...)
+                    //if we do this the type of that self argument needs to be somehow documented...
+                    //this is fine to do in place because global_to_specilized_local only makes the 1 cluster
+                    //and it calls specilized which binds no values/patterns
+                    todo!("member methods")
+                }
+                ResolveKind::Struct(rid)=>{
+                    let inf = &ctx.struct_infers[rid.0];
+                    let r = ctx.store.struct_value(inf.sid);
+                    if let Some(&(ref _n,x)) = r.fields.iter().find(|(n,_x)| ctx.program.name_str_id(*n)==name){
+                        match kind {
+                            AccessKind::Dot | AccessKind::Ptr =>{}
+                            AccessKind::Static => todo!("some error on it not making sense"),
+                        }
+
+                        let ans = match ctx.store.type_value(x){
+                            TypeValue::Generic(i)=>{
+                                inf.generics[i.0]
+                            }
+                            _=>ctx.new_solved(x)
+                        };
+                        ctx.bind_val(v,ans);
+                        return ans;
+                    }
+
+                    todo!("member methods")
+                }
+                _ => todo!("emit some sort of error on this making no sense"),
+            }
         }
         _ => panic!("more expressions {:?}", ctx.program.value(v)),
     }
