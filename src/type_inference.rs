@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
@@ -667,6 +668,65 @@ impl TypeClash {
 // Entry points
 // ===================================
 
+///runs the typechecker and reports all errors 
+///the rhs value is the total number of functions checked
+///the lhs value is either the result or the number of errors found
+pub fn run_typechecker(
+    program: &Program,
+    reporter: &mut ErrorReporter,
+) -> Result<(Result<(TypeStore,SolvedTypes),usize>,usize), Box<dyn std::error::Error>> {
+    let mut solved_types = SolvedTypes::new(program);
+    let mut types = TypeStore::new();
+    let mut err_count = 0;
+    let mut function_checked=0;
+
+    if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
+        err_count+=errs.len();
+
+        for e in errs {
+            reporter.report_type_error(program, &types, &e)?;
+        }
+
+        return Ok((Err(err_count),function_checked));
+    }
+
+    for (_n, methods) in program.member_methods.iter() {
+        for (_s,m) in methods.iter(){
+            function_checked+=1;
+
+            let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *m) else {
+                continue;
+            };
+            err_count+=errs.len();
+
+            for e in errs {
+                reporter.report_type_error(program, &types, &e)?;
+            }
+        }
+    }
+
+    for (_, def) in program.definitions.iter() {
+        let Defined::Func(v) = def else {
+            continue;
+        };
+        function_checked+=1;
+        let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *v) else {
+            continue;
+        };
+        err_count+=errs.len();
+
+        for e in errs {
+            reporter.report_type_error(program, &types, &e)?;
+        }
+    }
+
+    if err_count>0{
+        return Ok((Err(err_count),function_checked));
+    }
+
+    Ok((Ok((types,solved_types)),function_checked))
+}
+
 ///this function gathers global typedefs/structs
 ///and just the signature part of global functions
 ///we dont monomorphise here so its important to do so later
@@ -701,6 +761,33 @@ pub fn infer_global_types<'a>(
     main_solver(&mut ctx);
     if !ctx.errors.is_empty() {
         return Err(ctx.errors);
+    }
+
+    for (_n, methods) in program.member_methods.iter() {
+        for (_s,m) in methods.iter(){
+            //each function must solve by itself.
+            //since there isnt a body its fine to solve in order
+            //note that namespace on generics gurntees this works for the most outer scope
+            match ctx.program.value(*m) {
+                Value::Func {
+                    generics,
+                    params,
+                    output_type,
+                    body: _,
+                } => {
+                    let _ =
+                        gather_func_signature::<true>(&mut ctx, *m, generics, params, output_type);
+                }
+                _ => {
+
+                }
+            };
+
+            //solve now so we can monomorphise
+            //this is hacky and would make somewhat weird errors
+            //we need to introduce proper specilization for functions
+            main_solver(&mut ctx);
+        }
     }
 
     for (_n, def) in program.definitions.iter() {
@@ -800,6 +887,7 @@ pub fn infer_value_internals<'a>(
         Err(ctx.errors)
     }
 }
+
 
 ///this is just for tests we PURPOSFULLY ignore the global sig resolution
 fn _infer_value_hacky<'a>(

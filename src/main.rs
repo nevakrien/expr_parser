@@ -1,12 +1,8 @@
+use expr_parser::type_inference::run_typechecker;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::CompileError;
-use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_inference::infer_global_types;
-use expr_parser::type_inference::infer_value_internals;
-use expr_parser::type_inference::SolvedTypes;
-use expr_parser::type_inference::TypeStore;
 use std::fs;
 use std::io::{self, Write};
 
@@ -171,38 +167,7 @@ fn finalize_program(
         return Ok(());
     }
 
-    run_typechecker(program, reporter)?;
-
-    Ok(())
-}
-
-fn run_typechecker(
-    program: &Program,
-    reporter: &mut ErrorReporter,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut types = TypeStore::new();
-    let mut solved_types = SolvedTypes::new(program);
-
-    if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
-        for e in errs {
-            reporter.report_type_error(program, &types, &e)?;
-        }
-
-        return Ok(());
-    }
-
-    for (_, def) in program.definitions.iter() {
-        let Defined::Func(v) = def else {
-            continue;
-        };
-        let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *v) else {
-            continue;
-        };
-
-        for e in errs {
-            reporter.report_type_error(program, &types, &e)?;
-        }
-    }
+    let _ = run_typechecker(program, reporter)?;
 
     Ok(())
 }

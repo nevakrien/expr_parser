@@ -1,3 +1,4 @@
+use expr_parser::type_inference::run_typechecker;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::{Defined, Program};
@@ -46,36 +47,16 @@ fn main() {
         let _ = reporter.report_compile_error(&err);
     }
 
-    let mut functions_checked = 0usize;
     let mut type_error_count = 0usize;
+    let mut functions_checked = 0usize;
 
     if compile_error_count == 0 {
-        let mut types = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        match infer_global_types(&program, &mut types, &mut solved_types) {
-            Ok(_) => {
-                for (_, def) in program.definitions.iter() {
-                    let Defined::Func(v) = def else {
-                        continue;
-                    };
-                    functions_checked += 1;
-                    if let Err(errs) =
-                        infer_value_internals(&program, &mut types, &mut solved_types, *v)
-                    {
-                        type_error_count += errs.len();
-                        for e in errs {
-                            let _ = reporter.report_type_error(&program, &types, &e);
-                        }
-                    }
-                }
-            }
-            Err(errs) => {
-                type_error_count += errs.len();
-                for e in errs {
-                    let _ = reporter.report_type_error(&program, &types, &e);
-                }
-            }
+        let (r,checked) = run_typechecker(&program,&mut reporter).unwrap();
+        functions_checked+=checked;
+        if let Err(ec) = r {
+            type_error_count+=ec;
         }
+
     }
 
     let duration = start.elapsed();
