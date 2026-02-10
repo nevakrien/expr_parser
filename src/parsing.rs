@@ -269,7 +269,7 @@ const BP_CONSTRUCT: u32 = 750;
 
 const BP_MATCH_ARM: u32 = 90;
 const BP_PATTERN: u32 = 110;
-const BP_PATH: u32 = 850; // ., ->, ::
+const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
 const BP_POSTFIX_INC: u32 = 875;
 const BP_PREFIX: u32 = 900;
@@ -1693,6 +1693,36 @@ mod parse_tests {
                 assert_eq!(args.len(), 3);
             }
             _ => panic!("expected match"),
+        }
+    }
+
+    #[test]
+    fn method_call_binds_after_member_access() {
+        let src = "a.method()";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Postfix(open, args) => {
+                assert_eq!(open.value, "(");
+                assert_eq!(args.len(), 1);
+                match &args[0].value {
+                    Expr::Bin(dot, parts) => {
+                        assert_eq!(dot.value, ".");
+                        let (lhs, rhs) = &**parts;
+                        match &lhs.value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "a"),
+                            _ => panic!("expected base ident"),
+                        }
+                        match &rhs.value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "method"),
+                            _ => panic!("expected method ident"),
+                        }
+                    }
+                    _ => panic!("expected member access before call"),
+                }
+            }
+            _ => panic!("expected call expression"),
         }
     }
 
