@@ -1140,7 +1140,7 @@ impl<'a> InferState<'a> {
 // =====================================================
 
 #[inline(always)]
-fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
+fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {         
     let p = parent[x];
     if p != x {
         let r = find_root(parent, p);
