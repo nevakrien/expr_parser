@@ -1,7 +1,9 @@
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::{Defined, Program};
-use expr_parser::type_inference::{infer_global_types, infer_value_internals, TypeStore};
+use expr_parser::type_inference::{
+    infer_global_types, infer_value_internals, SolvedTypes, TypeStore,
+};
 use std::time::Instant;
 
 mod mapped_file;
@@ -49,14 +51,17 @@ fn main() {
 
     if compile_error_count == 0 {
         let mut types = TypeStore::new();
-        match infer_global_types(&program, &mut types) {
-            Ok(globals) => {
+        let mut solved_types = SolvedTypes::new(&program);
+        match infer_global_types(&program, &mut types, &mut solved_types) {
+            Ok(_) => {
                 for (_, def) in program.definitions.iter() {
                     let Defined::Func(v) = def else {
                         continue;
                     };
                     functions_checked += 1;
-                    if let Err(errs) = infer_value_internals(&globals, &program, &mut types, *v) {
+                    if let Err(errs) =
+                        infer_value_internals(&program, &mut types, &mut solved_types, *v)
+                    {
                         type_error_count += errs.len();
                         for e in errs {
                             let _ = reporter.report_type_error(&program, &types, &e);

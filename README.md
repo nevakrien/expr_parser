@@ -229,6 +229,9 @@ recent profiling notes (file_typecheck_benchmark, ~100k lines, perf record --cal
   - cpu_core samples: `type_inference::main_solver` ~49.7%, `hashbrown::HashMap::insert` ~19.1%, `type_inference::find_root` ~18.8%.
   - cpu_atom samples: `core::slice::memchr::memchr_aligned` ~58.1%, `clear_page_erms` ~21.5%, `__memmove_avx_unaligned_erms` ~20.4%.
 
+and moving to use vectors instead of hashmaps got us to 32k lines/sec
+
+
 trying simdutf8 seems to not really help with performance meaningfully.
 possible fixes for the utf8 problem is move validation into parsing so we dont do as much wrok outside of it.
 importantly this is NOT a cache miss because we are doing a
