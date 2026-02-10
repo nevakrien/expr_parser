@@ -215,3 +215,31 @@ this was while till keeping some heap
 ### typechecker benchmarks
 cargo run --release --example generate_typecheck_benchmark_data -- typecheck_benchmark_data.txt 100000
 cargo run --release --example file_typecheck_benchmark -- typecheck_benchmark_data.txt
+
+recent profiling notes (file_typecheck_benchmark, ~100k lines, perf record --call-graph dwarf):
+- throughput: ~19.35s total, ~5.17k lines/sec, ~860 funcs/sec on this machine.
+- top hot spot is `hashbrown::HashMap::insert` at ~44% of samples, reached from `type_inference::finalize` when inserting into SolvedTypes.
+- `ariadne::Source` construction and line/utf8 scanning account for ~23% (string splitting + collection) plus ~3-4% in utf8 validation.
+- takeaway: typecheck time is dominated by HashMap insert paths and input/source prep rather than the inference rules themselves.
+
+### context & rough comparisons
+
+On this machine, the typechecker processes ~100k lines in ~19.3s
+(~5.2k LOC/s, ~193µs/line, single-threaded, no codegen, whole-program HM-style inference).
+
+Very rough single-threaded comparisons on similarly sized codebases:
+
+- **TypeScript (tsc)**: ~5k–20k LOC/s (50–200µs/line) on large projects with
+  structural typing and heavy inference.
+- **Rust (rustc, cold build)**: ~3k–10k LOC/s (100–300µs/line) per crate when
+  including type checking, trait solving, and borrow checking.
+- **Clang (C++)**: ~30k–100k LOC/s (10–30µs/line) on non-template-heavy code;
+  substantially slower on template-intensive workloads.
+- **Go**: ~50k–200k LOC/s (5–20µs/line), reflecting a deliberately simple and
+  mostly local type system.
+- **TCC (Tiny C Compiler)**: historically reported at ~800k+ LOC/s on older
+  hardware (~2.4 GHz Pentium 4), emphasizing minimal analysis and extremely
+  fast code generation.
+
+so not the best but not the worse either. we can see that languges with hindly miller style infrence are just slower.
+this code is purposfully single threaded so not the most fair comperison to rustc that has multithreading.
