@@ -6,7 +6,7 @@ use crate::program::{CResult, CompileError, Program};
 
 #[derive(Debug)]
 pub struct Macro {
-    pub(crate) loc:Loc,
+    pub(crate) loc: Loc,
     vars: Vec<String>,
     body: Expr,
 }

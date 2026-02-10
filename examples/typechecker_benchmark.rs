@@ -1,7 +1,7 @@
-use expr_parser::type_inference::run_typechecker;
 use expr_parser::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
+use expr_parser::type_inference::run_typechecker;
 use std::time::Instant;
 
 const ITERATIONS: usize = 40000;
@@ -31,11 +31,9 @@ fn main() {
             continue;
         }
 
-        if let (Err(ec),_) = run_typechecker(&program,&mut reporter).unwrap(){
-            error_count+=ec;
+        if let (Err(ec), _) = run_typechecker(&program, &mut reporter).unwrap() {
+            error_count += ec;
         }
-
-
     }
 
     let duration = start.elapsed();

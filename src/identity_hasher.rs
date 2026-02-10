@@ -10,7 +10,9 @@ pub struct IdentityHasher(u64);
 //         let hi = (full >> 64) as u64;
 //         lo ^ hi
 // }
-fn hash(x: u64) -> u64 {x}
+fn hash(x: u64) -> u64 {
+    x
+}
 
 impl Hasher for IdentityHasher {
     fn write(&mut self, bytes: &[u8]) {

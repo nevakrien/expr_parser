@@ -1,7 +1,7 @@
-use expr_parser::type_inference::run_typechecker;
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
+use expr_parser::type_inference::run_typechecker;
 use std::time::Instant;
 
 mod mapped_file;
@@ -48,12 +48,11 @@ fn main() {
     let mut functions_checked = 0usize;
 
     if compile_error_count == 0 {
-        let (r,checked) = run_typechecker(&program,&mut reporter).unwrap();
-        functions_checked+=checked;
+        let (r, checked) = run_typechecker(&program, &mut reporter).unwrap();
+        functions_checked += checked;
         if let Err(ec) = r {
-            type_error_count+=ec;
+            type_error_count += ec;
         }
-
     }
 
     let duration = start.elapsed();

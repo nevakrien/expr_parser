@@ -271,8 +271,8 @@ const BP_MATCH_ARM: u32 = 90;
 const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
-const BP_POSTFIX_INC: u32 = 875;
-const BP_PREFIX: u32 = 900;
+const BP_POSTFIX_INC: u32 = 840;
+const BP_PREFIX: u32 = 850;
 
 #[inline]
 fn prefix_bp(op: &str) -> Option<u32> {
@@ -293,8 +293,6 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
             (BP_ASSIGN + 1, BP_ASSIGN)
         }
         "|>" => (120, 121),
-
-
 
         // logical
         "||" => (300, 301),

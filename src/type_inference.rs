@@ -9,10 +9,9 @@
 //
 // ================================================================
 
-use std::arch::asm;
-use crate::ir::AccessKind;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
+use crate::ir::AccessKind;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{
@@ -21,9 +20,8 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR,
-    EQ_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR,
-    SHR_STR, SUB_STR,
+    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, GE_STR, GT_STR,
+    LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR, StrId,
 };
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -390,8 +388,8 @@ impl TypeStore {
                 let inner = self.get_type_string_nested(program, *tgt, gen_count);
 
                 match (*raw, *mutable) {
-                    (true, true) => format!("*mut {inner}"),
-                    (true, false) => format!("*{inner}"),
+                    (true, true) => format!("*{inner}"),
+                    (true, false) => format!("*const {inner}"),
                     (false, true) => format!("&mut {inner}"),
                     (false, false) => format!("&{inner}"),
                 }
@@ -463,56 +461,46 @@ pub struct SolvedTypes {
     pub pat_types: Vec<TypeId>,
 }
 
-
-
 impl SolvedTypes {
-    pub fn new(program:&Program) -> Self {
+    pub fn new(program: &Program) -> Self {
         let mut typedef_types = IdHashMap::default();
         typedef_types.reserve(program.definitions.len());
 
         Self {
-            pat_types: vec![UNKNOWN_TYPE;program.patterns.len()],
+            pat_types: vec![UNKNOWN_TYPE; program.patterns.len()],
             typedef_types,
-            val_types: vec![UNKNOWN_TYPE;program.values.len()],
+            val_types: vec![UNKNOWN_TYPE; program.values.len()],
         }
     }
 
     #[inline]
-    pub fn set_val(&mut self,id: ValId,t:TypeId){
-        if self.val_types.len()<=id.0{
-            self.val_types.resize(id.0,UNKNOWN_TYPE);
+    pub fn set_val(&mut self, id: ValId, t: TypeId) {
+        if self.val_types.len() <= id.0 {
+            self.val_types.resize(id.0, UNKNOWN_TYPE);
         }
 
-        self.val_types[id.0]=t;
+        self.val_types[id.0] = t;
     }
 
     #[inline]
-    pub fn set_pat(&mut self,id: PatId,t:TypeId){
-        if self.pat_types.len()<=id.0{
-            self.pat_types.resize(id.0,UNKNOWN_TYPE);
+    pub fn set_pat(&mut self, id: PatId, t: TypeId) {
+        if self.pat_types.len() <= id.0 {
+            self.pat_types.resize(id.0, UNKNOWN_TYPE);
         }
 
-        self.pat_types[id.0]=t;
+        self.pat_types[id.0] = t;
     }
 
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans==UNKNOWN_TYPE{
-            None
-        }else{
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans==UNKNOWN_TYPE{
-            None
-        }else{
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 }
 
@@ -670,36 +658,37 @@ impl TypeClash {
 // Entry points
 // ===================================
 
-///runs the typechecker and reports all errors 
+///runs the typechecker and reports all errors
 ///the rhs value is the total number of functions checked
 ///the lhs value is either the result or the number of errors found
 pub fn run_typechecker(
     program: &Program,
     reporter: &mut ErrorReporter,
-) -> Result<(Result<(TypeStore,SolvedTypes),usize>,usize), Box<dyn std::error::Error>> {
+) -> Result<(Result<(TypeStore, SolvedTypes), usize>, usize), Box<dyn std::error::Error>> {
     let mut solved_types = SolvedTypes::new(program);
     let mut types = TypeStore::new();
     let mut err_count = 0;
-    let mut function_checked=0;
+    let mut function_checked = 0;
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
-        err_count+=errs.len();
+        err_count += errs.len();
 
         for e in errs {
             reporter.report_type_error(program, &types, &e)?;
         }
 
-        return Ok((Err(err_count),function_checked));
+        return Ok((Err(err_count), function_checked));
     }
 
     for (_n, methods) in program.member_methods.iter() {
-        for (_s,m) in methods.iter(){
-            function_checked+=1;
+        for (_s, m) in methods.iter() {
+            function_checked += 1;
 
-            let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *m) else {
+            let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *m)
+            else {
                 continue;
             };
-            err_count+=errs.len();
+            err_count += errs.len();
 
             for e in errs {
                 reporter.report_type_error(program, &types, &e)?;
@@ -711,22 +700,22 @@ pub fn run_typechecker(
         let Defined::Func(v) = def else {
             continue;
         };
-        function_checked+=1;
+        function_checked += 1;
         let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *v) else {
             continue;
         };
-        err_count+=errs.len();
+        err_count += errs.len();
 
         for e in errs {
             reporter.report_type_error(program, &types, &e)?;
         }
     }
 
-    if err_count>0{
-        return Ok((Err(err_count),function_checked));
+    if err_count > 0 {
+        return Ok((Err(err_count), function_checked));
     }
 
-    Ok((Ok((types,solved_types)),function_checked))
+    Ok((Ok((types, solved_types)), function_checked))
 }
 
 ///this function gathers global typedefs/structs
@@ -735,9 +724,9 @@ pub fn run_typechecker(
 pub fn infer_global_types<'a>(
     program: &'a Program,
     store: &'a mut TypeStore,
-    ans:&'a mut SolvedTypes,
+    ans: &'a mut SolvedTypes,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
-    let mut ctx = InferState::new(ans,store, program);
+    let mut ctx = InferState::new(ans, store, program);
 
     for (n, def) in program.definitions.iter() {
         let Defined::Type(texp) = def else {
@@ -766,7 +755,7 @@ pub fn infer_global_types<'a>(
     }
 
     for (_n, methods) in program.member_methods.iter() {
-        for (_s,m) in methods.iter(){
+        for (_s, m) in methods.iter() {
             //each function must solve by itself.
             //since there isnt a body its fine to solve in order
             //note that namespace on generics gurntees this works for the most outer scope
@@ -780,9 +769,7 @@ pub fn infer_global_types<'a>(
                     let _ =
                         gather_func_signature::<true>(&mut ctx, *m, generics, params, output_type);
                 }
-                _ => {
-
-                }
+                _ => {}
             };
 
             //solve now so we can monomorphise
@@ -807,12 +794,9 @@ pub fn infer_global_types<'a>(
                 output_type,
                 body: _,
             } => {
-                let _ =
-                    gather_func_signature::<true>(&mut ctx, *v, generics, params, output_type);
+                let _ = gather_func_signature::<true>(&mut ctx, *v, generics, params, output_type);
             }
-            _ => {
-
-            }
+            _ => {}
         };
 
         //solve now so we can monomorphise
@@ -828,15 +812,14 @@ pub fn infer_global_types<'a>(
     }
 }
 
-
 pub fn infer_value_internals<'a>(
     program: &'a Program,
     store: &'a mut TypeStore,
-    ans:&'a mut SolvedTypes,
+    ans: &'a mut SolvedTypes,
     value: ValId,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
     let known = ans.type_of(value);
-    let mut ctx = InferState::new(ans,store, program);
+    let mut ctx = InferState::new(ans, store, program);
 
     match ctx.program.value(value) {
         Value::Func {
@@ -845,14 +828,7 @@ pub fn infer_value_internals<'a>(
             output_type,
             body,
         } => {
-            gather_func_constraints::<true>(
-                &mut ctx,
-                value,
-                generics,
-                params,
-                output_type,
-                body,
-            )
+            gather_func_constraints::<true>(&mut ctx, value, generics, params, output_type, body)
             //this case we have a fully known type so no unify.
             //further a unify here is wrong
             //this is because we solved this as Func<> but its actually a WithGenrics
@@ -860,7 +836,7 @@ pub fn infer_value_internals<'a>(
         }
         _ => {
             let found = gather_constraints(&mut ctx, value);
-            if let Some(known)=known{
+            if let Some(known) = known {
                 let known = ctx.new_solved(known);
 
                 if let Err(clash) = ctx.unify(found, known) {
@@ -874,14 +850,13 @@ pub fn infer_value_internals<'a>(
                 }
             }
 
-
             found
         }
     };
 
     main_solver(&mut ctx);
-    if let Some(known)= known{
-        debug_assert_eq!(known,ctx.ans.type_of(value).unwrap())
+    if let Some(known) = known {
+        debug_assert_eq!(known, ctx.ans.type_of(value).unwrap())
     }
 
     if ctx.errors.is_empty() {
@@ -891,16 +866,15 @@ pub fn infer_value_internals<'a>(
     }
 }
 
-
 ///this is just for tests we PURPOSFULLY ignore the global sig resolution
 fn _infer_value_hacky<'a>(
     program: &'a Program,
     store: &'a mut TypeStore,
-    ans:&'a mut SolvedTypes,
+    ans: &'a mut SolvedTypes,
 
     value: ValId,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
-    let mut ctx = InferState::new(ans,store, program);
+    let mut ctx = InferState::new(ans, store, program);
 
     match ctx.program.value(value) {
         Value::Func {
@@ -937,6 +911,7 @@ fn main_solver(ctx: &mut InferState) {
         progress |= resolve_operator_types(ctx);
         progress |= resolve_func_types(ctx);
         progress |= resolve_struct_types(ctx);
+        progress |= resolve_ptr_types(ctx);
         if !progress {
             break;
         }
@@ -1034,6 +1009,12 @@ enum ResolveKind {
     ///not all functions are like this but if something is declared as a function its this
     Func(FuncInferId),
     Struct(StructInferId),
+
+    Ptr {
+        tgt: CId,
+        raw: Option<bool>,
+        mutable: Option<bool>,
+    },
 }
 
 #[derive(Debug)]
@@ -1121,7 +1102,7 @@ fn bind_val(val_cluster: &mut Vec<(ValId, CId)>, v: ValId, c: CId) {
 }
 
 impl<'a> InferState<'a> {
-    fn new(ans:&'a mut SolvedTypes,store: &'a mut TypeStore, program: &'a Program) -> Self {
+    fn new(ans: &'a mut SolvedTypes, store: &'a mut TypeStore, program: &'a Program) -> Self {
         Self {
             store,
             program,
@@ -1226,7 +1207,7 @@ impl<'a> InferState<'a> {
 // =====================================================
 
 #[inline(always)]
-fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {         
+fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
     let p = parent[x];
     if p != x {
         let r = find_root(parent, p);
@@ -1497,6 +1478,92 @@ fn _try_absorb(
             Ok(true)
         }
 
+        (Solved(t), Ptr { tgt, raw, mutable }) => {
+            unify_ptr_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tgt,
+                raw,
+                mutable,
+                t,
+            )?;
+            Ok(true)
+        }
+
+        (
+            Ptr {
+                tgt: dst_tgt,
+                raw: dst_raw,
+                mutable: dst_mut,
+            },
+            Ptr {
+                tgt: src_tgt,
+                raw: src_raw,
+                mutable: src_mut,
+            },
+        ) => {
+            let raw = merge_ptr_flag(dst_raw, src_raw).ok_or_else(|| TypeClash {
+                found: Some(BadTypeId(make_ptr_mock(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    src_tgt,
+                    src_raw,
+                    src_mut,
+                ))),
+                wanted: Some(BadTypeId(make_ptr_mock(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    dst_tgt,
+                    dst_raw,
+                    dst_mut,
+                ))),
+            })?;
+            let mutable = merge_ptr_flag(dst_mut, src_mut).ok_or_else(|| TypeClash {
+                found: Some(BadTypeId(make_ptr_mock(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    src_tgt,
+                    src_raw,
+                    src_mut,
+                ))),
+                wanted: Some(BadTypeId(make_ptr_mock(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    dst_tgt,
+                    dst_raw,
+                    dst_mut,
+                ))),
+            })?;
+
+            let tgt = unify_clusters(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                dst_tgt,
+                src_tgt,
+            )?;
+
+            cluster[dst].state = Ptr { tgt, raw, mutable };
+            Ok(true)
+        }
+
         // =====================================================
         // Everything else: do not guess
         // =====================================================
@@ -1552,7 +1619,91 @@ fn force_type(
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
+        ResolveKind::Ptr { tgt, raw, mutable } => {
+            unify_ptr_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tgt,
+                raw,
+                mutable,
+                ty,
+            )?;
+            cluster[root].state = ResolveKind::Solved(ty);
+            Ok(())
+        }
     }
+}
+
+#[inline(always)]
+fn merge_ptr_flag(a: Option<bool>, b: Option<bool>) -> Option<Option<bool>> {
+    match (a, b) {
+        (Some(x), Some(y)) if x != y => None,
+        (Some(x), _) => Some(Some(x)),
+        (_, Some(y)) => Some(Some(y)),
+        (None, None) => Some(None),
+    }
+}
+
+fn unify_ptr_with_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    tgt: CId,
+    raw: Option<bool>,
+    mutable: Option<bool>,
+    ty: TypeId,
+) -> Result<(), TypeClash> {
+    let TypeValue::Ptr {
+        tgt: ty_tgt,
+        raw: ty_raw,
+        mutable: ty_mut,
+    } = *store.type_value(ty)
+    else {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: Some(BadTypeId(make_ptr_mock(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tgt,
+                raw,
+                mutable,
+            ))),
+        });
+    };
+
+    if matches!(raw, Some(x) if x != ty_raw) || matches!(mutable, Some(x) if x != ty_mut) {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: Some(BadTypeId(make_ptr_mock(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tgt,
+                raw,
+                mutable,
+            ))),
+        });
+    }
+
+    force_type(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tgt,
+        ty_tgt,
+    )
 }
 
 fn unify_func_with_type(
@@ -1701,6 +1852,17 @@ fn mock_type_from_cluster(
             call,
             visiting,
         ),
+        ResolveKind::Ptr { tgt, raw, mutable } => make_ptr_mock_inner(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tgt,
+            raw,
+            mutable,
+            visiting,
+        ),
         ResolveKind::Nothing => UNKNOWN_TYPE,
     };
 
@@ -1817,6 +1979,57 @@ fn make_struct_mock(
     )
 }
 
+fn make_ptr_mock_inner(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tgt: CId,
+    raw: Option<bool>,
+    mutable: Option<bool>,
+    visiting: &mut std::collections::HashSet<CId>,
+) -> TypeId {
+    let tgt = mock_type_from_cluster(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tgt,
+        visiting,
+    );
+    store.intern(TypeValue::Ptr {
+        tgt,
+        raw: raw.unwrap_or(false),
+        mutable: mutable.unwrap_or(false),
+    })
+}
+
+fn make_ptr_mock(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tgt: CId,
+    raw: Option<bool>,
+    mutable: Option<bool>,
+) -> TypeId {
+    let mut visiting = std::collections::HashSet::new();
+    make_ptr_mock_inner(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tgt,
+        raw,
+        mutable,
+        &mut visiting,
+    )
+}
+
 fn func_call_clash(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -1903,18 +2116,23 @@ fn extract_bad_type(
             struct_infers,
             call,
         ))),
+        ResolveKind::Ptr { tgt, raw, mutable } => Some(BadTypeId(make_ptr_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tgt,
+            raw,
+            mutable,
+        ))),
 
         ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
         ResolveKind::FloatLike => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
     }
 }
 
-fn specialize_type(
-    ctx: &mut InferState,
-    ty: TypeId,
-    generics: &[CId],
-    loc: ValId,
-) -> CId {
+fn specialize_type(ctx: &mut InferState, ty: TypeId, generics: &[CId], loc: ValId) -> CId {
     match ctx.store.type_value(ty) {
         TypeValue::Generic(id) => generics
             .get(id.0)
@@ -1971,7 +2189,7 @@ fn specialize_type(
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn global_to_specilized_local(ctx: &mut InferState, def_val: &ValId,v:ValId)->CId{
+fn global_to_specilized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) -> CId {
     let Some(t) = ctx.ans.type_of(*def_val) else {
         let loc = ctx.program.value_loc(v);
         let c = ctx.new_cluster();
@@ -2037,8 +2255,8 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             if let Some(base) = ctx.names.get_mut(&n) {
                 //names might refer to something that us generic in the local scope...
                 //so this here is actually wrong for when users define local genric stuff
-                let c = find_root(&mut ctx.parent,*base);
-                *base=c;
+                let c = find_root(&mut ctx.parent, *base);
+                *base = c;
                 ctx.bind_val(v, c);
                 return c;
             }
@@ -2054,11 +2272,47 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     bind_val(&mut ctx.val_cluster, v, ans);
                     ans
                 }
-                Defined::Func(def_val) => {
-                    global_to_specilized_local(ctx,def_val,v)
-                }
+                Defined::Func(def_val) => global_to_specilized_local(ctx, def_val, v),
                 _ => todo!("global name resolution / overload sets"),
             }
+        }
+
+        Value::Let {
+            pat,
+            value,
+            else_part,
+        } => {
+            let lhs = gather_pattern_constraints(ctx, pat);
+            // let-expr evaluates to the bound pattern value => alias
+            ctx.bind_val(v, lhs);
+
+            let rhs = gather_constraints(ctx, value);
+
+            if let Err(clash) = ctx.unify(rhs, lhs) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "let binding requires pattern and value to match",
+                    site: v,
+                    found: value,
+                    expected_place: v,
+                    clash,
+                });
+            }
+
+            if let Some(e) = else_part {
+                let ec = gather_constraints(ctx, e);
+                if let Err(clash) = ctx.unify(ec, lhs) {
+                    ctx.push_error(TypeError::ValuesContradict {
+                        expectation_reason:
+                            "let-else requires the else value to match the pattern type",
+                        site: e,
+                        found: e,
+                        expected_place: v,
+                        clash,
+                    });
+                }
+            }
+
+            lhs
         }
 
         Value::TypeAnnotation { value, ty } => {
@@ -2102,6 +2356,19 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             p
         }
 
+        Value::AddrOf(base, kind) => {
+            let tgt = gather_constraints(ctx, base);
+            let mutable = kind.map(|x| matches!(x, VarKind::Mut));
+            let ans = ctx.new_cluster();
+            ctx.cluster[ans].state = ResolveKind::Ptr {
+                tgt,
+                raw: None,
+                mutable,
+            };
+            ctx.bind_val(v, ans);
+            ans
+        }
+
         Value::Assign {
             op: AssignOp::Nothing(value),
             target,
@@ -2118,44 +2385,6 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     expected_place: target,
                     clash,
                 });
-            }
-
-            lhs
-        }
-
-        Value::Let {
-            pat,
-            value,
-            else_part,
-        } => {
-            let lhs = gather_pattern_constraints(ctx, pat);
-            // let-expr evaluates to the bound pattern value => alias
-            ctx.bind_val(v, lhs);
-
-            let rhs = gather_constraints(ctx, value);
-
-            if let Err(clash) = ctx.unify(rhs, lhs) {
-                ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason: "let binding requires pattern and value to match",
-                    site: v,
-                    found: value,
-                    expected_place: v,
-                    clash,
-                });
-            }
-
-            if let Some(e) = else_part {
-                let ec = gather_constraints(ctx, e);
-                if let Err(clash) = ctx.unify(ec, lhs) {
-                    ctx.push_error(TypeError::ValuesContradict {
-                        expectation_reason:
-                            "let-else requires the else value to match the pattern type",
-                        site: e,
-                        found: e,
-                        expected_place: v,
-                        clash,
-                    });
-                }
             }
 
             lhs
@@ -2622,30 +2851,34 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             return ans;
         }
 
-        Value::Access { base, name, kind }=>{
-            let b = gather_constraints(ctx,base);
-            let b = find_root(&mut ctx.parent,b);
+        Value::Access { base, name, kind } => {
+            let b = gather_constraints(ctx, base);
+            let b = find_root(&mut ctx.parent, b);
 
             //TODO we currently just do structs
             match ctx.cluster[b].state {
-                ResolveKind::Nothing=>{
+                ResolveKind::Nothing => {
                     todo!("put access into some sort of queue which we later check for a solve")
-                },
-                ResolveKind::Solved(t)=>{
-                    let TypeValue::Struct { id, generics }=ctx.store.type_value(t) else {
+                }
+                ResolveKind::Solved(t) => {
+                    let TypeValue::Struct { id, generics } = ctx.store.type_value(t) else {
                         todo!()
                     };
                     let r = ctx.store.struct_value(*id);
-                    if let Some(&(ref _n,mut x)) = r.fields.iter().find(|(n,_x)| ctx.program.name_str_id(*n)==name){
+                    if let Some(&(ref _n, mut x)) = r
+                        .fields
+                        .iter()
+                        .find(|(n, _x)| ctx.program.name_str_id(*n) == name)
+                    {
                         match kind {
-                            AccessKind::Dot | AccessKind::Ptr =>{}
+                            AccessKind::Dot | AccessKind::Ptr => {}
                             AccessKind::Static => todo!("some error on it not making sense"),
                         }
-                        if let TypeValue::Generic(i) = ctx.store.type_value(x){
-                            x=generics[i.0];
+                        if let TypeValue::Generic(i) = ctx.store.type_value(x) {
+                            x = generics[i.0];
                         };
                         let ans = ctx.new_solved(x);
-                        ctx.bind_val(v,ans);
+                        ctx.bind_val(v, ans);
                         return ans;
                     }
 
@@ -2656,7 +2889,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                         todo!()
                     };
 
-                    let _method = global_to_specilized_local(ctx,method,v);
+                    let _method = global_to_specilized_local(ctx, method, v);
 
                     //in the common case the signature is fn(self:&something S,...) and we need to
                     //syntax sugar struct as the first argument by changing it to fn(...)
@@ -2665,22 +2898,24 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     //and it calls specilized which binds no values/patterns
                     todo!("member methods")
                 }
-                ResolveKind::Struct(rid)=>{
+                ResolveKind::Struct(rid) => {
                     let inf = &ctx.struct_infers[rid.0];
                     let r = ctx.store.struct_value(inf.sid);
-                    if let Some(&(ref _n,x)) = r.fields.iter().find(|(n,_x)| ctx.program.name_str_id(*n)==name){
+                    if let Some(&(ref _n, x)) = r
+                        .fields
+                        .iter()
+                        .find(|(n, _x)| ctx.program.name_str_id(*n) == name)
+                    {
                         match kind {
-                            AccessKind::Dot | AccessKind::Ptr =>{}
+                            AccessKind::Dot | AccessKind::Ptr => {}
                             AccessKind::Static => todo!("some error on it not making sense"),
                         }
 
-                        let ans = match ctx.store.type_value(x){
-                            TypeValue::Generic(i)=>{
-                                inf.generics[i.0]
-                            }
-                            _=>ctx.new_solved(x)
+                        let ans = match ctx.store.type_value(x) {
+                            TypeValue::Generic(i) => inf.generics[i.0],
+                            _ => ctx.new_solved(x),
                         };
-                        ctx.bind_val(v,ans);
+                        ctx.bind_val(v, ans);
                         return ans;
                     }
 
@@ -2725,10 +2960,7 @@ fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
 }
 
 #[inline(always)]
-fn gather_pattern_constraints_and_name(
-    ctx: &mut InferState,
-    p: PatId,
-) -> (CId, Option<NameId>) {
+fn gather_pattern_constraints_and_name(ctx: &mut InferState, p: PatId) -> (CId, Option<NameId>) {
     gather_pattern_constraints_and_name_with_generics::<false>(ctx, p)
 }
 
@@ -2741,9 +2973,7 @@ fn gather_pattern_constraints_with_generics<const ALLOW_GENERICS: bool>(
     x
 }
 
-fn gather_pattern_constraints_and_name_with_generics<
-    const ALLOW_GENERICS: bool,
->(
+fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
     p: PatId,
 ) -> (CId, Option<NameId>) {
@@ -2785,11 +3015,7 @@ fn gather_pattern_constraints_and_name_with_generics<
 ///currently when compiling type expressions we give them a type other the Type::Type
 ///we dont have a good destinction between the type of THE VALUE ITSELF and the type IT REFERS TO
 ///and this means that fn[T](){let x=T;} is technically legal and x has type Generic(0).
-fn gather_generic_constraints(
-    ctx: &mut InferState,
-    p: PatId,
-    id: GenId,
-) -> CId {
+fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId {
     match ctx.program.pattern(p) {
         Pattern::Bind(n, m) => {
             if m != VarKind::Const {
@@ -2901,7 +3127,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                     let Some(t) = ctx.ans.typedef_types.get(texp) else {
                         let id = ctx.new_cluster();
                         ctx.local_types.insert(n, id);
-                        return id
+                        return id;
                     };
 
                     *t
@@ -2918,6 +3144,16 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
         TypeExpr::Wildcard => ctx.new_cluster(),
 
         TypeExpr::Struct(def) => compile_struct_type::<false>(ctx, texpr, def),
+        TypeExpr::Ptr { base, raw, mutable } => {
+            let tgt = compile_type_expr(ctx, base);
+            let ans = ctx.new_cluster();
+            ctx.cluster[ans].state = ResolveKind::Ptr {
+                tgt,
+                raw: Some(raw),
+                mutable: Some(mutable),
+            };
+            ans
+        }
         TypeExpr::Index { base, args } => {
             let base_cluster = compile_type_expr(ctx, base);
             let generics = args
@@ -2961,10 +3197,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
     }
 }
 
-fn resolve_struct_id_from_cluster(
-    ctx: &mut InferState,
-    base: CId,
-) -> Option<StructId> {
+fn resolve_struct_id_from_cluster(ctx: &mut InferState, base: CId) -> Option<StructId> {
     let root = find_root(&mut ctx.parent, base);
     match ctx.cluster[root].state {
         ResolveKind::Solved(t) => match ctx.store.type_value(t) {
@@ -3088,6 +3321,7 @@ fn cluster_is_int_like(
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Ptr { .. } => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -3106,6 +3340,7 @@ fn cluster_is_float_like(
         ResolveKind::IntLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Ptr { .. } => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -3124,6 +3359,7 @@ fn cluster_is_bool(
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Ptr { .. } => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -3189,9 +3425,10 @@ fn classify_operand(
             let sid = struct_infers[call_id.0].sid;
             OperandKind::UserStruct(store.struct_value(sid).name)
         }
-        ResolveKind::IntLike | ResolveKind::FloatLike | ResolveKind::Func(_) => {
-            OperandKind::KnownNonUser
-        }
+        ResolveKind::IntLike
+        | ResolveKind::FloatLike
+        | ResolveKind::Func(_)
+        | ResolveKind::Ptr { .. } => OperandKind::KnownNonUser,
         ResolveKind::Nothing => OperandKind::Unknown,
     }
 }
@@ -3660,6 +3897,24 @@ fn try_resolve_struct_type(
     Some(store.intern(TypeValue::Struct { id: sid, generics }))
 }
 
+fn try_resolve_ptr_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    tgt: CId,
+    raw: Option<bool>,
+    mutable: Option<bool>,
+) -> Option<TypeId> {
+    let raw = raw?;
+    let mutable = mutable?;
+    let root = find_root(parent, tgt);
+    let tgt = match cluster[root].state {
+        ResolveKind::Solved(t) => t,
+        _ => return None,
+    };
+    Some(store.intern(TypeValue::Ptr { tgt, raw, mutable }))
+}
+
 #[inline(always)]
 fn resolve_func_types(ctx: &mut InferState) -> bool {
     let mut change = false;
@@ -3692,6 +3947,21 @@ fn resolve_struct_types(ctx: &mut InferState) -> bool {
                 &mut ctx.struct_infers,
                 call,
             )
+        {
+            ctx.cluster[cid].state = ResolveKind::Solved(t);
+            change = true;
+        }
+    }
+    change
+}
+
+#[inline(always)]
+fn resolve_ptr_types(ctx: &mut InferState) -> bool {
+    let mut change = false;
+    for cid in (0..ctx.cluster.len()).map(CId) {
+        if let ResolveKind::Ptr { tgt, raw, mutable } = ctx.cluster[cid].state
+            && let Some(t) =
+                try_resolve_ptr_type(ctx.store, &mut ctx.parent, &mut ctx.cluster, tgt, raw, mutable)
         {
             ctx.cluster[cid].state = ResolveKind::Solved(t);
             change = true;
@@ -3939,6 +4209,53 @@ mod type_infer_tests {
     #[test]
     fn infer_let_with_annotation() {
         assert_fn_type!("f = fn(){ let x:int = 1; x }", BuiltinType::Int);
+    }
+
+    #[test]
+    fn pointer_type_expr_forms_resolve() {
+        let src = r#"
+            f = fn(x:int) {
+                let a:&int = &x;
+                let b:&mut int = &x;
+                let c:*int = &x;
+                let d:*mut int = &x;
+                let e:*const int = &x;
+            }
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let solved_types = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let a_ty = find_let_stmt_type(&program, &solved_types, f, "a");
+        let b_ty = find_let_stmt_type(&program, &solved_types, f, "b");
+        let c_ty = find_let_stmt_type(&program, &solved_types, f, "c");
+        let d_ty = find_let_stmt_type(&program, &solved_types, f, "d");
+        let e_ty = find_let_stmt_type(&program, &solved_types, f, "e");
+
+        let is_int_ptr = |store: &TypeStore, ty: TypeId, raw: bool, mutable: bool| {
+            let TypeValue::Ptr {
+                tgt,
+                raw: got_raw,
+                mutable: got_mut,
+            } = *store.type_value(ty)
+            else {
+                return false;
+            };
+            got_raw
+                == raw
+                && got_mut == mutable
+                && matches!(store.type_value(tgt), TypeValue::Builtin(BuiltinType::Int))
+        };
+
+        assert!(is_int_ptr(&store, a_ty, false, false));
+        assert!(is_int_ptr(&store, b_ty, false, true));
+        assert!(is_int_ptr(&store, c_ty, true, true));
+        assert!(is_int_ptr(&store, d_ty, true, true));
+        assert!(is_int_ptr(&store, e_ty, true, false));
     }
 
     #[test]

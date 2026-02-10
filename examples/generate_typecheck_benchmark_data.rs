@@ -16,11 +16,7 @@ impl Rng {
     }
 
     fn range(&mut self, max: u32) -> u32 {
-        if max == 0 {
-            0
-        } else {
-            self.next_u32() % max
-        }
+        if max == 0 { 0 } else { self.next_u32() % max }
     }
 }
 
@@ -92,11 +88,7 @@ fn write_mixed_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: 
     write_line(writer, line_count, "    let y = add(x, b);");
     write_line(writer, line_count, "    let z = to_int(y);");
     write_line(writer, line_count, "    let q = id(z);");
-    write_line(
-        writer,
-        line_count,
-        "    let r = (fn(x)->int { x + 1 })(q);",
-    );
+    write_line(writer, line_count, "    let r = (fn(x)->int { x + 1 })(q);");
     write_line(writer, line_count, "    to_float(r)");
     write_line(writer, line_count, "};");
 }

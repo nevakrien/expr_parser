@@ -263,8 +263,8 @@ impl Program {
             Some(Defined::Type(expr)) => Some(self.type_expr_loc(*expr)),
             // Macro(Macro),
             Some(Defined::Macro(m)) => Some(m.loc.clone()),
-            
-            Some(Defined::BuildinType(..)|Defined::ToBeDefined) | None=>None,
+
+            Some(Defined::BuildinType(..) | Defined::ToBeDefined) | None => None,
         }
     }
 

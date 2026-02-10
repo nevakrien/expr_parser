@@ -235,9 +235,9 @@ pub enum BinOp {
 /// - Operand is evaluated exactly once
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum UnOp {
-    Neg,                     // -x
-    Not,                     // !x
-    BitNot,                  // ~x
+    Neg,    // -x
+    Not,    // !x
+    BitNot, // ~x
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
@@ -323,8 +323,8 @@ pub enum Value {
         op: UnOp,
         value: ValId,
     },
-    Deref(ValId),                  // *x
-    AddrOf(ValId,Option<VarKind>), // &x
+    Deref(ValId),                   // *x
+    AddrOf(ValId, Option<VarKind>), // &x
 
     Construct(Call),
 
@@ -478,6 +478,12 @@ pub enum TypeExpr {
     Index {
         base: TExpId,
         args: TypeExprSpan,
+    },
+
+    Ptr {
+        base: TExpId,
+        raw: bool,
+        mutable: bool,
     },
 
     Enum(StructLike),
@@ -1113,8 +1119,8 @@ impl Program {
             "~" => UnOp::BitNot,
             "*" => {
                 let rhs = self.lower_value(rhs_expr)?;
-                return Ok(Value::Deref(rhs))
-            },
+                return Ok(Value::Deref(rhs));
+            }
             "&" => {
                 let mut kind = None;
                 if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value {
@@ -1132,7 +1138,7 @@ impl Program {
                 }
 
                 let rhs = self.lower_value(rhs_expr)?;
-                return Ok(Value::AddrOf(rhs, kind))
+                return Ok(Value::AddrOf(rhs, kind));
             }
 
             "++" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Inc), vec![rhs_expr]),
@@ -1382,6 +1388,39 @@ impl Program {
                     base,
                     args: args_span,
                 })
+            }
+
+            Expr::Prefix(op, mut items) if matches!(op.value, "*" | "&") => {
+                if items.len() != 1 {
+                    return Err(CompileError::UnsupportedForm {
+                        loc,
+                        op_loc: Some(op.loc),
+                        op: Some(op.value),
+                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                    });
+                }
+
+                let raw = op.value == "*";
+                let mut mutable = raw;
+                let mut inner = items.pop().unwrap();
+
+                if let Expr::Prefix(ref inner_op, ref mut inner_items) = inner.value
+                    && matches!(inner_op.value, "mut" | "const")
+                {
+                    if inner_items.len() != 1 {
+                        return Err(CompileError::UnsupportedForm {
+                            loc,
+                            op_loc: Some(inner_op.loc.clone()),
+                            op: Some(inner_op.value),
+                            message: ERR_UNSUPPORTED_TYPE_EXPR,
+                        });
+                    }
+                    mutable = inner_op.value == "mut";
+                    inner = inner_items.pop().unwrap();
+                }
+
+                let base = self.lower_type_expr(inner)?;
+                Ok(TypeExpr::Ptr { base, raw, mutable })
             }
 
             Expr::Prefix(open, items) if matches!(open.value, "struct" | "enum" | "union") => {

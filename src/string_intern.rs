@@ -18,9 +18,8 @@ struct Entry {
 }
 
 pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
-    "__free", "__add", "__sub", "__mul", "__div", "__mod", "__bitand", "__bitor",
-    "__bitxor", "__shl", "__shr", "__eq", "__ne", "__lt", "__le", "__gt", "__ge", "__neg", "__not",
-    "__bitnot",
+    "__free", "__add", "__sub", "__mul", "__div", "__mod", "__bitand", "__bitor", "__bitxor",
+    "__shl", "__shr", "__eq", "__ne", "__lt", "__le", "__gt", "__ge", "__neg", "__not", "__bitnot",
 ];
 
 const fn const_str_eq(a: &str, b: &str) -> bool {
@@ -305,11 +304,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 #[inline]
 fn scrub_hash(h: u64) -> u64 {
-    if h == 0 {
-        1
-    } else {
-        h
-    }
+    if h == 0 { 1 } else { h }
 }
 
 #[cfg(test)]
