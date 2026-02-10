@@ -15,6 +15,7 @@
 - `target/` is build output and should not be edited.
 
 ## Commands
+- `cargo run` runs a repl that can be used for testing current behivior and errors.
 - `cargo test` runs the full test suite and should be used routinely.
 - `cargo fmt` formats Rust code; run before committing style changes.
 - `cargo clippy` runs lint checks; fix warnings before submitting.

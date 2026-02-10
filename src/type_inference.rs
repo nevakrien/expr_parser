@@ -3161,20 +3161,17 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                 .map(|arg| compile_type_expr(ctx, arg))
                 .collect::<Vec<_>>();
 
-            let sid = resolve_struct_id_from_cluster(ctx, base_cluster).or_else(|| {
-                match ctx.program.type_expr(base) {
-                    TypeExpr::NameRef(name) => resolve_struct_id_from_name(ctx, name),
-                    _ => None,
+            let sid = match resolve_struct_id_from_cluster(ctx, base_cluster) {
+                Some(Err(()))=>{
+                    let loc = ctx.program.type_expr_loc(texpr);
+                    ctx.errors.push(TypeError::Simple {
+                        loc,
+                        message: "type specialization expects a struct type",
+                    });
+                    return ctx.new_cluster();
                 }
-            });
-
-            let Some(sid) = sid else {
-                let loc = ctx.program.type_expr_loc(texpr);
-                ctx.errors.push(TypeError::Simple {
-                    loc,
-                    message: "type specialization expects a struct type",
-                });
-                return ctx.new_cluster();
+                Some(Ok(sid))=>sid,
+                None=>todo!("push this into some kind of vec and then later resolve")
             };
 
             let expected = ctx.store.struct_value(sid).gen_count;
@@ -3197,27 +3194,20 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
     }
 }
 
-fn resolve_struct_id_from_cluster(ctx: &mut InferState, base: CId) -> Option<StructId> {
+fn resolve_struct_id_from_cluster(ctx: &mut InferState, base: CId) -> Option<Result<StructId,()>>{
     let root = find_root(&mut ctx.parent, base);
     match ctx.cluster[root].state {
         ResolveKind::Solved(t) => match ctx.store.type_value(t) {
-            TypeValue::Struct { id, generics: _ } => Some(*id),
-            _ => None,
+            TypeValue::Struct { id, generics: _ } => Some(Ok(*id)),
+            _ => Some(Err(())),
         },
-        ResolveKind::Struct(call) => Some(ctx.struct_infers[call.0].sid),
-        _ => None,
+        ResolveKind::Struct(call) => Some(Ok(ctx.struct_infers[call.0].sid)),
+        ResolveKind::Nothing=>None,
+        _ => Some(Err(())),
     }
 }
 
-fn resolve_struct_id_from_name(ctx: &InferState, name: NameId) -> Option<StructId> {
-    let Some(Defined::Type(texp)) = ctx.program.definitions.get(&name) else {
-        return None;
-    };
-    ctx.struct_defs
-        .iter()
-        .find(|def| def.loc == *texp)
-        .map(|def| def.sid)
-}
+
 
 fn gather_func_signature<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
