@@ -270,7 +270,7 @@ const BP_CONSTRUCT: u32 = 750;
 const BP_MATCH_ARM: u32 = 90;
 const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 850; // ., ->, ::
-const BP_CALL: u32 = 800; // (), []
+const BP_CALL: u32 = 860; // (), []
 const BP_POSTFIX_INC: u32 = 875;
 const BP_PREFIX: u32 = 900;
 
