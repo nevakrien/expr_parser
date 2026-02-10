@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 mod platform {
+    use simdutf8::basic::from_utf8;
     use std::fs::File;
     use std::os::fd::AsRawFd;
 
@@ -41,7 +42,7 @@ mod platform {
 
         pub fn as_str(&self) -> Result<&str, String> {
             let bytes = unsafe { std::slice::from_raw_parts(self.ptr as *const u8, self.len) };
-            std::str::from_utf8(bytes).map_err(|err| format!("Invalid UTF-8: {err}"))
+            from_utf8(bytes).map_err(|err| format!("Invalid UTF-8: {err}"))
         }
 
         fn name_mapping(&self, name: &str) {
@@ -72,13 +73,13 @@ mod platform {
 #[cfg(not(target_os = "linux"))]
 mod platform {
     pub struct MappedFile {
-        contents: String,
+        contents: Vec<u8>,
     }
 
     impl MappedFile {
         pub fn map(path: &str, _name: &str) -> Result<Self, String> {
-            let contents = std::fs::read_to_string(path)
-                .map_err(|err| format!("Error opening {path}: {err}"))?;
+            let contents =
+                std::fs::read(path).map_err(|err| format!("Error opening {path}: {err}"))?;
             if contents.is_empty() {
                 return Err(format!("File {path} is empty"));
             }
@@ -87,7 +88,8 @@ mod platform {
         }
 
         pub fn as_str(&self) -> Result<&str, String> {
-            Ok(self.contents.as_str())
+            simdutf8::basic::from_utf8(&self.contents)
+                .map_err(|err| format!("Invalid UTF-8: {err}"))
         }
     }
 }

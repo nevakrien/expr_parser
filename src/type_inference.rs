@@ -644,6 +644,11 @@ pub fn infer_global_types(
 ) -> Result<SolvedTypes, Vec<TypeError>> {
     let mut ctx = InferState::new(store, program, ());
 
+    let def_len = program.definitions.len();
+    ctx.ans.pat_types.reserve(def_len*8);
+    ctx.ans.val_types.reserve(def_len);
+    ctx.ans.typedef_types.reserve(def_len*8);
+
     for (n, def) in program.definitions.iter() {
         let Defined::Type(texp) = def else {
             continue;

@@ -217,10 +217,21 @@ cargo run --release --example generate_typecheck_benchmark_data -- typecheck_ben
 cargo run --release --example file_typecheck_benchmark -- typecheck_benchmark_data.txt
 
 recent profiling notes (file_typecheck_benchmark, ~100k lines, perf record --call-graph dwarf):
-- throughput: ~19.35s total, ~5.17k lines/sec, ~860 funcs/sec on this machine.
-- top hot spot is `hashbrown::HashMap::insert` at ~44% of samples, reached from `type_inference::finalize` when inserting into SolvedTypes.
-- `ariadne::Source` construction and line/utf8 scanning account for ~23% (string splitting + collection) plus ~3-4% in utf8 validation.
-- takeaway: typecheck time is dominated by HashMap insert paths and input/source prep rather than the inference rules themselves.
+- before reserving global HashMaps:
+  - throughput: ~19.35s total, ~5.17k lines/sec, ~860 funcs/sec on this machine.
+  - top hot spot is `hashbrown::HashMap::insert` at ~44% of samples, reached from `type_inference::finalize` when inserting into SolvedTypes.
+  - `ariadne::Source` construction and line/utf8 scanning account for ~23% (string splitting + collection) plus ~3-4% in utf8 validation.
+  - takeaway: typecheck time is dominated by HashMap insert paths and input/source prep rather than the inference rules themselves.
+
+- after reserving global HashMaps:
+  - throughput: 3.919s total, ~25.5k lines/sec, ~4.25k funcs/sec, ~39.19us/line on this machine.
+  - speedup: ~4.94x faster overall, ~4.93x higher throughput vs the previous run.
+  - cpu_core samples: `type_inference::main_solver` ~49.7%, `hashbrown::HashMap::insert` ~19.1%, `type_inference::find_root` ~18.8%.
+  - cpu_atom samples: `core::slice::memchr::memchr_aligned` ~58.1%, `clear_page_erms` ~21.5%, `__memmove_avx_unaligned_erms` ~20.4%.
+
+trying simdutf8 seems to not really help with performance meaningfully.
+possible fixes for the utf8 problem is move validation into parsing so we dont do as much wrok outside of it.
+importantly this is NOT a cache miss because we are doing a
 
 ### context & rough comparisons
 

@@ -18,6 +18,7 @@ version = "0.1.0"
 dependencies = [
  "ariadne",
  "libc",
+ "simdutf8",
  "thiserror",
  "yansi",
 ]
@@ -45,6 +46,12 @@ checksum = "a338cc41d27e6cc6dce6cefc13a0729dfbb81c262b1f519331575dd80ef3067f"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
 name = "syn"
