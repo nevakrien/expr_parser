@@ -2677,6 +2677,35 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             ans
         }
 
+        Value::Deref(base)=>{
+            let src = gather_constraints(ctx, base);
+            let tgt = match ctx.cluster[src].state {
+                ResolveKind::Ptr { tgt, ..}=>{
+                    tgt
+                },
+                ResolveKind::Nothing=>{
+                    let tgt = ctx.new_cluster();
+                    ctx.cluster[src].state=ResolveKind::Ptr{
+                        tgt,mutable:None,raw:None
+                    };
+                    tgt
+                },
+                ResolveKind::Struct(_rid) => todo!("might have __smart_pointer"),
+                ResolveKind::Solved(t)=>{
+                    match ctx.store.type_value(t) {
+                        TypeValue::Ptr{tgt,..}=>{
+                            ctx.new_solved(*tgt)
+                        },
+                        TypeValue::Struct{id:_,..} => todo!("might have __smart_pointer"),
+                        _=>todo!("report error")
+                    }
+                }
+                _ => todo!()
+            };
+            ctx.bind_val(v,tgt);
+            tgt
+        }
+
         Value::Assign {
             op: AssignOp::Nothing(value),
             target,
