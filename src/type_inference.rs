@@ -4,11 +4,7 @@
 // CONTRACT
 // ================================================================
 // 1) we parse global type sinature and then internals of functions.
-// 2) generics arent normalized and thus are only allowed globaly 
-// 3) member methods have an implicit value being passed. so "x.member()" 
-//     is resolved as a call to fn(x)->? but the call has 0 args. its on the consumer to understand x is that type
-//     this is because at this point we cant really modify the IR so no way to know
-//     (we might want to change this but this is currently what we do)
+// 2) generics arent normalized and thus are only allowed globaly
 //
 // ================================================================
 
@@ -470,6 +466,13 @@ pub struct SolvedTypes {
     pub val_types: Vec<TypeId>,
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: Vec<TypeId>,
+    pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolvedMemberMethodType {
+    pub member: StrId,
+    pub full_type: TypeId,
 }
 
 impl SolvedTypes {
@@ -481,6 +484,7 @@ impl SolvedTypes {
             pat_types: vec![UNKNOWN_TYPE; program.patterns.len()],
             typedef_types,
             val_types: vec![UNKNOWN_TYPE; program.values.len()],
+            member_method_types: IdHashMap::default(),
         }
     }
 
@@ -520,6 +524,11 @@ impl SolvedTypes {
         } else {
             Some(ans)
         }
+    }
+
+    #[inline(always)]
+    pub fn member_method_type(&self, id: ValId) -> Option<SolvedMemberMethodType> {
+        self.member_method_types.get(&id).copied()
     }
 }
 
@@ -1002,6 +1011,7 @@ struct InferState<'a> {
     struct_infers: Vec<StructInfer>,
     generic_func_values: Vec<(ValId, usize)>,
     pending_specializations: Vec<PendingSpecialization>,
+    member_method_type_sites: Vec<PendingMemberMethodType>,
 
     //result
     errors: Vec<TypeError>,
@@ -1116,6 +1126,15 @@ struct UnOpSite {
     output: CId,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingMemberMethodType {
+    site: ValId,
+    member: StrId,
+    full_method: CId,
+    receiver: CId,
+    receiver_value: ValId,
+}
+
 fn new_cluster(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
     let id = CId(parent.len());
     parent.0.push(id);
@@ -1194,6 +1213,7 @@ impl<'a> InferState<'a> {
             struct_infers: Vec::new(),
             generic_func_values: Vec::new(),
             pending_specializations: Vec::new(),
+            member_method_type_sites: Vec::new(),
             errors: Vec::new(),
             ans,
         }
@@ -1217,6 +1237,7 @@ impl<'a> InferState<'a> {
             struct_infers,
             generic_func_values,
             pending_specializations,
+            member_method_type_sites,
             errors: _,
             ans: _,
         } = self;
@@ -1237,6 +1258,7 @@ impl<'a> InferState<'a> {
         struct_infers.clear();
         generic_func_values.clear();
         pending_specializations.clear();
+        member_method_type_sites.clear();
     }
 
     fn new_cluster(&mut self) -> CId {
@@ -2394,6 +2416,7 @@ fn resolve_member_method_access(
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
     val_cluster: &mut Vec<(ValId, CId)>,
+    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
     program: &Program,
     ans: &SolvedTypes,
@@ -2435,6 +2458,13 @@ fn resolve_member_method_access(
     );
 
     let Some(self_style) = get_member_self_style(store, method_ty, struct_name) else {
+        member_method_type_sites.push(PendingMemberMethodType {
+            site: access_site,
+            member: member_name,
+            full_method: method_local,
+            receiver: base_cluster,
+            receiver_value: base_value,
+        });
         bind_val(val_cluster, access_site, method_local);
         return method_local;
     };
@@ -2456,18 +2486,33 @@ fn resolve_member_method_access(
             params,
             ret,
             self_style,
+            full_method: method_local,
         },
         access_site,
     );
 
     match curried_method {
         Ok(curried) => {
-            bind_val(val_cluster, access_site, method_local);
+            member_method_type_sites.push(PendingMemberMethodType {
+                site: access_site,
+                member: member_name,
+                full_method: method_local,
+                receiver: base_cluster,
+                receiver_value: base_value,
+            });
+            bind_val(val_cluster, access_site, curried);
             curried
         }
         Err(clash) => {
             let unresolved = new_cluster(parent, cluster);
-            bind_val(val_cluster, access_site, method_local);
+            member_method_type_sites.push(PendingMemberMethodType {
+                site: access_site,
+                member: member_name,
+                full_method: method_local,
+                receiver: base_cluster,
+                receiver_value: base_value,
+            });
+            bind_val(val_cluster, access_site, unresolved);
             errors.push(TypeError::ValuesContradict {
                 expectation_reason: "member method receiver must match method self parameter",
                 site: access_site,
@@ -2732,6 +2777,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     cluster,
                     func_defs,
                     struct_infers,
+                    &mut ctx.member_method_type_sites,
                     errors,
                     &mut site,
                     ctx.program,
@@ -2774,6 +2820,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     cluster,
                     func_defs,
                     struct_infers,
+                    &mut ctx.member_method_type_sites,
                     errors,
                     &mut site,
                     ctx.program,
@@ -3181,6 +3228,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                         &mut ctx.func_defs,
                         &mut ctx.struct_infers,
                         &mut ctx.val_cluster,
+                        &mut ctx.member_method_type_sites,
                         &mut ctx.errors,
                         ctx.program,
                         &*ctx.ans,
@@ -3234,6 +3282,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                         &mut ctx.func_defs,
                         &mut ctx.struct_infers,
                         &mut ctx.val_cluster,
+                        &mut ctx.member_method_type_sites,
                         &mut ctx.errors,
                         ctx.program,
                         &*ctx.ans,
@@ -4154,6 +4203,7 @@ struct ResolvedMemberOverload {
     params: Vec<CId>,
     ret: CId,
     self_style: MemberSelfStyle,
+    full_method: CId,
 }
 
 #[inline(always)]
@@ -4233,6 +4283,7 @@ fn resolve_member_overload_signature(
         params,
         ret,
         self_style,
+        full_method: method_local,
     })
 }
 
@@ -4251,6 +4302,7 @@ fn make_member_closure(
         mut params,
         ret,
         self_style,
+        full_method: _,
     } = method;
     debug_assert!(!params.is_empty());
 
@@ -4285,6 +4337,7 @@ fn resolve_operator_site(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
     site: &mut BinOpSite,
     program: &Program,
@@ -4354,6 +4407,8 @@ fn resolve_operator_site(
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
+                let method_name = bin_op_overload_name(op);
+                let full_method = overload_sig.full_method;
                 let method_closure = make_member_closure(
                     store,
                     parent,
@@ -4383,6 +4438,13 @@ fn resolve_operator_site(
                     method_closure,
                     expected_fn,
                 )?;
+                member_method_type_sites.push(PendingMemberMethodType {
+                    site: site.loc,
+                    member: method_name,
+                    full_method,
+                    receiver: lhs,
+                    receiver_value: site.lhs_val,
+                });
                 Ok(())
             })();
 
@@ -4527,6 +4589,7 @@ fn resolve_unary_operator_site(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
     site: &mut UnOpSite,
     program: &Program,
@@ -4590,6 +4653,8 @@ fn resolve_unary_operator_site(
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
+                let method_name = un_op_overload_name(op);
+                let full_method = overload_sig.full_method;
                 let method_closure = make_member_closure(
                     store,
                     parent,
@@ -4619,6 +4684,13 @@ fn resolve_unary_operator_site(
                     method_closure,
                     expected_fn,
                 )?;
+                member_method_type_sites.push(PendingMemberMethodType {
+                    site: site.loc,
+                    member: method_name,
+                    full_method,
+                    receiver: input,
+                    receiver_value: site.val,
+                });
                 Ok(())
             })();
 
@@ -4755,12 +4827,24 @@ fn resolve_unary_operator_site(
 #[inline(always)]
 fn resolve_operator_types(ctx: &mut InferState) -> bool {
     let mut progress = false;
-    let (store, parent, cluster, func_defs, struct_infers, bin_op_sites, un_op_sites, errors, ans) = (
+    let (
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        member_method_type_sites,
+        bin_op_sites,
+        un_op_sites,
+        errors,
+        ans,
+    ) = (
         &mut ctx.store,
         &mut ctx.parent,
         &mut ctx.cluster,
         &mut ctx.func_defs,
         &mut ctx.struct_infers,
+        &mut ctx.member_method_type_sites,
         &mut ctx.bin_op_sites,
         &mut ctx.un_op_sites,
         &mut ctx.errors,
@@ -4774,6 +4858,7 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
             cluster,
             func_defs,
             struct_infers,
+            member_method_type_sites,
             errors,
             site,
             ctx.program,
@@ -4790,6 +4875,7 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
             cluster,
             func_defs,
             struct_infers,
+            member_method_type_sites,
             errors,
             site,
             ctx.program,
@@ -4964,9 +5050,10 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 // #[inline(never)]
 // #[unsafe(no_mangle)]
 fn finalize(ctx: &mut InferState) {
-    let (val_cluster, pat_cluster, parent, cluster, errors, ans) = (
+    let (val_cluster, pat_cluster, member_method_type_sites, parent, cluster, errors, ans) = (
         &ctx.val_cluster,
         &ctx.pat_cluster,
+        &ctx.member_method_type_sites,
         &mut ctx.parent,
         &ctx.cluster,
         &mut ctx.errors,
@@ -4975,14 +5062,18 @@ fn finalize(ctx: &mut InferState) {
 
     // unsafe{perf_begin();}
 
-    let mut reported = IdHashMap::default();
+    let mut reported: IdHashMap<CId, ()> = IdHashMap::default();
+    let mut member_method_by_site: IdHashMap<ValId, PendingMemberMethodType> = IdHashMap::default();
+    for entry in member_method_type_sites.iter().copied() {
+        member_method_by_site.insert(entry.site, entry);
+    }
     for (e, c) in ctx.typedef_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
             ans.typedef_types.insert(*e, t);
         } else if *c == root {
             errors.push(TypeError::UnresolvedTypeExpr { expr: *e });
-            reported.insert(c, ());
+            reported.insert(*c, ());
         }
     }
 
@@ -5007,7 +5098,7 @@ fn finalize(ctx: &mut InferState) {
                     loc,
                     message: "could not infer struct field type",
                 });
-                reported.insert(c, ());
+                reported.insert(*c, ());
             }
         }
     }
@@ -5018,7 +5109,11 @@ fn finalize(ctx: &mut InferState) {
             ans.set_val(*v, t);
         } else if *c == root && !reported.contains_key(c) {
             errors.push(TypeError::Unresolved { value: *v });
-            reported.insert(c, ());
+            reported.insert(*c, ());
+            if let Some(entry) = member_method_by_site.get(v) {
+                let full_root = find_root(parent, entry.full_method);
+                reported.insert(full_root, ());
+            }
         }
     }
     for (v, count) in ctx.generic_func_values.iter() {
@@ -5037,6 +5132,43 @@ fn finalize(ctx: &mut InferState) {
             ans.set_pat(*p, t);
         } else if *c == root && !reported.contains_key(c) {
             errors.push(TypeError::UnresolvedPattern { pattern: *p });
+            reported.insert(*c, ());
+        }
+    }
+
+    for entry in member_method_type_sites.iter() {
+        let root = find_root(parent, entry.full_method);
+        if let ResolveKind::Solved(full_type) = cluster[root].state {
+            ans.member_method_types.insert(
+                entry.site,
+                SolvedMemberMethodType {
+                    member: entry.member,
+                    full_type,
+                },
+            );
+            continue;
+        }
+
+        if reported.contains_key(&root) {
+            continue;
+        }
+
+        //these are tricky to report because there isnt TECHNICALLY a value
+        //its an implicit value we added because of a cast. 
+
+        //if the output isnt resolved then fundementally this cant be solved so we are good
+        //if it CAN be solved but the full signature cant that must be because of &self not being clear
+        //in that case we need to report an error but its gona be a bad one... 
+
+        let receiver_root = find_root(parent, entry.receiver);
+        if !matches!(cluster[receiver_root].state, ResolveKind::Solved(_))
+            && !reported.contains_key(&receiver_root)
+        {
+            errors.push(TypeError::Unresolved {
+                value: entry.receiver_value,
+            });
+            reported.insert(receiver_root, ());
+            reported.insert(root, ());
         }
     }
 
@@ -5152,12 +5284,55 @@ mod type_infer_tests {
         panic!("let binding `{}` not found", name)
     }
 
+    fn find_let_stmt_value(program: &Program, func: ValId, name: &str) -> ValId {
+        let Value::Func { body, .. } = program.value(func) else {
+            panic!("expected function value")
+        };
+        let Value::Block {
+            statements,
+            return_value: _,
+        } = program.value(body)
+        else {
+            panic!("expected block body")
+        };
+
+        for stmt in statements.ids() {
+            let Value::Let { pat, value, .. } = program.value(stmt) else {
+                continue;
+            };
+            let Some(n) = extract_bind_name(program, pat) else {
+                continue;
+            };
+            if program.name_string(n) == name {
+                return value;
+            }
+        }
+
+        panic!("let binding `{}` not found", name)
+    }
+
+    fn find_typedef_type_by_name(program: &Program, solved: &SolvedTypes, name: &str) -> TypeId {
+        let texp = program
+            .definitions
+            .iter()
+            .find_map(|(n, def)| match def {
+                Defined::Type(texp) if program.name_string(*n) == name => Some(*texp),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("type `{}` not found", name));
+        solved
+            .typedef_types
+            .get(&texp)
+            .copied()
+            .unwrap_or_else(|| panic!("type `{}` did not resolve", name))
+    }
+
     fn find_member_access_and_result_types(
         program: &Program,
         solved: &SolvedTypes,
         func: ValId,
         name: &str,
-    ) -> (TypeId, TypeId) {
+    ) -> (ValId, TypeId, TypeId) {
         let Value::Func { body, .. } = program.value(func) else {
             panic!("expected function value")
         };
@@ -5193,7 +5368,7 @@ mod type_infer_tests {
             let result_ty = solved
                 .type_of(stmt)
                 .unwrap_or_else(|| panic!("missing type for let statement `{}`", name));
-            return (access_ty, result_ty);
+            return (call.base, access_ty, result_ty);
         }
 
         panic!("let binding `{}` not found", name)
@@ -5791,12 +5966,29 @@ mod type_infer_tests {
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
 
         let f = find_value_by_name(&program, "f");
-        let solved_types =
-            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
-        let x_ty = find_let_stmt_type(&program, solved_types, f, "x");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let x_ty = find_let_stmt_type(&program, &solved_types, f, "x");
+        let bin_op_site = find_let_stmt_value(&program, f, "x");
 
         assert!(matches!(
             store.type_value(x_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let called = solved_types
+            .member_method_type(bin_op_site)
+            .expect("missing member overload signature for binary operator");
+        assert_eq!(program.str_intern.resolve(called.member), "__add");
+        let TypeValue::Func { params, ret } = store.type_value(called.full_type) else {
+            panic!("expected full overload type to be function")
+        };
+        assert_eq!(params.len(), 2);
+        assert!(matches!(
+            store.type_value(params[1]),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+        assert!(matches!(
+            store.type_value(*ret),
             TypeValue::Builtin(BuiltinType::Int)
         ));
     }
@@ -5821,7 +6013,7 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn member_access_keeps_precurried_method_type_for_by_value_self() {
+    fn member_access_uses_curried_type_and_tracks_full_signature_for_by_value_self() {
         let src = "S=struct{}; S.add_5 = fn(self:S)->S { self }; f=fn(x:S){ let y = x.add_5(); };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
@@ -5829,8 +6021,7 @@ mod type_infer_tests {
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
 
         let f = find_value_by_name(&program, "f");
-        let solved_types =
-            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
 
         let Value::Func { params, .. } = program.value(f) else {
             panic!("expected function value");
@@ -5838,20 +6029,35 @@ mod type_infer_tests {
         let x_ty = solved_types
             .pat_type(params.at(0))
             .expect("missing parameter type for x");
-        let (access_ty, call_ty) =
+        let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
+        assert_eq!(x_ty, s_ty);
+        let call_site = find_let_stmt_value(&program, f, "y");
+        let (access_site, access_ty, call_ty) =
             find_member_access_and_result_types(&program, &solved_types, f, "y");
+        assert_ne!(access_site, call_site);
+        assert!(solved_types.member_method_type(call_site).is_none());
 
         let TypeValue::Func { params, ret } = store.type_value(access_ty) else {
-            panic!("expected member access to stay pre-curried function")
+            panic!("expected member access to be curried function")
+        };
+        assert_eq!(params.len(), 0);
+        assert_eq!(*ret, x_ty);
+        assert_eq!(call_ty, x_ty);
+
+        let called = solved_types
+            .member_method_type(access_site)
+            .expect("missing solved member method signature for access site");
+        assert_eq!(program.str_intern.resolve(called.member), "add_5");
+        let TypeValue::Func { params, ret } = store.type_value(called.full_type) else {
+            panic!("expected tracked full member method type to be a function")
         };
         assert_eq!(params.len(), 1);
         assert_eq!(params[0], x_ty);
         assert_eq!(*ret, x_ty);
-        assert_eq!(call_ty, x_ty);
     }
 
     #[test]
-    fn member_access_keeps_ref_self_parameter_visible() {
+    fn member_access_curried_ref_self_and_tracks_full_signature() {
         let src = "S=struct{}; S.add_5 = fn(self:&S)->int { 1 }; f=fn(x:S){ let y = x.add_5(); };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
@@ -5859,8 +6065,7 @@ mod type_infer_tests {
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
 
         let f = find_value_by_name(&program, "f");
-        let solved_types =
-            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
 
         let Value::Func { params, .. } = program.value(f) else {
             panic!("expected function value");
@@ -5868,25 +6073,47 @@ mod type_infer_tests {
         let x_ty = solved_types
             .pat_type(params.at(0))
             .expect("missing parameter type for x");
-        let (access_ty, call_ty) =
+        let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
+        assert_eq!(x_ty, s_ty);
+        let call_site = find_let_stmt_value(&program, f, "y");
+        let (access_site, access_ty, call_ty) =
             find_member_access_and_result_types(&program, &solved_types, f, "y");
+        assert_ne!(access_site, call_site);
+        assert!(solved_types.member_method_type(call_site).is_none());
 
         let TypeValue::Func { params, ret } = store.type_value(access_ty) else {
-            panic!("expected member access to stay pre-curried function")
+            panic!("expected member access to be curried function")
         };
-        assert_eq!(params.len(), 1);
-        let TypeValue::Ptr { tgt, raw, mutable } = store.type_value(params[0]) else {
-            panic!("expected pre-curried self parameter to stay as pointer")
-        };
-        assert!(!*raw);
-        assert!(!*mutable);
-        assert_eq!(*tgt, x_ty);
+        assert_eq!(params.len(), 0);
         assert!(matches!(
             store.type_value(*ret),
             TypeValue::Builtin(BuiltinType::Int)
         ));
         assert!(matches!(
             store.type_value(call_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let called = solved_types
+            .member_method_type(access_site)
+            .expect("missing solved member method signature for access site");
+        assert_eq!(program.str_intern.resolve(called.member), "add_5");
+        let TypeValue::Func {
+            params: full_params,
+            ret: full_ret,
+        } = store.type_value(called.full_type)
+        else {
+            panic!("expected tracked full member method type to be a function")
+        };
+        assert_eq!(full_params.len(), 1);
+        let TypeValue::Ptr { tgt, raw, mutable } = store.type_value(full_params[0]) else {
+            panic!("expected tracked full self parameter to stay as pointer")
+        };
+        assert!(!*raw);
+        assert!(!*mutable);
+        assert_eq!(*tgt, s_ty);
+        assert!(matches!(
+            store.type_value(*full_ret),
             TypeValue::Builtin(BuiltinType::Int)
         ));
     }

@@ -678,6 +678,23 @@ impl ErrorReporter {
             ));
         }
 
+        for (site, member) in solved.member_method_types.iter() {
+            let loc = program.value_loc(*site);
+            if !loc_in_region(&loc, region) {
+                continue;
+            }
+            let member_name = program.str_intern.resolve(member.member);
+            labels_by_file.entry(loc.file).or_default().push((
+                loc.range.clone(),
+                format!(
+                    "member method `{}`: {}",
+                    member_name,
+                    store.get_type_string(program, member.full_type)
+                ),
+                Color::Magenta,
+            ));
+        }
+
         if labels_by_file.is_empty() {
             return Ok(());
         }
