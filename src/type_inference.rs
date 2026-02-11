@@ -1033,6 +1033,7 @@ struct StructInferId(usize);
 enum ResolveKind {
     Solved(TypeId),
     Nothing,
+    Never,
 
     // Specialized(SpecilizeId),
     ///the val is the last entity easily considered a lit like (2+1+3) in (let y = let x = 2+1+3)
@@ -1355,9 +1356,36 @@ fn unify_clusters(
     found: CId,
     wanted: CId,
 ) -> Result<CId, TypeClash> {
+    unify_clusters_inlined(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        found,
+        wanted,
+    )
+}
+#[inline(always)]
+fn unify_clusters_inlined(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    found: CId,
+    wanted: CId,
+) -> Result<CId, TypeClash> {
     let rf = find_root(parent, found);
     let rw = find_root(parent, wanted);
     if rf == rw {
+        return Ok(rw);
+    }
+
+    if matches!(cluster[rw].state, ResolveKind::Never) {
+        return Ok(rf);
+    }
+    if matches!(cluster[rf].state, ResolveKind::Never) {
         return Ok(rw);
     }
 
@@ -1761,6 +1789,7 @@ fn force_type(
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
+        ResolveKind::Never => Ok(()),
     }
 }
 
@@ -1990,7 +2019,7 @@ fn mock_type_from_cluster(
             mutable,
             visiting,
         ),
-        ResolveKind::Nothing => UNKNOWN_TYPE,
+        ResolveKind::Nothing | ResolveKind::Never => UNKNOWN_TYPE,
     };
 
     visiting.remove(&root);
@@ -2226,7 +2255,7 @@ fn extract_bad_type(
     let root = find_root(parent, cid);
     match cluster[root].state {
         ResolveKind::Solved(t) => Some(BadTypeId(t)),
-        ResolveKind::Nothing => None,
+        ResolveKind::Nothing | ResolveKind::Never => None,
         ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(
             store,
             parent,
@@ -2559,6 +2588,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             c
         }
 
+        Value::Wildcard => {
+            let c = ctx.new_cluster();
+            ctx.bind_val(v, c);
+            c
+        }
+
         Value::NameRef(n) => {
             if let Some(base) = ctx.names.get_mut(&n) {
                 //names might refer to something that us generic in the local scope...
@@ -2677,32 +2712,28 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             ans
         }
 
-        Value::Deref(base)=>{
+        Value::Deref(base) => {
             let src = gather_constraints(ctx, base);
             let tgt = match ctx.cluster[src].state {
-                ResolveKind::Ptr { tgt, ..}=>{
-                    tgt
-                },
-                ResolveKind::Nothing=>{
+                ResolveKind::Ptr { tgt, .. } => tgt,
+                ResolveKind::Nothing => {
                     let tgt = ctx.new_cluster();
-                    ctx.cluster[src].state=ResolveKind::Ptr{
-                        tgt,mutable:None,raw:None
+                    ctx.cluster[src].state = ResolveKind::Ptr {
+                        tgt,
+                        mutable: None,
+                        raw: None,
                     };
                     tgt
-                },
-                ResolveKind::Struct(_rid) => todo!("might have __smart_pointer"),
-                ResolveKind::Solved(t)=>{
-                    match ctx.store.type_value(t) {
-                        TypeValue::Ptr{tgt,..}=>{
-                            ctx.new_solved(*tgt)
-                        },
-                        TypeValue::Struct{id:_,..} => todo!("might have __smart_pointer"),
-                        _=>todo!("report error")
-                    }
                 }
-                _ => todo!()
+                ResolveKind::Struct(_rid) => todo!("might have __smart_pointer"),
+                ResolveKind::Solved(t) => match ctx.store.type_value(t) {
+                    TypeValue::Ptr { tgt, .. } => ctx.new_solved(*tgt),
+                    TypeValue::Struct { id: _, .. } => todo!("might have __smart_pointer"),
+                    _ => todo!("report error"),
+                },
+                _ => todo!(),
             };
-            ctx.bind_val(v,tgt);
+            ctx.bind_val(v, tgt);
             tgt
         }
 
@@ -2726,6 +2757,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
 
             lhs
         }
+        Value::Assign { .. } => todo!(),
 
         Value::Block {
             statements,
@@ -3325,7 +3357,30 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                 _ => todo!("emit some sort of error on this making no sense"),
             }
         }
-        _ => panic!("more expressions {:?}", ctx.program.value(v)),
+        Value::Break | Value::Continue => {
+            let c = ctx.new_cluster();
+            ctx.cluster[c].state = ResolveKind::Never;
+            c
+        }
+        Value::Return(op) => {
+            match op {
+                Some(v) => {
+                    let _c = gather_constraints(ctx, v);
+                    todo!()
+                }
+                None => todo!(),
+            }
+            // let c = ctx.new_cluster();
+            // ctx.cluster[c].state=ResolveKind::Never;
+            // c
+        }
+        Value::LogicOp { op: _, values: _ } => todo!(),
+
+        Value::Tuple(_) | Value::Array(_) => todo!(),
+        Value::Index(_) | Value::Match { .. } => todo!(),
+
+        Value::Labeled { .. } => unreachable!("bug tried compiling labeled normally"),
+        Value::MatchArm(_) => unreachable!("bug tried compiling match arm normally"),
     }
 }
 
@@ -4010,6 +4065,7 @@ fn cluster_is_int_like(
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
+        ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -4029,6 +4085,7 @@ fn cluster_is_float_like(
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
+        ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -4048,6 +4105,7 @@ fn cluster_is_bool(
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
+        ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -4118,6 +4176,10 @@ fn classify_operand(
         | ResolveKind::Func(_)
         | ResolveKind::Ptr { .. } => OperandKind::KnownNonUser,
         ResolveKind::Nothing => OperandKind::Unknown,
+
+        //for never its probably best if we treat it as an unresolved in the end
+        //we can do something more fancy but that would just be confusing
+        ResolveKind::Never => OperandKind::Unknown,
     }
 }
 
@@ -4168,7 +4230,15 @@ fn unify_if_distinct(
     if ra == rb {
         return Ok(false);
     }
-    unify_clusters(store, parent, cluster, func_defs, struct_infers, ra, rb)?;
+
+    if matches!(cluster[ra].state, ResolveKind::Never) {
+        return Ok(false);
+    }
+    if matches!(cluster[rb].state, ResolveKind::Never) {
+        return Ok(false);
+    }
+
+    unify_clusters_inlined(store, parent, cluster, func_defs, struct_infers, ra, rb)?;
     Ok(true)
 }
 
@@ -5183,11 +5253,11 @@ fn finalize(ctx: &mut InferState) {
         }
 
         //these are tricky to report because there isnt TECHNICALLY a value
-        //its an implicit value we added because of a cast. 
+        //its an implicit value we added because of a cast.
 
         //if the output isnt resolved then fundementally this cant be solved so we are good
         //if it CAN be solved but the full signature cant that must be because of &self not being clear
-        //in that case we need to report an error but its gona be a bad one... 
+        //in that case we need to report an error but its gona be a bad one...
 
         let receiver_root = find_root(parent, entry.receiver);
         if !matches!(cluster[receiver_root].state, ResolveKind::Solved(_))
@@ -5837,6 +5907,98 @@ mod type_infer_tests {
             "#,
             BuiltinType::Bool
         );
+    }
+
+    #[test]
+    fn if_branch_with_break_unifies_with_concrete_branch() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(
+            r#"
+            f = fn() {
+                let keep_going: bool = true;
+                let z: int = 0;
+                while keep_going {
+                    z = z + if keep_going { 1:int } else { break }
+                }
+            }
+            "#,
+            &mut store,
+        )
+        .unwrap_err();
+
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(!errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "if branches must have the same type",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn if_branch_with_continue_unifies_with_concrete_branch() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(
+            r#"
+            f = fn() {
+                let keep_going: bool = true;
+                let z: int = 0;
+                while keep_going {
+                    z = z + if keep_going { 1:int } else { continue }
+                }
+            }
+            "#,
+            &mut store,
+        )
+        .unwrap_err();
+
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(!errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "if branches must have the same type",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn nested_if_with_never_branch_avoids_branch_mismatch_errors() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(
+            r#"
+            f = fn() {
+                let keep_going: bool = true;
+                let z: int = 0;
+                while keep_going {
+                    let step = if keep_going {
+                        if keep_going { 2:int } else { continue }
+                    } else {
+                        3:int
+                    };
+                    z = z + step;
+                }
+            }
+            "#,
+            &mut store,
+        )
+        .unwrap_err();
+
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(!errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "if branches must have the same type",
+                ..
+            }
+        )));
     }
 
     /* ------------------------------------------------------------

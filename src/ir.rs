@@ -601,6 +601,12 @@ impl Program {
             Expr::Prefix(open, items) if open.value == "while" => {
                 self.lower_while_expr(expr.loc, items)
             }
+            Expr::Prefix(open, items) if open.value == "break" => {
+                self.lower_break_expr(expr.loc, open, items)
+            }
+            Expr::Prefix(open, items) if open.value == "continue" => {
+                self.lower_continue_expr(expr.loc, open, items)
+            }
 
             // fn (sig) body
             Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
@@ -838,6 +844,32 @@ impl Program {
         let body = self.lower_value(then_expr)?;
         let _ = loc;
         Ok(Value::While { cond, body })
+    }
+
+    #[inline(always)]
+    fn lower_break_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> CResult<Value> {
+        if !items.is_empty() {
+            return Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_EXPRESSION,
+            });
+        }
+        Ok(Value::Break)
+    }
+
+    #[inline(always)]
+    fn lower_continue_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> CResult<Value> {
+        if !items.is_empty() {
+            return Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_EXPRESSION,
+            });
+        }
+        Ok(Value::Continue)
     }
 
     #[inline(always)]
@@ -2231,6 +2263,21 @@ mod lowering_tests {
             }
             _ => panic!("expected if expression"),
         }
+    }
+
+    #[test]
+    fn lowers_break_and_continue() {
+        let src = "{ break; continue; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 2);
+
+        assert!(matches!(program.value(statements[0]), Value::Break));
+        assert!(matches!(program.value(statements[1]), Value::Continue));
     }
 
     #[test]

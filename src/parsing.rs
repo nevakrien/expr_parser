@@ -1047,6 +1047,13 @@ impl<'a> Parser<'a> {
                     self.next_token()?.unwrap();
                     return self.parse_after_match(start, op_s).map(Some);
                 }
+                if op == "break" || op == "continue" {
+                    self.next_token()?.unwrap();
+                    return Ok(Some(Located {
+                        loc: self.produce_loc(start),
+                        value: Expr::Prefix(op_s, Vec::new()),
+                    }))
+                }
 
                 if op == "fn" || op == "cfn" || op == "macro" {
                     self.next_token()?.unwrap();
@@ -1165,12 +1172,12 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn parse_after_if(&mut self, start: usize, if_tok: LFixed) -> PResult<LExpr> {
         let cond = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
-        let then_expr = self.consume_stmt()?;
+        let then_expr = self.consume_expr()?;
 
         let mut args = vec![cond, then_expr];
 
         if self.try_operator("else")?.is_some() {
-            args.push(self.consume_stmt()?);
+            args.push(self.consume_expr()?);
         }
 
         let loc = self.produce_loc(start);
@@ -1183,7 +1190,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn parse_after_while(&mut self, start: usize, w: LFixed) -> PResult<LExpr> {
         let cond = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
-        let body = self.consume_stmt()?;
+        let body = self.consume_expr()?;
 
         let loc = self.produce_loc(start);
         Ok(Located {
@@ -1599,6 +1606,33 @@ mod parse_tests {
                 assert_loc(&expr.loc, 0, src.len());
             }
             _ => panic!("expected if-else"),
+        }
+    }
+
+    #[test]
+    fn break_and_continue_parse_as_zero_arg_prefix() {
+        let src = "break; continue";
+        let mut p = Parser::new(src, 0);
+
+        let first = p.consume_stmt().unwrap();
+        let second = p.consume_stmt().unwrap();
+
+        match first.value {
+            Expr::Prefix(tok, args) => {
+                assert_eq!(tok.value, "break");
+                assert!(args.is_empty());
+                assert_loc(&first.loc, 0, 5);
+            }
+            _ => panic!("expected break"),
+        }
+
+        match second.value {
+            Expr::Prefix(tok, args) => {
+                assert_eq!(tok.value, "continue");
+                assert!(args.is_empty());
+                assert_loc(&second.loc, 7, 15);
+            }
+            _ => panic!("expected continue"),
         }
     }
 
