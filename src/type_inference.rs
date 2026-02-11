@@ -9,7 +9,6 @@
 //
 // ================================================================
 
-use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::StructLike;
@@ -20,9 +19,10 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, GE_STR, GT_STR,
-    LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR, StrId,
+    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, GE_STR, GT_STR,
+    LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR,
 };
+use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -494,13 +494,21 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        if ans == UNKNOWN_TYPE {
+            None
+        } else {
+            Some(ans)
+        }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        if ans == UNKNOWN_TYPE {
+            None
+        } else {
+            Some(ans)
+        }
     }
 }
 
@@ -913,9 +921,7 @@ fn main_solver(ctx: &mut InferState) {
     loop {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
-        progress |= resolve_func_types(ctx);
-        progress |= resolve_struct_types(ctx);
-        progress |= resolve_ptr_types(ctx);
+        progress |= resolve_deferred_types(ctx);
         progress |= resolve_pending_specializations(ctx);
         if !progress {
             break;
@@ -2192,10 +2198,7 @@ fn specialize_type(
     loc: ValId,
 ) -> CId {
     match store.type_value(ty) {
-        TypeValue::Generic(id) => generics
-            .get(id.0)
-            .copied()
-            .unwrap(),
+        TypeValue::Generic(id) => generics.get(id.0).copied().unwrap(),
         TypeValue::Func { params, ret } => {
             let ret = *ret;
             let plen = params.len();
@@ -2991,10 +2994,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     }
 
                     let Some(sname) = r.name else {
-                        unreachable!("internal error unset structname")
+                        //we know there cant be meber methods so this falls under not found
+                        todo!("report error")
                     };
                     let Some(method) = ctx.program.member_methods[&sname].get(&name) else {
-                        todo!()
+                        todo!("report error")
                     };
 
                     let _method = global_to_specialized_local(ctx, method, v);
@@ -4065,38 +4069,36 @@ fn try_resolve_ptr_type(
 }
 
 #[inline(always)]
-fn resolve_func_types(ctx: &mut InferState) -> bool {
+fn resolve_deferred_types(ctx: &mut InferState) -> bool {
     let mut change = false;
     for cid in (0..ctx.cluster.len()).map(CId) {
-        if let ResolveKind::Func(call) = ctx.cluster[cid].state
-            && let Some(t) = try_resolve_func_type(
+        let resolved = match ctx.cluster[cid].state {
+            ResolveKind::Func(call) => try_resolve_func_type(
                 ctx.store,
                 &mut ctx.parent,
                 &mut ctx.cluster,
                 &mut ctx.func_defs,
                 call,
-            )
-        {
-            ctx.cluster[cid].state = ResolveKind::Solved(t);
-            change = true;
-        }
-    }
-    change
-}
-
-#[inline(always)]
-fn resolve_struct_types(ctx: &mut InferState) -> bool {
-    let mut change = false;
-    for cid in (0..ctx.cluster.len()).map(CId) {
-        if let ResolveKind::Struct(call) = ctx.cluster[cid].state
-            && let Some(t) = try_resolve_struct_type(
+            ),
+            ResolveKind::Struct(call) => try_resolve_struct_type(
                 ctx.store,
                 &mut ctx.parent,
                 &mut ctx.cluster,
                 &mut ctx.struct_infers,
                 call,
-            )
-        {
+            ),
+            ResolveKind::Ptr { tgt, raw, mutable } => try_resolve_ptr_type(
+                ctx.store,
+                &mut ctx.parent,
+                &mut ctx.cluster,
+                tgt,
+                raw,
+                mutable,
+            ),
+            _ => None,
+        };
+
+        if let Some(t) = resolved {
             ctx.cluster[cid].state = ResolveKind::Solved(t);
             change = true;
         }
@@ -4152,27 +4154,6 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
     });
 
     ctx.pending_specializations = pending;
-    change
-}
-
-#[inline(always)]
-fn resolve_ptr_types(ctx: &mut InferState) -> bool {
-    let mut change = false;
-    for cid in (0..ctx.cluster.len()).map(CId) {
-        if let ResolveKind::Ptr { tgt, raw, mutable } = ctx.cluster[cid].state
-            && let Some(t) = try_resolve_ptr_type(
-                ctx.store,
-                &mut ctx.parent,
-                &mut ctx.cluster,
-                tgt,
-                raw,
-                mutable,
-            )
-        {
-            ctx.cluster[cid].state = ResolveKind::Solved(t);
-            change = true;
-        }
-    }
     change
 }
 
@@ -4805,10 +4786,9 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
     }
 
     #[test]
@@ -4930,10 +4910,9 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
     }
 
     //  #[test]
