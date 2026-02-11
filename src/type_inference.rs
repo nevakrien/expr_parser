@@ -8,8 +8,11 @@
 //
 // ================================================================
 
+use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
+use crate::ir::CallingConvention;
+use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{
@@ -18,11 +21,10 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
-    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR,
-    NOT_STR, SHL_STR, SHR_STR, SUB_STR,
+    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR, DIV_STR,
+    EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
+    SHL_STR, SHR_STR, SUB_STR, StrId,
 };
-use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -133,6 +135,7 @@ pub enum TypeValue {
     Tuple(Vec<TypeId>),
     Array(TypeId, usize),
     Func {
+        calling_convention: CallingConvention,
         params: Vec<TypeId>,
         ret: TypeId,
     },
@@ -214,16 +217,22 @@ pub struct StructRep {
     pub name: Option<NameId>,
     pub fields: Vec<(NameId, TypeId)>,
     pub gen_count: usize,
+    pub layout: StructLayoutSpec,
 }
 
 impl StructRep {
-    fn new(names: impl Iterator<Item = NameId>, gen_count: usize) -> Self {
+    fn new(
+        names: impl Iterator<Item = NameId>,
+        gen_count: usize,
+        layout: StructLayoutSpec,
+    ) -> Self {
         Self {
             //TODO: when solving typedefs in finalize we want to set this value
             //for anonymous structs it wont exist but those are rare
             name: None,
             fields: names.map(|x| (x, UNKNOWN_TYPE)).collect(),
             gen_count,
+            layout,
         }
     }
 
@@ -288,6 +297,7 @@ impl TypeStore {
             name,
             fields,
             gen_count: 0,
+            layout: StructLayoutSpec::Hot,
         };
         let sid = self.new_struct(rep);
         let tid = self.intern(TypeValue::Struct {
@@ -379,14 +389,24 @@ impl TypeStore {
                     .join(", ");
                 format!("({})", inner)
             }
-            TypeValue::Func { params, ret } => {
+            TypeValue::Func {
+                calling_convention,
+                params,
+                ret,
+            } => {
                 let params = params
                     .iter()
                     .map(|id| self.get_type_string_nested(program, *id, gen_count))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let fn_kw = match calling_convention {
+                    CallingConvention::Hot => "fn",
+                    CallingConvention::C => "cfn",
+                    CallingConvention::Unknown => "fn?",
+                };
                 format!(
-                    "fn({}) -> {}",
+                    "{}({}) -> {}",
+                    fn_kw,
                     params,
                     self.get_type_string_nested(program, *ret, gen_count)
                 )
@@ -511,21 +531,13 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
@@ -820,14 +832,21 @@ pub fn infer_global_types<'a>(
             //note that namespace on generics gurntees this works for the most outer scope
             match ctx.program.value(*m) {
                 Value::Func {
+                    calling_convention,
                     generics,
                     params,
                     output_type,
                     body: _,
                 } => {
                     ctx.clear_local_state();
-                    let _ =
-                        gather_func_signature::<true>(&mut ctx, *m, generics, params, output_type);
+                    let _ = gather_func_signature::<true>(
+                        &mut ctx,
+                        *m,
+                        calling_convention,
+                        generics,
+                        params,
+                        output_type,
+                    );
                     main_solver(&mut ctx);
                     check_special_member_method_signature(&mut ctx, *m, *struct_name, *method_name);
                 }
@@ -847,13 +866,21 @@ pub fn infer_global_types<'a>(
         //note that namespace on generics gurntees this works for the most outer scope
         match ctx.program.value(*v) {
             Value::Func {
+                calling_convention,
                 generics,
                 params,
                 output_type,
                 body: _,
             } => {
                 ctx.clear_local_state();
-                let _ = gather_func_signature::<true>(&mut ctx, *v, generics, params, output_type);
+                let _ = gather_func_signature::<true>(
+                    &mut ctx,
+                    *v,
+                    calling_convention,
+                    generics,
+                    params,
+                    output_type,
+                );
                 main_solver(&mut ctx);
             }
             _ => {}
@@ -878,12 +905,21 @@ pub fn infer_value_internals<'a>(
 
     match ctx.program.value(value) {
         Value::Func {
+            calling_convention,
             generics,
             params,
             output_type,
             body,
         } => {
-            gather_func_constraints::<true>(&mut ctx, value, generics, params, output_type, body)
+            gather_func_constraints::<true>(
+                &mut ctx,
+                value,
+                calling_convention,
+                generics,
+                params,
+                output_type,
+                body,
+            )
             //this case we have a fully known type so no unify.
             //further a unify here is wrong
             //this is because we solved this as Func<> but its actually a WithGenrics
@@ -933,6 +969,7 @@ fn _infer_value_hacky<'a>(
 
     match ctx.program.value(value) {
         Value::Func {
+            calling_convention,
             generics,
             params,
             output_type,
@@ -941,6 +978,7 @@ fn _infer_value_hacky<'a>(
             let _ = gather_func_constraints::<true>(
                 &mut ctx,
                 value,
+                calling_convention,
                 generics,
                 params,
                 output_type,
@@ -1083,6 +1121,7 @@ enum ResolveKind {
 struct FuncInfer {
     #[allow(dead_code)]
     loc: ValId,
+    calling_convention: CallingConvention,
     inputs: Vec<CId>,
     output: CId,
 }
@@ -1615,6 +1654,25 @@ fn _try_absorb(
                 ));
             }
 
+            let (dst_cc, src_cc) = {
+                let dst_call = &func_defs[dst_call.0];
+                let src_call = &func_defs[src_call.0];
+                (dst_call.calling_convention, src_call.calling_convention)
+            };
+            let Some(merged_cc) = merge_calling_convention(dst_cc, src_cc) else {
+                return Err(func_call_clash(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    dst_call,
+                    src_call,
+                ));
+            };
+            func_defs[dst_call.0].calling_convention = merged_cc;
+            func_defs[src_call.0].calling_convention = merged_cc;
+
             if let Some(t) = try_resolve_func_type(store, parent, cluster, func_defs, dst_call) {
                 cluster[dst].state = Solved(t);
             }
@@ -1863,6 +1921,19 @@ fn merge_ptr_flag(a: Option<bool>, b: Option<bool>) -> Option<Option<bool>> {
     }
 }
 
+#[inline(always)]
+fn merge_calling_convention(
+    a: CallingConvention,
+    b: CallingConvention,
+) -> Option<CallingConvention> {
+    use CallingConvention::*;
+    match (a, b) {
+        (Unknown, x) | (x, Unknown) => Some(x),
+        (x, y) if x == y => Some(x),
+        _ => None,
+    }
+}
+
 fn unify_ptr_with_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -1931,8 +2002,12 @@ fn unify_func_with_type(
     call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let (params, ret) = match store.type_value(ty) {
-        TypeValue::Func { params, ret } => (params.as_slice(), *ret),
+    let (cc, params, ret) = match store.type_value(ty) {
+        TypeValue::Func {
+            calling_convention,
+            params,
+            ret,
+        } => (*calling_convention, params.as_slice(), *ret),
         _ => {
             return Err(TypeClash {
                 found: Some(BadTypeId(ty)),
@@ -1940,6 +2015,22 @@ fn unify_func_with_type(
             });
         }
     };
+
+    let infer_cc = func_defs[call.0].calling_convention;
+    let Some(merged_cc) = merge_calling_convention(infer_cc, cc) else {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: Some(BadTypeId(make_func_mock(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                call,
+            ))),
+        });
+    };
+    func_defs[call.0].calling_convention = merged_cc;
 
     let input_len = func_defs[call.0].inputs.len();
     if params.len() != input_len {
@@ -1956,7 +2047,11 @@ fn unify_func_with_type(
         //              technically the Vec params points to never reallocs
         //              so theortically its possible to keep borowing this
         let param_ty = match store.type_value(ty) {
-            TypeValue::Func { params, ret: _ } => params[i],
+            TypeValue::Func {
+                params,
+                ret: _,
+                calling_convention: _,
+            } => params[i],
             _ => unreachable!(),
         };
         force_type(
@@ -2121,7 +2216,11 @@ fn make_func_mock_inner(
         visiting,
     );
 
-    store.intern(TypeValue::Func { params, ret })
+    store.intern(TypeValue::Func {
+        calling_convention: site.calling_convention,
+        params,
+        ret,
+    })
 }
 
 fn make_func_mock(
@@ -2360,9 +2459,14 @@ fn specialize_type(
 ) -> CId {
     match store.type_value(ty) {
         TypeValue::Generic(id) => generics.get(id.0).copied().unwrap(),
-        TypeValue::Func { params, ret } => {
+        TypeValue::Func {
+            calling_convention,
+            params,
+            ret,
+        } => {
             let ret = *ret;
             let plen = params.len();
+            let cc = *calling_convention;
             let inputs = (0..plen)
                 .map(|i| {
                     let TypeValue::Func { params, .. } = store.type_value(ty) else {
@@ -2399,6 +2503,7 @@ fn specialize_type(
                     inputs,
                     output,
                     loc,
+                    calling_convention: cc,
                 },
             )
         }
@@ -3594,11 +3699,20 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             output
         }
         Value::Func {
+            calling_convention,
             generics,
             params,
             output_type,
             body,
-        } => gather_func_constraints::<false>(ctx, v, generics, params, output_type, body),
+        } => gather_func_constraints::<false>(
+            ctx,
+            v,
+            calling_convention,
+            generics,
+            params,
+            output_type,
+            body,
+        ),
         Value::Call(call) => {
             if call.named_args().is_empty() {
                 //we can try derive the type of base directly
@@ -3614,6 +3728,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
                 let found = ctx.new_func(FuncInfer {
                     loc: v,
+                    calling_convention: CallingConvention::Unknown,
                     inputs,
                     output,
                 });
@@ -4110,7 +4225,11 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
 fn compile_struct_type<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
     texpr: TExpId,
-    StructLike { generics, fields }: StructLike,
+    StructLike {
+        layout,
+        generics,
+        fields,
+    }: StructLike,
 ) -> CId {
     if !ALLOW_GENERICS && !generics.is_empty() {
         let loc = generics
@@ -4161,7 +4280,7 @@ fn compile_struct_type<const ALLOW_GENERICS: bool>(
         }
     }
 
-    let rep = StructRep::new(field_info.iter().map(|(n, _)| *n), generics.len());
+    let rep = StructRep::new(field_info.iter().map(|(n, _)| *n), generics.len(), layout);
     let sid = ctx.store.new_struct(rep);
     let generics = (0..generics.len())
         .map(|x| ctx.store.intern(TypeValue::Generic(GenId(x))))
@@ -4331,6 +4450,7 @@ fn get_type_name(prog: &Program, t: TExpId) -> Option<NameId> {
 fn gather_func_signature<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
     v: ValId,
+    calling_convention: CallingConvention,
     generics: PatternSpan,
     params: PatternSpan,
     output_type: Option<TExpId>,
@@ -4367,6 +4487,7 @@ fn gather_func_signature<const ALLOW_GENERICS: bool>(
     };
 
     let f = ctx.new_func(FuncInfer {
+        calling_convention,
         inputs,
         output,
         loc: v,
@@ -4378,13 +4499,24 @@ fn gather_func_signature<const ALLOW_GENERICS: bool>(
 fn gather_func_constraints<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
     v: ValId,
+    calling_convention: CallingConvention,
     generics: PatternSpan,
     params: PatternSpan,
     output_type: Option<TExpId>,
-    body: ValId,
+    body: Option<ValId>,
 ) -> CId {
-    let (f, output) =
-        gather_func_signature::<ALLOW_GENERICS>(ctx, v, generics, params, output_type);
+    let (f, output) = gather_func_signature::<ALLOW_GENERICS>(
+        ctx,
+        v,
+        calling_convention,
+        generics,
+        params,
+        output_type,
+    );
+
+    let Some(body) = body else {
+        return f;
+    };
 
     let body_cluster = gather_constraints(ctx, body, Some(output));
 
@@ -4471,7 +4603,7 @@ fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeI
     };
 
     match store.type_value(fn_ty) {
-        TypeValue::Func { params, ret } => Some((params.as_slice(), *ret)),
+        TypeValue::Func { params, ret, .. } => Some((params.as_slice(), *ret)),
         _ => None,
     }
 }
@@ -5088,7 +5220,7 @@ fn function_parts_from_cluster(
             Some((func_defs[call.0].inputs.clone(), func_defs[call.0].output))
         }
         ResolveKind::Solved(t) => {
-            let TypeValue::Func { params, ret } = store.type_value(t) else {
+            let TypeValue::Func { params, ret, .. } = store.type_value(t) else {
                 return None;
             };
             let inputs = params
@@ -5255,6 +5387,7 @@ fn make_member_closure(
         func_defs,
         FuncInfer {
             loc,
+            calling_convention: CallingConvention::Unknown,
             inputs: params,
             output: ret,
         },
@@ -5356,6 +5489,7 @@ fn resolve_operator_site(
                     func_defs,
                     FuncInfer {
                         loc: site.loc,
+                        calling_convention: CallingConvention::Unknown,
                         inputs: vec![rhs],
                         output: out,
                     },
@@ -5817,6 +5951,7 @@ fn resolve_unary_operator_site(
                     func_defs,
                     FuncInfer {
                         loc: site.loc,
+                        calling_convention: CallingConvention::Unknown,
                         inputs: Vec::new(),
                         output: out,
                     },
@@ -6060,7 +6195,11 @@ fn try_resolve_func_type(
         _ => return None,
     };
 
-    Some(store.intern(TypeValue::Func { params, ret }))
+    Some(store.intern(TypeValue::Func {
+        calling_convention: func_defs[call.0].calling_convention,
+        params,
+        ret,
+    }))
 }
 
 fn try_resolve_struct_type(
@@ -6647,6 +6786,7 @@ mod type_infer_tests {
         let Value::Func { body, .. } = program.value(func) else {
             panic!("expected function value")
         };
+        let body = body.expect("expected function body");
         let Value::Block {
             statements,
             return_value: _,
@@ -6676,6 +6816,7 @@ mod type_infer_tests {
         let Value::Func { body, .. } = program.value(func) else {
             panic!("expected function value")
         };
+        let body = body.expect("expected function body");
         let Value::Block {
             statements,
             return_value: _,
@@ -6724,6 +6865,7 @@ mod type_infer_tests {
         let Value::Func { body, .. } = program.value(func) else {
             panic!("expected function value")
         };
+        let body = body.expect("expected function body");
         let Value::Block {
             statements,
             return_value: _,
@@ -6785,7 +6927,7 @@ mod type_infer_tests {
         infer_global_types(&program, store, &mut solved_types)?;
         let f = extract_single_fn(&program);
         let body = match program.value(f) {
-            Value::Func { body, .. } => body,
+            Value::Func { body, .. } => body.expect("expected function body"),
             _ => panic!("expected function value"),
         };
 
@@ -6801,7 +6943,7 @@ mod type_infer_tests {
 
         let f = extract_single_fn(&program);
         let body = match program.value(f) {
-            Value::Func { body, .. } => body,
+            Value::Func { body, .. } => body.expect("expected function body"),
             _ => panic!("expected function value"),
         };
 
@@ -7003,6 +7145,111 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn infer_external_cfn_signature() {
+        let src = "f = cfn(x:int)->int;";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let f_ty = solved_types.type_of(f).expect("missing f type");
+        let TypeValue::Func {
+            calling_convention,
+            params,
+            ret,
+        } = store.type_value(f_ty)
+        else {
+            panic!("expected function type")
+        };
+
+        assert_eq!(*calling_convention, CallingConvention::C);
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            store.type_value(params[0]),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+        assert!(matches!(
+            store.type_value(*ret),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn calling_convention_mismatch_is_a_type_error() {
+        let src = r#"
+            a = fn(x:int)->int { x }
+            b = cfn(x:int)->int;
+            c = fn() { let x = a; x = b; }
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let c = find_value_by_name(&program, "c");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, c)
+            .err()
+            .unwrap_or_default();
+
+        let clash = errs.iter().find_map(|err| match err {
+            TypeError::ValuesContradict { clash, .. } => Some(*clash),
+            _ => None,
+        });
+        let clash = clash.expect("expected mismatch error");
+
+        let mut saw_hot = false;
+        let mut saw_c = false;
+        for side in [clash.found, clash.wanted] {
+            let Some(side) = side else {
+                continue;
+            };
+            let TypeValue::Func {
+                calling_convention, ..
+            } = store.type_value(side.0)
+            else {
+                continue;
+            };
+            saw_hot |= *calling_convention == CallingConvention::Hot;
+            saw_c |= *calling_convention == CallingConvention::C;
+        }
+
+        assert!(
+            saw_hot && saw_c,
+            "expected fn/cfn mismatch in clash payload"
+        );
+    }
+
+    #[test]
+    fn unknown_calling_convention_prints_fn_question_mark() {
+        let program = Program::new();
+        let mut store = TypeStore::new();
+        let ty = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Unknown,
+            params: vec![BuiltinType::Int.into()],
+            ret: BuiltinType::Int.into(),
+        });
+
+        assert_eq!(store.get_type_string(&program, ty), "fn?(int) -> int");
+    }
+
+    #[test]
+    fn cstruct_layout_is_tracked_in_struct_representation() {
+        let src = "type S = cstruct { x:int };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
+        let TypeValue::Struct { id, .. } = store.type_value(s_ty) else {
+            panic!("expected struct type")
+        };
+        assert_eq!(store.struct_value(*id).layout, StructLayoutSpec::C);
+    }
+
+    #[test]
     fn generic_function_solves_with_generics() {
         let src = "f = fn[T](x:T)->T { x }";
         let mut store = TypeStore::new();
@@ -7016,7 +7263,7 @@ mod type_infer_tests {
             TypeValue::WithGenerics { count, body } => {
                 assert_eq!(*count, 1);
                 match store.type_value(*body) {
-                    TypeValue::Func { params, ret } => {
+                    TypeValue::Func { params, ret, .. } => {
                         assert_eq!(params.len(), 1);
                         assert_eq!(params[0], *ret);
                         match store.type_value(params[0]) {
@@ -7255,9 +7502,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -7284,9 +7532,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -7318,9 +7567,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -7348,9 +7598,10 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
     }
 
     #[test]
@@ -7472,9 +7723,10 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
+        );
     }
 
     #[test]
@@ -7558,9 +7810,10 @@ mod type_infer_tests {
             Ok(_) => panic!("expected type errors"),
             Err(errs) => errs,
         };
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
+        );
     }
 
     #[test]
@@ -7585,7 +7838,7 @@ mod type_infer_tests {
             .member_method_type(bin_op_site)
             .expect("missing member overload signature for binary operator");
         assert_eq!(program.str_intern.resolve(called.member), "__add");
-        let TypeValue::Func { params, ret } = store.type_value(called.full_type) else {
+        let TypeValue::Func { params, ret, .. } = store.type_value(called.full_type) else {
             panic!("expected full overload type to be function")
         };
         assert_eq!(params.len(), 2);
@@ -7643,7 +7896,7 @@ mod type_infer_tests {
         assert_ne!(access_site, call_site);
         assert!(solved_types.member_method_type(call_site).is_none());
 
-        let TypeValue::Func { params, ret } = store.type_value(access_ty) else {
+        let TypeValue::Func { params, ret, .. } = store.type_value(access_ty) else {
             panic!("expected member access to be curried function")
         };
         assert_eq!(params.len(), 0);
@@ -7654,7 +7907,7 @@ mod type_infer_tests {
             .member_method_type(access_site)
             .expect("missing solved member method signature for access site");
         assert_eq!(program.str_intern.resolve(called.member), "add_5");
-        let TypeValue::Func { params, ret } = store.type_value(called.full_type) else {
+        let TypeValue::Func { params, ret, .. } = store.type_value(called.full_type) else {
             panic!("expected tracked full member method type to be a function")
         };
         assert_eq!(params.len(), 1);
@@ -7687,7 +7940,7 @@ mod type_infer_tests {
         assert_ne!(access_site, call_site);
         assert!(solved_types.member_method_type(call_site).is_none());
 
-        let TypeValue::Func { params, ret } = store.type_value(access_ty) else {
+        let TypeValue::Func { params, ret, .. } = store.type_value(access_ty) else {
             panic!("expected member access to be curried function")
         };
         assert_eq!(params.len(), 0);
@@ -7707,6 +7960,7 @@ mod type_infer_tests {
         let TypeValue::Func {
             params: full_params,
             ret: full_ret,
+            ..
         } = store.type_value(called.full_type)
         else {
             panic!("expected tracked full member method type to be a function")
@@ -8139,6 +8393,7 @@ mod type_infer_tests {
         let Value::Func { body, .. } = program.value(f) else {
             panic!("expected function value")
         };
+        let body = body.expect("expected function body");
         let body_ty = solved_types
             .type_of(body)
             .unwrap_or_else(|| panic!("missing body type for `f`"));
@@ -8167,9 +8422,10 @@ mod type_infer_tests {
     #[test]
     fn unknown_builtin_member_method_name_errors() {
         let errs = infer_global_errs("S=struct{}; S.__derefed = fn(self:S){ }; f=fn(){};");
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
+        );
     }
 
     //  #[test]

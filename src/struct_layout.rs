@@ -391,6 +391,7 @@ fn align_up(value: usize, align: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::StructLayoutSpec;
     use crate::program::Program;
     use crate::type_inference::{GenId, StructRep, TypeStore, TypeValue};
 
@@ -484,6 +485,7 @@ mod tests {
             name: None,
             fields: vec![(value, generic)],
             gen_count: 1,
+            layout: StructLayoutSpec::Hot,
         };
         let sid = store.new_struct(rep);
 
@@ -511,6 +513,7 @@ mod tests {
             name: None,
             fields: vec![(value, generic)],
             gen_count: 1,
+            layout: StructLayoutSpec::Hot,
         };
         let sid = store.new_struct(rep);
 

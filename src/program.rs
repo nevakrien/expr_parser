@@ -463,7 +463,7 @@ impl Program {
                     s: ERR_MEMBER_METHOD_REQUIRES_FN,
                 });
             };
-            if fn_kw.value != "fn" {
+            if fn_kw.value != "fn" && fn_kw.value != "cfn" {
                 return Err(CompileError::SimpleError {
                     loc: rhs_loc,
                     s: ERR_MEMBER_METHOD_REQUIRES_FN,
@@ -512,7 +512,10 @@ impl Program {
                 })?,
 
             Expr::Prefix(ref kw, _)
-                if kw.value == "struct" || kw.value == "enum" || kw.value == "union" =>
+                if kw.value == "struct"
+                    || kw.value == "cstruct"
+                    || kw.value == "enum"
+                    || kw.value == "union" =>
             {
                 self.with_scope(|prog| {
                     let v = prog.lower_type_expr(Located {

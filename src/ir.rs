@@ -8,10 +8,9 @@
  * - Allow linear passes over IR
  */
 use crate::error_messages::{
-    ERR_ACCESS_EXPECTS_NAME, ERR_FN_BODY_REQUIRED, ERR_INVALID_MATCH_ARM,
-    ERR_MATCH_ARM_NEEDS_VALUE, ERR_PIPE_REQUIRES_CALL, ERR_POS_ARG_AFTER_NAMED,
-    ERR_UNSUPPORTED_EXPRESSION, ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN,
-    ERR_UNSUPPORTED_TYPE_EXPR,
+    ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
+    ERR_PIPE_REQUIRES_CALL, ERR_POS_ARG_AFTER_NAMED, ERR_UNSUPPORTED_EXPRESSION,
+    ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN, ERR_UNSUPPORTED_TYPE_EXPR,
 };
 use crate::parsing::{Expr, LExpr, LFixed, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
@@ -188,6 +187,30 @@ pub enum AccessKind {
     Dot,
     Static,
     Ptr,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum CallingConvention {
+    C,
+    Hot,
+    Unknown,
+}
+
+impl CallingConvention {
+    #[inline(always)]
+    pub fn from_fn_keyword(keyword: &str) -> Option<Self> {
+        match keyword {
+            "fn" => Some(Self::Hot),
+            "cfn" => Some(Self::C),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum StructLayoutSpec {
+    C,
+    Hot,
 }
 
 // /// Function parameter declaration
@@ -406,10 +429,11 @@ pub enum Value {
 
     /// Function literal
     Func {
+        calling_convention: CallingConvention,
         generics: PatternSpan,
         params: PatternSpan,
         output_type: Option<TExpId>,
-        body: ValId,
+        body: Option<ValId>,
     },
 
     /// Early return
@@ -501,6 +525,7 @@ pub struct MatchArm {
 /// Single arm in a match expression
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct StructLike {
+    pub layout: StructLayoutSpec,
     pub generics: PatternSpan,
     pub fields: PatternSpan,
 }
@@ -611,8 +636,10 @@ impl Program {
                 self.lower_return_expr(expr.loc, open, items)
             }
 
-            // fn (sig) body
-            Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
+            // fn/cfn (sig) [body]
+            Expr::Prefix(open, items) if open.value == "fn" || open.value == "cfn" => {
+                self.lower_fn_expr(expr.loc, open, items)
+            }
 
             //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
@@ -910,7 +937,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_fn_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_fn_expr(&mut self, loc: Loc, fn_kw: LFixed, items: Vec<LExpr>) -> CResult<Value> {
         debug_assert!(
             (1..=3).contains(&items.len()),
             "fn expects optional generics, signature, and optional body"
@@ -941,6 +968,8 @@ impl Program {
             unreachable!();
         };
         debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
+
+        let calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
 
         self.with_scope(|p| {
             let generics = match generics_expr {
@@ -973,20 +1002,15 @@ impl Program {
                 None => None,
             };
 
-            let body_expr = match body_expr {
-                Some(expr) => expr,
-                None => {
-                    // Function literals must have a body to define their behavior.
-                    return Err(CompileError::SimpleError {
-                        loc,
-                        s: ERR_FN_BODY_REQUIRED,
-                    });
-                }
+            let body = if let Some(body_expr) = body_expr {
+                Some(p.lower_value(body_expr)?)
+            } else {
+                None
             };
-            let body = p.lower_value(body_expr)?;
 
             let _ = loc;
             Ok(Value::Func {
+                calling_convention,
                 generics,
                 params: params_span,
                 output_type,
@@ -1477,7 +1501,9 @@ impl Program {
                 Ok(TypeExpr::Ptr { base, raw, mutable })
             }
 
-            Expr::Prefix(open, items) if matches!(open.value, "struct" | "enum" | "union") => {
+            Expr::Prefix(open, items)
+                if matches!(open.value, "struct" | "cstruct" | "enum" | "union") =>
+            {
                 self.lower_struct_like_type_expr(open, items)
             }
 
@@ -1581,8 +1607,16 @@ impl Program {
             }
         };
 
-        let def = StructLike { generics, fields };
+        let def = StructLike {
+            layout: match kw.value {
+                "cstruct" => StructLayoutSpec::C,
+                _ => StructLayoutSpec::Hot,
+            },
+            generics,
+            fields,
+        };
         Ok(match kw.value {
+            "cstruct" => TypeExpr::Struct(def),
             "struct" => TypeExpr::Struct(def),
             "enum" => TypeExpr::Enum(def),
             "union" => TypeExpr::Union(def),
@@ -2012,6 +2046,75 @@ mod lowering_tests {
     }
 
     #[test]
+    fn lowers_cfn_without_body_as_external_declaration() {
+        let src = "f = cfn(x:int)->int;";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get(&f_name))
+            .expect("missing f binding");
+
+        let Defined::Func(value) = program
+            .definitions
+            .get(&f_id)
+            .expect("missing f definition")
+        else {
+            panic!("expected function definition")
+        };
+
+        let Value::Func {
+            calling_convention,
+            params,
+            output_type,
+            body,
+            ..
+        } = program.value(*value)
+        else {
+            panic!("expected function value")
+        };
+
+        assert_eq!(calling_convention, CallingConvention::C);
+        assert_eq!(params.len(), 1);
+        assert!(output_type.is_some());
+        assert!(body.is_none());
+    }
+
+    #[test]
+    fn lowers_cstruct_definition_with_c_layout_marker() {
+        let src = "type S = cstruct { x:int };";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let s_name = program.str_intern.intern("S");
+        let s_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get(&s_name))
+            .expect("missing S binding");
+
+        let Defined::Type(texp) = program
+            .definitions
+            .get(&s_id)
+            .expect("missing S definition")
+        else {
+            panic!("expected type definition")
+        };
+
+        let TypeExpr::Struct(def) = program.type_expr(*texp) else {
+            panic!("expected struct type expression")
+        };
+
+        assert_eq!(def.layout, StructLayoutSpec::C);
+        assert_eq!(def.fields.len(), 1);
+    }
+
+    #[test]
     fn lowers_mutual_function_references() {
         let src = "f = fn(){ g() } g = fn(){ f() }";
         let mut parser = Parser::new(src, 0);
@@ -2043,7 +2146,7 @@ mod lowering_tests {
 
         let f_body = match f_def {
             Defined::Func(value) => match program.value(*value) {
-                Value::Func { body, .. } => body,
+                Value::Func { body, .. } => body.expect("expected f to have a body"),
                 _ => panic!("expected f to be a function"),
             },
             _ => panic!("expected f to lower to a value"),
@@ -2051,7 +2154,7 @@ mod lowering_tests {
 
         let g_body = match g_def {
             Defined::Func(value) => match program.value(*value) {
-                Value::Func { body, .. } => body,
+                Value::Func { body, .. } => body.expect("expected g to have a body"),
                 _ => panic!("expected g to be a function"),
             },
             _ => panic!("expected g to lower to a value"),

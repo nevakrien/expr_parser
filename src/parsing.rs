@@ -85,8 +85,9 @@ impl fmt::Display for Token {
 
 // Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
-    "let", "var", "const", "mut", "type", "struct", "union", "enum", "fn", "cfn", "macro", "if",
-    "else", "while", "for", "match", "return", "break", "continue", "as", "true", "false",
+    "let", "var", "const", "mut", "type", "struct", "cstruct", "union", "enum", "fn", "cfn",
+    "macro", "if", "else", "while", "for", "match", "return", "break", "continue", "as", "true",
+    "false",
 ];
 
 ///greedy match
@@ -227,6 +228,11 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
         6 => match b {
             b"struct" => Some("struct"),
             b"return" => Some("return"),
+            _ => None,
+        },
+
+        7 => match b {
+            b"cstruct" => Some("cstruct"),
             _ => None,
         },
 
@@ -1094,7 +1100,7 @@ impl<'a> Parser<'a> {
                     return self.parse_after_fn(start, op_s).map(Some);
                 }
 
-                if op == "struct" || op == "enum" || op == "union" {
+                if op == "struct" || op == "cstruct" || op == "enum" || op == "union" {
                     self.next_token()?.unwrap();
                     return self.parse_after_struct(start, op_s).map(Some);
                 }

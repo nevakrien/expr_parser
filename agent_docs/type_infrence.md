@@ -10,6 +10,8 @@ The implementation is intentionally constraint-first and error-tolerant:
 
 There is also an explicit engineering style used in the file: many internal "workhorse" helpers take *parts* of `InferState` (`store`, `parent`, `cluster`, `func_defs`, `struct_infers`, etc.) instead of taking `&mut InferState` wholesale. This is deliberate to enable complex borrow patterns and avoid borrow-checker dead ends during recursive unification and deferred solving.
 
+For syntax-level semantics that span parser/lowering/typecheck (for example `fn` vs `cfn`, `struct` vs `cstruct`, and `. / :: / ->` behavior), see `agent_docs/language_semantics.md`.
+
 ## The Workhorses (Read These First)
 
 These functions are the center of the entire file and appear all over inference:
@@ -135,6 +137,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 
 - `BuiltinType`: primitive set (`int`, sized ints, floats, `bool`, `str`, `void`, `Type`).
 - `TypeValue`: builtins, tuple, array, function, pointer, generic binder (`WithGenerics`), generic param (`Generic`), struct instance (`Struct`).
+  - function types now carry an explicit calling convention (`Hot`, `C`, `Unknown`), so diagnostics can print `fn`, `cfn`, or `fn?`.
 - `TypeStore`: interned type arena + struct table.
   - builtins are interned first,
   - structural equality is intern identity,
@@ -142,7 +145,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 
 ### Struct representation
 
-- `StructRep` contains optional name, field list, and generic count.
+- `StructRep` contains optional name, field list, generic count, and a layout spec (`Hot` vs `C` for `cstruct`).
 - Recursive structs are supported by creating struct ids early, then resolving field types in `finalize`.
 
 ## Internal Constraint Engine
@@ -229,6 +232,7 @@ Important fragile/unfinished expression areas:
   - if a field is not found, member methods are resolved from `program.member_methods`,
   - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),
   - important binding detail: inference binds the `Value::Access` node to the **curried** callable type used by the call site, while tracking the full called method signature (`self` still present) in `SolvedTypes.member_method_types`.
+  - see `agent_docs/language_semantics.md` for the language-level contract for `.`, `::`, and `->`.
 
 Other notable implemented branches:
 
@@ -310,7 +314,7 @@ Then `finalize`:
 - The inferred implicit deref/member metadata (`SolvedTypes.member_method_types`, `SolvedTypes.member_access_implicit_derefs`) is intentionally staged for that pass; it is not the final execution-level rewrite yet.
 - Medium-term intent: introduce a new IR tier dedicated to post-typecheck value semantics (ownership/borrows/destruction + explicit implicit-op insertion), so later backend/codegen phases do not rely on typechecker-only side channels.
 - Smart-pointer target: make a `Box`-style type a first-class validation case for deref/member flows; this mostly needs external-type integration and ABI/foreign-call tagging.
-- External/ABI note: we still need a stable way to mark functions as C ABI vs language-native. Temporary fallback can be treating all external-callable functions as C ABI until explicit tagging lands.
+- External/ABI syntax/semantics notes now live in `agent_docs/language_semantics.md`.
 
 ## Error and Test Philosophy
 
