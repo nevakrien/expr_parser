@@ -8,6 +8,7 @@
 //
 // ================================================================
 
+use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::StructLike;
@@ -18,11 +19,10 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
-    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR,
-    NOT_STR, SHL_STR, SHR_STR, SUB_STR,
+    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR, DIV_STR,
+    EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
+    SHL_STR, SHR_STR, SUB_STR, StrId,
 };
-use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -509,21 +509,13 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
@@ -4615,6 +4607,57 @@ enum OperandKind {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawPointerOperandKind {
+    RawPointer(CId),
+    UnknownRawPointer(CId),
+    NonRawPointer,
+    NotPointer,
+    Unknown,
+}
+
+#[inline(always)]
+fn classify_raw_pointer_operand(
+    store: &TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    cid: CId,
+) -> RawPointerOperandKind {
+    let root = find_root(parent, cid);
+    match cluster[root].state {
+        ResolveKind::Solved(t) => match store.type_value(t) {
+            TypeValue::Ptr { raw: true, .. } => RawPointerOperandKind::RawPointer(root),
+            TypeValue::Ptr { raw: false, .. } => RawPointerOperandKind::NonRawPointer,
+            _ => RawPointerOperandKind::NotPointer,
+        },
+        ResolveKind::Ptr {
+            raw: Some(true), ..
+        } => RawPointerOperandKind::RawPointer(root),
+        ResolveKind::Ptr {
+            raw: Some(false), ..
+        } => RawPointerOperandKind::NonRawPointer,
+        ResolveKind::Ptr { raw: None, .. } => RawPointerOperandKind::UnknownRawPointer(root),
+        ResolveKind::Nothing | ResolveKind::Never => RawPointerOperandKind::Unknown,
+        _ => RawPointerOperandKind::NotPointer,
+    }
+}
+
+#[inline(always)]
+fn set_pointer_raw_if_unknown(cluster: &mut ClusterVec<Cluster>, cid: CId) -> bool {
+    let ResolveKind::Ptr { tgt, raw, mutable } = cluster[cid].state else {
+        return false;
+    };
+    if raw.is_some() {
+        return false;
+    }
+    cluster[cid].state = ResolveKind::Ptr {
+        tgt,
+        raw: Some(true),
+        mutable,
+    };
+    true
+}
+
 #[inline(always)]
 fn classify_operand(
     store: &TypeStore,
@@ -5046,6 +5089,222 @@ fn resolve_operator_site(
         return ResolveOutcome::keep(false);
     }
 
+    if matches!(op, Add | Sub) {
+        let lhs_ptr = classify_raw_pointer_operand(store, parent, cluster, lhs);
+        let rhs_ptr = classify_raw_pointer_operand(store, parent, cluster, rhs);
+        let lhs_int = cluster_is_int_like(store, parent, cluster, lhs);
+        let rhs_int = cluster_is_int_like(store, parent, cluster, rhs);
+
+        if op == Sub {
+            match (lhs_ptr, rhs_ptr) {
+                (
+                    RawPointerOperandKind::RawPointer(lhs_raw),
+                    RawPointerOperandKind::RawPointer(rhs_raw),
+                )
+                | (
+                    RawPointerOperandKind::UnknownRawPointer(lhs_raw),
+                    RawPointerOperandKind::RawPointer(rhs_raw),
+                )
+                | (
+                    RawPointerOperandKind::RawPointer(lhs_raw),
+                    RawPointerOperandKind::UnknownRawPointer(rhs_raw),
+                )
+                | (
+                    RawPointerOperandKind::UnknownRawPointer(lhs_raw),
+                    RawPointerOperandKind::UnknownRawPointer(rhs_raw),
+                ) => {
+                    progress |= set_pointer_raw_if_unknown(cluster, lhs_raw);
+                    progress |= set_pointer_raw_if_unknown(cluster, rhs_raw);
+                    match unify_if_distinct(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        lhs_raw,
+                        rhs_raw,
+                    ) {
+                        Ok(changed) => progress |= changed,
+                        Err(clash) => {
+                            errors.push(TypeError::ValuesContradict {
+                                expectation_reason:
+                                    "pointer subtraction requires both operands have the same pointer type",
+                                site: site.loc,
+                                found: site.lhs_val,
+                                expected_place: site.rhs_val,
+                                clash,
+                            });
+                            return ResolveOutcome::drop(false);
+                        }
+                    }
+
+                    match force_type(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        out,
+                        BuiltinType::Isize.into(),
+                    ) {
+                        Ok(()) => {}
+                        Err(clash) => {
+                            errors.push(TypeError::ValuesContradict {
+                                expectation_reason: "pointer subtraction result must be isize",
+                                site: site.loc,
+                                found: site.lhs_val,
+                                expected_place: site.rhs_val,
+                                clash,
+                            });
+                            return ResolveOutcome::drop(false);
+                        }
+                    }
+
+                    return ResolveOutcome::drop(progress);
+                }
+                _ => {}
+            }
+        }
+
+        match (lhs_ptr, rhs_int) {
+            (RawPointerOperandKind::RawPointer(ptr), Some(true)) => {
+                match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, ptr)
+                {
+                    Ok(changed) => progress |= changed,
+                    Err(clash) => {
+                        errors.push(TypeError::ValuesContradict {
+                            expectation_reason:
+                                "operator result type must match pointer operand type",
+                            site: site.loc,
+                            found: site.lhs_val,
+                            expected_place: site.rhs_val,
+                            clash,
+                        });
+                        return ResolveOutcome::drop(false);
+                    }
+                }
+                return ResolveOutcome::drop(progress);
+            }
+            (RawPointerOperandKind::UnknownRawPointer(ptr), Some(true)) => {
+                progress |= set_pointer_raw_if_unknown(cluster, ptr);
+                match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, ptr)
+                {
+                    Ok(changed) => progress |= changed,
+                    Err(clash) => {
+                        errors.push(TypeError::ValuesContradict {
+                            expectation_reason:
+                                "operator result type must match pointer operand type",
+                            site: site.loc,
+                            found: site.lhs_val,
+                            expected_place: site.rhs_val,
+                            clash,
+                        });
+                        return ResolveOutcome::drop(false);
+                    }
+                }
+                return ResolveOutcome::drop(progress);
+            }
+            _ => {}
+        }
+
+        if op == Add {
+            match (rhs_ptr, lhs_int) {
+                (RawPointerOperandKind::RawPointer(ptr), Some(true)) => {
+                    match unify_if_distinct(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        out,
+                        ptr,
+                    ) {
+                        Ok(changed) => progress |= changed,
+                        Err(clash) => {
+                            errors.push(TypeError::ValuesContradict {
+                                expectation_reason:
+                                    "operator result type must match pointer operand type",
+                                site: site.loc,
+                                found: site.lhs_val,
+                                expected_place: site.rhs_val,
+                                clash,
+                            });
+                            return ResolveOutcome::drop(false);
+                        }
+                    }
+                    return ResolveOutcome::drop(progress);
+                }
+                (RawPointerOperandKind::UnknownRawPointer(ptr), Some(true)) => {
+                    progress |= set_pointer_raw_if_unknown(cluster, ptr);
+                    match unify_if_distinct(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        out,
+                        ptr,
+                    ) {
+                        Ok(changed) => progress |= changed,
+                        Err(clash) => {
+                            errors.push(TypeError::ValuesContradict {
+                                expectation_reason:
+                                    "operator result type must match pointer operand type",
+                                site: site.loc,
+                                found: site.lhs_val,
+                                expected_place: site.rhs_val,
+                                clash,
+                            });
+                            return ResolveOutcome::drop(false);
+                        }
+                    }
+                    return ResolveOutcome::drop(progress);
+                }
+                _ => {}
+            }
+        }
+
+        let lhs_pointerish = matches!(
+            lhs_ptr,
+            RawPointerOperandKind::RawPointer(_)
+                | RawPointerOperandKind::UnknownRawPointer(_)
+                | RawPointerOperandKind::NonRawPointer
+        );
+        let rhs_pointerish = matches!(
+            rhs_ptr,
+            RawPointerOperandKind::RawPointer(_)
+                | RawPointerOperandKind::UnknownRawPointer(_)
+                | RawPointerOperandKind::NonRawPointer
+        );
+        if lhs_pointerish || rhs_pointerish {
+            let lhs_can_be_raw = matches!(
+                lhs_ptr,
+                RawPointerOperandKind::RawPointer(_) | RawPointerOperandKind::UnknownRawPointer(_)
+            );
+            let rhs_can_be_raw = matches!(
+                rhs_ptr,
+                RawPointerOperandKind::RawPointer(_) | RawPointerOperandKind::UnknownRawPointer(_)
+            );
+            let could_still_succeed = (lhs_can_be_raw && rhs_int != Some(false))
+                || (op == Sub && lhs_can_be_raw && rhs_can_be_raw)
+                || (op == Add && rhs_can_be_raw && lhs_int != Some(false));
+            if could_still_succeed {
+                return ResolveOutcome::keep(progress);
+            }
+            errors.push(bin_op_overload_not_found_error(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                site,
+                lhs,
+                rhs,
+            ));
+            return ResolveOutcome::drop(progress);
+        }
+    }
+
     // ----------------------------------------------------
     // 1) Early legality rejection (single helper)
     // ----------------------------------------------------
@@ -5082,7 +5341,6 @@ fn resolve_operator_site(
     // 3) Arithmetic / bitwise
     //
     // - Only unify once both sides are known numeric
-    // - Pointer arithmetic intentionally deferred
     // ----------------------------------------------------
 
     let lhs_numeric = matches!(cluster_is_int_like(store, parent, cluster, lhs), Some(true))
@@ -5524,7 +5782,7 @@ fn try_resolve_ptr_type(
 fn resolve_deferred_types(ctx: &mut InferState) -> bool {
     let mut change = false;
     for cid in (0..ctx.cluster.len()).map(CId) {
-        if ctx.parent[cid]!=cid {
+        if ctx.parent[cid] != cid {
             continue;
         }
         let resolved = match ctx.cluster[cid].state {
@@ -6528,9 +6786,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6557,9 +6816,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6591,9 +6851,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6621,9 +6882,10 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
     }
 
     #[test]
@@ -6745,9 +7007,97 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
+        );
+    }
+
+    #[test]
+    fn raw_pointer_addition_resolves_to_pointer_type() {
+        let src = "f = fn(x:int){ let p:*const int = &x; let y:*const int = p + 1:int; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let y_ty = find_let_stmt_type(&program, solved_types, f, "y");
+
+        let TypeValue::Ptr { tgt, raw, mutable } = *store.type_value(y_ty) else {
+            panic!("expected raw pointer result type")
+        };
+        assert!(raw);
+        assert!(!mutable);
+        assert!(matches!(
+            store.type_value(tgt),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn raw_pointer_subtraction_resolves_to_pointer_type() {
+        let src = "f = fn(x:int){ let p:*int = &x; let y:*int = p - 1:int; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let y_ty = find_let_stmt_type(&program, solved_types, f, "y");
+
+        let TypeValue::Ptr { tgt, raw, mutable } = *store.type_value(y_ty) else {
+            panic!("expected raw pointer result type")
+        };
+        assert!(raw);
+        assert!(mutable);
+        assert!(matches!(
+            store.type_value(tgt),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn raw_pointer_minus_raw_pointer_returns_isize() {
+        let src =
+            "f = fn(x:int){ let p:*const int = &x; let q:*const int = &x; let d:isize = p - q; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let d_ty = find_let_stmt_type(&program, solved_types, f, "d");
+
+        assert!(matches!(
+            store.type_value(d_ty),
+            TypeValue::Builtin(BuiltinType::Isize)
+        ));
+    }
+
+    #[test]
+    fn reference_addition_still_rejected() {
+        let src = "f = fn(x:int){ let p:&int = &x; let y = p + 1:int; }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected type errors"),
+            Err(errs) => errs,
+        };
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
+        );
     }
 
     #[test]
@@ -7099,9 +7449,10 @@ mod type_infer_tests {
     #[test]
     fn unknown_builtin_member_method_name_errors() {
         let errs = infer_global_errs("S=struct{}; S.__derefed = fn(self:S){ }; f=fn(){};");
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
+        );
     }
 
     //  #[test]

@@ -272,6 +272,8 @@ Then `finalize`:
 - Operators are deferred as `BinOpSite` / `UnOpSite` and revisited during solver iterations.
 - `unify_if_distinct` is the main operator-resolution merge primitive.
 - Builtin legality checks are tri-state (`true` / `false` / `unknown`) to avoid premature hard errors.
+- Builtin binary pointer arithmetic now supports raw pointers only: `*T` / `*const T` can do `ptr + int`, `int + ptr`, and `ptr - int` (result keeps pointer type), plus `ptr - ptr` (both operands must be compatible raw pointers, result is `isize`).
+- Non-raw references (`&T`, `&mut T`) are intentionally rejected for builtin pointer arithmetic and still produce overload-not-found diagnostics.
 - User-struct operator overloads are now enforced through solved member-method signatures:
   - Resolver looks up the method (`__add`, `__neg`, etc.) on the lhs struct type.
   - It reads the method type from `SolvedTypes`, specializes `WithGenerics` into fresh local clusters (`solved_type_to_specialized_local`), then unifies against an expected function shape for the operator site.
