@@ -264,6 +264,12 @@ pub enum ParseError {
     },
 }
 
+#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+enum NonTerm {
+    Normal,
+    NoConstruct,
+}
+
 const BP_ASSIGN: u32 = 100;
 const BP_CONSTRUCT: u32 = 750;
 
@@ -275,7 +281,7 @@ const BP_POSTFIX_INC: u32 = 840;
 const BP_PREFIX: u32 = 850;
 
 #[inline]
-fn prefix_bp(op: &str) -> Option<u32> {
+fn prefix_bp(op: &str,_:NonTerm) -> Option<u32> {
     Some(match op {
         "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
@@ -283,7 +289,7 @@ fn prefix_bp(op: &str) -> Option<u32> {
 }
 
 #[inline]
-fn infix_bp(op: &str) -> Option<(u32, u32)> {
+fn infix_bp(op: &str,_:NonTerm) -> Option<(u32, u32)> {
     Some(match op {
         // match arm (right-assoc)
         "=>" => (BP_MATCH_ARM + 1, BP_MATCH_ARM),
@@ -324,14 +330,20 @@ fn infix_bp(op: &str) -> Option<(u32, u32)> {
 }
 
 #[inline]
-fn postfix_bp(op: &str) -> Option<u32> {
+fn postfix_bp(op: &str,style:NonTerm) -> Option<u32> {
     Some(match op {
         "++" | "--" => BP_POSTFIX_INC,
         "(" | "[" => BP_CALL,
-        "{" => BP_CONSTRUCT,
+        "{" => {
+            if style==NonTerm::NoConstruct{
+                return None;
+            }
+            BP_CONSTRUCT
+        },
         _ => return None,
     })
 }
+
 
 #[repr(align(16))]
 pub struct Parser<'a> {
@@ -377,11 +389,11 @@ impl<'a> Parser<'a> {
      * Public helpers
      * ============================= */
 
-    pub fn mark(&self) -> usize {
+    fn mark(&self) -> usize {
         self.pos
     }
 
-    pub fn produce_loc(&self, start: usize) -> Loc {
+    fn produce_loc(&self, start: usize) -> Loc {
         Loc {
             range: start..self.pos,
             file: self.file,
@@ -426,7 +438,7 @@ impl<'a> Parser<'a> {
 
     /// Fast path: ASCII whitespace. Slow path: Unicode whitespace (`char::is_whitespace()`).
     #[inline]
-    pub fn skip_whitespace(&mut self) {
+    fn skip_whitespace(&mut self) {
         let bytes = self.src.as_bytes();
 
         // ---- fast ASCII whitespace loop ----
@@ -797,7 +809,7 @@ impl<'a> Parser<'a> {
     /// Ok(None) => no expression starts here
     /// Err(_)   => expression started but failed
     pub fn try_expr(&mut self) -> PResult<Option<LExpr>> {
-        self.try_expr_bp(0)
+        self.try_expr_bp(0,NonTerm::Normal)
     }
 
     /// Must parse an expression or error.
@@ -870,20 +882,20 @@ impl<'a> Parser<'a> {
         };
         ParseError::OpenDelimiter { open, close, got }
     }
-    fn try_expr_bp(&mut self, min_bp: u32) -> PResult<Option<LExpr>> {
+    fn try_expr_bp(&mut self, min_bp: u32,style:NonTerm) -> PResult<Option<LExpr>> {
         let start = self.expr_start();
-        let Some(mut lhs) = self.parse_prefix(start)? else {
+        let Some(mut lhs) = self.parse_prefix(start,style)? else {
             return Ok(None);
         };
 
         loop {
             // postfix first
-            if self.try_parse_postfix(start, &mut lhs, min_bp)? {
+            if self.try_parse_postfix(start, &mut lhs, min_bp,style)? {
                 continue;
             }
 
             // then infix
-            if self.try_parse_infix(start, &mut lhs, min_bp)? {
+            if self.try_parse_infix(start, &mut lhs, min_bp, style)? {
                 continue;
             }
 
@@ -893,15 +905,15 @@ impl<'a> Parser<'a> {
         Ok(Some(lhs))
     }
 
-    fn consume_expr_bp(&mut self, min_bp: u32) -> PResult<LExpr> {
-        match self.try_expr_bp(min_bp)? {
+    fn consume_expr_bp(&mut self, min_bp: u32,style:NonTerm) -> PResult<LExpr> {
+        match self.try_expr_bp(min_bp,style)? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
                 got: self.peek_op()?,
             }),
         }
     }
-    fn try_parse_infix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
+    fn try_parse_infix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32,style:NonTerm) -> PResult<bool> {
         let Some(peek) = self.peek_token()? else {
             return Ok(false);
         };
@@ -909,7 +921,7 @@ impl<'a> Parser<'a> {
             return Ok(false);
         };
 
-        let Some((l_bp, r_bp)) = infix_bp(op) else {
+        let Some((l_bp, r_bp)) = infix_bp(op,style) else {
             return Ok(false);
         };
 
@@ -918,7 +930,7 @@ impl<'a> Parser<'a> {
         }
 
         let op_tok = self.try_op()?.unwrap();
-        let rhs = self.consume_expr_bp(r_bp)?;
+        let rhs = self.consume_expr_bp(r_bp,style)?;
 
         let loc = self.produce_loc(start);
         let mut temp = Located {
@@ -934,14 +946,14 @@ impl<'a> Parser<'a> {
         Ok(true)
     }
 
-    fn try_parse_postfix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32) -> PResult<bool> {
+    fn try_parse_postfix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32,style:NonTerm) -> PResult<bool> {
         let Some(peek) = self.peek_token()? else {
             return Ok(false);
         };
         let Token::Operator(op) = &peek.value else {
             return Ok(false);
         };
-        let Some(bp) = postfix_bp(op) else {
+        let Some(bp) = postfix_bp(op,style) else {
             return Ok(false);
         };
 
@@ -993,7 +1005,7 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn parse_prefix(&mut self, start: usize) -> PResult<Option<LExpr>> {
+    fn parse_prefix(&mut self, start: usize,style:NonTerm) -> PResult<Option<LExpr>> {
         let Some(tok) = self.peek_token()? else {
             return Ok(None);
         };
@@ -1076,9 +1088,9 @@ impl<'a> Parser<'a> {
                 }
 
                 // generic prefix operator via BP
-                if let Some(bp) = prefix_bp(op) {
+                if let Some(bp) = prefix_bp(op,style) {
                     self.next_token()?.unwrap();
-                    let rhs = self.consume_expr_bp(bp)?;
+                    let rhs = self.consume_expr_bp(bp,style)?;
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
                         loc,
@@ -1171,7 +1183,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_if(&mut self, start: usize, if_tok: LFixed) -> PResult<LExpr> {
-        let cond = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
+        let cond = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
         let then_expr = self.consume_expr()?;
 
         let mut args = vec![cond, then_expr];
@@ -1185,11 +1197,13 @@ impl<'a> Parser<'a> {
             loc,
             value: Expr::Prefix(if_tok, args),
         })
+
     }
+
 
     #[inline(always)]
     fn parse_after_while(&mut self, start: usize, w: LFixed) -> PResult<LExpr> {
-        let cond = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
+        let cond = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
         let body = self.consume_expr()?;
 
         let loc = self.produce_loc(start);
@@ -1201,13 +1215,13 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_match(&mut self, start: usize, m: LFixed) -> PResult<LExpr> {
-        let subject = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
+        let subject = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
         let open = self.expect_operator("{")?;
         let mut args = vec![subject];
 
         while self.try_operator("}")?.is_none() {
             let arm_start = self.expr_start();
-            let Some(pat) = self.try_expr_bp(BP_PATTERN)? else {
+            let Some(pat) = self.try_expr_bp(BP_PATTERN,NonTerm::Normal)? else {
                 return Err(self.err_open_delim(open.clone(), "}"));
             };
             let arrow = self.expect_operator("=>")?;
@@ -1258,7 +1272,7 @@ impl<'a> Parser<'a> {
         };
 
         if let Some(arrow) = self.try_operator("->")? {
-            let output = self.consume_expr_bp(BP_CONSTRUCT + 1)?;
+            let output = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
             sig = Located {
                 loc: self.produce_loc(paren_start),
                 value: Expr::Bin(arrow, Box::new((sig, output))),
@@ -1278,7 +1292,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn parse_after_let(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
         let mut vals = Vec::new();
-        vals.push(self.consume_expr_bp(BP_PATTERN)?);
+        vals.push(self.consume_expr_bp(BP_PATTERN,NonTerm::Normal)?);
         self.expect_operator("=")?;
         vals.push(self.consume_expr()?);
 
@@ -1295,7 +1309,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn parse_after_type(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
         let mut vals = Vec::new();
-        vals.push(self.consume_expr_bp(BP_PATTERN)?);
+        vals.push(self.consume_expr_bp(BP_PATTERN,NonTerm::Normal)?);
         self.expect_operator("=")?;
         vals.push(self.consume_expr()?);
 
@@ -1607,6 +1621,132 @@ mod parse_tests {
             }
             _ => panic!("expected if-else"),
         }
+    }
+
+    #[test]
+    fn if_binary_condition_uses_block_as_then_branch() {
+        let src = "if 1 < 2 { a }";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_expr().unwrap();
+
+        match expr.value {
+            Expr::Prefix(if_kw, args) => {
+                assert_eq!(if_kw.value, "if");
+                assert_eq!(args.len(), 2);
+
+                match &args[0].value {
+                    Expr::Bin(op, parts) => {
+                        assert_eq!(op.value, "<");
+                        let (lhs, rhs) = &**parts;
+                        match &lhs.value {
+                            Expr::Atom(Token::NumLit(1)) => {}
+                            _ => panic!("expected left side of condition to be 1"),
+                        }
+                        match &rhs.value {
+                            Expr::Atom(Token::NumLit(2)) => {}
+                            _ => panic!("expected right side of condition to be 2"),
+                        }
+                    }
+                    _ => panic!("expected binary if condition"),
+                }
+
+                match &args[1].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "{");
+                        assert_eq!(items.len(), 1);
+                        match &items[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "a"),
+                            _ => panic!("expected block item a"),
+                        }
+                    }
+                    _ => panic!("expected block then branch"),
+                }
+            }
+            _ => panic!("expected if expression"),
+        }
+
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn if_condition_does_not_take_brace_postfix_without_parens() {
+        let src = "if S{}; {a}";
+        let mut p = Parser::new(src, 0);
+
+        let first = p.consume_stmt().unwrap();
+        let second = p.consume_stmt().unwrap();
+
+        match first.value {
+            Expr::Prefix(if_kw, args) => {
+                assert_eq!(if_kw.value, "if");
+                assert_eq!(args.len(), 2);
+
+                match &args[0].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "S"),
+                    _ => panic!("expected bare S condition"),
+                }
+
+                match &args[1].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "{");
+                        assert!(items.is_empty());
+                    }
+                    _ => panic!("expected empty block as then branch"),
+                }
+            }
+            _ => panic!("expected if expression"),
+        }
+
+        match second.value {
+            Expr::Prefix(open, items) => {
+                assert_eq!(open.value, "{");
+                assert_eq!(items.len(), 1);
+                match &items[0].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "a"),
+                    _ => panic!("expected block item a"),
+                }
+            }
+            _ => panic!("expected trailing block"),
+        }
+
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn if_condition_can_use_brace_postfix_when_parenthesized() {
+        let src = "if (S{}) {a}";
+        let mut p = Parser::new(src, 0);
+        let expr = p.consume_stmt().unwrap();
+
+        match expr.value {
+            Expr::Prefix(if_kw, args) => {
+                assert_eq!(if_kw.value, "if");
+                assert_eq!(args.len(), 2);
+
+                match &args[0].value {
+                    Expr::Postfix(open, items) => {
+                        assert_eq!(open.value, "{");
+                        assert_eq!(items.len(), 1);
+                        match &items[0].value {
+                            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "S"),
+                            _ => panic!("expected construct base S"),
+                        }
+                    }
+                    _ => panic!("expected parenthesized construct condition"),
+                }
+
+                match &args[1].value {
+                    Expr::Prefix(open, items) => {
+                        assert_eq!(open.value, "{");
+                        assert_eq!(items.len(), 1);
+                    }
+                    _ => panic!("expected block then branch"),
+                }
+            }
+            _ => panic!("expected if expression"),
+        }
+
+        assert!(p.is_empty());
     }
 
     #[test]
