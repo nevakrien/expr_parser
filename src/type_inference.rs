@@ -1094,7 +1094,6 @@ struct BinOpSite {
     lhs: CId,
     rhs: CId,
     output: CId,
-    had_error: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1104,7 +1103,6 @@ struct UnOpSite {
     val: ValId,
     input: CId,
     output: CId,
-    had_error: bool,
 }
 
 fn new_cluster(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
@@ -2323,6 +2321,32 @@ fn specialize_type(
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
+fn solved_type_to_specialized_local(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    t: TypeId,
+    loc: ValId,
+) -> CId {
+    if let TypeValue::WithGenerics { count, body } = *store.type_value(t) {
+        let gens: Vec<_> = (0..count).map(|_| new_cluster(parent, cluster)).collect();
+        return specialize_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            body,
+            &gens,
+            loc,
+        );
+    }
+
+    new_solved(parent, cluster, t)
+}
+
 fn global_to_specialized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) -> CId {
     let Some(t) = ctx.ans.type_of(*def_val) else {
         let loc = ctx.program.value_loc(v);
@@ -2339,25 +2363,17 @@ fn global_to_specialized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) 
     //we wana make sure that we add a good way to run this
     //would be done as some normlization function somewhere
     //structs especially are weird with this
-    if let TypeValue::WithGenerics { count, body } = *ctx.store.type_value(t) {
-        let gens: Vec<_> = (0..count).map(|_| ctx.new_cluster()).collect();
-        let ans = specialize_type(
-            ctx.store,
-            &mut ctx.parent,
-            &mut ctx.cluster,
-            &mut ctx.func_defs,
-            &mut ctx.struct_infers,
-            body,
-            &gens,
-            v,
-        );
-        ctx.bind_val(v, ans);
-        return ans;
-    } else {
-        let ans = new_solved(&mut ctx.parent, &mut ctx.cluster, t);
-        bind_val(&mut ctx.val_cluster, *def_val, ans);
-        ans
-    }
+    let ans = solved_type_to_specialized_local(
+        ctx.store,
+        &mut ctx.parent,
+        &mut ctx.cluster,
+        &mut ctx.func_defs,
+        &mut ctx.struct_infers,
+        t,
+        v,
+    );
+    bind_val(&mut ctx.val_cluster, v, ans);
+    ans
 }
 
 fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
@@ -2597,7 +2613,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     &mut ctx.bin_op_sites,
                     &mut ctx.errors,
                 );
-                bin_op_sites.push(BinOpSite {
+                let mut site = BinOpSite {
                     loc: v,
                     op,
                     lhs_val: lhs,
@@ -2605,19 +2621,20 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     lhs: lc,
                     rhs: rc,
                     output,
-                    had_error: false,
-                });
-                if let Some(site) = bin_op_sites.last_mut() {
-                    let _ = resolve_operator_site(
-                        store,
-                        parent,
-                        cluster,
-                        func_defs,
-                        struct_infers,
-                        errors,
-                        site,
-                        ctx.program,
-                    );
+                };
+                let outcome = resolve_operator_site(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    errors,
+                    &mut site,
+                    ctx.program,
+                    &*ctx.ans,
+                );
+                if outcome.retain {
+                    bin_op_sites.push(site);
                 }
             }
             output
@@ -2640,25 +2657,26 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     &mut ctx.un_op_sites,
                     &mut ctx.errors,
                 );
-                un_op_sites.push(UnOpSite {
+                let mut site = UnOpSite {
                     loc: v,
                     op,
                     val: value,
                     input,
                     output,
-                    had_error: false,
-                });
-                if let Some(site) = un_op_sites.last_mut() {
-                    let _ = resolve_unary_operator_site(
-                        store,
-                        parent,
-                        cluster,
-                        func_defs,
-                        struct_infers,
-                        errors,
-                        site,
-                        ctx.program,
-                    );
+                };
+                let outcome = resolve_unary_operator_site(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    errors,
+                    &mut site,
+                    ctx.program,
+                    &*ctx.ans,
+                );
+                if outcome.retain {
+                    un_op_sites.push(site);
                 }
             }
             output
@@ -3559,6 +3577,54 @@ fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeI
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemberSelfStyle {
+    Value,
+    Ref { mutable: bool },
+}
+
+#[inline(always)]
+fn get_member_self_style(
+    store: &TypeStore,
+    method_ty: TypeId,
+    struct_name: NameId,
+) -> Option<MemberSelfStyle> {
+    let (inputs, _) = method_signature_type_parts(store, method_ty)?;
+    let first_input = *inputs.first()?;
+    match store.type_value(first_input) {
+        TypeValue::Struct { .. } if is_named_struct_type(store, first_input, struct_name) => {
+            Some(MemberSelfStyle::Value)
+        }
+        TypeValue::Ptr { tgt, raw, mutable }
+            if !*raw && is_named_struct_type(store, *tgt, struct_name) =>
+        {
+            Some(MemberSelfStyle::Ref { mutable: *mutable })
+        }
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn member_self_input_cluster(
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    lhs: CId,
+    style: MemberSelfStyle,
+) -> CId {
+    match style {
+        MemberSelfStyle::Value => lhs,
+        MemberSelfStyle::Ref { mutable } => {
+            let ans = new_cluster(parent, cluster);
+            cluster[ans].state = ResolveKind::Ptr {
+                tgt: lhs,
+                raw: Some(false),
+                mutable: Some(mutable),
+            };
+            ans
+        }
+    }
+}
+
 #[inline(always)]
 fn is_self_like_member_input_type(store: &TypeStore, input: TypeId, struct_name: NameId) -> bool {
     match store.type_value(input) {
@@ -3877,6 +3943,148 @@ fn unify_if_distinct(
 }
 
 #[inline(always)]
+fn function_parts_from_cluster(
+    store: &TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &[FuncInfer],
+    cid: CId,
+) -> Option<(Vec<CId>, CId)> {
+    let root = find_root(parent, cid);
+    match cluster[root].state {
+        ResolveKind::Func(call) => {
+            Some((func_defs[call.0].inputs.clone(), func_defs[call.0].output))
+        }
+        ResolveKind::Solved(t) => {
+            let TypeValue::Func { params, ret } = store.type_value(t) else {
+                return None;
+            };
+            let inputs = params
+                .iter()
+                .map(|p| new_solved(parent, cluster, *p))
+                .collect::<Vec<_>>();
+            let output = new_solved(parent, cluster, *ret);
+            Some((inputs, output))
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolveOutcome {
+    progress: bool,
+    retain: bool,
+}
+
+impl ResolveOutcome {
+    #[inline(always)]
+    fn keep(progress: bool) -> Self {
+        Self {
+            progress,
+            retain: true,
+        }
+    }
+
+    #[inline(always)]
+    fn drop(progress: bool) -> Self {
+        Self {
+            progress,
+            retain: false,
+        }
+    }
+}
+
+const OP_OVERLOAD_SIGNATURE_MISMATCH: &str =
+    "operator overload arguments and result must match overload signature";
+
+#[derive(Debug)]
+struct ResolvedMemberOverload {
+    params: Vec<CId>,
+    ret: CId,
+    self_style: MemberSelfStyle,
+}
+
+#[inline(always)]
+fn bin_op_overload_not_found_error(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    site: &BinOpSite,
+    lhs: CId,
+    rhs: CId,
+) -> TypeError {
+    TypeError::BinOpOverloadNotFound {
+        site: site.loc,
+        op: site.op,
+        lhs: site.lhs_val,
+        rhs: site.rhs_val,
+        lhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
+        rhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
+    }
+}
+
+#[inline(always)]
+fn un_op_overload_not_found_error(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    site: &UnOpSite,
+    input: CId,
+) -> TypeError {
+    TypeError::UnOpOverloadNotFound {
+        site: site.loc,
+        op: site.op,
+        operand: site.val,
+        operand_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, input),
+    }
+}
+
+#[inline(always)]
+fn resolve_member_overload_signature(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    ans: &SolvedTypes,
+    method: ValId,
+    struct_name: NameId,
+    loc: ValId,
+) -> Option<ResolvedMemberOverload> {
+    let Some(method_ty) = ans.type_of(method) else {
+        unreachable!(
+            "global member method signatures must be solved before body inference; missing type for operator overload"
+        );
+    };
+
+    let self_style = get_member_self_style(store, method_ty, struct_name)?;
+    let method_local = solved_type_to_specialized_local(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        method_ty,
+        loc,
+    );
+    let Some((params, ret)) =
+        function_parts_from_cluster(store, parent, cluster, func_defs, method_local)
+    else {
+        unreachable!("specialized operator overload method must resolve to a function shape");
+    };
+
+    Some(ResolvedMemberOverload {
+        params,
+        ret,
+        self_style,
+    })
+}
+
+#[inline(always)]
 fn resolve_operator_site(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -3886,12 +4094,9 @@ fn resolve_operator_site(
     errors: &mut Vec<TypeError>,
     site: &mut BinOpSite,
     program: &Program,
-) -> bool {
+    ans: &SolvedTypes,
+) -> ResolveOutcome {
     use BinOp::*;
-
-    if site.had_error {
-        return false;
-    }
 
     let mut progress = false;
     let lhs = find_root(parent, site.lhs);
@@ -3903,32 +4108,123 @@ fn resolve_operator_site(
     let rhs_kind = classify_operand(store, parent, cluster, struct_infers, rhs);
 
     if let OperandKind::UserStruct(struct_name) = lhs_kind {
-        let overload = bin_op_overload_name(op);
-        let has_overload = struct_name
-            .and_then(|struct_name| program.member_methods.get(&struct_name))
-            .and_then(|methods| methods.get(&overload))
-            .is_some();
-        if has_overload {
-            todo!("member operator overload");
+        let Some(struct_name) = struct_name else {
+            unreachable!(
+                "operator overload lookup produced a method only when struct_name is present"
+            );
+        };
+
+        let method = program
+            .member_methods
+            .get(&struct_name)
+            .and_then(|methods| methods.get(&bin_op_overload_name(op)))
+            .copied();
+
+        if let Some(method) = method {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                ans,
+                method,
+                struct_name,
+                site.loc,
+            ) else {
+                errors.push(bin_op_overload_not_found_error(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    site,
+                    lhs,
+                    rhs,
+                ));
+                return ResolveOutcome::drop(false);
+            };
+
+            if overload_sig.params.len() != 2 {
+                errors.push(bin_op_overload_not_found_error(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    site,
+                    lhs,
+                    rhs,
+                ));
+                return ResolveOutcome::drop(false);
+            }
+
+            let lhs_input =
+                member_self_input_cluster(parent, cluster, lhs, overload_sig.self_style);
+            let overload_mismatch: Result<(), TypeClash> = (|| {
+                progress |= unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    overload_sig.params[0],
+                    lhs_input,
+                )?;
+                progress |= unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    overload_sig.params[1],
+                    rhs,
+                )?;
+                progress |= unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    overload_sig.ret,
+                    out,
+                )?;
+                Ok(())
+            })();
+
+            if let Err(clash) = overload_mismatch {
+                errors.push(TypeError::ValuesContradict {
+                    expectation_reason: OP_OVERLOAD_SIGNATURE_MISMATCH,
+                    site: site.loc,
+                    found: site.lhs_val,
+                    expected_place: site.rhs_val,
+                    clash,
+                });
+                return ResolveOutcome::drop(false);
+            }
+
+            return ResolveOutcome::drop(progress);
         }
-        errors.push(TypeError::BinOpOverloadNotFound {
-            site: site.loc,
-            op,
-            lhs: site.lhs_val,
-            rhs: site.rhs_val,
-            lhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
-            rhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
-        });
-        site.had_error = true;
-        return false;
+
+        errors.push(bin_op_overload_not_found_error(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            site,
+            lhs,
+            rhs,
+        ));
+        return ResolveOutcome::drop(false);
     }
 
     if matches!(rhs_kind, OperandKind::UserStruct(_)) {
-        return false;
+        return ResolveOutcome::keep(false);
     }
 
     if lhs_kind == OperandKind::Unknown || rhs_kind == OperandKind::Unknown {
-        return false;
+        return ResolveOutcome::keep(false);
     }
 
     // ----------------------------------------------------
@@ -3939,16 +4235,17 @@ fn resolve_operator_site(
     let rhs_ok = system_types_operator_applicable(store, parent, cluster, op, rhs);
 
     if lhs_ok == Some(false) || rhs_ok == Some(false) {
-        errors.push(TypeError::BinOpOverloadNotFound {
-            site: site.loc,
-            op,
-            lhs: site.lhs_val,
-            rhs: site.rhs_val,
-            lhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
-            rhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
-        });
-        site.had_error = true;
-        return false;
+        errors.push(bin_op_overload_not_found_error(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            site,
+            lhs,
+            rhs,
+        ));
+        return ResolveOutcome::drop(false);
     }
 
     // ----------------------------------------------------
@@ -3959,7 +4256,7 @@ fn resolve_operator_site(
     // - output = bool is already enforced in gather
     // ----------------------------------------------------
     if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
-        return false;
+        return ResolveOutcome::drop(false);
     }
 
     // ----------------------------------------------------
@@ -3983,7 +4280,7 @@ fn resolve_operator_site(
 
     if !(lhs_numeric && rhs_numeric) {
         //TODO handle other cases
-        return false;
+        return ResolveOutcome::keep(false);
     }
 
     // (a) unify operands
@@ -3997,8 +4294,7 @@ fn resolve_operator_site(
                 expected_place: site.rhs_val,
                 clash,
             });
-            site.had_error = true;
-            return false;
+            return ResolveOutcome::drop(false);
         }
     }
 
@@ -4023,12 +4319,11 @@ fn resolve_operator_site(
                 expected_place: site.rhs_val,
                 clash,
             });
-            site.had_error = true;
-            return false;
+            return ResolveOutcome::drop(false);
         }
     }
 
-    progress
+    ResolveOutcome::drop(progress)
 }
 
 #[inline(always)]
@@ -4041,12 +4336,9 @@ fn resolve_unary_operator_site(
     errors: &mut Vec<TypeError>,
     site: &mut UnOpSite,
     program: &Program,
-) -> bool {
+    ans: &SolvedTypes,
+) -> ResolveOutcome {
     use UnOp::*;
-
-    if site.had_error {
-        return false;
-    }
 
     let mut progress = false;
     let input = find_root(parent, site.input);
@@ -4055,46 +4347,121 @@ fn resolve_unary_operator_site(
 
     let operand_kind = classify_operand(store, parent, cluster, struct_infers, input);
     if let OperandKind::UserStruct(struct_name) = operand_kind {
-        let overload = un_op_overload_name(op);
-        let has_overload = struct_name
-            .and_then(|struct_name| program.member_methods.get(&struct_name))
-            .and_then(|methods| methods.get(&overload))
-            .is_some();
-        if has_overload {
-            todo!("member operator overload");
+        let Some(struct_name) = struct_name else {
+            unreachable!(
+                "operator overload lookup produced a method only when struct_name is present"
+            );
+        };
+
+        let method = program
+            .member_methods
+            .get(&struct_name)
+            .and_then(|methods| methods.get(&un_op_overload_name(op)))
+            .copied();
+        if let Some(method) = method {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                ans,
+                method,
+                struct_name,
+                site.loc,
+            ) else {
+                errors.push(un_op_overload_not_found_error(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    site,
+                    input,
+                ));
+                return ResolveOutcome::drop(false);
+            };
+
+            if overload_sig.params.len() != 1 {
+                errors.push(un_op_overload_not_found_error(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    site,
+                    input,
+                ));
+                return ResolveOutcome::drop(false);
+            }
+
+            let self_input =
+                member_self_input_cluster(parent, cluster, input, overload_sig.self_style);
+            let overload_mismatch: Result<(), TypeClash> = (|| {
+                progress |= unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    overload_sig.params[0],
+                    self_input,
+                )?;
+                progress |= unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    overload_sig.ret,
+                    out,
+                )?;
+                Ok(())
+            })();
+
+            if let Err(clash) = overload_mismatch {
+                errors.push(TypeError::ValuesContradict {
+                    expectation_reason: OP_OVERLOAD_SIGNATURE_MISMATCH,
+                    site: site.loc,
+                    found: site.val,
+                    expected_place: site.loc,
+                    clash,
+                });
+                return ResolveOutcome::drop(false);
+            }
+
+            return ResolveOutcome::drop(progress);
         }
-        errors.push(TypeError::UnOpOverloadNotFound {
-            site: site.loc,
-            op,
-            operand: site.val,
-            operand_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, input),
-        });
-        site.had_error = true;
-        return false;
+
+        errors.push(un_op_overload_not_found_error(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            site,
+            input,
+        ));
+        return ResolveOutcome::drop(false);
     }
 
     if operand_kind == OperandKind::Unknown {
-        return false;
+        return ResolveOutcome::keep(false);
     }
 
     match op {
         Not => {
             if let Some(false) = cluster_is_bool(store, parent, cluster, input) {
-                errors.push(TypeError::UnOpOverloadNotFound {
-                    site: site.loc,
-                    op,
-                    operand: site.val,
-                    operand_type: extract_bad_type(
-                        store,
-                        parent,
-                        cluster,
-                        func_defs,
-                        struct_infers,
-                        input,
-                    ),
-                });
-                site.had_error = true;
-                return false;
+                errors.push(un_op_overload_not_found_error(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    site,
+                    input,
+                ));
+                return ResolveOutcome::drop(false);
             }
             match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
                 Ok(changed) => progress |= changed,
@@ -4106,8 +4473,7 @@ fn resolve_unary_operator_site(
                         expected_place: site.loc,
                         clash,
                     });
-                    site.had_error = true;
-                    return false;
+                    return ResolveOutcome::drop(false);
                 }
             }
         }
@@ -4118,23 +4484,18 @@ fn resolve_unary_operator_site(
             ) {
                 (Some(true), _) | (_, Some(true)) => {}
                 (Some(false), Some(false)) => {
-                    errors.push(TypeError::UnOpOverloadNotFound {
-                        site: site.loc,
-                        op,
-                        operand: site.val,
-                        operand_type: extract_bad_type(
-                            store,
-                            parent,
-                            cluster,
-                            func_defs,
-                            struct_infers,
-                            input,
-                        ),
-                    });
-                    site.had_error = true;
-                    return false;
+                    errors.push(un_op_overload_not_found_error(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        site,
+                        input,
+                    ));
+                    return ResolveOutcome::drop(false);
                 }
-                _ => return false,
+                _ => return ResolveOutcome::keep(false),
             }
 
             match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
@@ -4147,8 +4508,7 @@ fn resolve_unary_operator_site(
                         expected_place: site.loc,
                         clash,
                     });
-                    site.had_error = true;
-                    return false;
+                    return ResolveOutcome::drop(false);
                 }
             }
         }
@@ -4156,23 +4516,18 @@ fn resolve_unary_operator_site(
             match cluster_is_int_like(store, parent, cluster, input) {
                 Some(true) => {}
                 Some(false) => {
-                    errors.push(TypeError::UnOpOverloadNotFound {
-                        site: site.loc,
-                        op,
-                        operand: site.val,
-                        operand_type: extract_bad_type(
-                            store,
-                            parent,
-                            cluster,
-                            func_defs,
-                            struct_infers,
-                            input,
-                        ),
-                    });
-                    site.had_error = true;
-                    return false;
+                    errors.push(un_op_overload_not_found_error(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        site,
+                        input,
+                    ));
+                    return ResolveOutcome::drop(false);
                 }
-                None => return false,
+                None => return ResolveOutcome::keep(false),
             }
 
             match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
@@ -4185,20 +4540,19 @@ fn resolve_unary_operator_site(
                         expected_place: site.loc,
                         clash,
                     });
-                    site.had_error = true;
-                    return false;
+                    return ResolveOutcome::drop(false);
                 }
             }
         }
     }
 
-    progress
+    ResolveOutcome::drop(progress)
 }
 
 #[inline(always)]
 fn resolve_operator_types(ctx: &mut InferState) -> bool {
     let mut progress = false;
-    let (store, parent, cluster, func_defs, struct_infers, bin_op_sites, un_op_sites, errors) = (
+    let (store, parent, cluster, func_defs, struct_infers, bin_op_sites, un_op_sites, errors, ans) = (
         &mut ctx.store,
         &mut ctx.parent,
         &mut ctx.cluster,
@@ -4207,10 +4561,11 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
         &mut ctx.bin_op_sites,
         &mut ctx.un_op_sites,
         &mut ctx.errors,
+        &*ctx.ans,
     );
 
-    for site in bin_op_sites.iter_mut() {
-        progress |= resolve_operator_site(
+    bin_op_sites.retain_mut(|site| {
+        let outcome = resolve_operator_site(
             store,
             parent,
             cluster,
@@ -4219,11 +4574,14 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
             errors,
             site,
             ctx.program,
+            ans,
         );
-    }
+        progress |= outcome.progress;
+        outcome.retain
+    });
 
-    for site in un_op_sites.iter_mut() {
-        progress |= resolve_unary_operator_site(
+    un_op_sites.retain_mut(|site| {
+        let outcome = resolve_unary_operator_site(
             store,
             parent,
             cluster,
@@ -4232,8 +4590,11 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
             errors,
             site,
             ctx.program,
+            ans,
         );
-    }
+        progress |= outcome.progress;
+        outcome.retain
+    });
 
     progress
 }
@@ -5171,6 +5532,44 @@ mod type_infer_tests {
             errs.iter()
                 .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
         );
+    }
+
+    #[test]
+    fn binary_member_overload_specializes_generic_signature() {
+        let src = "type S = struct{}; S.__add = fn[T](s:S, y:T)->T { y }; f=fn(){ let s = S{}; let x:int = s + 2; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let x_ty = find_let_stmt_type(&program, solved_types, f, "x");
+
+        assert!(matches!(
+            store.type_value(x_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn unary_member_overload_implicit_ref_self() {
+        let src = "S=struct{}; S.__bitnot = fn(self:&S)->int { 1 }; f=fn(){ let s = S{}; let x:int = ~s; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let x_ty = find_let_stmt_type(&program, solved_types, f, "x");
+
+        assert!(matches!(
+            store.type_value(x_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
     }
 
     #[test]

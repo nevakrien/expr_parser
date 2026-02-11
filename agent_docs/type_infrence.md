@@ -264,7 +264,13 @@ Then `finalize`:
 - Operators are deferred as `BinOpSite` / `UnOpSite` and revisited during solver iterations.
 - `unify_if_distinct` is the main operator-resolution merge primitive.
 - Builtin legality checks are tri-state (`true` / `false` / `unknown`) to avoid premature hard errors.
-- User-struct overload lookup is wired for detection but actual overload execution is still mostly TODO.
+- User-struct operator overloads are now enforced through solved member-method signatures:
+  - Resolver looks up the method (`__add`, `__neg`, etc.) on the lhs struct type.
+  - It reads the method type from `SolvedTypes`, specializes `WithGenerics` into fresh local clusters (`solved_type_to_specialized_local`), then unifies against an expected function shape for the operator site.
+  - For receiver coercion, if method `self` is by-reference (`&self` / `&mut self`), resolver creates an explicit `ResolveKind::Ptr` cluster targeting the lhs operand cluster and unifies that against method input.
+  - This means operator overload resolution now constrains lhs/rhs/output directly from method signatures (instead of only reporting overload presence).
+- Deferred operator queues are now drained with `retain_mut`: resolved sites (including successful overload application and hard errors) are removed, while only truly pending/unknown sites are retained for future solver rounds.
+- Operator overload resolution assumes global signatures are already solved before function-body inference (`infer_global_types` first); missing method type/function-shape in this stage is treated as an internal-invariant violation (`unreachable!`).
 - Even though runtime/operator-call dispatch is still TODO, signature validation now enforces shape rules for special member names:
   - binary overload names (`__add`, `__sub`, etc.): `self`-like first parameter + exactly one extra parameter,
   - unary overload names (`__neg`, `__not`, `__bitnot`): `self`-like first parameter + no extra parameters,
