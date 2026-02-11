@@ -264,7 +264,7 @@ pub enum ParseError {
     },
 }
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NonTerm {
     Normal,
     NoConstruct,
@@ -281,7 +281,7 @@ const BP_POSTFIX_INC: u32 = 840;
 const BP_PREFIX: u32 = 850;
 
 #[inline]
-fn prefix_bp(op: &str,_:NonTerm) -> Option<u32> {
+fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
     Some(match op {
         "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
@@ -289,7 +289,7 @@ fn prefix_bp(op: &str,_:NonTerm) -> Option<u32> {
 }
 
 #[inline]
-fn infix_bp(op: &str,_:NonTerm) -> Option<(u32, u32)> {
+fn infix_bp(op: &str, _: NonTerm) -> Option<(u32, u32)> {
     Some(match op {
         // match arm (right-assoc)
         "=>" => (BP_MATCH_ARM + 1, BP_MATCH_ARM),
@@ -330,20 +330,19 @@ fn infix_bp(op: &str,_:NonTerm) -> Option<(u32, u32)> {
 }
 
 #[inline]
-fn postfix_bp(op: &str,style:NonTerm) -> Option<u32> {
+fn postfix_bp(op: &str, style: NonTerm) -> Option<u32> {
     Some(match op {
         "++" | "--" => BP_POSTFIX_INC,
         "(" | "[" => BP_CALL,
         "{" => {
-            if style==NonTerm::NoConstruct{
+            if style == NonTerm::NoConstruct {
                 return None;
             }
             BP_CONSTRUCT
-        },
+        }
         _ => return None,
     })
 }
-
 
 #[repr(align(16))]
 pub struct Parser<'a> {
@@ -809,7 +808,7 @@ impl<'a> Parser<'a> {
     /// Ok(None) => no expression starts here
     /// Err(_)   => expression started but failed
     pub fn try_expr(&mut self) -> PResult<Option<LExpr>> {
-        self.try_expr_bp(0,NonTerm::Normal)
+        self.try_expr_bp(0, NonTerm::Normal)
     }
 
     /// Must parse an expression or error.
@@ -882,15 +881,15 @@ impl<'a> Parser<'a> {
         };
         ParseError::OpenDelimiter { open, close, got }
     }
-    fn try_expr_bp(&mut self, min_bp: u32,style:NonTerm) -> PResult<Option<LExpr>> {
+    fn try_expr_bp(&mut self, min_bp: u32, style: NonTerm) -> PResult<Option<LExpr>> {
         let start = self.expr_start();
-        let Some(mut lhs) = self.parse_prefix(start,style)? else {
+        let Some(mut lhs) = self.parse_prefix(start, style)? else {
             return Ok(None);
         };
 
         loop {
             // postfix first
-            if self.try_parse_postfix(start, &mut lhs, min_bp,style)? {
+            if self.try_parse_postfix(start, &mut lhs, min_bp, style)? {
                 continue;
             }
 
@@ -905,15 +904,21 @@ impl<'a> Parser<'a> {
         Ok(Some(lhs))
     }
 
-    fn consume_expr_bp(&mut self, min_bp: u32,style:NonTerm) -> PResult<LExpr> {
-        match self.try_expr_bp(min_bp,style)? {
+    fn consume_expr_bp(&mut self, min_bp: u32, style: NonTerm) -> PResult<LExpr> {
+        match self.try_expr_bp(min_bp, style)? {
             Some(e) => Ok(e),
             None => Err(ParseError::ExpectedExpr {
                 got: self.peek_op()?,
             }),
         }
     }
-    fn try_parse_infix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32,style:NonTerm) -> PResult<bool> {
+    fn try_parse_infix(
+        &mut self,
+        start: usize,
+        lhs: &mut LExpr,
+        min_bp: u32,
+        style: NonTerm,
+    ) -> PResult<bool> {
         let Some(peek) = self.peek_token()? else {
             return Ok(false);
         };
@@ -921,7 +926,7 @@ impl<'a> Parser<'a> {
             return Ok(false);
         };
 
-        let Some((l_bp, r_bp)) = infix_bp(op,style) else {
+        let Some((l_bp, r_bp)) = infix_bp(op, style) else {
             return Ok(false);
         };
 
@@ -930,7 +935,7 @@ impl<'a> Parser<'a> {
         }
 
         let op_tok = self.try_op()?.unwrap();
-        let rhs = self.consume_expr_bp(r_bp,style)?;
+        let rhs = self.consume_expr_bp(r_bp, style)?;
 
         let loc = self.produce_loc(start);
         let mut temp = Located {
@@ -946,14 +951,20 @@ impl<'a> Parser<'a> {
         Ok(true)
     }
 
-    fn try_parse_postfix(&mut self, start: usize, lhs: &mut LExpr, min_bp: u32,style:NonTerm) -> PResult<bool> {
+    fn try_parse_postfix(
+        &mut self,
+        start: usize,
+        lhs: &mut LExpr,
+        min_bp: u32,
+        style: NonTerm,
+    ) -> PResult<bool> {
         let Some(peek) = self.peek_token()? else {
             return Ok(false);
         };
         let Token::Operator(op) = &peek.value else {
             return Ok(false);
         };
-        let Some(bp) = postfix_bp(op,style) else {
+        let Some(bp) = postfix_bp(op, style) else {
             return Ok(false);
         };
 
@@ -1005,7 +1016,7 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn parse_prefix(&mut self, start: usize,style:NonTerm) -> PResult<Option<LExpr>> {
+    fn parse_prefix(&mut self, start: usize, style: NonTerm) -> PResult<Option<LExpr>> {
         let Some(tok) = self.peek_token()? else {
             return Ok(None);
         };
@@ -1064,7 +1075,18 @@ impl<'a> Parser<'a> {
                     return Ok(Some(Located {
                         loc: self.produce_loc(start),
                         value: Expr::Prefix(op_s, Vec::new()),
-                    }))
+                    }));
+                }
+                if op == "return" {
+                    self.next_token()?.unwrap();
+                    let mut args = Vec::with_capacity(1);
+                    if let Some(rhs) = self.try_expr()? {
+                        args.push(rhs);
+                    }
+                    return Ok(Some(Located {
+                        loc: self.produce_loc(start),
+                        value: Expr::Prefix(op_s, args),
+                    }));
                 }
 
                 if op == "fn" || op == "cfn" || op == "macro" {
@@ -1088,9 +1110,9 @@ impl<'a> Parser<'a> {
                 }
 
                 // generic prefix operator via BP
-                if let Some(bp) = prefix_bp(op,style) {
+                if let Some(bp) = prefix_bp(op, style) {
                     self.next_token()?.unwrap();
-                    let rhs = self.consume_expr_bp(bp,style)?;
+                    let rhs = self.consume_expr_bp(bp, style)?;
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
                         loc,
@@ -1183,7 +1205,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_if(&mut self, start: usize, if_tok: LFixed) -> PResult<LExpr> {
-        let cond = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
+        let cond = self.consume_expr_bp(0, NonTerm::NoConstruct)?;
         let then_expr = self.consume_expr()?;
 
         let mut args = vec![cond, then_expr];
@@ -1197,13 +1219,11 @@ impl<'a> Parser<'a> {
             loc,
             value: Expr::Prefix(if_tok, args),
         })
-
     }
-
 
     #[inline(always)]
     fn parse_after_while(&mut self, start: usize, w: LFixed) -> PResult<LExpr> {
-        let cond = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
+        let cond = self.consume_expr_bp(0, NonTerm::NoConstruct)?;
         let body = self.consume_expr()?;
 
         let loc = self.produce_loc(start);
@@ -1215,13 +1235,13 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn parse_after_match(&mut self, start: usize, m: LFixed) -> PResult<LExpr> {
-        let subject = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
+        let subject = self.consume_expr_bp(0, NonTerm::NoConstruct)?;
         let open = self.expect_operator("{")?;
         let mut args = vec![subject];
 
         while self.try_operator("}")?.is_none() {
             let arm_start = self.expr_start();
-            let Some(pat) = self.try_expr_bp(BP_PATTERN,NonTerm::Normal)? else {
+            let Some(pat) = self.try_expr_bp(BP_PATTERN, NonTerm::Normal)? else {
                 return Err(self.err_open_delim(open.clone(), "}"));
             };
             let arrow = self.expect_operator("=>")?;
@@ -1272,7 +1292,7 @@ impl<'a> Parser<'a> {
         };
 
         if let Some(arrow) = self.try_operator("->")? {
-            let output = self.consume_expr_bp(0,NonTerm::NoConstruct)?;
+            let output = self.consume_expr_bp(0, NonTerm::NoConstruct)?;
             sig = Located {
                 loc: self.produce_loc(paren_start),
                 value: Expr::Bin(arrow, Box::new((sig, output))),
@@ -1292,7 +1312,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn parse_after_let(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
         let mut vals = Vec::new();
-        vals.push(self.consume_expr_bp(BP_PATTERN,NonTerm::Normal)?);
+        vals.push(self.consume_expr_bp(BP_PATTERN, NonTerm::Normal)?);
         self.expect_operator("=")?;
         vals.push(self.consume_expr()?);
 
@@ -1309,7 +1329,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn parse_after_type(&mut self, start: usize, let_tok: LFixed) -> PResult<LExpr> {
         let mut vals = Vec::new();
-        vals.push(self.consume_expr_bp(BP_PATTERN,NonTerm::Normal)?);
+        vals.push(self.consume_expr_bp(BP_PATTERN, NonTerm::Normal)?);
         self.expect_operator("=")?;
         vals.push(self.consume_expr()?);
 

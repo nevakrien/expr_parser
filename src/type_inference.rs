@@ -8,6 +8,7 @@
 //
 // ================================================================
 
+use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::StructLike;
@@ -18,11 +19,10 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, FREE_STR,
-    GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR, NOT_STR, SHL_STR, SHR_STR,
-    SUB_STR,
+    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, FREE_STR, GE_STR,
+    GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR,
+    StrId,
 };
-use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -509,21 +509,13 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
@@ -868,7 +860,7 @@ pub fn infer_value_internals<'a>(
             //this is fine for our local work as we pretend that generics are concrete
         }
         _ => {
-            let found = gather_constraints(&mut ctx, value);
+            let found = gather_constraints(&mut ctx, value, None);
             if let Some(known) = known {
                 let known = ctx.new_solved(known);
 
@@ -926,7 +918,7 @@ fn _infer_value_hacky<'a>(
             );
         }
         _ => {
-            gather_constraints(&mut ctx, value);
+            gather_constraints(&mut ctx, value, None);
         }
     }
 
@@ -2554,7 +2546,7 @@ fn resolve_member_method_access(
     }
 }
 
-fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
+fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId>) -> CId {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_int_like(v);
@@ -2629,7 +2621,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             // let-expr evaluates to the bound pattern value => alias
             ctx.bind_val(v, lhs);
 
-            let rhs = gather_constraints(ctx, value);
+            let rhs = gather_constraints(ctx, value, current_output);
 
             if let Err(clash) = ctx.unify(rhs, lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
@@ -2642,7 +2634,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             }
 
             if let Some(e) = else_part {
-                let ec = gather_constraints(ctx, e);
+                let ec = gather_constraints(ctx, e, current_output);
                 if let Err(clash) = ctx.unify(ec, lhs) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason:
@@ -2659,7 +2651,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let rhs_cluster = gather_constraints(ctx, value);
+            let rhs_cluster = gather_constraints(ctx, value, current_output);
             let ann_ty = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(rhs_cluster, ann_ty) {
@@ -2676,7 +2668,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         }
 
         Value::Cast { value, ty } => {
-            let _ = gather_constraints(ctx, value);
+            let _ = gather_constraints(ctx, value, current_output);
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty);
             ctx.bind_val(v, c);
@@ -2700,7 +2692,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         }
 
         Value::AddrOf(base, kind) => {
-            let tgt = gather_constraints(ctx, base);
+            let tgt = gather_constraints(ctx, base, current_output);
             let mutable = kind.map(|x| matches!(x, VarKind::Mut));
             let ans = ctx.new_cluster();
             ctx.cluster[ans].state = ResolveKind::Ptr {
@@ -2713,7 +2705,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         }
 
         Value::Deref(base) => {
-            let src = gather_constraints(ctx, base);
+            let src = gather_constraints(ctx, base, current_output);
             let tgt = match ctx.cluster[src].state {
                 ResolveKind::Ptr { tgt, .. } => tgt,
                 ResolveKind::Nothing => {
@@ -2741,10 +2733,10 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             op: AssignOp::Nothing(value),
             target,
         } => {
-            let lhs = gather_constraints(ctx, target);
+            let lhs = gather_constraints(ctx, target, current_output);
             ctx.bind_val(v, lhs);
 
-            let rhs = gather_constraints(ctx, value);
+            let rhs = gather_constraints(ctx, value, current_output);
             if let Err(clash) = ctx.unify(rhs, lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "assignment requires both sides match",
@@ -2764,12 +2756,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             return_value,
         } => {
             for s in statements.ids() {
-                gather_constraints(ctx, s);
+                gather_constraints(ctx, s, current_output);
             }
 
             // block aliases its return value cluster (or void)
             let c = match return_value {
-                Some(r) => gather_constraints(ctx, r),
+                Some(r) => gather_constraints(ctx, r, current_output),
                 None => ctx.new_solved(BuiltinType::Void.into()),
             };
 
@@ -2780,8 +2772,8 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         Value::BinOp { op, values } => {
             let (lhs, rhs) = values;
 
-            let lc = gather_constraints(ctx, lhs);
-            let rc = gather_constraints(ctx, rhs);
+            let lc = gather_constraints(ctx, lhs, current_output);
+            let rc = gather_constraints(ctx, rhs, current_output);
 
             let output = match op {
                 //there is no legitmate reason to overload != == to have a diffrent signature
@@ -2851,7 +2843,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             output
         }
         Value::UnOp { op, value } => {
-            let input = gather_constraints(ctx, value);
+            let input = gather_constraints(ctx, value, current_output);
             let output = match op {
                 UnOp::Not => ctx.new_solved(BuiltinType::Bool.into()),
                 _ => ctx.new_cluster(),
@@ -2894,7 +2886,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             output
         }
         Value::While { cond, body } => {
-            let cond_cluster = gather_constraints(ctx, cond);
+            let cond_cluster = gather_constraints(ctx, cond, current_output);
             if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "while condition must be bool",
@@ -2905,14 +2897,14 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                 });
             }
 
-            let _body_cluster = gather_constraints(ctx, body);
+            let _body_cluster = gather_constraints(ctx, body, current_output);
 
             let output = ctx.new_solved(BuiltinType::Bool.into());
             ctx.bind_val(v, output);
             output
         }
         Value::If { cond, then, els } => {
-            let cond_cluster = gather_constraints(ctx, cond);
+            let cond_cluster = gather_constraints(ctx, cond, current_output);
             if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "if condition must be bool",
@@ -2923,10 +2915,10 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                 });
             }
 
-            let then_cluster = gather_constraints(ctx, then);
+            let then_cluster = gather_constraints(ctx, then, current_output);
 
             let output = if let Some(els) = els {
-                let else_cluster = gather_constraints(ctx, els);
+                let else_cluster = gather_constraints(ctx, els, current_output);
                 if let Err(clash) = ctx.unify(then_cluster, else_cluster) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason: "if branches must have the same type",
@@ -2955,11 +2947,11 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                 //we can try derive the type of base directly
                 //this makes life SOOOO much easier than named args
 
-                let base = gather_constraints(ctx, call.base);
+                let base = gather_constraints(ctx, call.base, current_output);
                 let inputs: Vec<_> = call
                     .args
                     .ids()
-                    .map(|a| gather_constraints(ctx, a))
+                    .map(|a| gather_constraints(ctx, a, current_output))
                     .collect();
                 let output = ctx.new_cluster();
 
@@ -3002,7 +2994,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let Some(base_name) = try_get_name(ctx, cons.base) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg);
+                    gather_constraints(ctx, arg, current_output);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -3011,7 +3003,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let Some(def) = ctx.program.definitions.get(&base_name) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg);
+                    gather_constraints(ctx, arg, current_output);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -3021,7 +3013,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let Defined::Type(texp) = def else {
                 ctx.push_error(TypeError::ConstructorBaseNotTypeName { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg);
+                    gather_constraints(ctx, arg, current_output);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -3031,7 +3023,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let Some(base_type) = ctx.ans.typedef_types.get(texp) else {
                 ctx.push_error(TypeError::UnresolvedTypeExpr { expr: *texp });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg);
+                    gather_constraints(ctx, arg, current_output);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -3064,7 +3056,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                         found: Some(BadTypeId(base_type)),
                     });
                     for arg in cons.args.ids() {
-                        gather_constraints(ctx, arg);
+                        gather_constraints(ctx, arg, current_output);
                     }
                     let ans = ctx.new_cluster();
                     ctx.bind_val(v, ans);
@@ -3117,7 +3109,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             let missing = CId(usize::MAX);
             let mut args = Vec::with_capacity(expected.max(provided));
             for (i, a) in cons.pos_args().ids().enumerate() {
-                let c = gather_constraints(ctx, a);
+                let c = gather_constraints(ctx, a, current_output);
                 args.push(c);
 
                 let (nid, t) = ctx.store.struct_value(sid).fields[i];
@@ -3153,7 +3145,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     unreachable!()
                 };
 
-                let value_c = gather_constraints(ctx, value);
+                let value_c = gather_constraints(ctx, value, current_output);
 
                 let spot = ctx
                     .store
@@ -3234,7 +3226,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
         }
 
         Value::Access { base, name, kind } => {
-            let b = gather_constraints(ctx, base);
+            let b = gather_constraints(ctx, base, current_output);
             let b = find_root(&mut ctx.parent, b);
 
             //TODO we currently just do structs
@@ -3363,16 +3355,48 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
             c
         }
         Value::Return(op) => {
-            match op {
-                Some(v) => {
-                    let _c = gather_constraints(ctx, v);
-                    todo!()
+            if let Some(output) = current_output {
+                match op {
+                    Some(ret_value) => {
+                        let ret_cluster = gather_constraints(ctx, ret_value, current_output);
+                        if let Err(clash) = ctx.unify(ret_cluster, output) {
+                            ctx.push_error(TypeError::ValuesContradict {
+                                expectation_reason: "return value must match function return type",
+                                site: v,
+                                found: ret_value,
+                                expected_place: v,
+                                clash,
+                            });
+                        }
+                    }
+                    None => {
+                        let void = ctx.new_solved(BuiltinType::Void.into());
+                        if let Err(clash) = ctx.unify(void, output) {
+                            ctx.push_error(TypeError::ValuesContradict {
+                                expectation_reason:
+                                    "bare return requires function return type void",
+                                site: v,
+                                found: v,
+                                expected_place: v,
+                                clash,
+                            });
+                        }
+                    }
                 }
-                None => todo!(),
+            } else {
+                if let Some(ret_value) = op {
+                    let _ = gather_constraints(ctx, ret_value, None);
+                }
+                let loc = ctx.program.value_loc(v);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "return used outside of function body",
+                });
             }
-            // let c = ctx.new_cluster();
-            // ctx.cluster[c].state=ResolveKind::Never;
-            // c
+
+            let c = ctx.new_cluster();
+            ctx.cluster[c].state = ResolveKind::Never;
+            c
         }
         Value::LogicOp { op: _, values: _ } => todo!(),
 
@@ -3774,7 +3798,7 @@ fn gather_func_constraints<const ALLOW_GENERICS: bool>(
     let (f, output) =
         gather_func_signature::<ALLOW_GENERICS>(ctx, v, generics, params, output_type);
 
-    let body_cluster = gather_constraints(ctx, body);
+    let body_cluster = gather_constraints(ctx, body, Some(output));
 
     if let Err(clash) = ctx.unify(body_cluster, output) {
         let found = match ctx.program.value(body) {
@@ -5592,6 +5616,26 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn explicit_return_statement_typechecks() {
+        let mut store = TypeStore::new();
+        let ty = infer_fn("f = fn()->int { return 1; 2 }", &mut store).unwrap();
+        match store.type_value(ty) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
+            other => panic!("expected builtin type, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn closure_returns_typecheck() {
+        let mut store = TypeStore::new();
+        let ty = infer_fn("f = fn()->int { let d :float = (fn()->_{if true return 1.0; 2.0})(); 2 }", &mut store).unwrap();
+        match store.type_value(ty) {
+            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
+            other => panic!("expected builtin type, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn cast_allows_type_change() {
         assert_fn_type!("f = fn(){ let x:int = 1; x as bool }", BuiltinType::Bool);
     }
@@ -5926,9 +5970,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -5955,9 +6000,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -5989,9 +6035,10 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6019,9 +6066,10 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
     }
 
     #[test]
@@ -6143,9 +6191,10 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
+        );
     }
 
     #[test]
@@ -6386,9 +6435,10 @@ mod type_infer_tests {
     #[test]
     fn unknown_builtin_member_method_name_errors() {
         let errs = infer_global_errs("S=struct{}; S.__derefed = fn(self:S){ }; f=fn(){};");
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
+        );
     }
 
     //  #[test]

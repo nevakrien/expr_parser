@@ -190,6 +190,7 @@ High-level behavior:
 - literals create weak (`IntLike`/`FloatLike`) or concrete builtin clusters,
 - `let`, assignment, and branch joins create equality constraints with `ctx.unify`,
 - one-way obligations use `ctx.force_type` (`if`/`while` condition bool, etc.),
+- `return` is checked against the current function output cluster (threaded as `Option<CId>` through `gather_constraints`; `None` means outermost/non-function context),
 - calls/construction build deferred structural constraints (`Func`/`Struct`) then resolve via unification,
 - operators are queued as deferred sites and reprocessed in solver rounds.
 

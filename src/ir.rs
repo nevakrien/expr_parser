@@ -607,6 +607,9 @@ impl Program {
             Expr::Prefix(open, items) if open.value == "continue" => {
                 self.lower_continue_expr(expr.loc, open, items)
             }
+            Expr::Prefix(open, items) if open.value == "return" => {
+                self.lower_return_expr(expr.loc, open, items)
+            }
 
             // fn (sig) body
             Expr::Prefix(open, items) if open.value == "fn" => self.lower_fn_expr(expr.loc, items),
@@ -870,6 +873,25 @@ impl Program {
             });
         }
         Ok(Value::Continue)
+    }
+
+    #[inline(always)]
+    fn lower_return_expr(&mut self, loc: Loc, op: LFixed, mut items: Vec<LExpr>) -> CResult<Value> {
+        if items.len() > 1 {
+            return Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_EXPRESSION,
+            });
+        }
+
+        let value = if let Some(value) = items.pop() {
+            Some(self.lower_value(value)?)
+        } else {
+            None
+        };
+        Ok(Value::Return(value))
     }
 
     #[inline(always)]
