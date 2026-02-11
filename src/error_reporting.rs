@@ -1,7 +1,9 @@
-use crate::ir::{BinOp, UnOp, VarKind};
-use crate::parsing::{OTok, ParseError};
+use crate::ir::{BinOp, PatId, UnOp, ValId};
+use crate::parsing::{Loc, OTok, ParseError};
 use crate::program::{CompileError, Program};
-use crate::type_inference::{BadTypeId, TypeClash, TypeError, TypeStore};
+use crate::type_inference::{
+    BadTypeId, SolvedTypes, TypeClash, TypeError, TypeStore, UNKNOWN_TYPE,
+};
 use ariadne::{Cache, Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
@@ -610,6 +612,106 @@ impl ErrorReporter {
             }
         }
     }
+
+    pub fn report_type_dump(
+        &self,
+        program: &Program,
+        store: &TypeStore,
+        solved: &SolvedTypes,
+    ) -> io::Result<()> {
+        self.report_type_dump_in_region(program, store, solved, None)
+    }
+
+    pub fn report_type_dump_in_region(
+        &self,
+        program: &Program,
+        store: &TypeStore,
+        solved: &SolvedTypes,
+        region: Option<&Loc>,
+    ) -> io::Result<()> {
+        let mut labels_by_file: HashMap<usize, Vec<(std::ops::Range<usize>, String, Color)>> =
+            HashMap::new();
+
+        for index in 0..solved.val_types.len() {
+            let Some(t) = solved.type_of(ValId(index)) else {
+                continue;
+            };
+            let loc = program.value_loc(ValId(index));
+            if !loc_in_region(&loc, region) {
+                continue;
+            }
+            labels_by_file.entry(loc.file).or_default().push((
+                loc.range.clone(),
+                format!("value: {}", store.get_type_string(program, t)),
+                Color::Yellow,
+            ));
+        }
+
+        for index in 0..solved.pat_types.len() {
+            let Some(t) = solved.pat_type(PatId(index)) else {
+                continue;
+            };
+            let loc = program.pattern_loc(PatId(index));
+            if !loc_in_region(&loc, region) {
+                continue;
+            }
+            labels_by_file.entry(loc.file).or_default().push((
+                loc.range.clone(),
+                format!("pattern: {}", store.get_type_string(program, t)),
+                Color::Cyan,
+            ));
+        }
+
+        for (texp, t) in solved.typedef_types.iter() {
+            if *t == UNKNOWN_TYPE {
+                continue;
+            }
+
+            let loc = program.type_expr_loc(*texp);
+            if !loc_in_region(&loc, region) {
+                continue;
+            }
+            labels_by_file.entry(loc.file).or_default().push((
+                loc.range.clone(),
+                format!("type expr: {}", store.get_type_string(program, *t)),
+                Color::Green,
+            ));
+        }
+
+        if labels_by_file.is_empty() {
+            return Ok(());
+        }
+
+        for (file, mut labels) in labels_by_file {
+            labels.sort_by_key(|(range, _, _)| (range.start, range.end));
+
+            let start = labels.first().map(|(r, _, _)| r.start).unwrap_or(0);
+            let mut report = Report::build(ReportKind::Advice, file, start)
+                .with_message("dumping inferred types");
+
+            for (range, message, color) in labels {
+                report = report.with_label(
+                    Label::new((file, range))
+                        .with_message(message)
+                        .with_color(color),
+                );
+            }
+
+            self.print_report(file, report.finish())?;
+        }
+
+        Ok(())
+    }
+}
+
+fn loc_in_region(loc: &Loc, region: Option<&Loc>) -> bool {
+    let Some(region) = region else {
+        return true;
+    };
+
+    loc.file == region.file
+        && loc.range.start >= region.range.start
+        && loc.range.end <= region.range.end
 }
 
 fn clash_messages(program: &Program, store: &TypeStore, clash: TypeClash) -> (String, String) {
