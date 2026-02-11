@@ -29,9 +29,11 @@
 
 ### Current docs index
 - `agent_docs/type_infrence.md`: detailed guide to `src/type_inference.rs`, including unification/clash behavior, specialization, generic-scope risks, and gather-layer fragility/extension points.
+- `agent_docs/cli_debugging.md`: practical guide to using the REPL/CLI to inspect parsed AST shape, inferred types, and typechecker diagnostics while investigating behavior.
 
 ## Commands
-- `cargo run` runs a repl that can be used for testing current behivior and errors.
+- `cargo run` runs the CLI/REPL, which can be used to inspect parsed AST shape and type inference behavior.
+- See `agent_docs/cli_debugging.md` for practical debugging workflows and REPL command details.
 - `cargo test` runs the full test suite and should be used routinely.
 - `cargo fmt` formats Rust code; run before committing style changes.
 - `cargo clippy` runs lint checks; fix warnings before submitting.

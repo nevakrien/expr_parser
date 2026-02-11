@@ -213,9 +213,10 @@ Important fragile/unfinished expression areas:
   - later pointer solving depends on unification + deferred resolve,
   - future `Deref` support (not implemented yet) will need to integrate here and in operator/access paths.
 - `Value::Access`:
-  - partial support for struct field lookup from solved or deferred struct states,
-  - member-method route is largely TODO,
-  - this is a likely extension point for method dispatch and implicit receiver conversions.
+  - supports struct field lookup from solved and deferred struct states,
+  - if a field is not found, member methods are resolved from `program.member_methods`,
+  - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),
+  - important binding detail: inference now binds the `Value::Access` node itself to the **pre-curried** method signature (still includes `self`) while returning a separate curried function cluster to the parent expression; this preserves visibility of the implicit receiver/coercion in solved value types.
 
 Other notable implemented branches:
 
@@ -267,7 +268,8 @@ Then `finalize`:
 - User-struct operator overloads are now enforced through solved member-method signatures:
   - Resolver looks up the method (`__add`, `__neg`, etc.) on the lhs struct type.
   - It reads the method type from `SolvedTypes`, specializes `WithGenerics` into fresh local clusters (`solved_type_to_specialized_local`), then unifies against an expected function shape for the operator site.
-  - For receiver coercion, if method `self` is by-reference (`&self` / `&mut self`), resolver creates an explicit `ResolveKind::Ptr` cluster targeting the lhs operand cluster and unifies that against method input.
+  - Receiver currying is centralized in `make_member_closure`: it unifies `self` (including `&self` / `&mut self` via explicit `ResolveKind::Ptr` clusters) and returns a closure-like function cluster with `self` removed from the parameter list.
+  - Both binary and unary operator resolution now reuse this same closure helper, then unify that closure against an expected function shape for the operator site.
   - This means operator overload resolution now constrains lhs/rhs/output directly from method signatures (instead of only reporting overload presence).
 - Deferred operator queues are now drained with `retain_mut`: resolved sites (including successful overload application and hard errors) are removed, while only truly pending/unknown sites are retained for future solver rounds.
 - Operator overload resolution assumes global signatures are already solved before function-body inference (`infer_global_types` first); missing method type/function-shape in this stage is treated as an internal-invariant violation (`unreachable!`).
