@@ -121,6 +121,8 @@ Specialization avoids that by replacing generic placeholders with fresh local cl
 3. Run `specialize_type` recursively to substitute every `TypeValue::Generic` occurrence.
 4. Unify/force substituted result against call-site or annotation constraints.
 
+Pointer note: specialization must recurse through `TypeValue::Ptr` as well as function and struct shapes. If pointer wrappers are left unspecialized, methods like `__deref` / `__deref_mut` can incorrectly keep `T` as a global generic id instead of binding it from the receiver (for example `&Box[T] -> &T` called with `Box[int]`), which then produces spurious receiver/type-clash diagnostics.
+
 ## Core Type Model
 
 ### Stable IDs and sentinels

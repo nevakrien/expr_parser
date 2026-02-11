@@ -2388,7 +2388,34 @@ fn specialize_type(
                 .collect::<Vec<_>>();
             new_struct_instance(parent, cluster, struct_infers, id, resolved)
         }
-        _ => new_solved(parent, cluster, ty),
+        TypeValue::Ptr { .. } => {
+            let (tgt, raw, mutable) = {
+                let TypeValue::Ptr { tgt, raw, mutable } = store.type_value(ty) else {
+                    unreachable!();
+                };
+                (*tgt, *raw, *mutable)
+            };
+            let target = specialize_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tgt,
+                generics,
+                loc,
+            );
+            let ans = new_cluster(parent, cluster);
+            cluster[ans].state = ResolveKind::Ptr {
+                tgt: target,
+                raw: Some(raw),
+                mutable: Some(mutable),
+            };
+            ans
+        }
+        TypeValue::Builtin(_) => new_solved(parent, cluster, ty),
+        TypeValue::Tuple(_) | TypeValue::Array(_, _) =>todo!(),
+        TypeValue::WithGenerics { .. } => unreachable!("we only support generis outer most scope. this style of thing is a rank2 type and they can not be monomorphised in general"),
     }
 }
 
@@ -7427,6 +7454,36 @@ mod type_infer_tests {
         let ty = infer_fn_body(src, &mut store).unwrap();
         assert!(matches!(
             store.type_value(ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn generic_struct_deref_methods_specialize_from_receiver_type() {
+        let src = r#"
+            Box = struct[T]{p:*T}
+            Box.__free = fn[T](b:&mut Box[T]){}
+            Box.__deref = fn[T](b:&Box[T])->&T { &*(*b).p }
+            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*(*b).p }
+            f = fn(b:Box[int])->int { *b }
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let Value::Func { body, .. } = program.value(f) else {
+            panic!("expected function value")
+        };
+        let body_ty = solved_types
+            .type_of(body)
+            .unwrap_or_else(|| panic!("missing body type for `f`"));
+
+        assert!(matches!(
+            store.type_value(body_ty),
             TypeValue::Builtin(BuiltinType::Int)
         ));
     }
