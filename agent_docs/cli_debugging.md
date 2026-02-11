@@ -18,6 +18,7 @@ It is often the quickest way to inspect what the compiler currently thinks, with
   - `:types` dumps solved type info for the current program,
   - `:types-of <name>` dumps the solved type region for one definition,
   - `:type <name...>` prints one-line type info for selected names.
+  - Type dump now also annotates member-access sites with `member access implicit deref chain: ...`, listing each implicit dereference step plus the final resolved base type used for member lookup.
 
 ## Practical debugging pattern
 

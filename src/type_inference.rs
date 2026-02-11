@@ -8,7 +8,6 @@
 //
 // ================================================================
 
-use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::StructLike;
@@ -19,10 +18,11 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR, DIV_STR,
-    EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
-    SHL_STR, SHR_STR, SUB_STR, StrId,
+    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
+    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR,
+    NOT_STR, SHL_STR, SHR_STR, SUB_STR,
 };
+use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -467,6 +467,7 @@ pub struct SolvedTypes {
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: Vec<TypeId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
+    pub member_access_implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -485,6 +486,7 @@ impl SolvedTypes {
             typedef_types,
             val_types: vec![UNKNOWN_TYPE; program.values.len()],
             member_method_types: IdHashMap::default(),
+            member_access_implicit_derefs: IdHashMap::default(),
         }
     }
 
@@ -509,18 +511,39 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        if ans == UNKNOWN_TYPE {
+            None
+        } else {
+            Some(ans)
+        }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        if ans == UNKNOWN_TYPE {
+            None
+        } else {
+            Some(ans)
+        }
     }
 
     #[inline(always)]
     pub fn member_method_type(&self, id: ValId) -> Option<SolvedMemberMethodType> {
         self.member_method_types.get(&id).copied()
+    }
+
+    #[inline(always)]
+    pub fn member_access_implicit_deref_chain(&self, id: ValId) -> Option<&[TypeId]> {
+        self.member_access_implicit_derefs
+            .get(&id)
+            .map(Vec::as_slice)
+    }
+
+    #[inline(always)]
+    pub fn member_access_implicit_deref_count(&self, id: ValId) -> Option<usize> {
+        self.member_access_implicit_deref_chain(id)
+            .map(|chain| chain.len())
     }
 }
 
@@ -943,6 +966,7 @@ fn main_solver(ctx: &mut InferState) {
         progress |= resolve_operator_types(ctx);
         progress |= resolve_deferred_types(ctx);
         progress |= resolve_pointer_likes(ctx);
+        progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
         if !progress {
             break;
@@ -1012,6 +1036,8 @@ struct InferState<'a> {
     generic_func_values: Vec<(ValId, usize)>,
     pending_specializations: Vec<PendingSpecialization>,
     member_method_type_sites: Vec<PendingMemberMethodType>,
+    member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
+    pending_member_accesses: Vec<PendingMemberAccess>,
     pointer_likes: Vec<PendingPointerLike>,
 
     //result
@@ -1137,6 +1163,22 @@ struct PendingMemberMethodType {
     receiver_value: ValId,
 }
 
+#[derive(Debug, Clone)]
+struct PendingMemberAccessImplicitDeref {
+    site: ValId,
+    receivers: Vec<CId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingMemberAccess {
+    site: ValId,
+    base_value: ValId,
+    source: CId,
+    output: CId,
+    member: StrId,
+    kind: AccessKind,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PendingPointerLike {
     site: ValId,
@@ -1224,6 +1266,8 @@ impl<'a> InferState<'a> {
             generic_func_values: Vec::new(),
             pending_specializations: Vec::new(),
             member_method_type_sites: Vec::new(),
+            member_access_implicit_deref_sites: Vec::new(),
+            pending_member_accesses: Vec::new(),
             pointer_likes: Vec::new(),
             errors: Vec::new(),
             ans,
@@ -1249,6 +1293,8 @@ impl<'a> InferState<'a> {
             generic_func_values,
             pending_specializations,
             member_method_type_sites,
+            member_access_implicit_deref_sites,
+            pending_member_accesses,
             pointer_likes,
             errors: _,
             ans: _,
@@ -1271,6 +1317,8 @@ impl<'a> InferState<'a> {
         generic_func_values.clear();
         pending_specializations.clear();
         member_method_type_sites.clear();
+        member_access_implicit_deref_sites.clear();
+        pending_member_accesses.clear();
         pointer_likes.clear();
     }
 
@@ -2414,8 +2462,10 @@ fn specialize_type(
             ans
         }
         TypeValue::Builtin(_) => new_solved(parent, cluster, ty),
-        TypeValue::Tuple(_) | TypeValue::Array(_, _) =>todo!(),
-        TypeValue::WithGenerics { .. } => unreachable!("we only support generis outer most scope. this style of thing is a rank2 type and they can not be monomorphised in general"),
+        TypeValue::Tuple(_) | TypeValue::Array(_, _) => todo!(),
+        TypeValue::WithGenerics { .. } => unreachable!(
+            "we only support generis outer most scope. this style of thing is a rank2 type and they can not be monomorphised in general"
+        ),
     }
 }
 
@@ -2776,6 +2826,307 @@ fn push_cannot_deref_error(ctx: &mut InferState, site: ValId, source_value: ValI
         operand: source_value,
         operand_type: source_type,
     });
+}
+
+#[derive(Debug)]
+enum MemberAccessResolve {
+    Resolved {
+        result: CId,
+        implicit_receivers: Vec<CId>,
+    },
+    Pending {
+        source: CId,
+    },
+    Error(TypeError),
+}
+
+#[inline(always)]
+fn finalize_member_access_implicit_chain(
+    mut chain: Vec<CId>,
+    used_implicit_deref_steps: usize,
+    resolved_base: CId,
+) -> Vec<CId> {
+    if used_implicit_deref_steps > 0 {
+        chain.push(resolved_base);
+    }
+    chain
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn try_resolve_member_access(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    val_cluster: &mut Vec<(ValId, CId)>,
+    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    errors: &mut Vec<TypeError>,
+    program: &Program,
+    ans: &SolvedTypes,
+    site: ValId,
+    base_value: ValId,
+    source: CId,
+    member_name: StrId,
+    kind: AccessKind,
+) -> MemberAccessResolve {
+    let mut current = find_root(parent, source);
+    let mut implicit_receivers = Vec::new();
+    let max_implicit_deref_steps = match kind {
+        AccessKind::Dot => 1usize,
+        AccessKind::Ptr => 64usize,
+        AccessKind::Static => 0usize,
+    };
+    let implicit_deref_limit_message = match kind {
+        AccessKind::Dot => "`.` member access performs at most one implicit dereference",
+        AccessKind::Ptr => "member access autoderef recursion exceeded safety limit",
+        AccessKind::Static => "static member access does not support implicit dereference",
+    };
+    let mut used_implicit_deref_steps = 0usize;
+
+    loop {
+        match cluster[current].state {
+            ResolveKind::Nothing => return MemberAccessResolve::Pending { source: current },
+            ResolveKind::Ptr { tgt, .. } => {
+                if used_implicit_deref_steps >= max_implicit_deref_steps {
+                    return MemberAccessResolve::Error(TypeError::Simple {
+                        loc: program.value_loc(site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+                let next = find_root(parent, tgt);
+                implicit_receivers.push(current);
+                used_implicit_deref_steps += 1;
+                current = next;
+            }
+            ResolveKind::Solved(t) => {
+                let solved = store.type_value(t).clone();
+                match solved {
+                    TypeValue::Ptr { tgt, .. } => {
+                        if used_implicit_deref_steps >= max_implicit_deref_steps {
+                            return MemberAccessResolve::Error(TypeError::Simple {
+                                loc: program.value_loc(site),
+                                message: implicit_deref_limit_message,
+                            });
+                        }
+                        let next = new_solved(parent, cluster, tgt);
+                        let next = find_root(parent, next);
+                        implicit_receivers.push(current);
+                        used_implicit_deref_steps += 1;
+                        current = next;
+                    }
+                    TypeValue::Struct { id: sid, generics } => {
+                        let (field_ty, struct_name) = {
+                            let rep = store.struct_value(sid);
+                            let field_ty = rep
+                                .fields
+                                .iter()
+                                .find(|(n, _)| program.name_str_id(*n) == member_name)
+                                .map(|(_, t)| *t);
+                            (field_ty, rep.name)
+                        };
+
+                        if let Some(field_ty) = field_ty {
+                            match kind {
+                                AccessKind::Dot | AccessKind::Ptr => {}
+                                AccessKind::Static => {
+                                    return MemberAccessResolve::Error(TypeError::Simple {
+                                        loc: program.value_loc(site),
+                                        message: "some error on it not making sense",
+                                    });
+                                }
+                            }
+
+                            let result = match store.type_value(field_ty) {
+                                TypeValue::Generic(i) => new_solved(parent, cluster, generics[i.0]),
+                                _ => new_solved(parent, cluster, field_ty),
+                            };
+                            return MemberAccessResolve::Resolved {
+                                result,
+                                implicit_receivers: finalize_member_access_implicit_chain(
+                                    implicit_receivers,
+                                    used_implicit_deref_steps,
+                                    current,
+                                ),
+                            };
+                        }
+
+                        let has_member_method = struct_name
+                            .and_then(|sn| program.member_methods.get(&sn))
+                            .is_some_and(|methods| methods.contains_key(&member_name));
+                        if let Some(struct_name) = struct_name {
+                            if has_member_method {
+                                let result = resolve_member_method_access(
+                                    store,
+                                    parent,
+                                    cluster,
+                                    func_defs,
+                                    struct_infers,
+                                    val_cluster,
+                                    member_method_type_sites,
+                                    errors,
+                                    program,
+                                    ans,
+                                    site,
+                                    base_value,
+                                    current,
+                                    struct_name,
+                                    member_name,
+                                );
+                                return MemberAccessResolve::Resolved {
+                                    result,
+                                    implicit_receivers: finalize_member_access_implicit_chain(
+                                        implicit_receivers,
+                                        used_implicit_deref_steps,
+                                        current,
+                                    ),
+                                };
+                            }
+
+                            if used_implicit_deref_steps < max_implicit_deref_steps {
+                                if let Some(target) = resolve_struct_deref_target(
+                                    store,
+                                    parent,
+                                    cluster,
+                                    func_defs,
+                                    struct_infers,
+                                    errors,
+                                    program,
+                                    ans,
+                                    site,
+                                    base_value,
+                                    current,
+                                    struct_name,
+                                ) {
+                                    let next = find_root(parent, target);
+                                    implicit_receivers.push(current);
+                                    used_implicit_deref_steps += 1;
+                                    current = next;
+                                    continue;
+                                }
+                            }
+                        }
+
+                        return MemberAccessResolve::Error(TypeError::UnknownField {
+                            field: member_name,
+                            site,
+                        });
+                    }
+                    _ => {
+                        return MemberAccessResolve::Error(TypeError::Simple {
+                            loc: program.value_loc(site),
+                            message: "member access requires a struct or pointer-like base",
+                        });
+                    }
+                }
+            }
+            ResolveKind::Struct(rid) => {
+                let sid = struct_infers[rid.0].sid;
+                let (field_ty, struct_name) = {
+                    let rep = store.struct_value(sid);
+                    let field_ty = rep
+                        .fields
+                        .iter()
+                        .find(|(n, _)| program.name_str_id(*n) == member_name)
+                        .map(|(_, t)| *t);
+                    (field_ty, rep.name)
+                };
+
+                if let Some(field_ty) = field_ty {
+                    match kind {
+                        AccessKind::Dot | AccessKind::Ptr => {}
+                        AccessKind::Static => {
+                            return MemberAccessResolve::Error(TypeError::Simple {
+                                loc: program.value_loc(site),
+                                message: "some error on it not making sense",
+                            });
+                        }
+                    }
+
+                    let result = match store.type_value(field_ty) {
+                        TypeValue::Generic(i) => struct_infers[rid.0].generics[i.0],
+                        _ => new_solved(parent, cluster, field_ty),
+                    };
+                    return MemberAccessResolve::Resolved {
+                        result,
+                        implicit_receivers: finalize_member_access_implicit_chain(
+                            implicit_receivers,
+                            used_implicit_deref_steps,
+                            current,
+                        ),
+                    };
+                }
+
+                let has_member_method = struct_name
+                    .and_then(|sn| program.member_methods.get(&sn))
+                    .is_some_and(|methods| methods.contains_key(&member_name));
+                if let Some(struct_name) = struct_name {
+                    if has_member_method {
+                        let result = resolve_member_method_access(
+                            store,
+                            parent,
+                            cluster,
+                            func_defs,
+                            struct_infers,
+                            val_cluster,
+                            member_method_type_sites,
+                            errors,
+                            program,
+                            ans,
+                            site,
+                            base_value,
+                            current,
+                            struct_name,
+                            member_name,
+                        );
+                        return MemberAccessResolve::Resolved {
+                            result,
+                            implicit_receivers: finalize_member_access_implicit_chain(
+                                implicit_receivers,
+                                used_implicit_deref_steps,
+                                current,
+                            ),
+                        };
+                    }
+
+                    if used_implicit_deref_steps < max_implicit_deref_steps {
+                        if let Some(target) = resolve_struct_deref_target(
+                            store,
+                            parent,
+                            cluster,
+                            func_defs,
+                            struct_infers,
+                            errors,
+                            program,
+                            ans,
+                            site,
+                            base_value,
+                            current,
+                            struct_name,
+                        ) {
+                            let next = find_root(parent, target);
+                            implicit_receivers.push(current);
+                            used_implicit_deref_steps += 1;
+                            current = next;
+                            continue;
+                        }
+                    }
+                }
+
+                return MemberAccessResolve::Error(TypeError::UnknownField {
+                    field: member_name,
+                    site,
+                });
+            }
+            _ => {
+                return MemberAccessResolve::Error(TypeError::Simple {
+                    loc: program.value_loc(site),
+                    message: "member access requires a struct or pointer-like base",
+                });
+            }
+        }
+    }
 }
 
 fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId>) -> CId {
@@ -3532,127 +3883,58 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
         }
 
         Value::Access { base, name, kind } => {
-            let b = gather_constraints(ctx, base, current_output);
-            let b = find_root(&mut ctx.parent, b);
-
-            //TODO we currently just do structs
-            match ctx.cluster[b].state {
-                ResolveKind::Nothing => {
-                    todo!("put access into some sort of queue which we later check for a solve")
-                }
-                ResolveKind::Solved(t) => {
-                    //TODO do & and &mut coretion to their derefed version
-                    let TypeValue::Struct { id, generics } = ctx.store.type_value(t) else {
-                        todo!()
-                    };
-                    let sid = *id;
-                    let (field_ty, struct_name) = {
-                        let rep = ctx.store.struct_value(sid);
-                        let field_ty = rep
-                            .fields
-                            .iter()
-                            .find(|(n, _)| ctx.program.name_str_id(*n) == name)
-                            .map(|(_, t)| *t);
-                        (field_ty, rep.name)
-                    };
-
-                    if let Some(field_ty) = field_ty {
-                        match kind {
-                            AccessKind::Dot | AccessKind::Ptr => {}
-                            AccessKind::Static => todo!("some error on it not making sense"),
-                        }
-
-                        let ans = match ctx.store.type_value(field_ty) {
-                            TypeValue::Generic(i) => ctx.new_solved(generics[i.0]),
-                            _ => ctx.new_solved(field_ty),
-                        };
-                        ctx.bind_val(v, ans);
-                        return ans;
+            let source = gather_constraints(ctx, base, current_output);
+            match try_resolve_member_access(
+                ctx.store,
+                &mut ctx.parent,
+                &mut ctx.cluster,
+                &mut ctx.func_defs,
+                &mut ctx.struct_infers,
+                &mut ctx.val_cluster,
+                &mut ctx.member_method_type_sites,
+                &mut ctx.errors,
+                ctx.program,
+                &*ctx.ans,
+                v,
+                base,
+                source,
+                name,
+                kind,
+            ) {
+                MemberAccessResolve::Resolved {
+                    result,
+                    implicit_receivers,
+                } => {
+                    ctx.bind_val(v, result);
+                    if !implicit_receivers.is_empty() {
+                        ctx.member_access_implicit_deref_sites.push(
+                            PendingMemberAccessImplicitDeref {
+                                site: v,
+                                receivers: implicit_receivers,
+                            },
+                        );
                     }
-
-                    let Some(struct_name) = struct_name else {
-                        ctx.push_error(TypeError::UnknownField {
-                            field: name,
-                            site: v,
-                        });
-                        let ans = ctx.new_cluster();
-                        ctx.bind_val(v, ans);
-                        return ans;
-                    };
-
-                    return resolve_member_method_access(
-                        ctx.store,
-                        &mut ctx.parent,
-                        &mut ctx.cluster,
-                        &mut ctx.func_defs,
-                        &mut ctx.struct_infers,
-                        &mut ctx.val_cluster,
-                        &mut ctx.member_method_type_sites,
-                        &mut ctx.errors,
-                        ctx.program,
-                        &*ctx.ans,
-                        v,
-                        base,
-                        b,
-                        struct_name,
-                        name,
-                    );
+                    return result;
                 }
-                ResolveKind::Struct(rid) => {
-                    let sid = ctx.struct_infers[rid.0].sid;
-                    let (field_ty, struct_name) = {
-                        let rep = ctx.store.struct_value(sid);
-                        let field_ty = rep
-                            .fields
-                            .iter()
-                            .find(|(n, _)| ctx.program.name_str_id(*n) == name)
-                            .map(|(_, t)| *t);
-                        (field_ty, rep.name)
-                    };
-
-                    if let Some(field_ty) = field_ty {
-                        match kind {
-                            AccessKind::Dot | AccessKind::Ptr => {}
-                            AccessKind::Static => todo!("some error on it not making sense"),
-                        }
-
-                        let ans = match ctx.store.type_value(field_ty) {
-                            TypeValue::Generic(i) => ctx.struct_infers[rid.0].generics[i.0],
-                            _ => ctx.new_solved(field_ty),
-                        };
-                        ctx.bind_val(v, ans);
-                        return ans;
-                    }
-
-                    let Some(struct_name) = struct_name else {
-                        ctx.push_error(TypeError::UnknownField {
-                            field: name,
-                            site: v,
-                        });
-                        let ans = ctx.new_cluster();
-                        ctx.bind_val(v, ans);
-                        return ans;
-                    };
-
-                    return resolve_member_method_access(
-                        ctx.store,
-                        &mut ctx.parent,
-                        &mut ctx.cluster,
-                        &mut ctx.func_defs,
-                        &mut ctx.struct_infers,
-                        &mut ctx.val_cluster,
-                        &mut ctx.member_method_type_sites,
-                        &mut ctx.errors,
-                        ctx.program,
-                        &*ctx.ans,
-                        v,
-                        base,
-                        b,
-                        struct_name,
-                        name,
-                    );
+                MemberAccessResolve::Pending { source } => {
+                    let result = ctx.new_cluster();
+                    ctx.bind_val(v, result);
+                    ctx.pending_member_accesses.push(PendingMemberAccess {
+                        site: v,
+                        base_value: base,
+                        source,
+                        output: result,
+                        member: name,
+                        kind,
+                    });
+                    return result;
                 }
-                _ => todo!("emit some sort of error on this making no sense"),
+                MemberAccessResolve::Error(err) => {
+                    ctx.push_error(err);
+                    let result = ctx.new_cluster();
+                    ctx.bind_val(v, result);
+                    return result;
+                }
             }
         }
         Value::Break | Value::Continue => {
@@ -4333,6 +4615,14 @@ fn check_struct_deref_targets_compatible(ctx: &mut InferState, struct_name: Name
         ctx.ans.type_of(*deref_method),
         ctx.ans.type_of(*deref_mut_method),
     ) else {
+        // This runs after per-method signature solving in the global pass.
+        // If either type is still missing here, the signature is unresolved for
+        // this pass and should already have produced primary diagnostics.
+        // Skipping avoids layering secondary mismatch noise.
+        debug_assert!(
+            !ctx.errors.is_empty(),
+            "missing deref method type without prior diagnostics"
+        );
         return;
     };
 
@@ -4378,6 +4668,14 @@ fn check_special_member_method_signature(
     }
 
     let Some(method_ty) = ctx.ans.type_of(method_val) else {
+        // This check runs after `main_solver` for signature-only validation.
+        // If a special member method type is still missing now, we rely on the
+        // unresolved/signature diagnostics already produced by that solve pass.
+        // Emitting follow-up shape checks here would only add noisy cascades.
+        debug_assert!(
+            !ctx.errors.is_empty(),
+            "missing special member method type without prior diagnostics"
+        );
         return;
     };
     let Some((inputs, output)) = method_signature_type_parts(ctx.store, method_ty) else {
@@ -5958,6 +6256,106 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
 }
 
 #[inline(always)]
+fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    let (
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        val_cluster,
+        member_method_type_sites,
+        member_access_implicit_deref_sites,
+        pending_member_accesses,
+        errors,
+        ans,
+    ) = (
+        &mut ctx.store,
+        &mut ctx.parent,
+        &mut ctx.cluster,
+        &mut ctx.func_defs,
+        &mut ctx.struct_infers,
+        &mut ctx.val_cluster,
+        &mut ctx.member_method_type_sites,
+        &mut ctx.member_access_implicit_deref_sites,
+        &mut ctx.pending_member_accesses,
+        &mut ctx.errors,
+        &*ctx.ans,
+    );
+
+    pending_member_accesses.retain_mut(|pending| {
+        let source = find_root(parent, pending.source);
+        pending.source = source;
+
+        match try_resolve_member_access(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            val_cluster,
+            member_method_type_sites,
+            errors,
+            ctx.program,
+            ans,
+            pending.site,
+            pending.base_value,
+            source,
+            pending.member,
+            pending.kind,
+        ) {
+            MemberAccessResolve::Pending { source } => {
+                pending.source = source;
+                true
+            }
+            MemberAccessResolve::Resolved {
+                result,
+                implicit_receivers,
+            } => {
+                match unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    pending.output,
+                    result,
+                ) {
+                    Ok(changed) => progress |= changed,
+                    Err(clash) => {
+                        errors.push(TypeError::ValuesContradict {
+                            expectation_reason:
+                                "member access result must match its inferred use constraints",
+                            site: pending.site,
+                            found: pending.site,
+                            expected_place: pending.site,
+                            clash,
+                        });
+                        progress = true;
+                    }
+                }
+                if !implicit_receivers.is_empty() {
+                    member_access_implicit_deref_sites.push(PendingMemberAccessImplicitDeref {
+                        site: pending.site,
+                        receivers: implicit_receivers,
+                    });
+                }
+                false
+            }
+            MemberAccessResolve::Error(err) => {
+                errors.push(err);
+                progress = true;
+                false
+            }
+        }
+    });
+
+    progress
+}
+
+#[inline(always)]
 fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
     let mut change = false;
     let mut pending = std::mem::take(&mut ctx.pending_specializations);
@@ -6012,10 +6410,20 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 // #[inline(never)]
 // #[unsafe(no_mangle)]
 fn finalize(ctx: &mut InferState) {
-    let (val_cluster, pat_cluster, member_method_type_sites, parent, cluster, errors, ans) = (
+    let (
+        val_cluster,
+        pat_cluster,
+        member_method_type_sites,
+        member_access_implicit_deref_sites,
+        parent,
+        cluster,
+        errors,
+        ans,
+    ) = (
         &ctx.val_cluster,
         &ctx.pat_cluster,
         &ctx.member_method_type_sites,
+        &ctx.member_access_implicit_deref_sites,
         &mut ctx.parent,
         &ctx.cluster,
         &mut ctx.errors,
@@ -6131,6 +6539,24 @@ fn finalize(ctx: &mut InferState) {
             });
             reported.insert(receiver_root, ());
             reported.insert(root, ());
+        }
+    }
+
+    for entry in member_access_implicit_deref_sites.iter() {
+        let mut chain = Vec::with_capacity(entry.receivers.len());
+        let mut all_solved = true;
+        for receiver in entry.receivers.iter() {
+            let root = find_root(parent, *receiver);
+            match cluster[root].state {
+                ResolveKind::Solved(t) => chain.push(t),
+                _ => {
+                    all_solved = false;
+                    break;
+                }
+            }
+        }
+        if all_solved {
+            ans.member_access_implicit_derefs.insert(entry.site, chain);
         }
     }
 
@@ -6334,6 +6760,22 @@ mod type_infer_tests {
         }
 
         panic!("let binding `{}` not found", name)
+    }
+
+    fn implicit_deref_chain_type_strings(
+        program: &Program,
+        store: &TypeStore,
+        solved: &SolvedTypes,
+        site: ValId,
+    ) -> Option<Vec<String>> {
+        solved
+            .member_access_implicit_deref_chain(site)
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|t| store.get_type_string(program, *t))
+                    .collect()
+            })
     }
 
     /// Run inference on a single function body.
@@ -6813,10 +7255,9 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6843,10 +7284,9 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6878,10 +7318,9 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6909,10 +7348,9 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
     }
 
     #[test]
@@ -7034,10 +7472,9 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
     }
 
     #[test]
@@ -7121,10 +7558,9 @@ mod type_infer_tests {
             Ok(_) => panic!("expected type errors"),
             Err(errs) => errs,
         };
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
     }
 
     #[test]
@@ -7286,6 +7722,231 @@ mod type_infer_tests {
             store.type_value(*full_ret),
             TypeValue::Builtin(BuiltinType::Int)
         ));
+    }
+
+    #[test]
+    fn member_access_autoderefs_plain_pointer_like_base() {
+        let src = "S=struct{x:int}; f=fn(p:&S){ let y:int = p.x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .unwrap_or_default();
+        assert!(errs.iter().all(|err| {
+            !matches!(
+                err,
+                TypeError::UnknownField { .. } | TypeError::CannotDeref { .. }
+            )
+        }));
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(2),
+            "plain pointer-like implicit deref should be tracked"
+        );
+        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
+            .expect("expected implicit deref chain");
+        assert_eq!(chain.len(), 2);
+        assert!(chain[0].contains("S"));
+        assert!(chain[1].contains("S"));
+    }
+
+    #[test]
+    fn smart_pointer_member_access_falls_back_to_deref_and_tracks_count() {
+        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; f=fn(b:Box){ let y:int = b.x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(2)
+        );
+        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
+            .expect("expected implicit deref chain");
+        assert_eq!(chain.len(), 2);
+        assert!(chain[0].contains("Box"));
+        assert!(chain[1].contains("Inner"));
+    }
+
+    #[test]
+    fn smart_pointer_member_access_exposes_deref_count_for_type_dump() {
+        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; f=fn(b:Box){ let y:int = b.x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(2)
+        );
+        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
+            .expect("expected implicit deref chain");
+        assert_eq!(chain.len(), 2);
+        assert!(chain[0].contains("Box"));
+        assert!(chain[1].contains("Inner"));
+    }
+
+    #[test]
+    fn smart_pointer_member_access_prefers_direct_member_before_deref() {
+        let src = "Inner=struct{x:int}; Box=struct{x:bool, inner:Inner}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; f=fn(b:Box){ let y:bool = b.x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Bool)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            None
+        );
+    }
+
+    #[test]
+    fn dot_member_access_does_not_chain_multiple_smart_derefs() {
+        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Wrap=struct{boxed:Box}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; Wrap.__deref = fn(self:&Wrap)->&Box { &self.boxed }; f=fn(w:Wrap){ let y:int = w.x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected member access to fail without multi-hop dot autoderef"),
+            Err(errs) => errs,
+        };
+
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::UnknownField {
+                    field,
+                    ..
+                } if program.str_intern.resolve(*field) == "x"
+            )
+        }));
+    }
+
+    #[test]
+    fn ptr_member_access_can_chain_smart_derefs() {
+        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Wrap=struct{boxed:Box}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; Wrap.__deref = fn(self:&Wrap)->&Box { &self.boxed }; f=fn(w:Wrap){ let y:int = w->x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(3)
+        );
+        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
+            .expect("expected implicit deref chain");
+        assert_eq!(chain.len(), 3);
+        assert!(chain[0].contains("Wrap"));
+        assert!(chain[1].contains("Box"));
+        assert!(chain[2].contains("Inner"));
+    }
+
+    #[test]
+    fn pending_member_access_resolves_after_source_type_becomes_known() {
+        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; f=fn(b:Box)->void{ let v = b as _; let y:int = v.x; v:Box; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(2)
+        );
+        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
+            .expect("expected implicit deref chain");
+        assert_eq!(chain.len(), 2);
+        assert!(chain[0].contains("Box"));
+        assert!(chain[1].contains("Inner"));
+    }
+
+    #[test]
+    fn implicit_deref_chain_includes_pointer_and_smart_hops() {
+        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Wrap=struct{boxed:Box}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; Wrap.__deref = fn(self:&Wrap)->& &Box { & &self.boxed }; f=fn(w:Wrap){ let y:int = w->x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(4)
+        );
+
+        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
+            .expect("expected implicit deref chain");
+        assert_eq!(chain.len(), 4);
+        assert!(chain[0].contains("Wrap"));
+        assert!(chain.iter().any(|t| t.contains("&")));
+        assert!(chain.iter().any(|t| t.contains("Box")));
+        assert!(chain[2].contains("Box"));
+        assert!(chain[3].contains("Inner"));
     }
 
     #[test]
@@ -7506,10 +8167,9 @@ mod type_infer_tests {
     #[test]
     fn unknown_builtin_member_method_name_errors() {
         let errs = infer_global_errs("S=struct{}; S.__derefed = fn(self:S){ }; f=fn(){};");
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. })));
     }
 
     //  #[test]

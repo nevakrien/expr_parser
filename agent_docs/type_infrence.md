@@ -221,6 +221,11 @@ Important fragile/unfinished expression areas:
   - when deref starts from an unresolved `Nothing` source, it records a pending pointer-like constraint (`source -> target`) and resolves it in the middle solver instead of eagerly forcing the source to pointer.
 - `Value::Access`:
   - supports struct field lookup from solved and deferred struct states,
+  - unresolved member-access receivers are deferred into a pending queue (similar to pointer-like deferred solving) and retried in the main solver instead of erroring early,
+  - `.` member access performs at most one implicit dereference step (`(*x).field` behavior),
+  - `->` member access can chain implicit pointer-like dereference steps (with a safety cap) until lookup resolves,
+  - smart-pointer access tries direct member lookup on the current struct first, and only falls back to `__deref`/`__deref_mut` target lookup when direct lookup misses,
+  - all implicit member-access deref hops (pointer and smart-pointer fallback hops) are tracked in `SolvedTypes.member_access_implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
   - if a field is not found, member methods are resolved from `program.member_methods`,
   - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),
   - important binding detail: inference binds the `Value::Access` node to the **curried** callable type used by the call site, while tracking the full called method signature (`self` still present) in `SolvedTypes.member_method_types`.
@@ -258,7 +263,9 @@ Maintenance note: this whole gather layer is intentionally unfinished in places.
 
 1. `resolve_operator_types`
 2. `resolve_deferred_types`
-3. `resolve_pending_specializations`
+3. `resolve_pointer_likes`
+4. `resolve_pending_member_accesses`
+5. `resolve_pending_specializations`
 
 Then `finalize`:
 
@@ -267,6 +274,7 @@ Then `finalize`:
 - wraps generic function values into `WithGenerics`,
 - emits unresolved errors once per unresolved root (to reduce duplicate noise),
 - finalizes `SolvedTypes.member_method_types` from deferred member/operator call sites,
+- finalizes `SolvedTypes.member_access_implicit_derefs` for member-access sites that used implicit dereference hops,
 - suppresses duplicate unresolved reporting between curried call-site values and unresolved full member signatures, preferring unresolved receiver/reference value sites when only the full member signature remains unresolved.
 
 ## Operator Resolution Notes
@@ -294,6 +302,15 @@ Then `finalize`:
   - if both `__deref` and `__deref_mut` exist on the same struct, both must dereference to the same `T` target.
 - The validation is now based on solved global function type signatures (`TypeValue::Func` / `TypeValue::WithGenerics` body), not raw signature clusters.
 - Member method names that start with `__` and do not end with `_` are treated as reserved builtin names; unknown reserved names emit a dedicated type error.
+
+## Near-Term Roadmap / Intent
+
+- Current status: we have first IR lowering and type inference metadata, but semantic materialization is still split into later phases.
+- Next phase intent: run value/ownership analysis that decides where values are consumed, borrowed, or mutated, then inserts implicit operations (`__free`, implicit member method calls, implicit deref steps) explicitly.
+- The inferred implicit deref/member metadata (`SolvedTypes.member_method_types`, `SolvedTypes.member_access_implicit_derefs`) is intentionally staged for that pass; it is not the final execution-level rewrite yet.
+- Medium-term intent: introduce a new IR tier dedicated to post-typecheck value semantics (ownership/borrows/destruction + explicit implicit-op insertion), so later backend/codegen phases do not rely on typechecker-only side channels.
+- Smart-pointer target: make a `Box`-style type a first-class validation case for deref/member flows; this mostly needs external-type integration and ABI/foreign-call tagging.
+- External/ABI note: we still need a stable way to mark functions as C ABI vs language-native. Temporary fallback can be treating all external-callable functions as C ABI until explicit tagging lands.
 
 ## Error and Test Philosophy
 
