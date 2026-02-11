@@ -28,6 +28,14 @@ use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, Program};
 
+// use std::ffi::CStr;
+// unsafe extern "C" {
+//     fn perf_init();
+//     fn perf_begin();
+//     fn perf_done(name: *const std::os::raw::c_char);
+// }
+
+
 /* ================================================================
  * Core IDs (STABLE)
  * ================================================================ */
@@ -678,6 +686,8 @@ pub fn run_typechecker(
     let mut err_count = 0;
     let mut function_checked = 0;
 
+    // unsafe{perf_init();}
+
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
 
@@ -783,13 +793,10 @@ pub fn infer_global_types<'a>(
                 }
                 _ => {}
             };
-
-            //solve now so we can monomorphise
-            //this is hacky and would make somewhat weird errors
-            //we need to introduce proper specilization for functions
-            main_solver(&mut ctx);
         }
     }
+
+    main_solver(&mut ctx);
 
     for (_n, def) in program.definitions.iter() {
         let Defined::Func(v) = def else {
@@ -810,12 +817,10 @@ pub fn infer_global_types<'a>(
             }
             _ => {}
         };
-
-        //solve now so we can monomorphise
-        //this is hacky and would make somewhat weird errors
-        //we need to introduce proper specilization for functions
-        main_solver(&mut ctx);
     }
+    
+    main_solver(&mut ctx);
+
 
     if ctx.errors.is_empty() {
         Ok(ctx.ans)
@@ -4157,7 +4162,12 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
     change
 }
 
+
+
+
 #[inline(always)]
+// #[inline(never)]
+// #[unsafe(no_mangle)]
 fn finalize(ctx: &mut InferState) {
     let (val_cluster, pat_cluster, parent, cluster, errors, ans) = (
         &ctx.val_cluster,
@@ -4167,6 +4177,8 @@ fn finalize(ctx: &mut InferState) {
         &mut ctx.errors,
         &mut ctx.ans,
     );
+
+    // unsafe{perf_begin();}
 
     let mut reported = IdHashMap::default();
     for (e, c) in ctx.typedef_cluster.iter() {
@@ -4232,6 +4244,11 @@ fn finalize(ctx: &mut InferState) {
             errors.push(TypeError::UnresolvedPattern { pattern: *p });
         }
     }
+
+
+    
+    // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()); }
 }
 
 // fn report_unresolved(ctx: &mut InferState){
