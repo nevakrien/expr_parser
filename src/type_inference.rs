@@ -8,7 +8,6 @@
 //
 // ================================================================
 
-use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::StructLike;
@@ -19,10 +18,11 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, FREE_STR, GE_STR,
-    GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR,
-    StrId,
+    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
+    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR,
+    NOT_STR, SHL_STR, SHR_STR, SUB_STR,
 };
+use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -509,13 +509,21 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        if ans == UNKNOWN_TYPE {
+            None
+        } else {
+            Some(ans)
+        }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        if ans == UNKNOWN_TYPE {
+            None
+        } else {
+            Some(ans)
+        }
     }
 
     #[inline(always)]
@@ -635,6 +643,12 @@ pub enum TypeError {
     UnOpOverloadNotFound {
         site: ValId,
         op: UnOp,
+        operand: ValId,
+        operand_type: Option<BadTypeId>,
+    },
+
+    CannotDeref {
+        site: ValId,
         operand: ValId,
         operand_type: Option<BadTypeId>,
     },
@@ -805,6 +819,7 @@ pub fn infer_global_types<'a>(
                 _ => {}
             };
         }
+        check_struct_deref_targets_compatible(&mut ctx, *struct_name);
     }
 
     for (_n, def) in program.definitions.iter() {
@@ -935,6 +950,7 @@ fn main_solver(ctx: &mut InferState) {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
         progress |= resolve_deferred_types(ctx);
+        progress |= resolve_pointer_likes(ctx);
         progress |= resolve_pending_specializations(ctx);
         if !progress {
             break;
@@ -1004,6 +1020,7 @@ struct InferState<'a> {
     generic_func_values: Vec<(ValId, usize)>,
     pending_specializations: Vec<PendingSpecialization>,
     member_method_type_sites: Vec<PendingMemberMethodType>,
+    pointer_likes: Vec<PendingPointerLike>,
 
     //result
     errors: Vec<TypeError>,
@@ -1128,6 +1145,14 @@ struct PendingMemberMethodType {
     receiver_value: ValId,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PendingPointerLike {
+    site: ValId,
+    source: CId,
+    target: CId,
+    source_value: ValId,
+}
+
 fn new_cluster(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
     let id = CId(parent.len());
     parent.0.push(id);
@@ -1207,6 +1232,7 @@ impl<'a> InferState<'a> {
             generic_func_values: Vec::new(),
             pending_specializations: Vec::new(),
             member_method_type_sites: Vec::new(),
+            pointer_likes: Vec::new(),
             errors: Vec::new(),
             ans,
         }
@@ -1231,6 +1257,7 @@ impl<'a> InferState<'a> {
             generic_func_values,
             pending_specializations,
             member_method_type_sites,
+            pointer_likes,
             errors: _,
             ans: _,
         } = self;
@@ -1252,6 +1279,7 @@ impl<'a> InferState<'a> {
         generic_func_values.clear();
         pending_specializations.clear();
         member_method_type_sites.clear();
+        pointer_likes.clear();
     }
 
     fn new_cluster(&mut self) -> CId {
@@ -2546,6 +2574,191 @@ fn resolve_member_method_access(
     }
 }
 
+fn try_resolve_struct_deref_method(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    errors: &mut Vec<TypeError>,
+    program: &Program,
+    ans: &SolvedTypes,
+    site: ValId,
+    base_value: ValId,
+    base_cluster: CId,
+    struct_name: NameId,
+    method_name: StrId,
+    expected_self_mutable: bool,
+    expected_output_mutable: bool,
+) -> Option<CId> {
+    let method = program
+        .member_methods
+        .get(&struct_name)
+        .and_then(|methods| methods.get(&method_name))
+        .copied()?;
+
+    let Some(method_ty) = ans.type_of(method) else {
+        unreachable!(
+            "global member method signatures must be solved before body inference; missing type for deref"
+        );
+    };
+
+    let method_local = solved_type_to_specialized_local(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        method_ty,
+        site,
+    );
+
+    let Some((params, ret)) =
+        function_parts_from_cluster(store, parent, cluster, &*func_defs, method_local)
+    else {
+        unreachable!("specialized deref method must resolve to a function shape");
+    };
+
+    let Some(self_param) = params.first().copied() else {
+        return None;
+    };
+    if params.len() != 1 {
+        return None;
+    }
+
+    let self_input = member_self_input_cluster(
+        parent,
+        cluster,
+        base_cluster,
+        MemberSelfStyle::Ref {
+            mutable: expected_self_mutable,
+        },
+    );
+    if let Err(clash) = unify_if_distinct(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        self_param,
+        self_input,
+    ) {
+        errors.push(TypeError::ValuesContradict {
+            expectation_reason: "deref receiver must match special deref method self parameter",
+            site,
+            found: base_value,
+            expected_place: site,
+            clash,
+        });
+        return None;
+    }
+
+    let ret_root = find_root(parent, ret);
+    match cluster[ret_root].state {
+        ResolveKind::Ptr { tgt, raw, mutable }
+            if raw == Some(false) && mutable == Some(expected_output_mutable) =>
+        {
+            Some(tgt)
+        }
+        ResolveKind::Solved(ty) => match store.type_value(ty) {
+            TypeValue::Ptr { tgt, raw, mutable }
+                if !*raw && *mutable == expected_output_mutable =>
+            {
+                Some(new_solved(parent, cluster, *tgt))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn resolve_struct_deref_target(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    errors: &mut Vec<TypeError>,
+    program: &Program,
+    ans: &SolvedTypes,
+    site: ValId,
+    base_value: ValId,
+    base_cluster: CId,
+    struct_name: NameId,
+) -> Option<CId> {
+    let deref_target = try_resolve_struct_deref_method(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        errors,
+        program,
+        ans,
+        site,
+        base_value,
+        base_cluster,
+        struct_name,
+        DEREF_STR,
+        false,
+        false,
+    );
+    let deref_mut_target = try_resolve_struct_deref_method(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        errors,
+        program,
+        ans,
+        site,
+        base_value,
+        base_cluster,
+        struct_name,
+        DEREF_MUT_STR,
+        true,
+        true,
+    );
+
+    match (deref_target, deref_mut_target) {
+        (None, None) => None,
+        (Some(target), None) | (None, Some(target)) => Some(target),
+        (Some(a), Some(b)) => {
+            if let Err(clash) =
+                unify_if_distinct(store, parent, cluster, func_defs, struct_infers, a, b)
+            {
+                errors.push(TypeError::ValuesContradict {
+                    expectation_reason:
+                        "`__deref` and `__deref_mut` must produce the same dereference target type",
+                    site,
+                    found: base_value,
+                    expected_place: site,
+                    clash,
+                });
+                return None;
+            }
+            Some(a)
+        }
+    }
+}
+
+fn push_cannot_deref_error(ctx: &mut InferState, site: ValId, source_value: ValId, source: CId) {
+    let source_type = extract_bad_type(
+        ctx.store,
+        &mut ctx.parent,
+        &ctx.cluster,
+        &ctx.func_defs,
+        &ctx.struct_infers,
+        source,
+    );
+    ctx.push_error(TypeError::CannotDeref {
+        site,
+        operand: source_value,
+        operand_type: source_type,
+    });
+}
+
 fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId>) -> CId {
     match ctx.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
@@ -2706,24 +2919,98 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
         Value::Deref(base) => {
             let src = gather_constraints(ctx, base, current_output);
+            let src = find_root(&mut ctx.parent, src);
             let tgt = match ctx.cluster[src].state {
                 ResolveKind::Ptr { tgt, .. } => tgt,
                 ResolveKind::Nothing => {
                     let tgt = ctx.new_cluster();
-                    ctx.cluster[src].state = ResolveKind::Ptr {
-                        tgt,
-                        mutable: None,
-                        raw: None,
-                    };
+                    ctx.pointer_likes.push(PendingPointerLike {
+                        site: v,
+                        source: src,
+                        target: tgt,
+                        source_value: base,
+                    });
                     tgt
                 }
-                ResolveKind::Struct(_rid) => todo!("might have __smart_pointer"),
-                ResolveKind::Solved(t) => match ctx.store.type_value(t) {
-                    TypeValue::Ptr { tgt, .. } => ctx.new_solved(*tgt),
-                    TypeValue::Struct { id: _, .. } => todo!("might have __smart_pointer"),
-                    _ => todo!("report error"),
-                },
-                _ => todo!(),
+                ResolveKind::Struct(rid) => {
+                    let sid = ctx.struct_infers[rid.0].sid;
+                    let Some(struct_name) = ctx.store.struct_value(sid).name else {
+                        let ans = ctx.new_cluster();
+                        push_cannot_deref_error(ctx, v, base, src);
+                        ctx.bind_val(v, ans);
+                        return ans;
+                    };
+
+                    let Some(target) = resolve_struct_deref_target(
+                        ctx.store,
+                        &mut ctx.parent,
+                        &mut ctx.cluster,
+                        &mut ctx.func_defs,
+                        &mut ctx.struct_infers,
+                        &mut ctx.errors,
+                        ctx.program,
+                        &*ctx.ans,
+                        v,
+                        base,
+                        src,
+                        struct_name,
+                    ) else {
+                        let ans = ctx.new_cluster();
+                        push_cannot_deref_error(ctx, v, base, src);
+                        ctx.bind_val(v, ans);
+                        return ans;
+                    };
+
+                    target
+                }
+                ResolveKind::Solved(t) => {
+                    let solved = ctx.store.type_value(t).clone();
+                    match solved {
+                        TypeValue::Ptr { tgt, .. } => ctx.new_solved(tgt),
+                        TypeValue::Struct { id, .. } => {
+                            let Some(struct_name) = ctx.store.struct_value(id).name else {
+                                let ans = ctx.new_cluster();
+                                push_cannot_deref_error(ctx, v, base, src);
+                                ctx.bind_val(v, ans);
+                                return ans;
+                            };
+
+                            let Some(target) = resolve_struct_deref_target(
+                                ctx.store,
+                                &mut ctx.parent,
+                                &mut ctx.cluster,
+                                &mut ctx.func_defs,
+                                &mut ctx.struct_infers,
+                                &mut ctx.errors,
+                                ctx.program,
+                                &*ctx.ans,
+                                v,
+                                base,
+                                src,
+                                struct_name,
+                            ) else {
+                                let ans = ctx.new_cluster();
+                                push_cannot_deref_error(ctx, v, base, src);
+                                ctx.bind_val(v, ans);
+                                return ans;
+                            };
+
+                            target
+                        }
+                        _ => {
+                            let ans = ctx.new_cluster();
+                            push_cannot_deref_error(ctx, v, base, src);
+                            ctx.bind_val(v, ans);
+                            return ans;
+                        }
+                    }
+                }
+                _ => {
+                    let ans = ctx.new_cluster();
+                    push_cannot_deref_error(ctx, v, base, src);
+                    ctx.bind_val(v, ans);
+                    return ans;
+                }
             };
             ctx.bind_val(v, tgt);
             tgt
@@ -3857,6 +4144,8 @@ fn is_known_special_member_method_name(name: StrId) -> bool {
     is_binary_operator_overload_name(name)
         || is_unary_operator_overload_name(name)
         || name == FREE_STR
+        || name == DEREF_STR
+        || name == DEREF_MUT_STR
 }
 
 #[inline(always)]
@@ -3961,6 +4250,92 @@ fn is_mut_ref_to_named_struct_input_type(
     }
 }
 
+#[inline(always)]
+fn is_ref_to_named_struct_input_type(
+    store: &TypeStore,
+    input: TypeId,
+    struct_name: NameId,
+    mutable: bool,
+) -> bool {
+    match store.type_value(input) {
+        TypeValue::Ptr {
+            tgt,
+            raw,
+            mutable: is_mut,
+        } => !*raw && *is_mut == mutable && is_named_struct_type(store, *tgt, struct_name),
+        _ => false,
+    }
+}
+
+#[inline(always)]
+fn get_ref_target_type_if_kind(store: &TypeStore, ty: TypeId, mutable: bool) -> Option<TypeId> {
+    match store.type_value(ty) {
+        TypeValue::Ptr {
+            tgt,
+            raw,
+            mutable: is_mut,
+        } if !*raw && *is_mut == mutable => Some(*tgt),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn get_deref_method_target_type(
+    store: &TypeStore,
+    method_ty: TypeId,
+    struct_name: NameId,
+    self_mutable: bool,
+    output_mutable: bool,
+) -> Option<TypeId> {
+    let (inputs, output) = method_signature_type_parts(store, method_ty)?;
+    if inputs.len() != 1 {
+        return None;
+    }
+
+    let first = inputs[0];
+    if !is_ref_to_named_struct_input_type(store, first, struct_name, self_mutable) {
+        return None;
+    }
+
+    get_ref_target_type_if_kind(store, output, output_mutable)
+}
+
+fn check_struct_deref_targets_compatible(ctx: &mut InferState, struct_name: NameId) {
+    let Some(methods) = ctx.program.member_methods.get(&struct_name) else {
+        return;
+    };
+    let (Some(deref_method), Some(deref_mut_method)) =
+        (methods.get(&DEREF_STR), methods.get(&DEREF_MUT_STR))
+    else {
+        return;
+    };
+
+    let (Some(deref_ty), Some(deref_mut_ty)) = (
+        ctx.ans.type_of(*deref_method),
+        ctx.ans.type_of(*deref_mut_method),
+    ) else {
+        return;
+    };
+
+    let Some(deref_target) =
+        get_deref_method_target_type(ctx.store, deref_ty, struct_name, false, false)
+    else {
+        return;
+    };
+    let Some(deref_mut_target) =
+        get_deref_method_target_type(ctx.store, deref_mut_ty, struct_name, true, true)
+    else {
+        return;
+    };
+
+    if deref_target != deref_mut_target {
+        ctx.push_error(TypeError::Simple {
+            loc: ctx.program.value_loc(*deref_mut_method),
+            message: "`__deref` and `__deref_mut` must dereference to the same target type",
+        });
+    }
+}
+
 fn check_special_member_method_signature(
     ctx: &mut InferState,
     method_val: ValId,
@@ -3989,6 +4364,7 @@ fn check_special_member_method_signature(
     let Some((inputs, output)) = method_signature_type_parts(ctx.store, method_ty) else {
         return;
     };
+    let inputs = inputs.to_vec();
 
     if method_name == FREE_STR {
         let Some(first_input) = inputs.first().copied() else {
@@ -4020,6 +4396,70 @@ fn check_special_member_method_signature(
             ctx.push_error(TypeError::Simple {
                 loc,
                 message: "`__free` must return `void`",
+            });
+        }
+        return;
+    }
+
+    if method_name == DEREF_STR {
+        let Some(first_input) = inputs.first().copied() else {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "special member methods must take `self` as the first parameter",
+            });
+            return;
+        };
+
+        if !is_ref_to_named_struct_input_type(ctx.store, first_input, struct_name, false) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref` must take `&self` as the first parameter",
+            });
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref` must not take parameters after `self`",
+            });
+        }
+
+        if get_ref_target_type_if_kind(ctx.store, output, false).is_none() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__deref` must return a non-raw shared reference `&T`",
+            });
+        }
+        return;
+    }
+
+    if method_name == DEREF_MUT_STR {
+        let Some(first_input) = inputs.first().copied() else {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "special member methods must take `self` as the first parameter",
+            });
+            return;
+        };
+
+        if !is_ref_to_named_struct_input_type(ctx.store, first_input, struct_name, true) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref_mut` must take `&mut self` as the first parameter",
+            });
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref_mut` must not take parameters after `self`",
+            });
+        }
+
+        if get_ref_target_type_if_kind(ctx.store, output, true).is_none() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__deref_mut` must return a non-raw mutable reference `&mut T`",
             });
         }
         return;
@@ -5084,6 +5524,9 @@ fn try_resolve_ptr_type(
 fn resolve_deferred_types(ctx: &mut InferState) -> bool {
     let mut change = false;
     for cid in (0..ctx.cluster.len()).map(CId) {
+        if ctx.parent[cid]!=cid {
+            continue;
+        }
         let resolved = match ctx.cluster[cid].state {
             ResolveKind::Func(call) => try_resolve_func_type(
                 ctx.store,
@@ -5116,6 +5559,117 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
         }
     }
     change
+}
+
+#[inline(always)]
+fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    let (store, parent, cluster, func_defs, struct_infers, pointer_likes, errors, ans, program) = (
+        &mut ctx.store,
+        &mut ctx.parent,
+        &mut ctx.cluster,
+        &mut ctx.func_defs,
+        &mut ctx.struct_infers,
+        &mut ctx.pointer_likes,
+        &mut ctx.errors,
+        &*ctx.ans,
+        ctx.program,
+    );
+
+    pointer_likes.retain_mut(|pending| {
+        let source = find_root(parent, pending.source);
+        pending.source = source;
+
+        let result = match cluster[source].state {
+            ResolveKind::Nothing => return true,
+            ResolveKind::Ptr { tgt, .. } => Some(tgt),
+            ResolveKind::Solved(t) => match store.type_value(t) {
+                TypeValue::Ptr { tgt, .. } => Some(new_solved(parent, cluster, *tgt)),
+                TypeValue::Struct { id, .. } => {
+                    let struct_name = store.struct_value(*id).name;
+                    struct_name.and_then(|struct_name| {
+                        resolve_struct_deref_target(
+                            store,
+                            parent,
+                            cluster,
+                            func_defs,
+                            struct_infers,
+                            errors,
+                            program,
+                            ans,
+                            pending.site,
+                            pending.source_value,
+                            source,
+                            struct_name,
+                        )
+                    })
+                }
+                _ => None,
+            },
+            ResolveKind::Struct(rid) => {
+                let sid = struct_infers[rid.0].sid;
+                let struct_name = store.struct_value(sid).name;
+                struct_name.and_then(|struct_name| {
+                    resolve_struct_deref_target(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        errors,
+                        program,
+                        ans,
+                        pending.site,
+                        pending.source_value,
+                        source,
+                        struct_name,
+                    )
+                })
+            }
+            _ => None,
+        };
+
+        let Some(result) = result else {
+            let source_type =
+                extract_bad_type(store, parent, cluster, &*func_defs, &*struct_infers, source);
+            errors.push(TypeError::CannotDeref {
+                site: pending.site,
+                operand: pending.source_value,
+                operand_type: source_type,
+            });
+            progress = true;
+            return false;
+        };
+
+        match unify_if_distinct(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            pending.target,
+            result,
+        ) {
+            Ok(changed) => {
+                progress |= changed;
+                false
+            }
+            Err(clash) => {
+                errors.push(TypeError::ValuesContradict {
+                    expectation_reason: "dereference result must match pointee type",
+                    site: pending.site,
+                    found: pending.source_value,
+                    expected_place: pending.site,
+                    clash,
+                });
+                progress = true;
+                false
+            }
+        }
+    });
+
+    progress
 }
 
 #[inline(always)]
@@ -5628,7 +6182,11 @@ mod type_infer_tests {
     #[test]
     fn closure_returns_typecheck() {
         let mut store = TypeStore::new();
-        let ty = infer_fn("f = fn()->int { let d :float = (fn()->_{if true return 1.0; 2.0})(); 2 }", &mut store).unwrap();
+        let ty = infer_fn(
+            "f = fn()->int { let d :float = (fn()->_{if true return 1.0; 2.0})(); 2 }",
+            &mut store,
+        )
+        .unwrap();
         match store.type_value(ty) {
             TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
             other => panic!("expected builtin type, got {:?}", other),
@@ -5970,10 +6528,9 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6000,10 +6557,9 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6035,10 +6591,9 @@ mod type_infer_tests {
         )
         .unwrap_err();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
         assert!(!errs.iter().any(|err| matches!(
             err,
             TypeError::ValuesContradict {
@@ -6066,10 +6621,9 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::Unresolved { .. })));
     }
 
     #[test]
@@ -6191,10 +6745,9 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
     }
 
     #[test]
@@ -6433,12 +6986,122 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn deref_member_requires_shared_ref_self_and_shared_ref_output() {
+        let errs = infer_global_errs("S=struct{}; S.__deref = fn(self:S)->int { 1 }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__deref` must take `&self` as the first parameter",
+                    ..
+                }
+            )
+        }));
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__deref` must return a non-raw shared reference `&T`",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn deref_mut_member_requires_mut_ref_self_and_mut_ref_output() {
+        let errs =
+            infer_global_errs("S=struct{}; S.__deref_mut = fn(self:&S)->&int { }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__deref_mut` must take `&mut self` as the first parameter",
+                    ..
+                }
+            )
+        }));
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__deref_mut` must return a non-raw mutable reference `&mut T`",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn deref_and_deref_mut_must_have_same_target() {
+        let errs = infer_global_errs(
+            "S=struct{}; S.__deref = fn(self:&S)->&int { }; S.__deref_mut = fn(self:&mut S)->&mut bool { }; f=fn(){};",
+        );
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__deref` and `__deref_mut` must dereference to the same target type",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn value_deref_uses_special_deref_method_target() {
+        let src =
+            "type S=struct{x:int}; S.__deref = fn(self:&S)->&int { }; f = fn(){ let s = S{1}; *s }";
+        let mut store = TypeStore::new();
+        let ty = infer_fn_body(src, &mut store).unwrap();
+        assert!(matches!(
+            store.type_value(ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn value_deref_from_unknown_is_deferred_and_can_resolve_to_struct_deref() {
+        let src = "
+            type S=struct{p:*int};
+            S.__deref = fn(self:&S)->&int { &*self.p };
+            f=fn(){
+                let x = 0:int;
+                let y = x as _;
+                let r = *y;
+                y = S{&x};
+                r
+            }
+        ";
+        let mut store = TypeStore::new();
+        let ty = infer_fn_body(src, &mut store).unwrap();
+        assert!(matches!(
+            store.type_value(ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn cannot_deref_error_reports_operand_type() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body("f=fn(){ let x:int = 1; *x }", &mut store).unwrap_err();
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::CannotDeref {
+                    operand_type: Some(BadTypeId(t)),
+                    ..
+                } if matches!(store.type_value(*t), TypeValue::Builtin(BuiltinType::Int))
+            )
+        }));
+    }
+
+    #[test]
     fn unknown_builtin_member_method_name_errors() {
         let errs = infer_global_errs("S=struct{}; S.__derefed = fn(self:S){ }; f=fn(){};");
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
-        );
+        assert!(errs
+            .iter()
+            .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. })));
     }
 
     //  #[test]

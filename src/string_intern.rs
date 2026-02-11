@@ -18,8 +18,28 @@ struct Entry {
 }
 
 pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
-    "__free", "__add", "__sub", "__mul", "__div", "__mod", "__bitand", "__bitor", "__bitxor",
-    "__shl", "__shr", "__eq", "__ne", "__lt", "__le", "__gt", "__ge", "__neg", "__not", "__bitnot",
+    "__free",
+    "__deref",
+    "__deref_mut",
+    "__add",
+    "__sub",
+    "__mul",
+    "__div",
+    "__mod",
+    "__bitand",
+    "__bitor",
+    "__bitxor",
+    "__shl",
+    "__shr",
+    "__eq",
+    "__ne",
+    "__lt",
+    "__le",
+    "__gt",
+    "__ge",
+    "__neg",
+    "__not",
+    "__bitnot",
 ];
 
 const fn const_str_eq(a: &str, b: &str) -> bool {
@@ -93,6 +113,8 @@ pub const NEG_STR: StrId = get_known_strid("__neg");
 pub const NOT_STR: StrId = get_known_strid("__not");
 pub const BITNOT_STR: StrId = get_known_strid("__bitnot");
 pub const FREE_STR: StrId = get_known_strid("__free");
+pub const DEREF_STR: StrId = get_known_strid("__deref");
+pub const DEREF_MUT_STR: StrId = get_known_strid("__deref_mut");
 
 #[derive(Debug)]
 pub struct StringInterner {

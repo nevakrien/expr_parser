@@ -519,6 +519,30 @@ impl ErrorReporter {
 
                 self.print_report(site_loc.file, report.finish())
             }
+            TypeError::CannotDeref {
+                site,
+                operand,
+                operand_type,
+            } => {
+                let site_loc = program.value_loc(*site);
+                let operand_loc = program.value_loc(*operand);
+                let operand_msg = operand_type_message(program, store, "operand", *operand_type);
+
+                let report = Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
+                    .with_message("cannot dereference this value")
+                    .with_label(
+                        Label::new((site_loc.file, site_loc.range.clone()))
+                            .with_message("deref used here")
+                            .with_color(Color::Red),
+                    )
+                    .with_label(
+                        Label::new((operand_loc.file, operand_loc.range.clone()))
+                            .with_message(operand_msg)
+                            .with_color(Color::Yellow),
+                    );
+
+                self.print_report(site_loc.file, report.finish())
+            }
             TypeError::AnnotationMismatch {
                 annotation,
                 constrained,

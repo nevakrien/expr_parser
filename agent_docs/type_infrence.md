@@ -211,8 +211,12 @@ Important fragile/unfinished expression areas:
   - contains many assumptions and error paths that are easy to break when extending syntax.
 - `Value::AddrOf`:
   - creates pointer placeholder state (`ResolveKind::Ptr`) with partially-known flags,
-  - later pointer solving depends on unification + deferred resolve,
-  - future `Deref` support (not implemented yet) will need to integrate here and in operator/access paths.
+  - later pointer solving depends on unification + deferred resolve.
+- `Value::Deref`:
+  - supports builtin pointer dereference,
+  - also supports struct-based smart-pointer style dereference through member methods `__deref` and `__deref_mut`,
+  - when both methods exist, dereference target types are constrained to agree,
+  - when deref starts from an unresolved `Nothing` source, it records a pending pointer-like constraint (`source -> target`) and resolves it in the middle solver instead of eagerly forcing the source to pointer.
 - `Value::Access`:
   - supports struct field lookup from solved and deferred struct states,
   - if a field is not found, member methods are resolved from `program.member_methods`,
@@ -281,6 +285,9 @@ Then `finalize`:
   - binary overload names (`__add`, `__sub`, etc.): `self`-like first parameter + exactly one extra parameter,
   - unary overload names (`__neg`, `__not`, `__bitnot`): `self`-like first parameter + no extra parameters,
   - `__free`: first parameter must be `&mut self`, no extra parameters, return type `void`; checks short-circuit on the first failing `__free` requirement so one root error is emitted.
+  - `__deref`: first parameter must be `&self`, no extra parameters, and return type must be a non-raw shared reference (`&T`).
+  - `__deref_mut`: first parameter must be `&mut self`, no extra parameters, and return type must be a non-raw mutable reference (`&mut T`).
+  - if both `__deref` and `__deref_mut` exist on the same struct, both must dereference to the same `T` target.
 - The validation is now based on solved global function type signatures (`TypeValue::Func` / `TypeValue::WithGenerics` body), not raw signature clusters.
 - Member method names that start with `__` and do not end with `_` are treated as reserved builtin names; unknown reserved names emit a dedicated type error.
 
