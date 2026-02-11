@@ -9,6 +9,7 @@
 //
 // ================================================================
 
+use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::StructLike;
@@ -19,10 +20,10 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    StrId, ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, GE_STR, GT_STR,
-    LE_STR, LT_STR, MOD_STR, MUL_STR, NEG_STR, NE_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR,
+    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR, FREE_STR, GE_STR,
+    GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR, SHL_STR, SHR_STR, SUB_STR,
+    StrId,
 };
-use crate::ErrorReporter;
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
@@ -501,21 +502,13 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
         let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
         let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE {
-            None
-        } else {
-            Some(ans)
-        }
+        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
     }
 }
 
@@ -528,6 +521,10 @@ pub enum TypeError {
     Simple {
         loc: Loc,
         message: &'static str,
+    },
+    UnknownBuiltinMemberMethod {
+        site: ValId,
+        method: StrId,
     },
     Unresolved {
         value: ValId,
@@ -775,8 +772,8 @@ pub fn infer_global_types<'a>(
         return Err(ctx.errors);
     }
 
-    for (_n, methods) in program.member_methods.iter() {
-        for (_s, m) in methods.iter() {
+    for (struct_name, methods) in program.member_methods.iter() {
+        for (method_name, m) in methods.iter() {
             //each function must solve by itself.
             //since there isnt a body its fine to solve in order
             //note that namespace on generics gurntees this works for the most outer scope
@@ -791,6 +788,7 @@ pub fn infer_global_types<'a>(
                     let _ =
                         gather_func_signature::<true>(&mut ctx, *m, generics, params, output_type);
                     main_solver(&mut ctx);
+                    check_special_member_method_signature(&mut ctx, *m, *struct_name, *method_name);
                 }
                 _ => {}
             };
@@ -3499,6 +3497,204 @@ fn gather_func_constraints<const ALLOW_GENERICS: bool>(
     f
 }
 
+#[inline(always)]
+fn is_binary_operator_overload_name(name: StrId) -> bool {
+    matches!(
+        name,
+        ADD_STR
+            | SUB_STR
+            | MUL_STR
+            | DIV_STR
+            | MOD_STR
+            | BITAND_STR
+            | BITOR_STR
+            | BITXOR_STR
+            | SHL_STR
+            | SHR_STR
+            | EQ_STR
+            | NE_STR
+            | LT_STR
+            | LE_STR
+            | GT_STR
+            | GE_STR
+    )
+}
+
+#[inline(always)]
+fn is_unary_operator_overload_name(name: StrId) -> bool {
+    matches!(name, NEG_STR | NOT_STR | BITNOT_STR)
+}
+
+#[inline(always)]
+fn is_known_special_member_method_name(name: StrId) -> bool {
+    is_binary_operator_overload_name(name)
+        || is_unary_operator_overload_name(name)
+        || name == FREE_STR
+}
+
+#[inline(always)]
+fn is_reserved_builtin_member_name(program: &Program, method_name: StrId) -> bool {
+    let method_name = program.str_intern.resolve(method_name);
+    method_name.starts_with("__") && !method_name.ends_with('_')
+}
+
+#[inline(always)]
+fn is_named_struct_type(store: &TypeStore, ty: TypeId, struct_name: NameId) -> bool {
+    match store.type_value(ty) {
+        TypeValue::Struct { id, .. } => store.struct_value(*id).name == Some(struct_name),
+        _ => false,
+    }
+}
+
+#[inline(always)]
+fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeId], TypeId)> {
+    let fn_ty = match store.type_value(ty) {
+        TypeValue::WithGenerics { body, .. } => *body,
+        _ => ty,
+    };
+
+    match store.type_value(fn_ty) {
+        TypeValue::Func { params, ret } => Some((params.as_slice(), *ret)),
+        _ => None,
+    }
+}
+
+#[inline(always)]
+fn is_self_like_member_input_type(store: &TypeStore, input: TypeId, struct_name: NameId) -> bool {
+    match store.type_value(input) {
+        TypeValue::Struct { .. } => is_named_struct_type(store, input, struct_name),
+        TypeValue::Ptr {
+            tgt,
+            raw,
+            mutable: _,
+        } => !*raw && is_named_struct_type(store, *tgt, struct_name),
+        _ => false,
+    }
+}
+
+#[inline(always)]
+fn is_mut_ref_to_named_struct_input_type(
+    store: &TypeStore,
+    input: TypeId,
+    struct_name: NameId,
+) -> bool {
+    match store.type_value(input) {
+        TypeValue::Ptr { tgt, raw, mutable } => {
+            !*raw && *mutable && is_named_struct_type(store, *tgt, struct_name)
+        }
+        _ => false,
+    }
+}
+
+fn check_special_member_method_signature(
+    ctx: &mut InferState,
+    method_val: ValId,
+    struct_name: NameId,
+    method_name: StrId,
+) {
+    let loc = ctx.program.value_loc(method_val);
+
+    if is_reserved_builtin_member_name(ctx.program, method_name)
+        && !is_known_special_member_method_name(method_name)
+    {
+        ctx.push_error(TypeError::UnknownBuiltinMemberMethod {
+            site: method_val,
+            method: method_name,
+        });
+        return;
+    }
+
+    if !is_known_special_member_method_name(method_name) {
+        return;
+    }
+
+    let Some(method_ty) = ctx.ans.type_of(method_val) else {
+        return;
+    };
+    let Some((inputs, output)) = method_signature_type_parts(ctx.store, method_ty) else {
+        return;
+    };
+
+    if method_name == FREE_STR {
+        let Some(first_input) = inputs.first().copied() else {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "special member methods must take `self` as the first parameter",
+            });
+            return;
+        };
+
+        if !is_mut_ref_to_named_struct_input_type(ctx.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__free` must take `&mut self` as the first parameter",
+            });
+            return;
+        }
+
+        let additional_args = inputs.len() - 1;
+        if additional_args != 0 {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__free` must not take parameters after `self`",
+            });
+            return;
+        }
+
+        if output != BuiltinType::Void.into() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__free` must return `void`",
+            });
+        }
+        return;
+    }
+
+    let Some(first_input) = inputs.first().copied() else {
+        ctx.push_error(TypeError::Simple {
+            loc,
+            message: "special member methods must take `self` as the first parameter",
+        });
+        return;
+    };
+
+    let additional_args = inputs.len() - 1;
+
+    if is_binary_operator_overload_name(method_name) {
+        if !is_self_like_member_input_type(ctx.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "binary operator overloads must take `self` as the first parameter type",
+            });
+        }
+
+        if additional_args != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "binary operator overloads must take exactly one parameter after `self`",
+            });
+        }
+        return;
+    }
+
+    if is_unary_operator_overload_name(method_name) {
+        if !is_self_like_member_input_type(ctx.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "unary operator overloads must take `self` as the first parameter type",
+            });
+        }
+
+        if additional_args != 0 {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "unary operator overloads must not take parameters after `self`",
+            });
+        }
+        return;
+    }
+}
+
 // ===================================
 // middle phase
 // ===================================
@@ -4423,6 +4619,16 @@ mod type_infer_tests {
         Ok(solved_types.type_of(body).unwrap())
     }
 
+    fn infer_global_errs(src: &str) -> Vec<TypeError> {
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        match infer_global_types(&program, &mut store, &mut solved_types) {
+            Ok(_) => panic!("expected global type inference to fail"),
+            Err(errs) => errs,
+        }
+    }
+
     macro_rules! assert_fn_type {
         ($src:expr, $builtin:expr) => {{
             let mut store = TypeStore::new();
@@ -4836,9 +5042,10 @@ mod type_infer_tests {
     fn unresolved_int_errors() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("f = fn(){ let x = 1; x }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::Unresolved { .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::Unresolved { .. }))
+        );
     }
 
     #[test]
@@ -4960,9 +5167,93 @@ mod type_infer_tests {
     fn operator_overload_not_found_for_structs() {
         let mut store = TypeStore::new();
         let errs = infer_fn_body("S=struct{}; f=fn(){ S{} + S{}; }", &mut store).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. })));
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::BinOpOverloadNotFound { op: BinOp::Add, .. }))
+        );
+    }
+
+    #[test]
+    fn binary_member_overload_requires_one_extra_param() {
+        let errs = infer_global_errs("S=struct{}; S.__add = fn(self:S){ }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message:
+                        "binary operator overloads must take exactly one parameter after `self`",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn binary_member_overload_requires_self_like_first_param() {
+        let errs = infer_global_errs("S=struct{}; S.__add = fn(x:int, rhs:int){ }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message:
+                        "binary operator overloads must take `self` as the first parameter type",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn unary_member_overload_disallows_extra_params() {
+        let errs = infer_global_errs("S=struct{}; S.__bitnot = fn(self:S, x:int){ }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "unary operator overloads must not take parameters after `self`",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn free_member_requires_mut_ref_self_and_void_output() {
+        let errs = infer_global_errs("S=struct{}; S.__free = fn(self:&S)->int { 1 }; f=fn(){};");
+        assert_eq!(errs.len(), 1);
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__free` must take `&mut self` as the first parameter",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn free_member_non_self_param_reports_single_error() {
+        let errs = infer_global_errs("S=struct{}; S.__free = fn(x:int){ }; f=fn(){};");
+        assert_eq!(errs.len(), 1);
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__free` must take `&mut self` as the first parameter",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn unknown_builtin_member_method_name_errors() {
+        let errs = infer_global_errs("S=struct{}; S.__derefed = fn(self:S){ }; f=fn(){};");
+        assert!(
+            errs.iter()
+                .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
+        );
     }
 
     //  #[test]

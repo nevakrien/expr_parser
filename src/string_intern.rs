@@ -92,6 +92,7 @@ pub const GE_STR: StrId = get_known_strid("__ge");
 pub const NEG_STR: StrId = get_known_strid("__neg");
 pub const NOT_STR: StrId = get_known_strid("__not");
 pub const BITNOT_STR: StrId = get_known_strid("__bitnot");
+pub const FREE_STR: StrId = get_known_strid("__free");
 
 #[derive(Debug)]
 pub struct StringInterner {

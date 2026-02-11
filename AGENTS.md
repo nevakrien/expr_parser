@@ -12,7 +12,23 @@
 - `src/string_intern.rs` implements the string interner.
 - `src/type_inference.rs` contains the type inference sketch and tests.
 - `src/lib.rs` is the library entry point.
+- `agent_docs/` contains agent-maintained technical documentation and deep module summaries.
 - `target/` is build output and should not be edited.
+
+## Agent Documentation Responsibility
+- Agents should keep `agent_docs/` up to date when behavior, architecture, or important APIs change.
+- If an agent touches a complex subsystem, it should also update the relevant doc in `agent_docs/` as part of the same task when practical.
+- Treat stale docs in `agent_docs/` as a maintenance issue and refresh them proactively.
+
+## Agent Docs Usage (Read This First)
+- Before changing a subsystem, agents should check `agent_docs/` for the relevant module summary and read it first.
+- `agent_docs/` exists to capture architecture, invariants, known fragile areas, and feature-extension notes that are easy to miss in code-only scans.
+- If docs and code disagree and the code was not written by the current agent in this task, treat code as source-of-truth and update docs to match.
+- Agents should only change code to match docs when the agent itself introduced the mismatch in the current task.
+- When adding a new complex subsystem, add a new `agent_docs/<subsystem>.md` file so future agents have a focused starting point.
+
+### Current docs index
+- `agent_docs/type_infrence.md`: detailed guide to `src/type_inference.rs`, including unification/clash behavior, specialization, generic-scope risks, and gather-layer fragility/extension points.
 
 ## Commands
 - `cargo run` runs a repl that can be used for testing current behivior and errors.
@@ -30,8 +46,3 @@
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
-
-## TODO
-- Member methods: parse `StructName.method = fn ...` in `src/ir.rs` and represent as syntax-level member method definitions (no type checks yet); document parse rules and expected AST/IR shape.
-- Pointer/reference types + mutability: add syntax for `*T`, `&T`, `&mut T` and ensure mutability is represented; document how these are parsed and surfaced in IR. note that we already have the start of mutability on variables, and its purposfully not tested yet as that goes into borrow_checking and not general type chekc. however &const x vs &mut x vs &x is a diffrent story. we currently just have address_of and not more info than that.
-- Member access + member calls: support `value.field` and `value.method(...)` in typecheck. we need to resolve MemberAccess nodes properly. this is especially tricky with methods as those would have to be added later. it should be possible to save methods into the SolvedTypes and use that. or even have them in TypeStore somewhere maybe in StructRep or a similar struct related field there.

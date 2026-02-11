@@ -231,6 +231,19 @@ impl ErrorReporter {
 
                 self.print_report(loc.file, report.finish())
             }
+            TypeError::UnknownBuiltinMemberMethod { site, method } => {
+                let loc = program.value_loc(*site);
+                let method_name = program.str_intern.resolve(*method);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!("unknown builtin member method `{}`", method_name))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("builtin member methods starting with `__` are reserved")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(loc.file, report.finish())
+            }
             TypeError::Unresolved { value } => {
                 let loc = program.value_loc(*value);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)

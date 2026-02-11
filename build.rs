@@ -13,4 +13,4 @@
 //         .file("perf_counter.c")
 //         .compile("perf_counter");
 // }
-fn main(){}
+fn main() {}
