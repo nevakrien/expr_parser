@@ -686,8 +686,8 @@ impl ErrorReporter {
             labels.sort_by_key(|(range, _, _)| (range.start, range.end));
 
             let start = labels.first().map(|(r, _, _)| r.start).unwrap_or(0);
-            let mut report = Report::build(ReportKind::Advice, file, start)
-                .with_message("dumping inferred types");
+            let mut report =
+                Report::build(ReportKind::Custom("Type Dump", Color::Yellow), file, start);
 
             for (range, message, color) in labels {
                 report = report.with_label(
