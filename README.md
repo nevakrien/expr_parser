@@ -217,6 +217,5 @@ cargo run --release --example generate_typecheck_benchmark_data -- typecheck_ben
 cargo run --release --example file_typecheck_benchmark -- typecheck_benchmark_data.txt
 
 originally wrote a pretty bad algorithmic bug of runing O(n) in a loop causing O(n^2).
-after doing this we are up to 832k lines checked per second. at the start we were at 5k.
+after doing this we are up to 900k lines checked per second. at the start we were at 5k.
 reserving the hashmap ahead of time got us to around 25k and moving to indecies moved us to 32k.
-during this time we got the following results:

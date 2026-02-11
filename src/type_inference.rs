@@ -35,7 +35,6 @@ use crate::program::{Defined, Program};
 //     fn perf_done(name: *const std::os::raw::c_char);
 // }
 
-
 /* ================================================================
  * Core IDs (STABLE)
  * ================================================================ */
@@ -788,15 +787,15 @@ pub fn infer_global_types<'a>(
                     output_type,
                     body: _,
                 } => {
+                    ctx.clear_local_state();
                     let _ =
                         gather_func_signature::<true>(&mut ctx, *m, generics, params, output_type);
+                    main_solver(&mut ctx);
                 }
                 _ => {}
             };
         }
     }
-
-    main_solver(&mut ctx);
 
     for (_n, def) in program.definitions.iter() {
         let Defined::Func(v) = def else {
@@ -813,14 +812,13 @@ pub fn infer_global_types<'a>(
                 output_type,
                 body: _,
             } => {
+                ctx.clear_local_state();
                 let _ = gather_func_signature::<true>(&mut ctx, *v, generics, params, output_type);
+                main_solver(&mut ctx);
             }
             _ => {}
         };
     }
-    
-    main_solver(&mut ctx);
-
 
     if ctx.errors.is_empty() {
         Ok(ctx.ans)
@@ -1192,6 +1190,46 @@ impl<'a> InferState<'a> {
             errors: Vec::new(),
             ans,
         }
+    }
+
+    fn clear_local_state(&mut self) {
+        let InferState {
+            store: _,
+            program: _,
+            val_cluster,
+            pat_cluster,
+            typedef_cluster,
+            local_types,
+            names,
+            parent,
+            cluster,
+            bin_op_sites,
+            un_op_sites,
+            func_defs,
+            struct_defs,
+            struct_infers,
+            generic_func_values,
+            pending_specializations,
+            errors: _,
+            ans: _,
+        } = self;
+
+        val_cluster.clear();
+        pat_cluster.clear();
+        typedef_cluster.clear();
+        local_types.clear();
+        names.clear();
+
+        *parent = ClusterVec::new();
+        *cluster = ClusterVec::new();
+
+        bin_op_sites.clear();
+        un_op_sites.clear();
+        func_defs.clear();
+        struct_defs.clear();
+        struct_infers.clear();
+        generic_func_values.clear();
+        pending_specializations.clear();
     }
 
     fn new_cluster(&mut self) -> CId {
@@ -4162,9 +4200,6 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
     change
 }
 
-
-
-
 #[inline(always)]
 // #[inline(never)]
 // #[unsafe(no_mangle)]
@@ -4245,8 +4280,6 @@ fn finalize(ctx: &mut InferState) {
         }
     }
 
-
-    
     // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
     // unsafe { perf_done(name.as_ptr()); }
 }
