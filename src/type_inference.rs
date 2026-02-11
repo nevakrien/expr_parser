@@ -746,7 +746,11 @@ pub fn infer_global_types<'a>(
                 });
             }
         }
-        ctx.typedef_cluster.push((*texp, t));
+        if let ResolveKind::Solved(ty) = ctx.cluster[t].state {
+            ctx.ans.typedef_types.insert(*texp, ty);
+        } else {
+            ctx.typedef_cluster.push((*texp, t));
+        }
     }
 
     main_solver(&mut ctx);
@@ -912,6 +916,7 @@ fn main_solver(ctx: &mut InferState) {
         progress |= resolve_func_types(ctx);
         progress |= resolve_struct_types(ctx);
         progress |= resolve_ptr_types(ctx);
+        progress |= resolve_pending_specializations(ctx);
         if !progress {
             break;
         }
@@ -978,6 +983,7 @@ struct InferState<'a> {
     struct_defs: Vec<StructDef>,
     struct_infers: Vec<StructInfer>,
     generic_func_values: Vec<(ValId, usize)>,
+    pending_specializations: Vec<PendingSpecialization>,
 
     //result
     errors: Vec<TypeError>,
@@ -1049,6 +1055,14 @@ struct Specialized {
     output: CId,
 }
 
+#[derive(Debug)]
+struct PendingSpecialization {
+    name: NameId,
+    global: TExpId,
+    generics: Vec<CId>,
+    output: CId,
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 struct ComplexCallSite {
@@ -1086,14 +1100,58 @@ struct UnOpSite {
     had_error: bool,
 }
 
-fn new_solved(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>, t: TypeId) -> CId {
-    //duplicated in Handeler
-
+fn new_cluster(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
     let id = CId(parent.len());
     parent.0.push(id);
     cluster.0.push(Cluster {
-        state: ResolveKind::Solved(t),
+        state: ResolveKind::Nothing,
     });
+    id
+}
+
+fn new_solved(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>, t: TypeId) -> CId {
+    //duplicated in Handeler
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::Solved(t);
+    id
+}
+
+fn new_int_like(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::IntLike;
+    id
+}
+
+fn new_float_like(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::FloatLike;
+    id
+}
+
+fn new_func(
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    call: FuncInfer,
+) -> CId {
+    let call_id = FuncInferId(func_defs.len());
+    func_defs.push(call);
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::Func(call_id);
+    id
+}
+
+fn new_struct_instance(
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    struct_infers: &mut Vec<StructInfer>,
+    sid: StructId,
+    generics: Vec<CId>,
+) -> CId {
+    let call_id = StructInferId(struct_infers.len());
+    struct_infers.push(StructInfer { sid, generics });
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::Struct(call_id);
     id
 }
 
@@ -1119,18 +1177,14 @@ impl<'a> InferState<'a> {
             struct_defs: Vec::new(),
             struct_infers: Vec::new(),
             generic_func_values: Vec::new(),
+            pending_specializations: Vec::new(),
             errors: Vec::new(),
             ans,
         }
     }
 
     fn new_cluster(&mut self) -> CId {
-        let id = CId(self.parent.len());
-        self.parent.0.push(id);
-        self.cluster.0.push(Cluster {
-            state: ResolveKind::Nothing,
-        });
-        id
+        new_cluster(&mut self.parent, &mut self.cluster)
     }
 
     fn new_solved(&mut self, t: TypeId) -> CId {
@@ -1138,31 +1192,30 @@ impl<'a> InferState<'a> {
     }
 
     fn new_int_like(&mut self, _v: ValId) -> CId {
-        let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::IntLike;
-        id
+        new_int_like(&mut self.parent, &mut self.cluster)
     }
 
     fn new_float_like(&mut self, _v: ValId) -> CId {
-        let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::FloatLike;
-        id
+        new_float_like(&mut self.parent, &mut self.cluster)
     }
 
     fn new_func(&mut self, call: FuncInfer) -> CId {
-        let call_id = FuncInferId(self.func_defs.len());
-        self.func_defs.push(call);
-        let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::Func(call_id);
-        id
+        new_func(
+            &mut self.parent,
+            &mut self.cluster,
+            &mut self.func_defs,
+            call,
+        )
     }
 
     fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>) -> CId {
-        let call_id = StructInferId(self.struct_infers.len());
-        self.struct_infers.push(StructInfer { sid, generics });
-        let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::Struct(call_id);
-        id
+        new_struct_instance(
+            &mut self.parent,
+            &mut self.cluster,
+            &mut self.struct_infers,
+            sid,
+            generics,
+        )
     }
 
     fn bind_val(&mut self, v: ValId, c: CId) {
@@ -1201,10 +1254,6 @@ impl<'a> InferState<'a> {
         )
     }
 }
-
-// =====================================================
-// general union find + error resolution
-// =====================================================
 
 #[inline(always)]
 fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
@@ -2132,37 +2181,69 @@ fn extract_bad_type(
     }
 }
 
-fn specialize_type(ctx: &mut InferState, ty: TypeId, generics: &[CId], loc: ValId) -> CId {
-    match ctx.store.type_value(ty) {
+fn specialize_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    ty: TypeId,
+    generics: &[CId],
+    loc: ValId,
+) -> CId {
+    match store.type_value(ty) {
         TypeValue::Generic(id) => generics
             .get(id.0)
             .copied()
-            .unwrap_or_else(|| ctx.new_solved(ty)),
+            .unwrap(),
         TypeValue::Func { params, ret } => {
             let ret = *ret;
             let plen = params.len();
             let inputs = (0..plen)
                 .map(|i| {
-                    let TypeValue::Func { params, .. } = ctx.store.type_value(ty) else {
+                    let TypeValue::Func { params, .. } = store.type_value(ty) else {
                         unreachable!()
                     };
                     let t = params[i];
-                    specialize_type(ctx, t, generics, loc)
+                    specialize_type(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        t,
+                        generics,
+                        loc,
+                    )
                 })
                 .collect::<Vec<_>>();
-            let output = specialize_type(ctx, ret, generics, loc);
-            ctx.new_func(FuncInfer {
-                inputs,
-                output,
+            let output = specialize_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                ret,
+                generics,
                 loc,
-            })
+            );
+            new_func(
+                parent,
+                cluster,
+                func_defs,
+                FuncInfer {
+                    inputs,
+                    output,
+                    loc,
+                },
+            )
         }
         TypeValue::Struct {
             id,
             generics: parts,
         } => {
             if parts.is_empty() {
-                return ctx.new_solved(ty);
+                return new_solved(parent, cluster, ty);
             }
             let id = *id;
             let glen = parts.len();
@@ -2172,24 +2253,33 @@ fn specialize_type(ctx: &mut InferState, ty: TypeId, generics: &[CId], loc: ValI
                     let TypeValue::Struct {
                         id: _,
                         generics: parts,
-                    } = ctx.store.type_value(ty)
+                    } = store.type_value(ty)
                     else {
                         unreachable!();
                     };
                     let t = parts[i];
-                    specialize_type(ctx, t, generics, loc)
+                    specialize_type(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        t,
+                        generics,
+                        loc,
+                    )
                 })
                 .collect::<Vec<_>>();
-            ctx.new_struct_instance(id, resolved)
+            new_struct_instance(parent, cluster, struct_infers, id, resolved)
         }
-        _ => ctx.new_solved(ty),
+        _ => new_solved(parent, cluster, ty),
     }
 }
 
 // ===================================
 // Constraint gathering (alias where possible)
 // ===================================
-fn global_to_specilized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) -> CId {
+fn global_to_specialized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) -> CId {
     let Some(t) = ctx.ans.type_of(*def_val) else {
         let loc = ctx.program.value_loc(v);
         let c = ctx.new_cluster();
@@ -2207,7 +2297,16 @@ fn global_to_specilized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) -
     //structs especially are weird with this
     if let TypeValue::WithGenerics { count, body } = *ctx.store.type_value(t) {
         let gens: Vec<_> = (0..count).map(|_| ctx.new_cluster()).collect();
-        let ans = specialize_type(ctx, body, &gens, v);
+        let ans = specialize_type(
+            ctx.store,
+            &mut ctx.parent,
+            &mut ctx.cluster,
+            &mut ctx.func_defs,
+            &mut ctx.struct_infers,
+            body,
+            &gens,
+            v,
+        );
         ctx.bind_val(v, ans);
         return ans;
     } else {
@@ -2272,7 +2371,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     bind_val(&mut ctx.val_cluster, v, ans);
                     ans
                 }
-                Defined::Func(def_val) => global_to_specilized_local(ctx, def_val, v),
+                Defined::Func(def_val) => global_to_specialized_local(ctx, def_val, v),
                 _ => todo!("global name resolution / overload sets"),
             }
         }
@@ -2726,7 +2825,16 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                     (0..flen)
                         .map(|f| {
                             let (_, t) = ctx.store.struct_value(sid).fields[f];
-                            specialize_type(ctx, t, &generic_clusters, v)
+                            specialize_type(
+                                ctx.store,
+                                &mut ctx.parent,
+                                &mut ctx.cluster,
+                                &mut ctx.func_defs,
+                                &mut ctx.struct_infers,
+                                t,
+                                &generic_clusters,
+                                v,
+                            )
                         })
                         .collect::<Vec<_>>(),
                 );
@@ -2889,12 +2997,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId) -> CId {
                         todo!()
                     };
 
-                    let _method = global_to_specilized_local(ctx, method, v);
+                    let _method = global_to_specialized_local(ctx, method, v);
 
                     //in the common case the signature is fn(self:&something S,...) and we need to
                     //syntax sugar struct as the first argument by changing it to fn(...)
                     //if we do this the type of that self argument needs to be somehow documented...
-                    //this is fine to do in place because global_to_specilized_local only makes the 1 cluster
+                    //this is fine to do in place because global_to_specialized_local only makes the 1 cluster
                     //and it calls specilized which binds no values/patterns
                     todo!("member methods")
                 }
@@ -3037,6 +3145,8 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
     }
 }
 
+///in order to break recursion this function MUST return a concrete type
+///the returned struct is not fully realized yet and its fields are gona be handeled later
 fn compile_struct_type<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
     texpr: TExpId,
@@ -3155,24 +3265,81 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             ans
         }
         TypeExpr::Index { base, args } => {
-            let base_cluster = compile_type_expr(ctx, base);
             let generics = args
                 .ids()
                 .map(|arg| compile_type_expr(ctx, arg))
                 .collect::<Vec<_>>();
 
-            let sid = match resolve_struct_id_from_cluster(ctx, base_cluster) {
-                Some(Err(()))=>{
-                    let loc = ctx.program.type_expr_loc(texpr);
-                    ctx.errors.push(TypeError::Simple {
-                        loc,
-                        message: "type specialization expects a struct type",
-                    });
-                    return ctx.new_cluster();
-                }
-                Some(Ok(sid))=>sid,
-                None=>todo!("push this into some kind of vec and then later resolve")
+            // let ans = ctx.new_cluster();
+            let Some(name) = get_type_name(ctx.program, base) else {
+                let loc = ctx.program.type_expr_loc(base);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "type specialization base must be a type name",
+                });
+                return ctx.new_cluster();
             };
+
+            let Some(def) = ctx.program.definitions.get(&name) else {
+                //we dont allow generics on local structs
+                //so this is either not a struct at all
+                //or a struct with no generics
+                let loc = ctx.program.type_expr_loc(base);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "type specialization base must be a global type",
+                });
+                return ctx.new_cluster();
+            };
+
+            let Defined::Type(g) = def else {
+                let loc = ctx.program.type_expr_loc(base);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "type specialization expects a type definition",
+                });
+                return ctx.new_cluster();
+            };
+
+            let Some(t) = ctx.ans.typedef_types.get(g) else {
+                //this happens only in global context
+                //and so it only happens when we specifically solve for global structs
+                //because of this to break the recursion we are gona cheat
+                //but with a tiny bit of class
+
+                let Some(_cid) = ctx.local_types.get(&name) else {
+                    let output = ctx.new_cluster();
+                    ctx.pending_specializations.push(PendingSpecialization {
+                        name,
+                        global: *g,
+                        generics,
+                        output,
+                    });
+                    return output;
+                };
+
+                //we would need to double check here that its not a side speciliztion.
+                //that acually ends up being a bunch of work
+                //instead we can make sure that all structs defined globally are inserted ASAP into ans.typedef_types
+                //and this saves us the hassle
+                let loc = ctx.program.type_expr_loc(texpr);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "currently we only support specilizing struct definitions directly",
+                });
+
+                return ctx.new_cluster();
+            };
+
+            let TypeValue::Struct { id: sid, .. } = ctx.store.type_value(*t) else {
+                let loc = ctx.program.type_expr_loc(base);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "type specialization expects a struct type",
+                });
+                return ctx.new_cluster();
+            };
+            let sid = *sid;
 
             let expected = ctx.store.struct_value(sid).gen_count;
             if generics.len() != expected {
@@ -3194,20 +3361,12 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
     }
 }
 
-fn resolve_struct_id_from_cluster(ctx: &mut InferState, base: CId) -> Option<Result<StructId,()>>{
-    let root = find_root(&mut ctx.parent, base);
-    match ctx.cluster[root].state {
-        ResolveKind::Solved(t) => match ctx.store.type_value(t) {
-            TypeValue::Struct { id, generics: _ } => Some(Ok(*id)),
-            _ => Some(Err(())),
-        },
-        ResolveKind::Struct(call) => Some(Ok(ctx.struct_infers[call.0].sid)),
-        ResolveKind::Nothing=>None,
-        _ => Some(Err(())),
+fn get_type_name(prog: &Program, t: TExpId) -> Option<NameId> {
+    match prog.type_expr(t) {
+        TypeExpr::NameRef(n) => Some(n),
+        _ => None,
     }
 }
-
-
 
 fn gather_func_signature<const ALLOW_GENERICS: bool>(
     ctx: &mut InferState,
@@ -3946,12 +4105,69 @@ fn resolve_struct_types(ctx: &mut InferState) -> bool {
 }
 
 #[inline(always)]
+fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
+    let mut change = false;
+    let mut pending = std::mem::take(&mut ctx.pending_specializations);
+
+    pending.retain_mut(|p| {
+        let Some(base_type) = ctx.ans.typedef_types.get(&p.global).copied() else {
+            return true;
+        };
+
+        let sid = match ctx.store.type_value(base_type) {
+            TypeValue::Struct { id: sid, .. } => *sid,
+            _ => {
+                let loc = ctx.program.type_expr_loc(p.global);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "only struct types can be specialized",
+                });
+                change = true;
+                return false;
+            }
+        };
+
+        let expected = ctx.store.struct_value(sid).gen_count;
+        if p.generics.len() != expected {
+            let loc = ctx.program.type_expr_loc(p.global);
+            ctx.errors.push(TypeError::Simple {
+                loc,
+                message: "wrong number of generic arguments for struct type",
+            });
+            change = true;
+            return false;
+        }
+
+        let found = ctx.new_struct_instance(sid, p.generics.clone());
+        if let Err(clash) = ctx.unify(found, p.output) {
+            ctx.errors.push(TypeError::TypeClashBeforeMentioned {
+                name: p.name,
+                expr: p.global,
+                clash,
+            });
+        }
+
+        change = true;
+        false
+    });
+
+    ctx.pending_specializations = pending;
+    change
+}
+
+#[inline(always)]
 fn resolve_ptr_types(ctx: &mut InferState) -> bool {
     let mut change = false;
     for cid in (0..ctx.cluster.len()).map(CId) {
         if let ResolveKind::Ptr { tgt, raw, mutable } = ctx.cluster[cid].state
-            && let Some(t) =
-                try_resolve_ptr_type(ctx.store, &mut ctx.parent, &mut ctx.cluster, tgt, raw, mutable)
+            && let Some(t) = try_resolve_ptr_type(
+                ctx.store,
+                &mut ctx.parent,
+                &mut ctx.cluster,
+                tgt,
+                raw,
+                mutable,
+            )
         {
             ctx.cluster[cid].state = ResolveKind::Solved(t);
             change = true;
@@ -4218,7 +4434,8 @@ mod type_infer_tests {
         let mut solved_types = SolvedTypes::new(&program);
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
         let f = find_value_by_name(&program, "f");
-        let solved_types = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
 
         let a_ty = find_let_stmt_type(&program, &solved_types, f, "a");
         let b_ty = find_let_stmt_type(&program, &solved_types, f, "b");
@@ -4235,8 +4452,7 @@ mod type_infer_tests {
             else {
                 return false;
             };
-            got_raw
-                == raw
+            got_raw == raw
                 && got_mut == mutable
                 && matches!(store.type_value(tgt), TypeValue::Builtin(BuiltinType::Int))
         };
@@ -4511,6 +4727,22 @@ mod type_infer_tests {
             field_ty, ty,
             "recursive field should point to the struct type itself"
         );
+    }
+    #[test]
+    fn recursive_structs_with_generics() {
+        let mut store = TypeStore::new();
+        infer_fn(
+            r#"
+                type A = struct[T]{next:*A[T],other:B[T]}
+                type B = struct[T]{value:T,parent:*A[T]}
+                f=fn[T](a:A)->T {
+                    let b = a.other;
+                    b.value
+                }
+            "#,
+            &mut store,
+        )
+        .unwrap();
     }
 
     #[test]
