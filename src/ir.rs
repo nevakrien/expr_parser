@@ -552,16 +552,14 @@ impl Program {
     }
 
     #[inline]
-    fn lower_value_into(&mut self, target: ValId, expr: LExpr) -> CResult<ValId> {
+    fn lower_value_into(&mut self, target: ValId, mut expr: LExpr) -> CResult<ValId> {
         let loc = expr.loc.clone();
-        if let Expr::Prefix(op, items) = expr.value {
-            if op.value == "goto" {
-                return self.lower_goto_into(target, loc, op, items);
-            }
 
-            let value = self.lower_value_inner(loc.clone().with(Expr::Prefix(op, items)))?;
-            self.set_value(target, loc, value);
-            return Ok(target);
+        //gotos have to know the valid
+        if let Expr::Prefix(ref op, ref mut items) = expr.value {
+            if op.value == "goto" {
+                return self.lower_goto_into(target, loc, op.clone(), items);
+            }
         }
 
         let value = self.lower_value_inner(expr)?;
@@ -977,7 +975,7 @@ impl Program {
         target: ValId,
         loc: Loc,
         op: LFixed,
-        mut items: Vec<LExpr>,
+        items: &mut Vec<LExpr>,
     ) -> CResult<ValId> {
         if !self.in_function_body() {
             return Err(CompileError::SimpleError {
