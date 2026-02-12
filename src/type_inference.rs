@@ -16,14 +16,14 @@ use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{
-    AssignOp, BinOp, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, UnOp, ValId,
-    Value,
+    AssignOp, BinOp, Dir, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, UnOp,
+    ValId, Value,
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
     ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR, DIV_STR,
     EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
-    SHL_STR, SHR_STR, SUB_STR, StrId,
+    POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SUB_STR, StrId,
 };
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -1068,6 +1068,7 @@ struct InferState<'a> {
     //requirments
     bin_op_sites: Vec<BinOpSite>,
     un_op_sites: Vec<UnOpSite>,
+    assign_op_sites: Vec<AssignPrePostSite>,
     func_defs: Vec<FuncInfer>,
     struct_defs: Vec<StructDef>,
     struct_infers: Vec<StructInfer>,
@@ -1194,6 +1195,23 @@ struct UnOpSite {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum AssignIncDecFlavor {
+    PreInc,
+    PostInc,
+    PreDec,
+    PostDec,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AssignPrePostSite {
+    loc: ValId,
+    target_val: ValId,
+    target: CId,
+    implicit_rhs: CId,
+    flavor: AssignIncDecFlavor,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct PendingMemberMethodType {
     site: ValId,
     member: StrId,
@@ -1299,6 +1317,7 @@ impl<'a> InferState<'a> {
             cluster: ClusterVec::new(),
             bin_op_sites: Vec::new(),
             un_op_sites: Vec::new(),
+            assign_op_sites: Vec::new(),
             func_defs: Vec::new(),
             struct_defs: Vec::new(),
             struct_infers: Vec::new(),
@@ -1326,6 +1345,7 @@ impl<'a> InferState<'a> {
             cluster,
             bin_op_sites,
             un_op_sites,
+            assign_op_sites,
             func_defs,
             struct_defs,
             struct_infers,
@@ -1345,11 +1365,12 @@ impl<'a> InferState<'a> {
         local_types.clear();
         names.clear();
 
-        *parent = ClusterVec::new();
-        *cluster = ClusterVec::new();
+        parent.0.clear();
+        cluster.0.clear();
 
         bin_op_sites.clear();
         un_op_sites.clear();
+        assign_op_sites.clear();
         func_defs.clear();
         struct_defs.clear();
         struct_infers.clear();
@@ -3490,27 +3511,85 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             tgt
         }
 
-        Value::Assign {
-            op: AssignOp::Nothing(value),
-            target,
-        } => {
+        Value::Assign { op, target } => {
             let lhs = gather_constraints(ctx, target, current_output);
             ctx.bind_val(v, lhs);
 
-            let rhs = gather_constraints(ctx, value, current_output);
-            if let Err(clash) = ctx.unify(rhs, lhs) {
-                ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason: "assignment requires both sides match",
-                    site: v,
-                    found: value,
-                    expected_place: target,
-                    clash,
-                });
+            match op {
+                AssignOp::Nothing(value) => {
+                    let rhs = gather_constraints(ctx, value, current_output);
+                    if let Err(clash) = ctx.unify(rhs, lhs) {
+                        ctx.push_error(TypeError::ValuesContradict {
+                            expectation_reason: "assignment requires both sides match",
+                            site: v,
+                            found: value,
+                            expected_place: target,
+                            clash,
+                        });
+                    }
+                }
+                AssignOp::Bin(bin_op, value) => {
+                    let rhs = gather_constraints(ctx, value, current_output);
+                    let mut site = BinOpSite {
+                        loc: v,
+                        op: bin_op,
+                        lhs_val: target,
+                        rhs_val: value,
+                        lhs,
+                        rhs,
+                        output: lhs,
+                    };
+                    let outcome = resolve_operator_site(
+                        ctx.store,
+                        &mut ctx.parent,
+                        &mut ctx.cluster,
+                        &mut ctx.func_defs,
+                        &mut ctx.struct_infers,
+                        &mut ctx.member_method_type_sites,
+                        &mut ctx.errors,
+                        &mut site,
+                        ctx.program,
+                        &*ctx.ans,
+                    );
+                    if outcome.retain {
+                        ctx.bin_op_sites.push(site);
+                    }
+                }
+                AssignOp::Pre(dir) | AssignOp::Post(dir) => {
+                    let implicit_rhs = ctx.new_int_like(v);
+                    let flavor = match (matches!(op, AssignOp::Post(_)), dir) {
+                        (false, Dir::Inc) => AssignIncDecFlavor::PreInc,
+                        (true, Dir::Inc) => AssignIncDecFlavor::PostInc,
+                        (false, Dir::Dec) => AssignIncDecFlavor::PreDec,
+                        (true, Dir::Dec) => AssignIncDecFlavor::PostDec,
+                    };
+                    let mut site = AssignPrePostSite {
+                        loc: v,
+                        target_val: target,
+                        target: lhs,
+                        implicit_rhs,
+                        flavor,
+                    };
+                    let outcome = resolve_assign_pre_post_site(
+                        ctx.store,
+                        &mut ctx.parent,
+                        &mut ctx.cluster,
+                        &mut ctx.func_defs,
+                        &mut ctx.struct_infers,
+                        &mut ctx.member_method_type_sites,
+                        &mut ctx.errors,
+                        &mut site,
+                        ctx.program,
+                        &*ctx.ans,
+                    );
+                    if outcome.retain {
+                        ctx.assign_op_sites.push(site);
+                    }
+                }
             }
 
             lhs
         }
-        Value::Assign { .. } => todo!(),
 
         Value::Block {
             statements,
@@ -4568,7 +4647,10 @@ fn is_binary_operator_overload_name(name: StrId) -> bool {
 
 #[inline(always)]
 fn is_unary_operator_overload_name(name: StrId) -> bool {
-    matches!(name, NEG_STR | NOT_STR | BITNOT_STR)
+    matches!(
+        name,
+        NEG_STR | NOT_STR | BITNOT_STR | PRE_INC_STR | POST_INC_STR | PRE_DEC_STR | POST_DEC_STR
+    )
 }
 
 #[inline(always)]
@@ -5174,6 +5256,24 @@ fn un_op_overload_name(op: UnOp) -> StrId {
         UnOp::Neg => NEG_STR,
         UnOp::Not => NOT_STR,
         UnOp::BitNot => BITNOT_STR,
+    }
+}
+
+#[inline(always)]
+fn assign_inc_dec_overload_name(flavor: AssignIncDecFlavor) -> StrId {
+    match flavor {
+        AssignIncDecFlavor::PreInc => PRE_INC_STR,
+        AssignIncDecFlavor::PostInc => POST_INC_STR,
+        AssignIncDecFlavor::PreDec => PRE_DEC_STR,
+        AssignIncDecFlavor::PostDec => POST_DEC_STR,
+    }
+}
+
+#[inline(always)]
+fn assign_inc_dec_fallback_bin_op(flavor: AssignIncDecFlavor) -> BinOp {
+    match flavor {
+        AssignIncDecFlavor::PreInc | AssignIncDecFlavor::PostInc => BinOp::Add,
+        AssignIncDecFlavor::PreDec | AssignIncDecFlavor::PostDec => BinOp::Sub,
     }
 }
 
@@ -6105,6 +6205,143 @@ fn resolve_unary_operator_site(
 }
 
 #[inline(always)]
+fn resolve_assign_pre_post_site(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    errors: &mut Vec<TypeError>,
+    site: &mut AssignPrePostSite,
+    program: &Program,
+    ans: &SolvedTypes,
+) -> ResolveOutcome {
+    let mut progress = false;
+    let target = find_root(parent, site.target);
+    let implicit_rhs = find_root(parent, site.implicit_rhs);
+
+    let target_kind = classify_operand(store, parent, cluster, struct_infers, target);
+    if let OperandKind::UserStruct(struct_name) = target_kind {
+        let Some(struct_name) = struct_name else {
+            unreachable!("member overload lookup requires named user struct")
+        };
+
+        let method_name = assign_inc_dec_overload_name(site.flavor);
+        let method = program
+            .member_methods
+            .get(&struct_name)
+            .and_then(|methods| methods.get(&method_name))
+            .copied();
+
+        if let Some(method) = method {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                ans,
+                method,
+                struct_name,
+                site.loc,
+            ) else {
+                return ResolveOutcome::drop(false);
+            };
+
+            if overload_sig.params.len() != 1 {
+                return ResolveOutcome::drop(false);
+            }
+
+            let overload_mismatch: Result<(), TypeClash> = (|| {
+                let full_method = overload_sig.full_method;
+                let method_closure = make_member_closure(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    target,
+                    overload_sig,
+                    site.loc,
+                )?;
+                let expected_fn = new_func(
+                    parent,
+                    cluster,
+                    func_defs,
+                    FuncInfer {
+                        loc: site.loc,
+                        calling_convention: CallingConvention::Unknown,
+                        inputs: Vec::new(),
+                        output: target,
+                    },
+                );
+                progress |= unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    method_closure,
+                    expected_fn,
+                )?;
+                member_method_type_sites.push(PendingMemberMethodType {
+                    site: site.loc,
+                    member: method_name,
+                    full_method,
+                    receiver: target,
+                    receiver_value: site.target_val,
+                });
+                Ok(())
+            })();
+
+            if let Err(clash) = overload_mismatch {
+                errors.push(TypeError::ValuesContradict {
+                    expectation_reason: OP_OVERLOAD_SIGNATURE_MISMATCH,
+                    site: site.loc,
+                    found: site.target_val,
+                    expected_place: site.loc,
+                    clash,
+                });
+                return ResolveOutcome::drop(false);
+            }
+
+            return ResolveOutcome::drop(progress);
+        }
+    }
+
+    let mut fallback_site = BinOpSite {
+        loc: site.loc,
+        op: assign_inc_dec_fallback_bin_op(site.flavor),
+        lhs_val: site.target_val,
+        rhs_val: site.loc,
+        lhs: target,
+        rhs: implicit_rhs,
+        output: target,
+    };
+
+    let outcome = resolve_operator_site(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        member_method_type_sites,
+        errors,
+        &mut fallback_site,
+        program,
+        ans,
+    );
+    progress |= outcome.progress;
+    if outcome.retain {
+        site.target = fallback_site.lhs;
+        site.implicit_rhs = fallback_site.rhs;
+        return ResolveOutcome::keep(progress);
+    }
+    ResolveOutcome::drop(progress)
+}
+
+#[inline(always)]
 fn resolve_operator_types(ctx: &mut InferState) -> bool {
     let mut progress = false;
     let (
@@ -6116,6 +6353,7 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
         member_method_type_sites,
         bin_op_sites,
         un_op_sites,
+        assign_op_sites,
         errors,
         ans,
     ) = (
@@ -6127,6 +6365,7 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
         &mut ctx.member_method_type_sites,
         &mut ctx.bin_op_sites,
         &mut ctx.un_op_sites,
+        &mut ctx.assign_op_sites,
         &mut ctx.errors,
         &*ctx.ans,
     );
@@ -6150,6 +6389,23 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
 
     un_op_sites.retain_mut(|site| {
         let outcome = resolve_unary_operator_site(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            member_method_type_sites,
+            errors,
+            site,
+            ctx.program,
+            ans,
+        );
+        progress |= outcome.progress;
+        outcome.retain
+    });
+
+    assign_op_sites.retain_mut(|site| {
+        let outcome = resolve_assign_pre_post_site(
             store,
             parent,
             cluster,
@@ -7871,6 +8127,42 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn compound_assignment_reuses_binary_operator_resolution() {
+        let src = "S=struct{}; S.__add = fn(self:S, rhs:int)->S { self }; f=fn(){ let s = S{}; s += 1:int; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn inc_dec_assign_falls_back_to_add_sub_overloads_with_implicit_int_rhs() {
+        let src = "S=struct{}; S.__add = fn(self:S, rhs:usize)->S { self }; S.__sub = fn(self:S, rhs:int)->S { self }; f=fn(){ let s = S{}; ++s; s--; --s; s++; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn inc_dec_assign_can_use_dedicated_pre_post_overloads() {
+        let src = "S=struct{}; S.__pre_inc = fn(self:S)->S { self }; S.__post_inc = fn(self:S)->S { self }; S.__pre_dec = fn(self:S)->S { self }; S.__post_dec = fn(self:S)->S { self }; f=fn(){ let s = S{}; ++s; s++; --s; s--; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
     fn member_access_uses_curried_type_and_tracks_full_signature_for_by_value_self() {
         let src = "S=struct{}; S.add_5 = fn(self:S)->S { self }; f=fn(x:S){ let y = x.add_5(); };";
         let program = gather_program(src);
@@ -8235,6 +8527,20 @@ mod type_infer_tests {
     #[test]
     fn unary_member_overload_disallows_extra_params() {
         let errs = infer_global_errs("S=struct{}; S.__bitnot = fn(self:S, x:int){ }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "unary operator overloads must not take parameters after `self`",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn inc_dec_member_overloads_share_unary_signature_requirements() {
+        let errs = infer_global_errs("S=struct{}; S.__pre_inc = fn(self:S, x:int){ }; f=fn(){};");
         assert!(errs.iter().any(|err| {
             matches!(
                 err,

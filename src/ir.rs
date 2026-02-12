@@ -864,14 +864,13 @@ impl Program {
 
         let arms = self.reserve_value_span(items.len());
         for (id, arm_expr) in arms.ids().zip(items) {
-            self.with_scope(|p|{
+            self.with_scope(|p| {
                 let loc = arm_expr.loc.clone();
                 let arm = p.lower_match_arm(arm_expr)?;
                 p.set_value(id, loc, Value::MatchArm(arm));
                 Ok(())
             })?;
-            
-        };
+        }
 
         Ok(Value::Match { value, arms })
     }

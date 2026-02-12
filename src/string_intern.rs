@@ -40,6 +40,10 @@ pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
     "__neg",
     "__not",
     "__bitnot",
+    "__pre_inc",
+    "__post_inc",
+    "__pre_dec",
+    "__post_dec",
 ];
 
 const fn const_str_eq(a: &str, b: &str) -> bool {
@@ -112,6 +116,10 @@ pub const GE_STR: StrId = get_known_strid("__ge");
 pub const NEG_STR: StrId = get_known_strid("__neg");
 pub const NOT_STR: StrId = get_known_strid("__not");
 pub const BITNOT_STR: StrId = get_known_strid("__bitnot");
+pub const PRE_INC_STR: StrId = get_known_strid("__pre_inc");
+pub const POST_INC_STR: StrId = get_known_strid("__post_inc");
+pub const PRE_DEC_STR: StrId = get_known_strid("__pre_dec");
+pub const POST_DEC_STR: StrId = get_known_strid("__post_dec");
 pub const FREE_STR: StrId = get_known_strid("__free");
 pub const DEREF_STR: StrId = get_known_strid("__deref");
 pub const DEREF_MUT_STR: StrId = get_known_strid("__deref_mut");

@@ -284,6 +284,9 @@ Then `finalize`:
 ## Operator Resolution Notes
 
 - Operators are deferred as `BinOpSite` / `UnOpSite` and revisited during solver iterations.
+- Assignment operators are now also deferred for operator-driven cases:
+  - `a <op>= b` (`AssignOp::Bin`) is modeled as the same binary operator site as `a <op> b` with output constrained to `a`.
+  - `++a` / `a++` / `--a` / `a--` are solved through assignment-op sites that (a) prefer dedicated overload names, then (b) fall back to `__add` / `__sub` with an implicit int-like rhs and output constrained to the target.
 - `unify_if_distinct` is the main operator-resolution merge primitive.
 - Builtin legality checks are tri-state (`true` / `false` / `unknown`) to avoid premature hard errors.
 - Builtin binary pointer arithmetic now supports raw pointers only: `*T` / `*const T` can do `ptr + int`, `int + ptr`, and `ptr - int` (result keeps pointer type), plus `ptr - ptr` (both operands must be compatible raw pointers, result is `isize`).
@@ -299,7 +302,7 @@ Then `finalize`:
 - Operator overload resolution assumes global signatures are already solved before function-body inference (`infer_global_types` first); missing method type/function-shape in this stage is treated as an internal-invariant violation (`unreachable!`).
 - Even though runtime/operator-call dispatch is still TODO, signature validation now enforces shape rules for special member names:
   - binary overload names (`__add`, `__sub`, etc.): `self`-like first parameter + exactly one extra parameter,
-  - unary overload names (`__neg`, `__not`, `__bitnot`): `self`-like first parameter + no extra parameters,
+  - unary overload names (`__neg`, `__not`, `__bitnot`, `__pre_inc`, `__post_inc`, `__pre_dec`, `__post_dec`): `self`-like first parameter + no extra parameters,
   - `__free`: first parameter must be `&mut self`, no extra parameters, return type `void`; checks short-circuit on the first failing `__free` requirement so one root error is emitted.
   - `__deref`: first parameter must be `&self`, no extra parameters, and return type must be a non-raw shared reference (`&T`).
   - `__deref_mut`: first parameter must be `&mut self`, no extra parameters, and return type must be a non-raw mutable reference (`&mut T`).
