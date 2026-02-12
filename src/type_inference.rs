@@ -1068,10 +1068,11 @@ struct InferState<'a> {
     //requirments
     bin_op_sites: Vec<BinOpSite>,
     un_op_sites: Vec<UnOpSite>,
-    assign_op_sites: Vec<AssignPrePostSite>,
+    assign_pre_post_sites: Vec<AssignPrePostSite>,
     func_defs: Vec<FuncInfer>,
     struct_defs: Vec<StructDef>,
     struct_infers: Vec<StructInfer>,
+    tuple_infers: Vec<TupleInfer>,
     generic_func_values: Vec<(ValId, usize)>,
     pending_specializations: Vec<PendingSpecialization>,
     member_method_type_sites: Vec<PendingMemberMethodType>,
@@ -1095,6 +1096,9 @@ struct FuncInferId(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct StructInferId(usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct TupleInferId(usize);
+
 #[derive(Debug, Clone, Copy)]
 enum ResolveKind {
     Solved(TypeId),
@@ -1110,6 +1114,11 @@ enum ResolveKind {
     ///not all functions are like this but if something is declared as a function its this
     Func(FuncInferId),
     Struct(StructInferId),
+    Tuple(TupleInferId),
+    Array {
+        element: CId,
+        len: usize,
+    },
 
     Ptr {
         tgt: CId,
@@ -1131,6 +1140,11 @@ struct FuncInfer {
 struct StructInfer {
     sid: StructId,
     generics: Vec<CId>,
+}
+
+#[derive(Debug)]
+struct TupleInfer {
+    items: Vec<CId>,
 }
 
 #[derive(Debug)]
@@ -1299,6 +1313,30 @@ fn new_struct_instance(
     id
 }
 
+fn new_tuple_instance(
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    tuple_infers: &mut Vec<TupleInfer>,
+    items: Vec<CId>,
+) -> CId {
+    let tuple_id = TupleInferId(tuple_infers.len());
+    tuple_infers.push(TupleInfer { items });
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::Tuple(tuple_id);
+    id
+}
+
+fn new_array_instance(
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    element: CId,
+    len: usize,
+) -> CId {
+    let id = new_cluster(parent, cluster);
+    cluster[id].state = ResolveKind::Array { element, len };
+    id
+}
+
 fn bind_val(val_cluster: &mut Vec<(ValId, CId)>, v: ValId, c: CId) {
     val_cluster.push((v, c));
 }
@@ -1317,10 +1355,11 @@ impl<'a> InferState<'a> {
             cluster: ClusterVec::new(),
             bin_op_sites: Vec::new(),
             un_op_sites: Vec::new(),
-            assign_op_sites: Vec::new(),
+            assign_pre_post_sites: Vec::new(),
             func_defs: Vec::new(),
             struct_defs: Vec::new(),
             struct_infers: Vec::new(),
+            tuple_infers: Vec::new(),
             generic_func_values: Vec::new(),
             pending_specializations: Vec::new(),
             member_method_type_sites: Vec::new(),
@@ -1345,10 +1384,11 @@ impl<'a> InferState<'a> {
             cluster,
             bin_op_sites,
             un_op_sites,
-            assign_op_sites,
+            assign_pre_post_sites,
             func_defs,
             struct_defs,
             struct_infers,
+            tuple_infers,
             generic_func_values,
             pending_specializations,
             member_method_type_sites,
@@ -1370,10 +1410,11 @@ impl<'a> InferState<'a> {
 
         bin_op_sites.clear();
         un_op_sites.clear();
-        assign_op_sites.clear();
+        assign_pre_post_sites.clear();
         func_defs.clear();
         struct_defs.clear();
         struct_infers.clear();
+        tuple_infers.clear();
         generic_func_values.clear();
         pending_specializations.clear();
         member_method_type_sites.clear();
@@ -1417,6 +1458,19 @@ impl<'a> InferState<'a> {
         )
     }
 
+    fn new_tuple_instance(&mut self, items: Vec<CId>) -> CId {
+        new_tuple_instance(
+            &mut self.parent,
+            &mut self.cluster,
+            &mut self.tuple_infers,
+            items,
+        )
+    }
+
+    fn new_array_instance(&mut self, element: CId, len: usize) -> CId {
+        new_array_instance(&mut self.parent, &mut self.cluster, element, len)
+    }
+
     fn bind_val(&mut self, v: ValId, c: CId) {
         bind_val(&mut self.val_cluster, v, c);
     }
@@ -1436,6 +1490,7 @@ impl<'a> InferState<'a> {
             &mut self.cluster,
             &mut self.func_defs,
             &mut self.struct_infers,
+            &mut self.tuple_infers,
             a,
             b,
         )
@@ -1448,6 +1503,7 @@ impl<'a> InferState<'a> {
             &mut self.cluster,
             &mut self.func_defs,
             &mut self.struct_infers,
+            &mut self.tuple_infers,
             a,
             t,
         )
@@ -1473,6 +1529,7 @@ fn unify_clusters(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     found: CId,
     wanted: CId,
 ) -> Result<CId, TypeClash> {
@@ -1482,6 +1539,7 @@ fn unify_clusters(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         found,
         wanted,
     )
@@ -1493,6 +1551,7 @@ fn unify_clusters_inlined(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     found: CId,
     wanted: CId,
 ) -> Result<CId, TypeClash> {
@@ -1510,7 +1569,16 @@ fn unify_clusters_inlined(
     }
 
     // Try found <- wanted
-    if _try_absorb(store, parent, cluster, func_defs, struct_infers, rw, rf)? {
+    if _try_absorb(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        rw,
+        rf,
+    )? {
         if rf != parent[rf] {
             todo!()
         }
@@ -1520,8 +1588,17 @@ fn unify_clusters_inlined(
     }
 
     // Otherwise try wanted <- found
-    if _try_absorb(store, parent, cluster, func_defs, struct_infers, rf, rw)
-        .map_err(TypeClash::swap)?
+    if _try_absorb(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        rf,
+        rw,
+    )
+    .map_err(TypeClash::swap)?
     {
         if rw != parent[rw] {
             todo!()
@@ -1533,8 +1610,24 @@ fn unify_clusters_inlined(
 
     // Neither direction worked → real contradiction
     Err(TypeClash {
-        found: extract_bad_type(store, parent, cluster, func_defs, struct_infers, found),
-        wanted: extract_bad_type(store, parent, cluster, func_defs, struct_infers, wanted),
+        found: extract_bad_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            found,
+        ),
+        wanted: extract_bad_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            wanted,
+        ),
     })
 }
 
@@ -1545,6 +1638,7 @@ fn _try_absorb(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     dst: CId,
     src: CId,
 ) -> Result<bool, TypeClash> {
@@ -1625,6 +1719,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_call,
                     src_call,
                 ));
@@ -1636,13 +1731,25 @@ fn _try_absorb(
                     let src_call = &func_defs[src_call.0];
                     (dst_call.inputs[i], src_call.inputs[i])
                 };
-                if unify_clusters(store, parent, cluster, func_defs, struct_infers, a, b).is_err() {
+                if unify_clusters(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    a,
+                    b,
+                )
+                .is_err()
+                {
                     return Err(func_call_clash(
                         store,
                         parent,
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         dst_call,
                         src_call,
                     ));
@@ -1659,6 +1766,7 @@ fn _try_absorb(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 dst_out,
                 src_out,
             )
@@ -1670,6 +1778,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_call,
                     src_call,
                 ));
@@ -1687,6 +1796,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_call,
                     src_call,
                 ));
@@ -1701,7 +1811,16 @@ fn _try_absorb(
         }
 
         (Solved(t), Func(call)) => {
-            unify_func_with_type(store, parent, cluster, func_defs, struct_infers, call, t)?;
+            unify_func_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                call,
+                t,
+            )?;
             Ok(true)
         }
 
@@ -1718,6 +1837,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_call,
                     src_call,
                 ));
@@ -1735,6 +1855,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_call,
                     src_call,
                 ));
@@ -1746,13 +1867,25 @@ fn _try_absorb(
                     let src_call = &struct_infers[src_call.0];
                     (dst_call.generics[i], src_call.generics[i])
                 };
-                if unify_clusters(store, parent, cluster, func_defs, struct_infers, a, b).is_err() {
+                if unify_clusters(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    a,
+                    b,
+                )
+                .is_err()
+                {
                     return Err(struct_call_clash(
                         store,
                         parent,
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         dst_call,
                         src_call,
                     ));
@@ -1768,7 +1901,16 @@ fn _try_absorb(
         }
 
         (Solved(t), Struct(call)) => {
-            unify_struct_with_type(store, parent, cluster, func_defs, struct_infers, call, t)?;
+            unify_struct_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                call,
+                t,
+            )?;
             Ok(true)
         }
 
@@ -1779,6 +1921,7 @@ fn _try_absorb(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 tgt,
                 raw,
                 mutable,
@@ -1806,6 +1949,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     src_tgt,
                     src_raw,
                     src_mut,
@@ -1816,6 +1960,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_tgt,
                     dst_raw,
                     dst_mut,
@@ -1828,6 +1973,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     src_tgt,
                     src_raw,
                     src_mut,
@@ -1838,6 +1984,7 @@ fn _try_absorb(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     dst_tgt,
                     dst_raw,
                     dst_mut,
@@ -1850,11 +1997,155 @@ fn _try_absorb(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 dst_tgt,
                 src_tgt,
             )?;
 
             cluster[dst].state = Ptr { tgt, raw, mutable };
+            Ok(true)
+        }
+
+        (Tuple(dst_tuple), Tuple(src_tuple)) => {
+            let (dst_len, src_len) = {
+                let dst_tuple = &tuple_infers[dst_tuple.0];
+                let src_tuple = &tuple_infers[src_tuple.0];
+                (dst_tuple.items.len(), src_tuple.items.len())
+            };
+            if dst_len != src_len {
+                return Err(tuple_call_clash(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    dst_tuple,
+                    src_tuple,
+                ));
+            }
+
+            for i in 0..dst_len {
+                let (a, b) = {
+                    let dst_tuple = &tuple_infers[dst_tuple.0];
+                    let src_tuple = &tuple_infers[src_tuple.0];
+                    (dst_tuple.items[i], src_tuple.items[i])
+                };
+                if unify_clusters(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    a,
+                    b,
+                )
+                .is_err()
+                {
+                    return Err(tuple_call_clash(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        tuple_infers,
+                        dst_tuple,
+                        src_tuple,
+                    ));
+                }
+            }
+
+            if let Some(t) = try_resolve_tuple_type(store, parent, cluster, tuple_infers, dst_tuple)
+            {
+                cluster[dst].state = Solved(t);
+            }
+            Ok(true)
+        }
+
+        (Solved(t), Tuple(tuple_id)) => {
+            unify_tuple_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                tuple_id,
+                t,
+            )?;
+            Ok(true)
+        }
+
+        (
+            Array {
+                element: dst_element,
+                len: dst_len,
+            },
+            Array {
+                element: src_element,
+                len: src_len,
+            },
+        ) => {
+            if dst_len != src_len {
+                return Err(array_call_clash(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    dst_element,
+                    dst_len,
+                    src_element,
+                    src_len,
+                ));
+            }
+
+            if unify_clusters(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                dst_element,
+                src_element,
+            )
+            .is_err()
+            {
+                return Err(array_call_clash(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    dst_element,
+                    dst_len,
+                    src_element,
+                    src_len,
+                ));
+            }
+
+            if let Some(t) = try_resolve_array_type(store, parent, cluster, dst_element, dst_len) {
+                cluster[dst].state = Solved(t);
+            }
+            Ok(true)
+        }
+
+        (Solved(t), Array { element, len }) => {
+            unify_array_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                element,
+                len,
+                t,
+            )?;
             Ok(true)
         }
 
@@ -1871,6 +2162,7 @@ fn force_type(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     target: CId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -1904,12 +2196,59 @@ fn force_type(
             Ok(())
         }
         ResolveKind::Func(call) => {
-            unify_func_with_type(store, parent, cluster, func_defs, struct_infers, call, ty)?;
+            unify_func_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                call,
+                ty,
+            )?;
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
         ResolveKind::Struct(call) => {
-            unify_struct_with_type(store, parent, cluster, func_defs, struct_infers, call, ty)?;
+            unify_struct_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                call,
+                ty,
+            )?;
+            cluster[root].state = ResolveKind::Solved(ty);
+            Ok(())
+        }
+        ResolveKind::Tuple(call) => {
+            unify_tuple_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                call,
+                ty,
+            )?;
+            cluster[root].state = ResolveKind::Solved(ty);
+            Ok(())
+        }
+        ResolveKind::Array { element, len } => {
+            unify_array_with_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                element,
+                len,
+                ty,
+            )?;
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
@@ -1920,6 +2259,7 @@ fn force_type(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 tgt,
                 raw,
                 mutable,
@@ -1961,6 +2301,7 @@ fn unify_ptr_with_type(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     tgt: CId,
     raw: Option<bool>,
     mutable: Option<bool>,
@@ -1980,6 +2321,7 @@ fn unify_ptr_with_type(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 tgt,
                 raw,
                 mutable,
@@ -1996,6 +2338,7 @@ fn unify_ptr_with_type(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 tgt,
                 raw,
                 mutable,
@@ -2009,6 +2352,7 @@ fn unify_ptr_with_type(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         tgt,
         ty_tgt,
     )
@@ -2020,6 +2364,7 @@ fn unify_func_with_type(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -2047,6 +2392,7 @@ fn unify_func_with_type(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 call,
             ))),
         });
@@ -2081,6 +2427,7 @@ fn unify_func_with_type(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             input,
             param_ty,
         )?;
@@ -2093,6 +2440,7 @@ fn unify_func_with_type(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         output,
         ret,
     )?;
@@ -2106,6 +2454,7 @@ fn unify_struct_with_type(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     call: StructInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
@@ -2133,10 +2482,138 @@ fn unify_struct_with_type(
             unreachable!();
         };
         let t = generics[i];
-        force_type(store, parent, cluster, func_defs, struct_infers, input, t)?;
+        force_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            input,
+            t,
+        )?;
     }
 
     Ok(())
+}
+
+fn unify_tuple_with_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
+    tuple: TupleInferId,
+    ty: TypeId,
+) -> Result<(), TypeClash> {
+    let ilen = tuple_infers[tuple.0].items.len();
+    let TypeValue::Tuple(items) = store.type_value(ty) else {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: Some(BadTypeId(make_tuple_mock(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                tuple,
+            ))),
+        });
+    };
+    if items.len() != ilen {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: Some(BadTypeId(make_tuple_mock(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                tuple,
+            ))),
+        });
+    }
+
+    for i in 0..ilen {
+        let TypeValue::Tuple(items) = store.type_value(ty) else {
+            unreachable!();
+        };
+        let item_ty = items[i];
+        let item = tuple_infers[tuple.0].items[i];
+        force_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            item,
+            item_ty,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn unify_array_with_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
+    element: CId,
+    len: usize,
+    ty: TypeId,
+) -> Result<(), TypeClash> {
+    let (ty_element, ty_len) = match store.type_value(ty) {
+        TypeValue::Array(item, n) => (*item, *n),
+        _ => {
+            return Err(TypeClash {
+                found: Some(BadTypeId(ty)),
+                wanted: Some(BadTypeId(make_array_mock(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    element,
+                    len,
+                ))),
+            });
+        }
+    };
+
+    if ty_len != len {
+        return Err(TypeClash {
+            found: Some(BadTypeId(ty)),
+            wanted: Some(BadTypeId(make_array_mock(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                element,
+                len,
+            ))),
+        });
+    }
+
+    force_type(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        element,
+        ty_element,
+    )
 }
 
 fn simple_type_clash(a: TypeId, b: TypeId) -> TypeClash {
@@ -2154,6 +2631,7 @@ fn mock_type_from_cluster(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     cid: CId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -2172,6 +2650,7 @@ fn mock_type_from_cluster(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             call,
             visiting,
         ),
@@ -2181,7 +2660,29 @@ fn mock_type_from_cluster(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             call,
+            visiting,
+        ),
+        ResolveKind::Tuple(call) => make_tuple_mock_inner(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            call,
+            visiting,
+        ),
+        ResolveKind::Array { element, len } => make_array_mock_inner(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            element,
+            len,
             visiting,
         ),
         ResolveKind::Ptr { tgt, raw, mutable } => make_ptr_mock_inner(
@@ -2190,6 +2691,7 @@ fn mock_type_from_cluster(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             tgt,
             raw,
             mutable,
@@ -2208,6 +2710,7 @@ fn make_func_mock_inner(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     call: FuncInferId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -2222,6 +2725,7 @@ fn make_func_mock_inner(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 input,
                 visiting,
             )
@@ -2233,6 +2737,7 @@ fn make_func_mock_inner(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         site.output,
         visiting,
     );
@@ -2250,6 +2755,7 @@ fn make_func_mock(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     call: FuncInferId,
 ) -> TypeId {
     let mut visiting = std::collections::HashSet::new();
@@ -2259,6 +2765,7 @@ fn make_func_mock(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         call,
         &mut visiting,
     )
@@ -2270,6 +2777,7 @@ fn make_struct_mock_inner(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     call: StructInferId,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
@@ -2284,6 +2792,7 @@ fn make_struct_mock_inner(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 input,
                 visiting,
             )
@@ -2301,6 +2810,7 @@ fn make_struct_mock(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     call: StructInferId,
 ) -> TypeId {
     let mut visiting = std::collections::HashSet::new();
@@ -2310,7 +2820,107 @@ fn make_struct_mock(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         call,
+        &mut visiting,
+    )
+}
+
+fn make_tuple_mock_inner(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
+    tuple: TupleInferId,
+    visiting: &mut std::collections::HashSet<CId>,
+) -> TypeId {
+    let items = tuple_infers[tuple.0]
+        .items
+        .iter()
+        .map(|&item| {
+            mock_type_from_cluster(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                item,
+                visiting,
+            )
+        })
+        .collect::<Vec<_>>();
+    store.intern(TypeValue::Tuple(items))
+}
+
+fn make_tuple_mock(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
+    tuple: TupleInferId,
+) -> TypeId {
+    let mut visiting = std::collections::HashSet::new();
+    make_tuple_mock_inner(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        tuple,
+        &mut visiting,
+    )
+}
+
+fn make_array_mock_inner(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
+    element: CId,
+    len: usize,
+    visiting: &mut std::collections::HashSet<CId>,
+) -> TypeId {
+    let element = mock_type_from_cluster(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        element,
+        visiting,
+    );
+    store.intern(TypeValue::Array(element, len))
+}
+
+fn make_array_mock(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
+    element: CId,
+    len: usize,
+) -> TypeId {
+    let mut visiting = std::collections::HashSet::new();
+    make_array_mock_inner(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        element,
+        len,
         &mut visiting,
     )
 }
@@ -2321,6 +2931,7 @@ fn make_ptr_mock_inner(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     tgt: CId,
     raw: Option<bool>,
     mutable: Option<bool>,
@@ -2332,6 +2943,7 @@ fn make_ptr_mock_inner(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         tgt,
         visiting,
     );
@@ -2348,6 +2960,7 @@ fn make_ptr_mock(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     tgt: CId,
     raw: Option<bool>,
     mutable: Option<bool>,
@@ -2359,6 +2972,7 @@ fn make_ptr_mock(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         tgt,
         raw,
         mutable,
@@ -2372,6 +2986,7 @@ fn func_call_clash(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     dst_call: FuncInferId,
     src_call: FuncInferId,
 ) -> TypeClash {
@@ -2382,6 +2997,7 @@ fn func_call_clash(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             src_call,
         ))),
         wanted: Some(BadTypeId(make_func_mock(
@@ -2390,6 +3006,7 @@ fn func_call_clash(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             dst_call,
         ))),
     }
@@ -2401,6 +3018,7 @@ fn struct_call_clash(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     dst_call: StructInferId,
     src_call: StructInferId,
 ) -> TypeClash {
@@ -2411,6 +3029,7 @@ fn struct_call_clash(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             src_call,
         ))),
         wanted: Some(BadTypeId(make_struct_mock(
@@ -2419,7 +3038,76 @@ fn struct_call_clash(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             dst_call,
+        ))),
+    }
+}
+
+fn tuple_call_clash(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
+    dst_tuple: TupleInferId,
+    src_tuple: TupleInferId,
+) -> TypeClash {
+    TypeClash {
+        found: Some(BadTypeId(make_tuple_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            src_tuple,
+        ))),
+        wanted: Some(BadTypeId(make_tuple_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            dst_tuple,
+        ))),
+    }
+}
+
+fn array_call_clash(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+    func_defs: &Vec<FuncInfer>,
+    struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
+    dst_element: CId,
+    dst_len: usize,
+    src_element: CId,
+    src_len: usize,
+) -> TypeClash {
+    TypeClash {
+        found: Some(BadTypeId(make_array_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            src_element,
+            src_len,
+        ))),
+        wanted: Some(BadTypeId(make_array_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            dst_element,
+            dst_len,
         ))),
     }
 }
@@ -2430,6 +3118,7 @@ fn extract_bad_type(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     cid: CId,
 ) -> Option<BadTypeId> {
     let root = find_root(parent, cid);
@@ -2442,6 +3131,7 @@ fn extract_bad_type(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             call,
         ))),
         ResolveKind::Struct(call) => Some(BadTypeId(make_struct_mock(
@@ -2450,7 +3140,27 @@ fn extract_bad_type(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             call,
+        ))),
+        ResolveKind::Tuple(call) => Some(BadTypeId(make_tuple_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            call,
+        ))),
+        ResolveKind::Array { element, len } => Some(BadTypeId(make_array_mock(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            element,
+            len,
         ))),
         ResolveKind::Ptr { tgt, raw, mutable } => Some(BadTypeId(make_ptr_mock(
             store,
@@ -2458,6 +3168,7 @@ fn extract_bad_type(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             tgt,
             raw,
             mutable,
@@ -2474,32 +3185,28 @@ fn specialize_type(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     ty: TypeId,
     generics: &[CId],
     loc: ValId,
 ) -> CId {
-    match store.type_value(ty) {
+    match store.type_value(ty).clone() {
         TypeValue::Generic(id) => generics.get(id.0).copied().unwrap(),
         TypeValue::Func {
             calling_convention,
             params,
             ret,
         } => {
-            let ret = *ret;
-            let plen = params.len();
-            let cc = *calling_convention;
-            let inputs = (0..plen)
-                .map(|i| {
-                    let TypeValue::Func { params, .. } = store.type_value(ty) else {
-                        unreachable!()
-                    };
-                    let t = params[i];
+            let inputs = params
+                .into_iter()
+                .map(|t| {
                     specialize_type(
                         store,
                         parent,
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         t,
                         generics,
                         loc,
@@ -2512,6 +3219,7 @@ fn specialize_type(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 ret,
                 generics,
                 loc,
@@ -2524,7 +3232,7 @@ fn specialize_type(
                     inputs,
                     output,
                     loc,
-                    calling_convention: cc,
+                    calling_convention,
                 },
             )
         }
@@ -2535,25 +3243,17 @@ fn specialize_type(
             if parts.is_empty() {
                 return new_solved(parent, cluster, ty);
             }
-            let id = *id;
-            let glen = parts.len();
 
-            let resolved = (0..glen)
-                .map(|i| {
-                    let TypeValue::Struct {
-                        id: _,
-                        generics: parts,
-                    } = store.type_value(ty)
-                    else {
-                        unreachable!();
-                    };
-                    let t = parts[i];
+            let resolved = parts
+                .into_iter()
+                .map(|t| {
                     specialize_type(
                         store,
                         parent,
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         t,
                         generics,
                         loc,
@@ -2562,19 +3262,14 @@ fn specialize_type(
                 .collect::<Vec<_>>();
             new_struct_instance(parent, cluster, struct_infers, id, resolved)
         }
-        TypeValue::Ptr { .. } => {
-            let (tgt, raw, mutable) = {
-                let TypeValue::Ptr { tgt, raw, mutable } = store.type_value(ty) else {
-                    unreachable!();
-                };
-                (*tgt, *raw, *mutable)
-            };
+        TypeValue::Ptr { tgt, raw, mutable } => {
             let target = specialize_type(
                 store,
                 parent,
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 tgt,
                 generics,
                 loc,
@@ -2587,8 +3282,40 @@ fn specialize_type(
             };
             ans
         }
+        TypeValue::Tuple(items) => {
+            let items = items
+                .into_iter()
+                .map(|item| {
+                    specialize_type(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        tuple_infers,
+                        item,
+                        generics,
+                        loc,
+                    )
+                })
+                .collect::<Vec<_>>();
+            new_tuple_instance(parent, cluster, tuple_infers, items)
+        }
+        TypeValue::Array(inner, len) => {
+            let inner = specialize_type(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                inner,
+                generics,
+                loc,
+            );
+            new_array_instance(parent, cluster, inner, len)
+        }
         TypeValue::Builtin(_) => new_solved(parent, cluster, ty),
-        TypeValue::Tuple(_) | TypeValue::Array(_, _) => todo!(),
         TypeValue::WithGenerics { .. } => unreachable!(
             "we only support generis outer most scope. this style of thing is a rank2 type and they can not be monomorphised in general"
         ),
@@ -2604,6 +3331,7 @@ fn solved_type_to_specialized_local(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     t: TypeId,
     loc: ValId,
 ) -> CId {
@@ -2615,6 +3343,7 @@ fn solved_type_to_specialized_local(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             body,
             &gens,
             loc,
@@ -2646,6 +3375,7 @@ fn global_to_specialized_local(ctx: &mut InferState, def_val: &ValId, v: ValId) 
         &mut ctx.cluster,
         &mut ctx.func_defs,
         &mut ctx.struct_infers,
+        &mut ctx.tuple_infers,
         t,
         v,
     );
@@ -2659,6 +3389,7 @@ fn resolve_member_method_access(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     val_cluster: &mut Vec<(ValId, CId)>,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
@@ -2697,6 +3428,7 @@ fn resolve_member_method_access(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         method_ty,
         access_site,
     );
@@ -2725,6 +3457,7 @@ fn resolve_member_method_access(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         base_cluster,
         ResolvedMemberOverload {
             params,
@@ -2775,6 +3508,7 @@ fn try_resolve_struct_deref_method(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     errors: &mut Vec<TypeError>,
     program: &Program,
     ans: &SolvedTypes,
@@ -2804,6 +3538,7 @@ fn try_resolve_struct_deref_method(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         method_ty,
         site,
     );
@@ -2835,6 +3570,7 @@ fn try_resolve_struct_deref_method(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         self_param,
         self_input,
     ) {
@@ -2873,6 +3609,7 @@ fn resolve_struct_deref_target(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     errors: &mut Vec<TypeError>,
     program: &Program,
     ans: &SolvedTypes,
@@ -2887,6 +3624,7 @@ fn resolve_struct_deref_target(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         errors,
         program,
         ans,
@@ -2904,6 +3642,7 @@ fn resolve_struct_deref_target(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         errors,
         program,
         ans,
@@ -2920,9 +3659,16 @@ fn resolve_struct_deref_target(
         (None, None) => None,
         (Some(target), None) | (None, Some(target)) => Some(target),
         (Some(a), Some(b)) => {
-            if let Err(clash) =
-                unify_if_distinct(store, parent, cluster, func_defs, struct_infers, a, b)
-            {
+            if let Err(clash) = unify_if_distinct(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                a,
+                b,
+            ) {
                 errors.push(TypeError::ValuesContradict {
                     expectation_reason:
                         "`__deref` and `__deref_mut` must produce the same dereference target type",
@@ -2945,6 +3691,7 @@ fn push_cannot_deref_error(ctx: &mut InferState, site: ValId, source_value: ValI
         &ctx.cluster,
         &ctx.func_defs,
         &ctx.struct_infers,
+        &ctx.tuple_infers,
         source,
     );
     ctx.push_error(TypeError::CannotDeref {
@@ -2986,6 +3733,7 @@ fn try_resolve_member_access(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     val_cluster: &mut Vec<(ValId, CId)>,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
@@ -3089,6 +3837,7 @@ fn try_resolve_member_access(
                                     cluster,
                                     func_defs,
                                     struct_infers,
+                                    tuple_infers,
                                     val_cluster,
                                     member_method_type_sites,
                                     errors,
@@ -3117,6 +3866,7 @@ fn try_resolve_member_access(
                                     cluster,
                                     func_defs,
                                     struct_infers,
+                                    tuple_infers,
                                     errors,
                                     program,
                                     ans,
@@ -3195,6 +3945,7 @@ fn try_resolve_member_access(
                             cluster,
                             func_defs,
                             struct_infers,
+                            tuple_infers,
                             val_cluster,
                             member_method_type_sites,
                             errors,
@@ -3223,6 +3974,7 @@ fn try_resolve_member_access(
                             cluster,
                             func_defs,
                             struct_infers,
+                            tuple_infers,
                             errors,
                             program,
                             ans,
@@ -3442,6 +4194,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         &mut ctx.cluster,
                         &mut ctx.func_defs,
                         &mut ctx.struct_infers,
+                        &mut ctx.tuple_infers,
                         &mut ctx.errors,
                         ctx.program,
                         &*ctx.ans,
@@ -3476,6 +4229,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                                 &mut ctx.cluster,
                                 &mut ctx.func_defs,
                                 &mut ctx.struct_infers,
+                                &mut ctx.tuple_infers,
                                 &mut ctx.errors,
                                 ctx.program,
                                 &*ctx.ans,
@@ -3545,6 +4299,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         &mut ctx.cluster,
                         &mut ctx.func_defs,
                         &mut ctx.struct_infers,
+                        &mut ctx.tuple_infers,
                         &mut ctx.member_method_type_sites,
                         &mut ctx.errors,
                         &mut site,
@@ -3576,6 +4331,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         &mut ctx.cluster,
                         &mut ctx.func_defs,
                         &mut ctx.struct_infers,
+                        &mut ctx.tuple_infers,
                         &mut ctx.member_method_type_sites,
                         &mut ctx.errors,
                         &mut site,
@@ -3583,7 +4339,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         &*ctx.ans,
                     );
                     if outcome.retain {
-                        ctx.assign_op_sites.push(site);
+                        ctx.assign_pre_post_sites.push(site);
                     }
                 }
             }
@@ -3670,6 +4426,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     cluster,
                     func_defs,
                     struct_infers,
+                    &mut ctx.tuple_infers,
                     &mut ctx.member_method_type_sites,
                     errors,
                     &mut site,
@@ -3713,6 +4470,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     cluster,
                     func_defs,
                     struct_infers,
+                    &mut ctx.tuple_infers,
                     &mut ctx.member_method_type_sites,
                     errors,
                     &mut site,
@@ -3947,6 +4705,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                                 &mut ctx.cluster,
                                 &mut ctx.func_defs,
                                 &mut ctx.struct_infers,
+                                &mut ctx.tuple_infers,
                                 t,
                                 &generic_clusters,
                                 v,
@@ -4083,6 +4842,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 &mut ctx.cluster,
                 &mut ctx.func_defs,
                 &mut ctx.struct_infers,
+                &mut ctx.tuple_infers,
                 &mut ctx.val_cluster,
                 &mut ctx.member_method_type_sites,
                 &mut ctx.errors,
@@ -4181,7 +4941,40 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
         }
         Value::LogicOp { op: _, values: _ } => todo!(),
 
-        Value::Tuple(_) | Value::Array(_) => todo!(),
+        Value::Tuple(items) => {
+            let item_clusters = items
+                .ids()
+                .map(|item| gather_constraints(ctx, item, current_output))
+                .collect::<Vec<_>>();
+            let tuple = ctx.new_tuple_instance(item_clusters);
+            ctx.bind_val(v, tuple);
+            tuple
+        }
+        Value::Array(items) => {
+            let values = items.ids().collect::<Vec<_>>();
+            let element = if let Some(first) = values.first().copied() {
+                let element = gather_constraints(ctx, first, current_output);
+                for item in values.iter().copied().skip(1) {
+                    let item_c = gather_constraints(ctx, item, current_output);
+                    if let Err(clash) = ctx.unify(item_c, element) {
+                        ctx.push_error(TypeError::ValuesContradict {
+                            expectation_reason: "array elements must all have the same type",
+                            site: v,
+                            found: item,
+                            expected_place: first,
+                            clash,
+                        });
+                    }
+                }
+                element
+            } else {
+                ctx.new_cluster()
+            };
+
+            let array = ctx.new_array_instance(element, values.len());
+            ctx.bind_val(v, array);
+            array
+        }
         Value::Index(_) | Value::Match { .. } => todo!(),
 
         Value::Labeled { .. } => unreachable!("bug tried compiling labeled normally"),
@@ -4266,6 +5059,16 @@ fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool>
 
             ctx.bind_pat(p, c);
             (c, n)
+        }
+
+        Pattern::Tuple(items) => {
+            let item_clusters = items
+                .ids()
+                .map(|item| gather_pattern_constraints_with_generics::<ALLOW_GENERICS>(ctx, item))
+                .collect::<Vec<_>>();
+            let tuple = ctx.new_tuple_instance(item_clusters);
+            ctx.bind_pat(p, tuple);
+            (tuple, None)
         }
 
         _ => todo!(),
@@ -4409,6 +5212,14 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             ctx.new_solved(t)
         }
         TypeExpr::Wildcard => ctx.new_cluster(),
+
+        TypeExpr::Tuple(items) => {
+            let item_clusters = items
+                .ids()
+                .map(|item| compile_type_expr(ctx, item))
+                .collect::<Vec<_>>();
+            ctx.new_tuple_instance(item_clusters)
+        }
 
         TypeExpr::Struct(def) => compile_struct_type::<false>(ctx, texpr, def),
         TypeExpr::Ptr { base, raw, mutable } => {
@@ -5058,6 +5869,8 @@ fn cluster_is_int_like(
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Tuple(_) => Some(false),
+        ResolveKind::Array { .. } => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
         ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
@@ -5078,6 +5891,8 @@ fn cluster_is_float_like(
         ResolveKind::IntLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Tuple(_) => Some(false),
+        ResolveKind::Array { .. } => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
         ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
@@ -5098,6 +5913,8 @@ fn cluster_is_bool(
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
         ResolveKind::Struct(_) => Some(false),
+        ResolveKind::Tuple(_) => Some(false),
+        ResolveKind::Array { .. } => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
         ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
@@ -5219,6 +6036,8 @@ fn classify_operand(
         ResolveKind::IntLike
         | ResolveKind::FloatLike
         | ResolveKind::Func(_)
+        | ResolveKind::Tuple(_)
+        | ResolveKind::Array { .. }
         | ResolveKind::Ptr { .. } => OperandKind::KnownNonUser,
         ResolveKind::Nothing => OperandKind::Unknown,
 
@@ -5285,6 +6104,7 @@ fn unify_if_distinct(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     a: CId,
     b: CId,
 ) -> Result<bool, TypeClash> {
@@ -5301,7 +6121,16 @@ fn unify_if_distinct(
         return Ok(false);
     }
 
-    unify_clusters_inlined(store, parent, cluster, func_defs, struct_infers, ra, rb)?;
+    unify_clusters_inlined(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        ra,
+        rb,
+    )?;
     Ok(true)
 }
 
@@ -5375,6 +6204,7 @@ fn bin_op_overload_not_found_error(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     site: &BinOpSite,
     lhs: CId,
     rhs: CId,
@@ -5384,8 +6214,24 @@ fn bin_op_overload_not_found_error(
         op: site.op,
         lhs: site.lhs_val,
         rhs: site.rhs_val,
-        lhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, lhs),
-        rhs_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, rhs),
+        lhs_type: extract_bad_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            lhs,
+        ),
+        rhs_type: extract_bad_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            rhs,
+        ),
     }
 }
 
@@ -5396,6 +6242,7 @@ fn un_op_overload_not_found_error(
     cluster: &ClusterVec<Cluster>,
     func_defs: &Vec<FuncInfer>,
     struct_infers: &Vec<StructInfer>,
+    tuple_infers: &Vec<TupleInfer>,
     site: &UnOpSite,
     input: CId,
 ) -> TypeError {
@@ -5403,7 +6250,15 @@ fn un_op_overload_not_found_error(
         site: site.loc,
         op: site.op,
         operand: site.val,
-        operand_type: extract_bad_type(store, parent, cluster, func_defs, struct_infers, input),
+        operand_type: extract_bad_type(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            input,
+        ),
     }
 }
 
@@ -5414,6 +6269,7 @@ fn resolve_member_overload_signature(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     ans: &SolvedTypes,
     method: ValId,
     struct_name: NameId,
@@ -5432,6 +6288,7 @@ fn resolve_member_overload_signature(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         method_ty,
         loc,
     );
@@ -5456,6 +6313,7 @@ fn make_member_closure(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     receiver: CId,
     method: ResolvedMemberOverload,
     loc: ValId,
@@ -5476,6 +6334,7 @@ fn make_member_closure(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         self_param,
         self_input,
     )?;
@@ -5500,6 +6359,7 @@ fn resolve_operator_site(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
     site: &mut BinOpSite,
@@ -5537,6 +6397,7 @@ fn resolve_operator_site(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 ans,
                 method,
                 struct_name,
@@ -5548,6 +6409,7 @@ fn resolve_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     site,
                     lhs,
                     rhs,
@@ -5562,6 +6424,7 @@ fn resolve_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     site,
                     lhs,
                     rhs,
@@ -5578,6 +6441,7 @@ fn resolve_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     lhs,
                     overload_sig,
                     site.loc,
@@ -5599,6 +6463,7 @@ fn resolve_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     method_closure,
                     expected_fn,
                 )?;
@@ -5632,6 +6497,7 @@ fn resolve_operator_site(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             site,
             lhs,
             rhs,
@@ -5679,6 +6545,7 @@ fn resolve_operator_site(
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         lhs_raw,
                         rhs_raw,
                     ) {
@@ -5702,6 +6569,7 @@ fn resolve_operator_site(
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         out,
                         BuiltinType::Isize.into(),
                     ) {
@@ -5726,8 +6594,16 @@ fn resolve_operator_site(
 
         match (lhs_ptr, rhs_int) {
             (RawPointerOperandKind::RawPointer(ptr), Some(true)) => {
-                match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, ptr)
-                {
+                match unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    out,
+                    ptr,
+                ) {
                     Ok(changed) => progress |= changed,
                     Err(clash) => {
                         errors.push(TypeError::ValuesContradict {
@@ -5745,8 +6621,16 @@ fn resolve_operator_site(
             }
             (RawPointerOperandKind::UnknownRawPointer(ptr), Some(true)) => {
                 progress |= set_pointer_raw_if_unknown(cluster, ptr);
-                match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, out, ptr)
-                {
+                match unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    out,
+                    ptr,
+                ) {
                     Ok(changed) => progress |= changed,
                     Err(clash) => {
                         errors.push(TypeError::ValuesContradict {
@@ -5774,6 +6658,7 @@ fn resolve_operator_site(
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         out,
                         ptr,
                     ) {
@@ -5800,6 +6685,7 @@ fn resolve_operator_site(
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         out,
                         ptr,
                     ) {
@@ -5855,6 +6741,7 @@ fn resolve_operator_site(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 site,
                 lhs,
                 rhs,
@@ -5877,6 +6764,7 @@ fn resolve_operator_site(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             site,
             lhs,
             rhs,
@@ -5919,7 +6807,16 @@ fn resolve_operator_site(
     }
 
     // (a) unify operands
-    match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, lhs, rhs) {
+    match unify_if_distinct(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        lhs,
+        rhs,
+    ) {
         Ok(changed) => progress |= changed,
         Err(clash) => {
             errors.push(TypeError::ValuesContradict {
@@ -5942,6 +6839,7 @@ fn resolve_operator_site(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         out,
         operand,
     ) {
@@ -5968,6 +6866,7 @@ fn resolve_unary_operator_site(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
     site: &mut UnOpSite,
@@ -6001,6 +6900,7 @@ fn resolve_unary_operator_site(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 ans,
                 method,
                 struct_name,
@@ -6012,6 +6912,7 @@ fn resolve_unary_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     site,
                     input,
                 ));
@@ -6025,6 +6926,7 @@ fn resolve_unary_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     site,
                     input,
                 ));
@@ -6040,6 +6942,7 @@ fn resolve_unary_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     input,
                     overload_sig,
                     site.loc,
@@ -6061,6 +6964,7 @@ fn resolve_unary_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     method_closure,
                     expected_fn,
                 )?;
@@ -6094,6 +6998,7 @@ fn resolve_unary_operator_site(
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             site,
             input,
         ));
@@ -6113,12 +7018,22 @@ fn resolve_unary_operator_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     site,
                     input,
                 ));
                 return ResolveOutcome::drop(false);
             }
-            match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
+            match unify_if_distinct(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                input,
+                out,
+            ) {
                 Ok(changed) => progress |= changed,
                 Err(clash) => {
                     errors.push(TypeError::ValuesContradict {
@@ -6145,6 +7060,7 @@ fn resolve_unary_operator_site(
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         site,
                         input,
                     ));
@@ -6153,7 +7069,16 @@ fn resolve_unary_operator_site(
                 _ => return ResolveOutcome::keep(false),
             }
 
-            match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
+            match unify_if_distinct(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                input,
+                out,
+            ) {
                 Ok(changed) => progress |= changed,
                 Err(clash) => {
                     errors.push(TypeError::ValuesContradict {
@@ -6177,6 +7102,7 @@ fn resolve_unary_operator_site(
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         site,
                         input,
                     ));
@@ -6185,7 +7111,16 @@ fn resolve_unary_operator_site(
                 None => return ResolveOutcome::keep(false),
             }
 
-            match unify_if_distinct(store, parent, cluster, func_defs, struct_infers, input, out) {
+            match unify_if_distinct(
+                store,
+                parent,
+                cluster,
+                func_defs,
+                struct_infers,
+                tuple_infers,
+                input,
+                out,
+            ) {
                 Ok(changed) => progress |= changed,
                 Err(clash) => {
                     errors.push(TypeError::ValuesContradict {
@@ -6211,6 +7146,7 @@ fn resolve_assign_pre_post_site(
     cluster: &mut ClusterVec<Cluster>,
     func_defs: &mut Vec<FuncInfer>,
     struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     errors: &mut Vec<TypeError>,
     site: &mut AssignPrePostSite,
@@ -6241,6 +7177,7 @@ fn resolve_assign_pre_post_site(
                 cluster,
                 func_defs,
                 struct_infers,
+                tuple_infers,
                 ans,
                 method,
                 struct_name,
@@ -6261,6 +7198,7 @@ fn resolve_assign_pre_post_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     target,
                     overload_sig,
                     site.loc,
@@ -6282,6 +7220,7 @@ fn resolve_assign_pre_post_site(
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     method_closure,
                     expected_fn,
                 )?;
@@ -6326,6 +7265,7 @@ fn resolve_assign_pre_post_site(
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         member_method_type_sites,
         errors,
         &mut fallback_site,
@@ -6350,10 +7290,11 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         member_method_type_sites,
         bin_op_sites,
         un_op_sites,
-        assign_op_sites,
+        assign_pre_post_sites,
         errors,
         ans,
     ) = (
@@ -6362,10 +7303,11 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
         &mut ctx.cluster,
         &mut ctx.func_defs,
         &mut ctx.struct_infers,
+        &mut ctx.tuple_infers,
         &mut ctx.member_method_type_sites,
         &mut ctx.bin_op_sites,
         &mut ctx.un_op_sites,
-        &mut ctx.assign_op_sites,
+        &mut ctx.assign_pre_post_sites,
         &mut ctx.errors,
         &*ctx.ans,
     );
@@ -6377,6 +7319,7 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             member_method_type_sites,
             errors,
             site,
@@ -6394,6 +7337,7 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             member_method_type_sites,
             errors,
             site,
@@ -6404,13 +7348,14 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
         outcome.retain
     });
 
-    assign_op_sites.retain_mut(|site| {
+    assign_pre_post_sites.retain_mut(|site| {
         let outcome = resolve_assign_pre_post_site(
             store,
             parent,
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             member_method_type_sites,
             errors,
             site,
@@ -6479,6 +7424,42 @@ fn try_resolve_struct_type(
     Some(store.intern(TypeValue::Struct { id: sid, generics }))
 }
 
+fn try_resolve_tuple_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    tuple_infers: &mut [TupleInfer],
+    tuple: TupleInferId,
+) -> Option<TypeId> {
+    let mut items = Vec::with_capacity(tuple_infers[tuple.0].items.len());
+    for i in 0..tuple_infers[tuple.0].items.len() {
+        let input = tuple_infers[tuple.0].items[i];
+        let root = find_root(parent, input);
+        tuple_infers[tuple.0].items[i] = root;
+        match cluster[root].state {
+            ResolveKind::Solved(t) => items.push(t),
+            _ => return None,
+        }
+    }
+
+    Some(store.intern(TypeValue::Tuple(items)))
+}
+
+fn try_resolve_array_type(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    element: CId,
+    len: usize,
+) -> Option<TypeId> {
+    let root = find_root(parent, element);
+    let element = match cluster[root].state {
+        ResolveKind::Solved(t) => t,
+        _ => return None,
+    };
+    Some(store.intern(TypeValue::Array(element, len)))
+}
+
 fn try_resolve_ptr_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -6519,6 +7500,16 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
                 &mut ctx.struct_infers,
                 call,
             ),
+            ResolveKind::Tuple(call) => try_resolve_tuple_type(
+                ctx.store,
+                &mut ctx.parent,
+                &mut ctx.cluster,
+                &mut ctx.tuple_infers,
+                call,
+            ),
+            ResolveKind::Array { element, len } => {
+                try_resolve_array_type(ctx.store, &mut ctx.parent, &mut ctx.cluster, element, len)
+            }
             ResolveKind::Ptr { tgt, raw, mutable } => try_resolve_ptr_type(
                 ctx.store,
                 &mut ctx.parent,
@@ -6542,12 +7533,24 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
 fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
     let mut progress = false;
 
-    let (store, parent, cluster, func_defs, struct_infers, pointer_likes, errors, ans, program) = (
+    let (
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        pointer_likes,
+        errors,
+        ans,
+        program,
+    ) = (
         &mut ctx.store,
         &mut ctx.parent,
         &mut ctx.cluster,
         &mut ctx.func_defs,
         &mut ctx.struct_infers,
+        &mut ctx.tuple_infers,
         &mut ctx.pointer_likes,
         &mut ctx.errors,
         &*ctx.ans,
@@ -6572,6 +7575,7 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                             cluster,
                             func_defs,
                             struct_infers,
+                            tuple_infers,
                             errors,
                             program,
                             ans,
@@ -6594,6 +7598,7 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                         cluster,
                         func_defs,
                         struct_infers,
+                        tuple_infers,
                         errors,
                         program,
                         ans,
@@ -6608,8 +7613,15 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
         };
 
         let Some(result) = result else {
-            let source_type =
-                extract_bad_type(store, parent, cluster, &*func_defs, &*struct_infers, source);
+            let source_type = extract_bad_type(
+                store,
+                parent,
+                cluster,
+                &*func_defs,
+                &*struct_infers,
+                &*tuple_infers,
+                source,
+            );
             errors.push(TypeError::CannotDeref {
                 site: pending.site,
                 operand: pending.source_value,
@@ -6625,6 +7637,7 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             pending.target,
             result,
         ) {
@@ -6659,6 +7672,7 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
         cluster,
         func_defs,
         struct_infers,
+        tuple_infers,
         val_cluster,
         member_method_type_sites,
         member_access_implicit_deref_sites,
@@ -6671,6 +7685,7 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
         &mut ctx.cluster,
         &mut ctx.func_defs,
         &mut ctx.struct_infers,
+        &mut ctx.tuple_infers,
         &mut ctx.val_cluster,
         &mut ctx.member_method_type_sites,
         &mut ctx.member_access_implicit_deref_sites,
@@ -6689,6 +7704,7 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
             cluster,
             func_defs,
             struct_infers,
+            tuple_infers,
             val_cluster,
             member_method_type_sites,
             errors,
@@ -6714,6 +7730,7 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
                     cluster,
                     func_defs,
                     struct_infers,
+                    tuple_infers,
                     pending.output,
                     result,
                 ) {
@@ -7239,6 +8256,65 @@ mod type_infer_tests {
     #[test]
     fn infer_let_with_annotation() {
         assert_fn_type!("f = fn(){ let x:int = 1; x }", BuiltinType::Int);
+    }
+
+    #[test]
+    fn tuple_expression_and_annotation_typecheck() {
+        let src = "f = fn(){ let t:(int, float) = (1:int, 2.0:float); t }";
+        let mut store = TypeStore::new();
+        let ty = infer_fn_body(src, &mut store).unwrap();
+        let TypeValue::Tuple(items) = store.type_value(ty) else {
+            panic!("expected tuple type")
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            store.type_value(items[0]),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+        assert!(matches!(
+            store.type_value(items[1]),
+            TypeValue::Builtin(BuiltinType::F64)
+        ));
+    }
+
+    #[test]
+    fn tuple_pattern_destructure_typechecks() {
+        assert_fn_type!(
+            "f = fn(){ let (x, y):(int, float) = (1:int, 2.0:float); x }",
+            BuiltinType::Int
+        );
+    }
+
+    #[test]
+    fn array_expression_typechecks_and_tracks_length() {
+        let src = "f = fn(){ [1:int, 2:int, 3:int] }";
+        let mut store = TypeStore::new();
+        let ty = infer_fn_body(src, &mut store).unwrap();
+        let TypeValue::Array(item, len) = *store.type_value(ty) else {
+            panic!("expected array type")
+        };
+        assert_eq!(len, 3);
+        assert!(matches!(
+            store.type_value(item),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn array_assignment_with_different_length_fails() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(
+            "f = fn(){ let a = [1:int, 2:int]; a = [3:int]; }",
+            &mut store,
+        )
+        .unwrap_err();
+        assert!(errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "assignment requires both sides match",
+                ..
+            }
+        )));
     }
 
     #[test]

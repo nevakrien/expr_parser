@@ -156,7 +156,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 - `ResolveKind` cluster states:
   - `Solved(TypeId)`, `Nothing`,
   - weak literals: `IntLike`, `FloatLike`,
-  - deferred structures: `Func(FuncInferId)`, `Struct(StructInferId)`, `Ptr { ... }`.
+  - deferred structures: `Func(FuncInferId)`, `Struct(StructInferId)`, `Tuple(TupleInferId)`, `Array { element, len }`, `Ptr { ... }`.
 - `InferState` holds:
   - IR-node -> cluster bindings,
   - union-find arrays (`parent`, `cluster`),
@@ -193,6 +193,8 @@ This is the AST/IR-to-typechecker bridge and one of the most important maintenan
 High-level behavior:
 
 - literals create weak (`IntLike`/`FloatLike`) or concrete builtin clusters,
+- tuple values (`Value::Tuple`) gather element clusters and produce deferred tuple clusters,
+- array values (`Value::Array`) unify element clusters and produce deferred array clusters with known length,
 - `let`, assignment, and branch joins create equality constraints with `ctx.unify`,
 - one-way obligations use `ctx.force_type` (`if`/`while` condition bool, etc.),
 - `return` is checked against the current function output cluster (threaded as `Option<CId>` through `gather_constraints`; `None` means outermost/non-function context),
@@ -245,7 +247,7 @@ Other notable implemented branches:
 
 - `gather_pattern_constraints*` handles bind/wildcard/annotated patterns and binds names to clusters.
 - `gather_generic_constraints` maps generic parameter bind names to `TypeValue::Generic(GenId)` and records them in both value-name and type-name local maps.
-- `compile_type_expr` lowers type syntax to clusters (name refs, wildcard, inline struct defs, pointers, specialization index).
+- `compile_type_expr` lowers type syntax to clusters (name refs, wildcard, tuple, inline struct defs, pointers, specialization index).
 
 Critical type-expression fragility points:
 
