@@ -12,7 +12,8 @@ struct IRV(usize);
 enum Operation {
     Write(IRV, IRV),
     Read(IRV),
-    Branch(Option<IRV>, Label),
+    Jump(Label),
+    Branch(IRV, Label),
 
     ///these are operation on basic copy types
     ///we truly dont need to add anything to this
