@@ -8,6 +8,8 @@
 //
 // ================================================================
 
+#![allow(clippy::too_many_arguments)]
+
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -288,6 +290,7 @@ impl TypeStore {
         sid
     }
 
+    #[cfg(test)]
     pub(crate) fn simple_struct(
         &mut self,
         name: Option<NameId>,
@@ -723,13 +726,13 @@ impl TypeClash {
 // Entry points
 // ===================================
 
+type TypecheckSummary = (Result<(TypeStore, SolvedTypes), usize>, usize);
+type TypecheckResult = Result<TypecheckSummary, Box<dyn std::error::Error>>;
+
 ///runs the typechecker and reports all errors
 ///the rhs value is the total number of functions checked
 ///the lhs value is either the result or the number of errors found
-pub fn run_typechecker(
-    program: &Program,
-    reporter: &mut ErrorReporter,
-) -> Result<(Result<(TypeStore, SolvedTypes), usize>, usize), Box<dyn std::error::Error>> {
+pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> TypecheckResult {
     let mut solved_types = SolvedTypes::new(program);
     let mut types = TypeStore::new();
     let mut err_count = 0;
@@ -804,14 +807,14 @@ pub fn infer_global_types<'a>(
             TypeExpr::Struct(def) => compile_struct_type::<true>(&mut ctx, *texp, def),
             _ => compile_type_expr(&mut ctx, *texp),
         };
-        if let Some(previous) = ctx.local_types.insert(*n, t) {
-            if let Err(clash) = ctx.unify(previous, t) {
-                ctx.errors.push(TypeError::TypeClashBeforeMentioned {
-                    name: *n,
-                    expr: *texp,
-                    clash,
-                });
-            }
+        if let Some(previous) = ctx.local_types.insert(*n, t)
+            && let Err(clash) = ctx.unify(previous, t)
+        {
+            ctx.errors.push(TypeError::TypeClashBeforeMentioned {
+                name: *n,
+                expr: *texp,
+                clash,
+            });
         }
         if let ResolveKind::Solved(ty) = ctx.cluster[t].state {
             ctx.ans.typedef_types.insert(*texp, ty);
@@ -830,27 +833,25 @@ pub fn infer_global_types<'a>(
             //each function must solve by itself.
             //since there isnt a body its fine to solve in order
             //note that namespace on generics gurntees this works for the most outer scope
-            match ctx.program.value(*m) {
-                Value::Func {
+            if let Value::Func {
+                calling_convention,
+                generics,
+                params,
+                output_type,
+                body: _,
+            } = ctx.program.value(*m)
+            {
+                ctx.clear_local_state();
+                let _ = gather_func_signature::<true>(
+                    &mut ctx,
+                    *m,
                     calling_convention,
                     generics,
                     params,
                     output_type,
-                    body: _,
-                } => {
-                    ctx.clear_local_state();
-                    let _ = gather_func_signature::<true>(
-                        &mut ctx,
-                        *m,
-                        calling_convention,
-                        generics,
-                        params,
-                        output_type,
-                    );
-                    main_solver(&mut ctx);
-                    check_special_member_method_signature(&mut ctx, *m, *struct_name, *method_name);
-                }
-                _ => {}
+                );
+                main_solver(&mut ctx);
+                check_special_member_method_signature(&mut ctx, *m, *struct_name, *method_name);
             };
         }
         check_struct_deref_targets_compatible(&mut ctx, *struct_name);
@@ -864,26 +865,24 @@ pub fn infer_global_types<'a>(
         //each function must solve by itself.
         //since there isnt a body its fine to solve in order
         //note that namespace on generics gurntees this works for the most outer scope
-        match ctx.program.value(*v) {
-            Value::Func {
+        if let Value::Func {
+            calling_convention,
+            generics,
+            params,
+            output_type,
+            body: _,
+        } = ctx.program.value(*v)
+        {
+            ctx.clear_local_state();
+            let _ = gather_func_signature::<true>(
+                &mut ctx,
+                *v,
                 calling_convention,
                 generics,
                 params,
                 output_type,
-                body: _,
-            } => {
-                ctx.clear_local_state();
-                let _ = gather_func_signature::<true>(
-                    &mut ctx,
-                    *v,
-                    calling_convention,
-                    generics,
-                    params,
-                    output_type,
-                );
-                main_solver(&mut ctx);
-            }
-            _ => {}
+            );
+            main_solver(&mut ctx);
         };
     }
 
@@ -1152,7 +1151,6 @@ struct StructDef {
     #[allow(dead_code)]
     loc: TExpId,
     fields: Vec<(NameId, CId)>,
-    output: CId,
     sid: StructId,
 }
 
@@ -3549,9 +3547,7 @@ fn try_resolve_struct_deref_method(
         unreachable!("specialized deref method must resolve to a function shape");
     };
 
-    let Some(self_param) = params.first().copied() else {
-        return None;
-    };
+    let self_param = params.first().copied()?;
     if params.len() != 1 {
         return None;
     }
@@ -3859,8 +3855,8 @@ fn try_resolve_member_access(
                                 };
                             }
 
-                            if used_implicit_deref_steps < max_implicit_deref_steps {
-                                if let Some(target) = resolve_struct_deref_target(
+                            if used_implicit_deref_steps < max_implicit_deref_steps
+                                && let Some(target) = resolve_struct_deref_target(
                                     store,
                                     parent,
                                     cluster,
@@ -3874,13 +3870,13 @@ fn try_resolve_member_access(
                                     base_value,
                                     current,
                                     struct_name,
-                                ) {
-                                    let next = find_root(parent, target);
-                                    implicit_receivers.push(current);
-                                    used_implicit_deref_steps += 1;
-                                    current = next;
-                                    continue;
-                                }
+                                )
+                            {
+                                let next = find_root(parent, target);
+                                implicit_receivers.push(current);
+                                used_implicit_deref_steps += 1;
+                                current = next;
+                                continue;
                             }
                         }
 
@@ -3967,8 +3963,8 @@ fn try_resolve_member_access(
                         };
                     }
 
-                    if used_implicit_deref_steps < max_implicit_deref_steps {
-                        if let Some(target) = resolve_struct_deref_target(
+                    if used_implicit_deref_steps < max_implicit_deref_steps
+                        && let Some(target) = resolve_struct_deref_target(
                             store,
                             parent,
                             cluster,
@@ -3982,13 +3978,13 @@ fn try_resolve_member_access(
                             base_value,
                             current,
                             struct_name,
-                        ) {
-                            let next = find_root(parent, target);
-                            implicit_receivers.push(current);
-                            used_implicit_deref_steps += 1;
-                            current = next;
-                            continue;
-                        }
+                        )
+                    {
+                        let next = find_root(parent, target);
+                        implicit_receivers.push(current);
+                        used_implicit_deref_steps += 1;
+                        current = next;
+                        continue;
                     }
                 }
 
@@ -4831,7 +4827,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
             let ans = ctx.new_struct_instance(sid, generic_clusters);
             ctx.bind_val(v, ans);
-            return ans;
+            ans
         }
 
         Value::Access { base, name, kind } => {
@@ -4867,7 +4863,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                             },
                         );
                     }
-                    return result;
+                    result
                 }
                 MemberAccessResolve::Pending { source } => {
                     let result = ctx.new_cluster();
@@ -4880,13 +4876,13 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         member: name,
                         kind,
                     });
-                    return result;
+                    result
                 }
                 MemberAccessResolve::Error(err) => {
                     ctx.push_error(err);
                     let result = ctx.new_cluster();
                     ctx.bind_val(v, result);
-                    return result;
+                    result
                 }
             }
         }
@@ -5173,7 +5169,6 @@ fn compile_struct_type<const ALLOW_GENERICS: bool>(
         loc: texpr,
         fields: field_info,
         sid,
-        output,
     });
     output
 }
@@ -5684,7 +5679,6 @@ fn check_special_member_method_signature(
             site: method_val,
             method: method_name,
         });
-        return;
     }
 
     if !is_known_special_member_method_name(method_name) {
@@ -5830,10 +5824,7 @@ fn check_special_member_method_signature(
                 message: "binary operator overloads must take exactly one parameter after `self`",
             });
         }
-        return;
-    }
-
-    if is_unary_operator_overload_name(method_name) {
+    } else if is_unary_operator_overload_name(method_name) {
         if !is_self_like_member_input_type(ctx.store, first_input, struct_name) {
             ctx.push_error(TypeError::Simple {
                 loc: loc.clone(),
@@ -5847,7 +5838,6 @@ fn check_special_member_method_signature(
                 message: "unary operator overloads must not take parameters after `self`",
             });
         }
-        return;
     }
 }
 
@@ -7859,15 +7849,14 @@ fn finalize(ctx: &mut InferState) {
     }
 
     for sdef in ctx.struct_defs.iter() {
-        if ctx.store.structs[sdef.sid.0].name.is_none() {
-            if let Some((name, _)) = ctx
+        if ctx.store.structs[sdef.sid.0].name.is_none()
+            && let Some((name, _)) = ctx
                 .program
                 .definitions
                 .iter()
                 .find(|(_, def)| matches!(def, Defined::Type(texp) if *texp == sdef.loc))
-            {
-                ctx.store.structs[sdef.sid.0].name = Some(*name);
-            }
+        {
+            ctx.store.structs[sdef.sid.0].name = Some(*name);
         }
         for (i, (_n, c)) in sdef.fields.iter().enumerate() {
             let root = find_root(parent, *c);

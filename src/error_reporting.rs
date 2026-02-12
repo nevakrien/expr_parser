@@ -14,7 +14,7 @@ pub struct ErrorReporter {
     sources: HashMap<usize, Source<String>>,
 }
 
-impl<'a> Cache<usize> for &'a ErrorReporter {
+impl Cache<usize> for &ErrorReporter {
     type Storage = String;
 
     fn fetch(&mut self, id: &usize) -> Result<&Source<String>, Box<dyn std::fmt::Debug + '_>> {

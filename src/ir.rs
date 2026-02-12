@@ -556,10 +556,10 @@ impl Program {
         let loc = expr.loc.clone();
 
         //gotos have to know the valid
-        if let Expr::Prefix(ref op, ref mut items) = expr.value {
-            if op.value == "goto" {
-                return self.lower_goto_into(target, loc, op.clone(), items);
-            }
+        if let Expr::Prefix(ref op, ref mut items) = expr.value
+            && op.value == "goto"
+        {
+            return self.lower_goto_into(target, loc, op.clone(), items);
         }
 
         let value = self.lower_value_inner(expr)?;
@@ -832,14 +832,12 @@ impl Program {
                 if named_args_start == args.len() {
                     named_args_start = index;
                 }
-            } else {
-                if named_args_start != args.len() {
-                    // Positional arguments after named ones break the contiguous split.
-                    return Err(CompileError::SimpleError {
-                        loc: arg_loc,
-                        s: ERR_POS_ARG_AFTER_NAMED,
-                    });
-                }
+            } else if named_args_start != args.len() {
+                // Positional arguments after named ones break the contiguous split.
+                return Err(CompileError::SimpleError {
+                    loc: arg_loc,
+                    s: ERR_POS_ARG_AFTER_NAMED,
+                });
             }
         }
 
@@ -1286,18 +1284,18 @@ impl Program {
             }
             "&" => {
                 let mut kind = None;
-                if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value {
-                    if matches!(inner_op.value, "mut" | "const") {
-                        debug_assert_eq!(inner_items.len(), 1);
-                        kind = Some(if inner_op.value == "mut" {
-                            VarKind::Mut
-                        } else {
-                            VarKind::Const
-                        });
+                if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value
+                    && matches!(inner_op.value, "mut" | "const")
+                {
+                    debug_assert_eq!(inner_items.len(), 1);
+                    kind = Some(if inner_op.value == "mut" {
+                        VarKind::Mut
+                    } else {
+                        VarKind::Const
+                    });
 
-                        let mut inner = inner_items.pop().unwrap();
-                        std::mem::swap(&mut rhs_expr, &mut inner);
-                    }
+                    let mut inner = inner_items.pop().unwrap();
+                    std::mem::swap(&mut rhs_expr, &mut inner);
                 }
 
                 let rhs = self.lower_value(rhs_expr)?;

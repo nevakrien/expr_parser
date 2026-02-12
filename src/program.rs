@@ -450,9 +450,9 @@ impl Program {
             .pop()
             .expect("function label scope missing");
 
-        if result.is_err() {
+        let Ok(result) = result else {
             return result;
-        }
+        };
 
         for (name, state) in labels {
             if state.defined_loc.is_some() {
@@ -469,7 +469,7 @@ impl Program {
             return Err(CompileError::UnresolvedLabel { name, locs });
         }
 
-        result
+        Ok(result)
     }
 
     pub(crate) fn use_label_name_for_goto(
@@ -742,13 +742,13 @@ impl Program {
         let method_name = self.str_intern.intern(method_name);
 
         for field in def.fields.ids() {
-            if let Some(field_name) = self.field_name(field) {
-                if field_name == method_name {
-                    return Err(CompileError::SimpleError {
-                        loc: method.loc.clone(),
-                        s: ERR_MEMBER_METHOD_NAME_COLLISION,
-                    });
-                }
+            if let Some(field_name) = self.field_name(field)
+                && field_name == method_name
+            {
+                return Err(CompileError::SimpleError {
+                    loc: method.loc.clone(),
+                    s: ERR_MEMBER_METHOD_NAME_COLLISION,
+                });
             }
         }
 
