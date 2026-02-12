@@ -5227,6 +5227,18 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             };
             ans
         }
+        TypeExpr::Array(element, len) => {
+            let element = compile_type_expr(ctx, element);
+            let Some(len) = len else {
+                let loc = ctx.program.type_expr_loc(texpr);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "unsized array types are not supported yet",
+                });
+                return ctx.new_cluster();
+            };
+            ctx.new_array_instance(element, len)
+        }
         TypeExpr::Index { base, args } => {
             let generics = args
                 .ids()
@@ -8301,6 +8313,34 @@ mod type_infer_tests {
             err,
             TypeError::ValuesContradict {
                 expectation_reason: "assignment requires both sides match",
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn sized_array_type_expression_typechecks() {
+        let src = "f = fn(){ let a:[int;3] = [1:int, 2:int, 3:int]; a }";
+        let mut store = TypeStore::new();
+        let ty = infer_fn_body(src, &mut store).unwrap();
+        let TypeValue::Array(item, len) = *store.type_value(ty) else {
+            panic!("expected array type")
+        };
+        assert_eq!(len, 3);
+        assert!(matches!(
+            store.type_value(item),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn unsized_array_type_expression_is_rejected_for_now() {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body("f = fn(){ let a:[int] = [1:int]; a }", &mut store).unwrap_err();
+        assert!(errs.iter().any(|err| matches!(
+            err,
+            TypeError::Simple {
+                message: "unsized array types are not supported yet",
                 ..
             }
         )));

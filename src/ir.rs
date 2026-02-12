@@ -522,6 +522,8 @@ pub enum TypeExpr {
         mutable: bool,
     },
 
+    Array(TExpId, Option<usize>),
+
     Enum(StructLike),
     Struct(StructLike),
     Union(StructLike),
@@ -1525,6 +1527,46 @@ impl Program {
                     self.lower_type_expr_into(target, item)?;
                 }
                 Ok(TypeExpr::Tuple(span))
+            }
+
+            Expr::Prefix(open, mut items) if open.value == "[" => {
+                if items.is_empty() || items.len() > 2 {
+                    return Err(CompileError::UnsupportedForm {
+                        loc,
+                        op_loc: Some(open.loc),
+                        op: Some(open.value),
+                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                    });
+                }
+
+                let element = self.lower_type_expr(items.remove(0))?;
+                let len = if let Some(len_expr) = items.pop() {
+                    match len_expr.value {
+                        Expr::Atom(Token::NumLit(n)) => {
+                            let Ok(n) = usize::try_from(n) else {
+                                return Err(CompileError::UnsupportedForm {
+                                    loc,
+                                    op_loc: Some(open.loc),
+                                    op: Some(open.value),
+                                    message: ERR_UNSUPPORTED_TYPE_EXPR,
+                                });
+                            };
+                            Some(n)
+                        }
+                        _ => {
+                            return Err(CompileError::UnsupportedForm {
+                                loc,
+                                op_loc: Some(open.loc),
+                                op: Some(open.value),
+                                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                            });
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Ok(TypeExpr::Array(element, len))
             }
 
             Expr::Postfix(open, items) if open.value == "[" => {
@@ -2619,6 +2661,57 @@ mod lowering_tests {
                     _ => panic!("expected type annotation pattern"),
                 }
             }
+            _ => panic!("expected let statement"),
+        }
+    }
+
+    #[test]
+    fn lowers_sized_array_type_annotation() {
+        let src = "{ let x:[int;3] = [1:int, 2:int, 3:int]; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 1);
+
+        let let_stmt = statements[0];
+        match program.value(let_stmt) {
+            Value::Let { pat, .. } => match program.pattern(pat) {
+                Pattern::TypeAnnotation { ty, .. } => match program.type_expr(ty) {
+                    TypeExpr::Array(element, Some(3)) => match program.type_expr(element) {
+                        TypeExpr::NameRef(_) => {}
+                        _ => panic!("expected array element type name"),
+                    },
+                    _ => panic!("expected sized array type expression"),
+                },
+                _ => panic!("expected type annotation pattern"),
+            },
+            _ => panic!("expected let statement"),
+        }
+    }
+
+    #[test]
+    fn lowers_unsized_array_type_annotation() {
+        let src = "{ let x:[int] = [1:int]; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 1);
+
+        let let_stmt = statements[0];
+        match program.value(let_stmt) {
+            Value::Let { pat, .. } => match program.pattern(pat) {
+                Pattern::TypeAnnotation { ty, .. } => match program.type_expr(ty) {
+                    TypeExpr::Array(_, None) => {}
+                    _ => panic!("expected unsized array type expression"),
+                },
+                _ => panic!("expected type annotation pattern"),
+            },
             _ => panic!("expected let statement"),
         }
     }

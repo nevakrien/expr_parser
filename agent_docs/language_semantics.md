@@ -29,6 +29,15 @@ Calling-convention unification behavior:
 - Current inference/layout code records the marker in `StructRep.layout`.
 - Today this mainly preserves intent; future passes can branch on it (for example field-reordering only for non-C layout types).
 
+## Array Type Expressions
+
+- Type expressions accept bracket array forms:
+  - `[T; N]` for sized arrays.
+  - `[T]` parses as an unsized array form.
+- Current typechecking support is intentionally limited:
+  - only `[T; N]` is accepted as a concrete type and maps to the existing sized `Array` type shape,
+  - `[T]` currently reports a type error (`unsized array types are not supported yet`) and is reserved for future work.
+
 ## Member Access Semantics (`.`, `::`, `->`)
 
 Lowering maps syntax to `AccessKind`:

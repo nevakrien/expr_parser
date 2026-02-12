@@ -1185,7 +1185,11 @@ impl<'a> Parser<'a> {
                 return Err(self.err_open_delim(open.clone(), "]"));
             };
             items.push(exp);
-            self.try_operator(",")?;
+            if let Some(Token::Operator(op)) = self.peek_token()?.map(|l| &l.value)
+                && matches!(*op, "," | ";")
+            {
+                self.next_token()?;
+            }
         }
 
         Ok(Located {
