@@ -86,8 +86,8 @@ impl fmt::Display for Token {
 // Keywords are treated like operators during lexing.
 pub const KEYWORDS: &[&str] = &[
     "let", "var", "const", "mut", "type", "struct", "cstruct", "union", "enum", "fn", "cfn",
-    "macro", "if", "else", "while", "for", "match", "return", "break", "continue", "as", "true",
-    "false",
+    "macro", "if", "else", "while", "for", "match", "return", "break", "continue", "goto", "as",
+    "true", "false",
 ];
 
 ///greedy match
@@ -96,7 +96,7 @@ pub const OPERATORS: &[&str] = &[
     "<<=", ">>=", // --- 2-char operators ---
     "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "|>", "==", "!=", "<=", ">=", "~=", "=>", "<<",
     ">>", "&&", "||", "++", "--", "->", "::", // --- 1-char operators ---
-    "&", "|", "^", "~", "+", "-", "*", "/", "%", "=", "<", ">", "!", ".",
+    "&", "|", "^", "~", "`", "+", "-", "*", "/", "%", "=", "<", ">", "!", ".",
     // --- delimiters ---
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
@@ -148,6 +148,7 @@ const fn match_operator(input: &str) -> Option<&'static str> {
 
         (b'~', b'=', _) => Some("~="),
         (b'~', _, _) => Some("~"),
+        (b'`', _, _) => Some("`"),
 
         // comparisons / assignment
         (b'=', b'=', _) => Some("=="),
@@ -210,6 +211,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"else" => Some("else"),
             b"enum" => Some("enum"),
             b"true" => Some("true"),
+            b"goto" => Some("goto"),
             _ => None,
         },
 
@@ -289,7 +291,7 @@ const BP_PREFIX: u32 = 850;
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
     Some(match op {
-        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
+        "!" | "-" | "*" | "&" | "~" | "`" | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
     })
 }
@@ -1092,6 +1094,14 @@ impl<'a> Parser<'a> {
                     return Ok(Some(Located {
                         loc: self.produce_loc(start),
                         value: Expr::Prefix(op_s, args),
+                    }));
+                }
+                if op == "goto" {
+                    self.next_token()?.unwrap();
+                    let target = self.consume_expr_bp(BP_PREFIX, style)?;
+                    return Ok(Some(Located {
+                        loc: self.produce_loc(start),
+                        value: Expr::Prefix(op_s, vec![target]),
                     }));
                 }
 

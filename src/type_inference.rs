@@ -3273,7 +3273,6 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             ctx.bind_val(v, c);
             c
         }
-
         Value::NameRef(n) => {
             if let Some(base) = ctx.names.get_mut(&n) {
                 //names might refer to something that us generic in the local scope...
@@ -4052,7 +4051,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 }
             }
         }
-        Value::Break | Value::Continue => {
+        Value::Goto(_) | Value::Break | Value::Continue | Value::LabelDecl(_) => {
             let c = ctx.new_cluster();
             ctx.cluster[c].state = ResolveKind::Never;
             c

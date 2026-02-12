@@ -8,7 +8,8 @@
  * - Allow linear passes over IR
  */
 use crate::error_messages::{
-    ERR_ACCESS_EXPECTS_NAME, ERR_INVALID_MATCH_ARM, ERR_MATCH_ARM_NEEDS_VALUE,
+    ERR_ACCESS_EXPECTS_NAME, ERR_GOTO_OUTSIDE_FUNCTION, ERR_INVALID_MATCH_ARM,
+    ERR_LABEL_NAME_REQUIRED, ERR_LABEL_OUTSIDE_FUNCTION, ERR_MATCH_ARM_NEEDS_VALUE,
     ERR_PIPE_REQUIRES_CALL, ERR_POS_ARG_AFTER_NAMED, ERR_UNSUPPORTED_EXPRESSION,
     ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN, ERR_UNSUPPORTED_TYPE_EXPR,
 };
@@ -24,6 +25,13 @@ use crate::string_intern::StrId;
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NameId(pub usize);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LabelId(pub usize);
+
+impl LabelId {
+    pub const PENDING: Self = Self(usize::MAX);
+}
 
 // Type aliases for commonly used typed/located constructs
 pub type LName = Located<NameId>;
@@ -332,6 +340,8 @@ pub enum Value {
     /// Wildcard pattern that matches anything (_)
     Wildcard,
 
+    LabelDecl(LabelId),
+
     Tuple(ValueSpan),
     Array(ValueSpan),
 
@@ -439,6 +449,8 @@ pub enum Value {
     /// Early return
     Return(Option<ValId>),
 
+    Goto(LabelId),
+
     Break,
     Continue,
 
@@ -535,14 +547,23 @@ impl Program {
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
     pub fn lower_value(&mut self, expr: LExpr) -> CResult<ValId> {
-        let loc = expr.loc.clone();
-        let value = self.lower_value_inner(expr)?;
-        Ok(self.id_value(loc, value))
+        let target = self.id_value(expr.loc.clone(), Value::Literal(Literal::Void));
+        self.lower_value_into(target, expr)
     }
 
     #[inline]
     fn lower_value_into(&mut self, target: ValId, expr: LExpr) -> CResult<ValId> {
         let loc = expr.loc.clone();
+        if let Expr::Prefix(op, items) = expr.value {
+            if op.value == "goto" {
+                return self.lower_goto_into(target, loc, op, items);
+            }
+
+            let value = self.lower_value_inner(loc.clone().with(Expr::Prefix(op, items)))?;
+            self.set_value(target, loc, value);
+            return Ok(target);
+        }
+
         let value = self.lower_value_inner(expr)?;
         self.set_value(target, loc, value);
         Ok(target)
@@ -635,7 +656,6 @@ impl Program {
             Expr::Prefix(open, items) if open.value == "return" => {
                 self.lower_return_expr(expr.loc, open, items)
             }
-
             // fn/cfn (sig) [body]
             Expr::Prefix(open, items) if open.value == "fn" || open.value == "cfn" => {
                 self.lower_fn_expr(expr.loc, open, items)
@@ -687,7 +707,19 @@ impl Program {
                 let span = this.reserve_value_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    this.lower_value_into(target, item)?;
+                    if let Some(name) = Self::extract_label_name(&item) {
+                        if !this.in_function_body() {
+                            return Err(CompileError::SimpleError {
+                                loc: item.loc,
+                                s: ERR_LABEL_OUTSIDE_FUNCTION,
+                            });
+                        }
+
+                        let id = this.define_label_name(&item.loc, name)?;
+                        this.set_value(target, item.loc, Value::LabelDecl(id));
+                    } else {
+                        this.lower_value_into(target, item)?;
+                    }
                 }
 
                 let return_value = if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
@@ -706,6 +738,20 @@ impl Program {
                 return_value,
             })
         })
+    }
+
+    fn extract_label_name(expr: &LExpr) -> Option<&str> {
+        let Expr::Prefix(op, args) = &expr.value else {
+            return None;
+        };
+        if op.value != "`" || args.len() != 1 {
+            return None;
+        }
+
+        match &args[0].value {
+            Expr::Atom(Token::Ident(name)) => Some(name),
+            _ => None,
+        }
     }
 
     #[inline(always)]
@@ -922,6 +968,42 @@ impl Program {
     }
 
     #[inline(always)]
+    fn lower_goto_into(
+        &mut self,
+        target: ValId,
+        loc: Loc,
+        op: LFixed,
+        mut items: Vec<LExpr>,
+    ) -> CResult<ValId> {
+        if !self.in_function_body() {
+            return Err(CompileError::SimpleError {
+                loc,
+                s: ERR_GOTO_OUTSIDE_FUNCTION,
+            });
+        }
+        if items.len() != 1 {
+            return Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: Some(op.loc),
+                op: Some(op.value),
+                message: ERR_UNSUPPORTED_EXPRESSION,
+            });
+        }
+
+        let label_expr = items.pop().unwrap();
+        let Some(label_name) = Self::extract_label_name(&label_expr) else {
+            return Err(CompileError::SimpleError {
+                loc: label_expr.loc,
+                s: ERR_LABEL_NAME_REQUIRED,
+            });
+        };
+
+        let label = self.use_label_name_for_goto(target, &label_expr.loc, label_name)?;
+        self.set_value(target, loc, Value::Goto(label));
+        Ok(target)
+    }
+
+    #[inline(always)]
     fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<Value> {
         let (lhs, rhs) = pair;
 
@@ -971,50 +1053,52 @@ impl Program {
 
         let calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
 
-        self.with_scope(|p| {
-            let generics = match generics_expr {
-                Some(gen_expr) => {
-                    let Expr::Prefix(open, items) = gen_expr.value else {
-                        debug_assert!(false, "fn generics must use brackets");
-                        unreachable!();
-                    };
-                    debug_assert!(open.value == "[", "fn generics must use brackets");
+        self.with_function_labels(|this| {
+            this.with_scope(|p| {
+                let generics = match generics_expr {
+                    Some(gen_expr) => {
+                        let Expr::Prefix(open, items) = gen_expr.value else {
+                            debug_assert!(false, "fn generics must use brackets");
+                            unreachable!();
+                        };
+                        debug_assert!(open.value == "[", "fn generics must use brackets");
 
-                    let ans = p.reserve_pattern_span(items.len());
-                    for (index, expr) in items.into_iter().enumerate() {
-                        let target = ans.at(index);
-                        p.lower_pattern_into(target, expr, VarKind::Const)?;
+                        let ans = p.reserve_pattern_span(items.len());
+                        for (index, expr) in items.into_iter().enumerate() {
+                            let target = ans.at(index);
+                            p.lower_pattern_into(target, expr, VarKind::Const)?;
+                        }
+                        ans
                     }
-                    ans
+                    None => p.reserve_pattern_span(0),
+                };
+
+                let params_span = p.reserve_pattern_span(param_items.len());
+                for (index, param) in param_items.into_iter().enumerate() {
+                    //TODO support type anotation
+                    let target = params_span.at(index);
+                    p.lower_pattern_into(target, param, VarKind::Const)?;
                 }
-                None => p.reserve_pattern_span(0),
-            };
 
-            let params_span = p.reserve_pattern_span(param_items.len());
-            for (index, param) in param_items.into_iter().enumerate() {
-                //TODO support type anotation
-                let target = params_span.at(index);
-                p.lower_pattern_into(target, param, VarKind::Const)?;
-            }
+                let output_type = match ret_expr {
+                    Some(e) => Some(p.lower_type_expr(e)?),
+                    None => None,
+                };
 
-            let output_type = match ret_expr {
-                Some(e) => Some(p.lower_type_expr(e)?),
-                None => None,
-            };
+                let body = if let Some(body_expr) = body_expr {
+                    Some(p.lower_value(body_expr)?)
+                } else {
+                    None
+                };
 
-            let body = if let Some(body_expr) = body_expr {
-                Some(p.lower_value(body_expr)?)
-            } else {
-                None
-            };
-
-            let _ = loc;
-            Ok(Value::Func {
-                calling_convention,
-                generics,
-                params: params_span,
-                output_type,
-                body,
+                let _ = loc;
+                Ok(Value::Func {
+                    calling_convention,
+                    generics,
+                    params: params_span,
+                    output_type,
+                    body,
+                })
             })
         })
     }
@@ -1692,7 +1776,10 @@ mod var_scope_test {
 #[cfg(test)]
 mod lowering_tests {
     use super::*;
-    use crate::error_messages::{ERR_ACCESS_EXPECTS_NAME, ERR_MEMBER_METHOD_NAME_COLLISION};
+    use crate::error_messages::{
+        ERR_ACCESS_EXPECTS_NAME, ERR_LABEL_ALREADY_DEFINED, ERR_LABEL_NAME_REQUIRED,
+        ERR_MEMBER_METHOD_NAME_COLLISION,
+    };
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
@@ -2403,6 +2490,93 @@ mod lowering_tests {
 
         assert!(matches!(program.value(statements[0]), Value::Break));
         assert!(matches!(program.value(statements[1]), Value::Continue));
+    }
+
+    #[test]
+    fn lowers_forward_goto_and_label_declaration_in_function() {
+        let src = "f = fn(){ goto `err; `err; }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.get(&f_name))
+            .expect("missing f binding");
+
+        let Defined::Func(f_val) = program
+            .definitions
+            .get(&f_id)
+            .expect("missing f definition")
+        else {
+            panic!("expected function definition")
+        };
+
+        let Value::Func { body, .. } = program.value(*f_val) else {
+            panic!("expected function value")
+        };
+        let body = body.expect("expected function body");
+
+        let statements = match program.value(body) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected function body block"),
+        };
+        assert_eq!(statements.len(), 2);
+
+        let goto_label = match program.value(statements[0]) {
+            Value::Goto(id) => id,
+            _ => panic!("expected goto statement"),
+        };
+
+        let declared_label = match program.value(statements[1]) {
+            Value::LabelDecl(id) => id,
+            _ => panic!("expected label declaration statement"),
+        };
+
+        assert_eq!(goto_label, declared_label);
+    }
+
+    #[test]
+    fn goto_label_must_be_defined_in_the_same_function() {
+        let src = "f = fn(){ goto `missing; }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let err = program.lower_all(&mut parser).unwrap_err();
+
+        match err {
+            CompileError::UnresolvedLabel { name, .. } => {
+                assert_eq!(name, "missing");
+            }
+            other => panic!("expected unresolved label error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goto_requires_direct_label_syntax() {
+        let src = "f = fn(){ goto x; `x; }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let err = program.lower_all(&mut parser).unwrap_err();
+
+        match err {
+            CompileError::SimpleError { s, .. } => assert_eq!(s, ERR_LABEL_NAME_REQUIRED),
+            other => panic!("expected label syntax error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_label_definition_errors() {
+        let src = "f = fn(){ `x; `x; }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let err = program.lower_all(&mut parser).unwrap_err();
+
+        match err {
+            CompileError::SimpleError { s, .. } => assert_eq!(s, ERR_LABEL_ALREADY_DEFINED),
+            other => panic!("expected duplicate label error, got {other:?}"),
+        }
     }
 
     #[test]

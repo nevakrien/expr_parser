@@ -55,3 +55,14 @@ Method access/currying:
 - Reserved internal names begin with `__` (except names ending with `_` are not treated as reserved internals).
 - Implemented special signatures include operator overloads (`__add`, `__neg`, ...), `__free`, `__deref`, and `__deref_mut`.
 - Signature checks for these happen during global signature inference.
+
+## Labels and `goto`
+
+- Backtick is prefix label syntax: `` `name ``.
+- A statement-form label declaration is a standalone backtick expression statement, for example `` `err; ``.
+- `goto` is a prefix control-flow form with one argument and currently expects direct label syntax (`goto `err;`).
+- Label resolution is function-local and lazy during lowering:
+  - Forward jumps like `goto `err; `err;` are valid.
+  - Labels are isolated per function body; same label text in different functions does not share a target.
+  - If a function uses a label that is never declared in that function, lowering emits `label \`X\` was used but never defined`.
+- Label declarations and `goto` both type as `Never`, same as `break`/`continue`.

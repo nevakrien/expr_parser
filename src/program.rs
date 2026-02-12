@@ -1,9 +1,10 @@
 use crate::error_messages::{
-    ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME, ERR_MEMBER_METHOD_NAME_COLLISION,
-    ERR_MEMBER_METHOD_REQUIRES_FN, ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+    ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME, ERR_LABEL_ALREADY_DEFINED,
+    ERR_LABEL_OUTSIDE_FUNCTION, ERR_MEMBER_METHOD_NAME_COLLISION, ERR_MEMBER_METHOD_REQUIRES_FN,
+    ERR_MEMBER_METHOD_REQUIRES_STRUCT,
 };
 use crate::identity_hasher::IdHashMap;
-use crate::ir::VarKind;
+use crate::ir::{LabelId, VarKind};
 use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{Macro, expand_macros_recursive};
@@ -22,6 +23,9 @@ pub enum CompileError {
 
     #[error("Unresolved name")]
     UnresolvedNames { name: String, locs: Vec<Loc> },
+
+    #[error("label `{name}` was used but never defined")]
+    UnresolvedLabel { name: String, locs: Vec<Loc> },
 
     #[error("{call_name} expected {expected} arguments, got {got}")]
     Arity {
@@ -61,6 +65,14 @@ pub enum Defined {
 }
 
 #[derive(Debug)]
+struct PendingLabel {
+    id: LabelId,
+    defined_loc: Option<Loc>,
+    pending_uses: Vec<Loc>,
+    pending_gotos: Vec<ValId>,
+}
+
+#[derive(Debug)]
 pub struct Program {
     pub definitions: IdHashMap<NameId, Defined>,
     definition_locs: IdHashMap<NameId, Loc>,
@@ -79,6 +91,9 @@ pub struct Program {
     pub scopes: Vec<IdHashMap<StrId, NameId>>,
     pub pending_names: IdHashMap<NameId, Vec<Loc>>,
     pub member_methods: IdHashMap<NameId, IdHashMap<StrId, ValId>>,
+
+    label_names: Vec<StrId>,
+    function_labels: Vec<IdHashMap<StrId, PendingLabel>>,
 }
 
 impl Default for Program {
@@ -106,6 +121,8 @@ impl Program {
             scopes: vec![IdHashMap::default()],
             pending_names: IdHashMap::default(),
             member_methods: IdHashMap::default(),
+            label_names: Vec::new(),
+            function_labels: Vec::new(),
         };
         program.insert_builtin_types();
         program
@@ -410,6 +427,148 @@ impl Program {
             return Err(CompileError::UnresolvedNames { name, locs });
         }
         Ok(()) //should never get here
+    }
+
+    fn fresh_label_id(&mut self, name: StrId) -> LabelId {
+        let id = LabelId(self.label_names.len());
+        self.label_names.push(name);
+        id
+    }
+
+    pub(crate) fn in_function_body(&self) -> bool {
+        !self.function_labels.is_empty()
+    }
+
+    pub(crate) fn with_function_labels<T>(
+        &mut self,
+        f: impl FnOnce(&mut Program) -> CResult<T>,
+    ) -> CResult<T> {
+        self.function_labels.push(IdHashMap::default());
+        let result = f(self);
+        let labels = self
+            .function_labels
+            .pop()
+            .expect("function label scope missing");
+
+        if result.is_err() {
+            return result;
+        }
+
+        for (name, state) in labels {
+            if state.defined_loc.is_some() {
+                continue;
+            }
+
+            let mut locs = state.pending_uses;
+            if locs.is_empty() {
+                continue;
+            }
+
+            let name = self.str_intern.resolve(name).to_string();
+            locs.shrink_to_fit();
+            return Err(CompileError::UnresolvedLabel { name, locs });
+        }
+
+        result
+    }
+
+    pub(crate) fn use_label_name_for_goto(
+        &mut self,
+        goto_id: ValId,
+        loc: &Loc,
+        name: &str,
+    ) -> CResult<LabelId> {
+        let name = self.str_intern.intern(name);
+
+        {
+            let Some(labels) = self.function_labels.last_mut() else {
+                return Err(CompileError::SimpleError {
+                    loc: loc.clone(),
+                    s: ERR_LABEL_OUTSIDE_FUNCTION,
+                });
+            };
+
+            if let Some(state) = labels.get_mut(&name) {
+                if state.defined_loc.is_none() {
+                    state.pending_uses.push(loc.clone());
+                    state.pending_gotos.push(goto_id);
+                    return Ok(LabelId::PENDING);
+                }
+                return Ok(state.id);
+            }
+        }
+
+        let id = self.fresh_label_id(name);
+        let labels = self
+            .function_labels
+            .last_mut()
+            .expect("label usage outside function scope should be checked first");
+        labels.insert(
+            name,
+            PendingLabel {
+                id,
+                defined_loc: None,
+                pending_uses: vec![loc.clone()],
+                pending_gotos: vec![goto_id],
+            },
+        );
+        Ok(LabelId::PENDING)
+    }
+
+    pub(crate) fn define_label_name(&mut self, loc: &Loc, name: &str) -> CResult<LabelId> {
+        let name = self.str_intern.intern(name);
+
+        let mut pending_gotos = Vec::new();
+        let mut id = None;
+
+        {
+            let Some(labels) = self.function_labels.last_mut() else {
+                return Err(CompileError::SimpleError {
+                    loc: loc.clone(),
+                    s: ERR_LABEL_OUTSIDE_FUNCTION,
+                });
+            };
+
+            if let Some(state) = labels.get_mut(&name) {
+                if state.defined_loc.is_some() {
+                    return Err(CompileError::SimpleError {
+                        loc: loc.clone(),
+                        s: ERR_LABEL_ALREADY_DEFINED,
+                    });
+                }
+                state.defined_loc = Some(loc.clone());
+                state.pending_uses.clear();
+                std::mem::swap(&mut pending_gotos, &mut state.pending_gotos);
+                id = Some(state.id);
+            }
+        }
+
+        let id = if let Some(id) = id {
+            id
+        } else {
+            let id = self.fresh_label_id(name);
+            let labels = self
+                .function_labels
+                .last_mut()
+                .expect("label definition outside function scope should be checked first");
+            labels.insert(
+                name,
+                PendingLabel {
+                    id,
+                    defined_loc: Some(loc.clone()),
+                    pending_uses: Vec::new(),
+                    pending_gotos: Vec::new(),
+                },
+            );
+            id
+        };
+
+        for goto_id in pending_gotos {
+            let goto_loc = self.value_loc(goto_id);
+            self.set_value(goto_id, goto_loc, Value::Goto(id));
+        }
+
+        Ok(id)
     }
 
     fn get_ident_for_global(&mut self, lhs: LExpr) -> CResult<NameId> {

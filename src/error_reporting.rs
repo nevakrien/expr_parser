@@ -144,6 +144,23 @@ impl ErrorReporter {
 
                 self.print_report(primary.file, report.finish())
             }
+            CompileError::UnresolvedLabel { locs, name } => {
+                let Some(primary) = locs.first() else {
+                    return Ok(());
+                };
+
+                let mut report =
+                    Report::build(ReportKind::Error, primary.file, primary.range.start)
+                        .with_message(format!("label `{name}` was used but never defined"));
+
+                for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
+                    report = report.with_label(
+                        Label::new((loc.file, loc.range.clone())).with_message("used here"),
+                    );
+                }
+
+                self.print_report(primary.file, report.finish())
+            }
             CompileError::SimpleError { loc, .. } | CompileError::Arity { loc, .. } => {
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message(error.to_string())

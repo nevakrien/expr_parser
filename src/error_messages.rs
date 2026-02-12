@@ -21,3 +21,7 @@ pub const ERR_MEMBER_METHOD_REQUIRES_STRUCT: &str = "Member method requires a st
 pub const ERR_MEMBER_METHOD_REQUIRES_FN: &str = "Member method requires a function value";
 pub const ERR_MEMBER_METHOD_NAME_COLLISION: &str =
     "Member method name collides with existing struct field or method";
+pub const ERR_LABEL_OUTSIDE_FUNCTION: &str = "Labels can only be used inside function bodies";
+pub const ERR_GOTO_OUTSIDE_FUNCTION: &str = "goto can only be used inside function bodies";
+pub const ERR_LABEL_NAME_REQUIRED: &str = "Label operator expects a simple identifier";
+pub const ERR_LABEL_ALREADY_DEFINED: &str = "Label was already defined in this function";
