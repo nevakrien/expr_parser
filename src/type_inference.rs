@@ -131,10 +131,10 @@ impl TryFrom<TypeId> for BuiltinType {
     }
 };*/
 
-#[derive(Debug, Clone,Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArrayType {
     Sized(usize),
-    Unsized
+    Unsized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -504,7 +504,7 @@ pub struct SolvedTypes {
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: Vec<TypeId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
-    pub member_access_implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
+    pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,7 +523,7 @@ impl SolvedTypes {
             typedef_types,
             val_types: vec![UNKNOWN_TYPE; program.values.len()],
             member_method_types: IdHashMap::default(),
-            member_access_implicit_derefs: IdHashMap::default(),
+            implicit_derefs: IdHashMap::default(),
         }
     }
 
@@ -563,16 +563,33 @@ impl SolvedTypes {
     }
 
     #[inline(always)]
+    pub fn implicit_deref_chain(&self, id: ValId) -> Option<&[TypeId]> {
+        self.implicit_derefs.get(&id).map(Vec::as_slice)
+    }
+
+    #[inline(always)]
+    pub fn implicit_deref_count(&self, id: ValId) -> Option<usize> {
+        self.implicit_deref_chain(id).map(|chain| chain.len())
+    }
+
+    #[inline(always)]
     pub fn member_access_implicit_deref_chain(&self, id: ValId) -> Option<&[TypeId]> {
-        self.member_access_implicit_derefs
-            .get(&id)
-            .map(Vec::as_slice)
+        self.implicit_deref_chain(id)
     }
 
     #[inline(always)]
     pub fn member_access_implicit_deref_count(&self, id: ValId) -> Option<usize> {
-        self.member_access_implicit_deref_chain(id)
-            .map(|chain| chain.len())
+        self.implicit_deref_count(id)
+    }
+
+    #[inline(always)]
+    pub fn index_implicit_deref_chain(&self, id: ValId) -> Option<&[TypeId]> {
+        self.implicit_deref_chain(id)
+    }
+
+    #[inline(always)]
+    pub fn index_implicit_deref_count(&self, id: ValId) -> Option<usize> {
+        self.implicit_deref_count(id)
     }
 }
 
@@ -1012,11 +1029,15 @@ fn _infer_value_hacky<'a>(
 }
 
 fn main_solver(ctx: &mut InferState) {
+    //this loop only exists once ALL requirments have checked and didnt complain
+    //on the state we are gona release. since there was no change
+    //this is SUPER important because they are not just progressions
     loop {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
         progress |= resolve_deferred_types(ctx);
         progress |= resolve_pointer_likes(ctx);
+        progress |= resolve_pending_indexes(ctx);
         progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
         if !progress {
@@ -1090,7 +1111,9 @@ struct InferState<'a> {
     pending_specializations: Vec<PendingSpecialization>,
     member_method_type_sites: Vec<PendingMemberMethodType>,
     member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
+    index_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
     pending_member_accesses: Vec<PendingMemberAccess>,
+    pending_indexes: Vec<PendingIndex>,
     pointer_likes: Vec<PendingPointerLike>,
 
     //result
@@ -1270,6 +1293,17 @@ struct PendingPointerLike {
     source_value: ValId,
 }
 
+#[derive(Debug, Clone)]
+struct PendingIndex {
+    site: ValId,
+    base_value: ValId,
+    index_value: ValId,
+    base: CId,
+    index: CId,
+    output: CId,
+    implicit_receivers: Vec<CId>,
+}
+
 fn new_cluster(parent: &mut ClusterVec<CId>, cluster: &mut ClusterVec<Cluster>) -> CId {
     let id = CId(parent.len());
     parent.0.push(id);
@@ -1376,7 +1410,9 @@ impl<'a> InferState<'a> {
             pending_specializations: Vec::new(),
             member_method_type_sites: Vec::new(),
             member_access_implicit_deref_sites: Vec::new(),
+            index_implicit_deref_sites: Vec::new(),
             pending_member_accesses: Vec::new(),
+            pending_indexes: Vec::new(),
             pointer_likes: Vec::new(),
             errors: Vec::new(),
             ans,
@@ -1405,7 +1441,9 @@ impl<'a> InferState<'a> {
             pending_specializations,
             member_method_type_sites,
             member_access_implicit_deref_sites,
+            index_implicit_deref_sites,
             pending_member_accesses,
+            pending_indexes,
             pointer_likes,
             errors: _,
             ans: _,
@@ -1431,7 +1469,9 @@ impl<'a> InferState<'a> {
         pending_specializations.clear();
         member_method_type_sites.clear();
         member_access_implicit_deref_sites.clear();
+        index_implicit_deref_sites.clear();
         pending_member_accesses.clear();
+        pending_indexes.clear();
         pointer_likes.clear();
     }
 
@@ -3531,7 +3571,7 @@ fn try_resolve_struct_deref_method(
     method_name: StrId,
     expected_self_mutable: bool,
     expected_output_mutable: bool,
-) -> Option<CId> {
+) -> Option<ResolvedStructDerefTarget> {
     let method = program
         .member_methods
         .get(&struct_name)
@@ -3599,18 +3639,30 @@ fn try_resolve_struct_deref_method(
         ResolveKind::Ptr { tgt, raw, mutable }
             if raw == Some(false) && mutable == Some(expected_output_mutable) =>
         {
-            Some(tgt)
+            Some(ResolvedStructDerefTarget {
+                target: tgt,
+                deref_result_ptr: ret_root,
+            })
         }
         ResolveKind::Solved(ty) => match store.type_value(ty) {
             TypeValue::Ptr { tgt, raw, mutable }
                 if !*raw && *mutable == expected_output_mutable =>
             {
-                Some(new_solved(parent, cluster, *tgt))
+                Some(ResolvedStructDerefTarget {
+                    target: new_solved(parent, cluster, *tgt),
+                    deref_result_ptr: new_solved(parent, cluster, ty),
+                })
             }
             _ => None,
         },
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedStructDerefTarget {
+    target: CId,
+    deref_result_ptr: CId,
 }
 
 fn resolve_struct_deref_target(
@@ -3627,7 +3679,7 @@ fn resolve_struct_deref_target(
     base_value: ValId,
     base_cluster: CId,
     struct_name: NameId,
-) -> Option<CId> {
+) -> Option<ResolvedStructDerefTarget> {
     let deref_target = try_resolve_struct_deref_method(
         store,
         parent,
@@ -3676,8 +3728,8 @@ fn resolve_struct_deref_target(
                 func_defs,
                 struct_infers,
                 tuple_infers,
-                a,
-                b,
+                a.target,
+                b.target,
             ) {
                 errors.push(TypeError::ValuesContradict {
                     expectation_reason:
@@ -3689,7 +3741,7 @@ fn resolve_struct_deref_target(
                 });
                 return None;
             }
-            Some(a)
+            Some(b)
         }
     }
 }
@@ -3886,7 +3938,7 @@ fn try_resolve_member_access(
                                     struct_name,
                                 )
                             {
-                                let next = find_root(parent, target);
+                                let next = find_root(parent, target.target);
                                 implicit_receivers.push(current);
                                 used_implicit_deref_steps += 1;
                                 current = next;
@@ -3994,7 +4046,7 @@ fn try_resolve_member_access(
                             struct_name,
                         )
                     {
-                        let next = find_root(parent, target);
+                        let next = find_root(parent, target.target);
                         implicit_receivers.push(current);
                         used_implicit_deref_steps += 1;
                         current = next;
@@ -4219,7 +4271,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         return ans;
                     };
 
-                    target
+                    target.target
                 }
                 ResolveKind::Solved(t) => {
                     let solved = ctx.store.type_value(t).clone();
@@ -4254,7 +4306,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                                 return ans;
                             };
 
-                            target
+                            target.target
                         }
                         _ => {
                             let ans = ctx.new_cluster();
@@ -4985,7 +5037,65 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             ctx.bind_val(v, array);
             array
         }
-        Value::Index(_) | Value::Match { .. } => todo!(),
+        Value::Index(call) => {
+            let base = gather_constraints(ctx, call.base, current_output);
+            let pos_args = call.pos_args().ids().collect::<Vec<_>>();
+            let pos_arg_clusters = pos_args
+                .iter()
+                .copied()
+                .map(|arg| gather_constraints(ctx, arg, current_output))
+                .collect::<Vec<_>>();
+            let named_args = call.named_args().ids().collect::<Vec<_>>();
+            for arg in named_args.iter().copied() {
+                let _ = gather_constraints(ctx, arg, current_output);
+            }
+
+            let output = ctx.new_cluster();
+            ctx.bind_val(v, output);
+
+            if !named_args.is_empty() || pos_args.len() != 1 {
+                let loc = ctx.program.value_loc(v);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "indexing currently expects exactly one positional argument",
+                });
+                return output;
+            }
+
+            let mut site = PendingIndex {
+                site: v,
+                base_value: call.base,
+                index_value: pos_args[0],
+                base,
+                index: pos_arg_clusters[0],
+                output,
+                implicit_receivers: Vec::new(),
+            };
+            let outcome = resolve_index_site(
+                ctx.store,
+                &mut ctx.parent,
+                &mut ctx.cluster,
+                &mut ctx.func_defs,
+                &mut ctx.struct_infers,
+                &mut ctx.tuple_infers,
+                &mut ctx.errors,
+                ctx.program,
+                &*ctx.ans,
+                &mut site,
+            );
+            if outcome.retain {
+                ctx.pending_indexes.push(site);
+            } else if !site.implicit_receivers.is_empty() {
+                ctx.index_implicit_deref_sites
+                    .push(PendingMemberAccessImplicitDeref {
+                        site: v,
+                        receivers: site.implicit_receivers,
+                    });
+            }
+
+            output
+        }
+        Value::Match { .. } => todo!(),
 
         Value::Labeled { .. } => unreachable!("bug tried compiling labeled normally"),
         Value::MatchArm(_) => unreachable!("bug tried compiling match arm normally"),
@@ -7378,6 +7488,206 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
     progress
 }
 
+fn resolve_index_site(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
+    errors: &mut Vec<TypeError>,
+    program: &Program,
+    ans: &SolvedTypes,
+    site: &mut PendingIndex,
+) -> ResolveOutcome {
+    let mut progress = false;
+
+    site.base = find_root(parent, site.base);
+    site.index = find_root(parent, site.index);
+
+    let mut current = site.base;
+    let mut used_implicit_deref_steps = 0usize;
+    let max_implicit_deref_steps = 64usize;
+    let mut implicit_receivers = Vec::new();
+
+    let element = loop {
+        match cluster[current].state {
+            ResolveKind::Nothing => {
+                site.base = current;
+                return ResolveOutcome::keep(progress);
+            }
+            ResolveKind::Array { element, .. } => break element,
+            ResolveKind::Ptr { tgt, .. } => {
+                if used_implicit_deref_steps >= max_implicit_deref_steps {
+                    errors.push(TypeError::Simple {
+                        loc: program.value_loc(site.site),
+                        message: "index autoderef recursion exceeded safety limit",
+                    });
+                    return ResolveOutcome::drop(progress);
+                }
+                implicit_receivers.push(current);
+                current = find_root(parent, tgt);
+                used_implicit_deref_steps += 1;
+            }
+            ResolveKind::Solved(t) => match store.type_value(t).clone() {
+                TypeValue::Array(element, _) => break new_solved(parent, cluster, element),
+                TypeValue::Ptr { tgt, .. } => {
+                    if used_implicit_deref_steps >= max_implicit_deref_steps {
+                        errors.push(TypeError::Simple {
+                            loc: program.value_loc(site.site),
+                            message: "index autoderef recursion exceeded safety limit",
+                        });
+                        return ResolveOutcome::drop(progress);
+                    }
+                    let next = new_solved(parent, cluster, tgt);
+                    implicit_receivers.push(current);
+                    current = find_root(parent, next);
+                    used_implicit_deref_steps += 1;
+                }
+                TypeValue::Struct { id, .. } => {
+                    let Some(struct_name) = store.struct_value(id).name else {
+                        errors.push(TypeError::Simple {
+                            loc: program.value_loc(site.site),
+                            message: "indexing base must be an array or pointer to array",
+                        });
+                        return ResolveOutcome::drop(progress);
+                    };
+                    let Some(target) = resolve_struct_deref_target(
+                        store,
+                        parent,
+                        cluster,
+                        func_defs,
+                        struct_infers,
+                        tuple_infers,
+                        errors,
+                        program,
+                        ans,
+                        site.site,
+                        site.base_value,
+                        current,
+                        struct_name,
+                    ) else {
+                        errors.push(TypeError::Simple {
+                            loc: program.value_loc(site.site),
+                            message: "indexing base must be an array or pointer to array",
+                        });
+                        return ResolveOutcome::drop(progress);
+                    };
+                    implicit_receivers.push(current);
+                    implicit_receivers.push(target.deref_result_ptr);
+                    current = find_root(parent, target.target);
+                    used_implicit_deref_steps += 1;
+                }
+                _ => {
+                    errors.push(TypeError::Simple {
+                        loc: program.value_loc(site.site),
+                        message: "indexing base must be an array or pointer to array",
+                    });
+                    return ResolveOutcome::drop(progress);
+                }
+            },
+            ResolveKind::Struct(rid) => {
+                let sid = struct_infers[rid.0].sid;
+                let Some(struct_name) = store.struct_value(sid).name else {
+                    errors.push(TypeError::Simple {
+                        loc: program.value_loc(site.site),
+                        message: "indexing base must be an array or pointer to array",
+                    });
+                    return ResolveOutcome::drop(progress);
+                };
+                let Some(target) = resolve_struct_deref_target(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    errors,
+                    program,
+                    ans,
+                    site.site,
+                    site.base_value,
+                    current,
+                    struct_name,
+                ) else {
+                    errors.push(TypeError::Simple {
+                        loc: program.value_loc(site.site),
+                        message: "indexing base must be an array or pointer to array",
+                    });
+                    return ResolveOutcome::drop(progress);
+                };
+                implicit_receivers.push(current);
+                implicit_receivers.push(target.deref_result_ptr);
+                current = find_root(parent, target.target);
+                used_implicit_deref_steps += 1;
+            }
+            _ => {
+                errors.push(TypeError::Simple {
+                    loc: program.value_loc(site.site),
+                    message: "indexing base must be an array or pointer to array",
+                });
+                return ResolveOutcome::drop(progress);
+            }
+        }
+    };
+
+    site.base = current;
+    site.implicit_receivers = finalize_member_access_implicit_chain(
+        implicit_receivers,
+        used_implicit_deref_steps,
+        current,
+    );
+
+    let usize_c = new_solved(parent, cluster, BuiltinType::Usize.into());
+    match unify_if_distinct(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        site.index,
+        usize_c,
+    ) {
+        Ok(changed) => progress |= changed,
+        Err(clash) => {
+            errors.push(TypeError::ValuesContradict {
+                expectation_reason: "array indexing requires an index of type usize",
+                site: site.site,
+                found: site.index_value,
+                expected_place: site.site,
+                clash,
+            });
+            return ResolveOutcome::drop(progress);
+        }
+    }
+
+    match unify_if_distinct(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        site.output,
+        element,
+    ) {
+        Ok(changed) => progress |= changed,
+        Err(clash) => {
+            errors.push(TypeError::ValuesContradict {
+                expectation_reason: "index expression result must match indexed element type",
+                site: site.site,
+                found: site.base_value,
+                expected_place: site.site,
+                clash,
+            });
+            return ResolveOutcome::drop(progress);
+        }
+    }
+
+    ResolveOutcome::drop(progress)
+}
+
 fn try_resolve_func_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -7593,6 +7903,7 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                             source,
                             struct_name,
                         )
+                        .map(|resolved| resolved.target)
                     })
                 }
                 _ => None,
@@ -7616,6 +7927,7 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                         source,
                         struct_name,
                     )
+                    .map(|resolved| resolved.target)
                 })
             }
             _ => None,
@@ -7666,6 +7978,60 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                 false
             }
         }
+    });
+
+    progress
+}
+
+#[inline(always)]
+fn resolve_pending_indexes(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    let (
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        pending_indexes,
+        index_implicit_deref_sites,
+        errors,
+        ans,
+    ) = (
+        &mut ctx.store,
+        &mut ctx.parent,
+        &mut ctx.cluster,
+        &mut ctx.func_defs,
+        &mut ctx.struct_infers,
+        &mut ctx.tuple_infers,
+        &mut ctx.pending_indexes,
+        &mut ctx.index_implicit_deref_sites,
+        &mut ctx.errors,
+        &*ctx.ans,
+    );
+
+    pending_indexes.retain_mut(|site| {
+        let outcome = resolve_index_site(
+            store,
+            parent,
+            cluster,
+            func_defs,
+            struct_infers,
+            tuple_infers,
+            errors,
+            ctx.program,
+            ans,
+            site,
+        );
+        progress |= outcome.progress;
+        if !outcome.retain && !site.implicit_receivers.is_empty() {
+            index_implicit_deref_sites.push(PendingMemberAccessImplicitDeref {
+                site: site.site,
+                receivers: std::mem::take(&mut site.implicit_receivers),
+            });
+        }
+        outcome.retain
     });
 
     progress
@@ -7835,6 +8201,7 @@ fn finalize(ctx: &mut InferState) {
         pat_cluster,
         member_method_type_sites,
         member_access_implicit_deref_sites,
+        index_implicit_deref_sites,
         parent,
         cluster,
         errors,
@@ -7844,6 +8211,7 @@ fn finalize(ctx: &mut InferState) {
         &ctx.pat_cluster,
         &ctx.member_method_type_sites,
         &ctx.member_access_implicit_deref_sites,
+        &ctx.index_implicit_deref_sites,
         &mut ctx.parent,
         &ctx.cluster,
         &mut ctx.errors,
@@ -7961,7 +8329,30 @@ fn finalize(ctx: &mut InferState) {
         }
     }
 
-    for entry in member_access_implicit_deref_sites.iter() {
+    store_implicit_deref_chains(
+        &mut ans.implicit_derefs,
+        member_access_implicit_deref_sites,
+        parent,
+        cluster,
+    );
+    store_implicit_deref_chains(
+        &mut ans.implicit_derefs,
+        index_implicit_deref_sites,
+        parent,
+        cluster,
+    );
+
+    // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()); }
+}
+
+fn store_implicit_deref_chains(
+    out: &mut IdHashMap<ValId, Vec<TypeId>>,
+    entries: &[PendingMemberAccessImplicitDeref],
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+) {
+    for entry in entries.iter() {
         let mut chain = Vec::with_capacity(entry.receivers.len());
         let mut all_solved = true;
         for receiver in entry.receivers.iter() {
@@ -7975,12 +8366,9 @@ fn finalize(ctx: &mut InferState) {
             }
         }
         if all_solved {
-            ans.member_access_implicit_derefs.insert(entry.site, chain);
+            out.insert(entry.site, chain);
         }
     }
-
-    // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
-    // unsafe { perf_done(name.as_ptr()); }
 }
 
 // fn report_unresolved(ctx: &mut InferState){
@@ -8357,6 +8745,107 @@ mod type_infer_tests {
             store.type_value(item),
             TypeValue::Builtin(BuiltinType::Int)
         ));
+    }
+
+    #[test]
+    fn array_index_expression_typechecks() {
+        assert_fn_type!(
+            "f = fn(){ let a = [1:int, 2:int, 3:int]; a[0:usize] }",
+            BuiltinType::Int
+        );
+    }
+
+    #[test]
+    fn pointer_to_array_index_expression_typechecks() {
+        assert_fn_type!(
+            "f = fn(){ let a:[int;2] = [1:int, 2:int]; let p:*[int;2] = &a; p[1:usize] }",
+            BuiltinType::Int
+        );
+    }
+
+    #[test]
+    fn struct_deref_to_array_index_expression_typechecks() {
+        let src = "Box=struct{inner:&[int;2]}; Box.__deref_mut = fn(self:&mut Box)->&mut &[int;2] { &mut self.inner }; f = fn(b:Box)->int { let y:int = b[1:usize]; y };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let index_site = find_let_stmt_value(&program, f, "y");
+        let chain = solved_types
+            .index_implicit_deref_chain(index_site)
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|t| store.get_type_string(&program, *t))
+                    .collect::<Vec<_>>()
+            })
+            .expect("expected implicit deref chain for index site");
+        assert_eq!(
+            chain,
+            vec![
+                "Box₀".to_string(),
+                "&mut &[int;2]".to_string(),
+                "&[int;2]".to_string(),
+                "[int;2]".to_string(),
+            ],
+            "unexpected implicit deref chain for struct-deref indexing"
+        );
+    }
+
+    #[test]
+    fn generic_box_array_index_chain_includes_box_step() {
+        let src = "free = cfn(p:*void); Box = struct[T]{ptr:*T}; Box.__free = fn[T](b:&mut Box[T]){free(b->ptr as *void)} Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr} Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr} f=fn(b:Box[[int]])->int { let y:int = b[0]; y };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let index_site = find_let_stmt_value(&program, f, "y");
+        let chain = solved_types
+            .index_implicit_deref_chain(index_site)
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|t| store.get_type_string(&program, *t))
+                    .collect::<Vec<_>>()
+            })
+            .expect("expected implicit deref chain for index site");
+        assert_eq!(
+            chain,
+            vec![
+                "Box₀".to_string(),
+                "&mut [int]".to_string(),
+                "[int]".to_string(),
+            ],
+            "unexpected implicit deref chain for generic Box indexing"
+        );
+    }
+
+    #[test]
+    fn array_index_requires_usize() {
+        let mut store = TypeStore::new();
+        let errs =
+            infer_fn_body("f = fn(){ let a = [1:int, 2:int]; a[0:int] }", &mut store).unwrap_err();
+        assert!(errs.iter().any(|err| matches!(
+            err,
+            TypeError::ValuesContradict {
+                expectation_reason: "array indexing requires an index of type usize",
+                ..
+            }
+        )));
     }
 
     #[test]

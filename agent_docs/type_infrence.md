@@ -230,11 +230,19 @@ Important fragile/unfinished expression areas:
   - `.` member access performs at most one implicit dereference step (`(*x).field` behavior),
   - `->` member access can chain implicit pointer-like dereference steps (with a safety cap) until lookup resolves,
   - smart-pointer access tries direct member lookup on the current struct first, and only falls back to `__deref`/`__deref_mut` target lookup when direct lookup misses,
-  - all implicit member-access deref hops (pointer and smart-pointer fallback hops) are tracked in `SolvedTypes.member_access_implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
+  - all implicit deref hops used by member access and indexing are tracked in `SolvedTypes.implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
+  - for smart-deref struct hops, the chain records both the pre-deref receiver type and the deref-method result pointer/reference type (before the pointee target),
   - if a field is not found, member methods are resolved from `program.member_methods`,
   - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),
   - important binding detail: inference binds the `Value::Access` node to the **curried** callable type used by the call site, while tracking the full called method signature (`self` still present) in `SolvedTypes.member_method_types`.
   - see `agent_docs/language_semantics.md` for the language-level contract for `.`, `::`, and `->`.
+- `Value::Index`:
+  - currently only the builtin array case is implemented (no overload/slice semantics yet),
+  - gather enqueues indexing sites into a deferred queue (same queue+`retain_mut` pattern used by operators/member access),
+  - solver only requires index operand `usize` once base resolves to an actual indexable array-like target,
+  - index-base resolution follows pointer-like and smart-deref chains (`struct -> __deref/__deref_mut -> &array -> array`) with a recursion safety cap,
+  - if base resolves to `[T; N]`, `[T]`, or pointer/reference to array (`&[T; N]`, `*[T; N]`, etc.), result is constrained to `T`,
+  - unresolved bases stay pending; non-array/non-pointer-to-array bases emit a hard error.
 
 Other notable implemented branches:
 
@@ -274,8 +282,9 @@ Maintenance note: this whole gather layer is intentionally unfinished in places.
 1. `resolve_operator_types`
 2. `resolve_deferred_types`
 3. `resolve_pointer_likes`
-4. `resolve_pending_member_accesses`
-5. `resolve_pending_specializations`
+4. `resolve_pending_indexes`
+5. `resolve_pending_member_accesses`
+6. `resolve_pending_specializations`
 
 Then `finalize`:
 
@@ -284,7 +293,7 @@ Then `finalize`:
 - wraps generic function values into `WithGenerics`,
 - emits unresolved errors once per unresolved root (to reduce duplicate noise),
 - finalizes `SolvedTypes.member_method_types` from deferred member/operator call sites,
-- finalizes `SolvedTypes.member_access_implicit_derefs` for member-access sites that used implicit dereference hops,
+- finalizes `SolvedTypes.implicit_derefs` for value sites that used implicit dereference hops (member access + index),
 - suppresses duplicate unresolved reporting between curried call-site values and unresolved full member signatures, preferring unresolved receiver/reference value sites when only the full member signature remains unresolved.
 
 ## Operator Resolution Notes
@@ -320,7 +329,7 @@ Then `finalize`:
 
 - Current status: we have first IR lowering and type inference metadata, but semantic materialization is still split into later phases.
 - Next phase intent: run value/ownership analysis that decides where values are consumed, borrowed, or mutated, then inserts implicit operations (`__free`, implicit member method calls, implicit deref steps) explicitly.
-- The inferred implicit deref/member metadata (`SolvedTypes.member_method_types`, `SolvedTypes.member_access_implicit_derefs`) is intentionally staged for that pass; it is not the final execution-level rewrite yet.
+- The inferred implicit deref/member metadata (`SolvedTypes.member_method_types`, `SolvedTypes.implicit_derefs`) is intentionally staged for that pass; it is not the final execution-level rewrite yet.
 - Medium-term intent: introduce a new IR tier dedicated to post-typecheck value semantics (ownership/borrows/destruction + explicit implicit-op insertion), so later backend/codegen phases do not rely on typechecker-only side channels.
 - Smart-pointer target: make a `Box`-style type a first-class validation case for deref/member flows; this mostly needs external-type integration and ABI/foreign-call tagging.
 - External/ABI syntax/semantics notes now live in `agent_docs/language_semantics.md`.

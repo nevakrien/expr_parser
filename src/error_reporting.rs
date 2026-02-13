@@ -736,7 +736,7 @@ impl ErrorReporter {
             ));
         }
 
-        for (site, chain) in solved.member_access_implicit_derefs.iter() {
+        for (site, chain) in solved.implicit_derefs.iter() {
             let loc = program.value_loc(*site);
             if !loc_in_region(&loc, region) {
                 continue;
@@ -748,7 +748,7 @@ impl ErrorReporter {
                 .join(" -> ");
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("member access implicit deref chain: {chain_types}"),
+                format!("implicit deref chain: {chain_types}"),
                 Color::Blue,
             ));
         }
