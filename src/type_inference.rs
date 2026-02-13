@@ -738,6 +738,13 @@ pub enum TypeError {
         clash: TypeClash,
     },
 
+    /// Function output type annotation conflicts with inferred body result.
+    FunctionOutputAnnotationMismatch {
+        output_type: Option<TExpId>,
+        constrained: ValId,
+        clash: TypeClash,
+    },
+
     /// Pattern annotation mismatch
     PatternAnnotationMismatch {
         annotation: PatId,
@@ -993,13 +1000,11 @@ pub fn infer_value_internals<'a>(
                         } => x,
                         _ => body,
                     };
-                    ctx.push_error(TypeError::ValuesContradict {
-                        expectation_reason: "function body must match return type",
-                        site: value,
-                        found,
-                        expected_place: value,
-                        clash,
-                    });
+                    ctx.push_error(TypeError::FunctionOutputAnnotationMismatch {
+                            output_type,
+                            constrained: found,
+                            clash,
+                        });
                 }
             }
 
@@ -5345,7 +5350,6 @@ fn compile_struct_type<const ALLOW_GENERICS: bool>(
     output
 }
 
-
 fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
     ctx: &mut InferState,
     typedef_name: NameId,
@@ -5363,11 +5367,11 @@ fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
                 _ => unreachable!("struct def didnt return struct"),
             };
 
-            debug_assert_eq!(ctx.store.structs[sid.0].name,None);
+            debug_assert_eq!(ctx.store.structs[sid.0].name, None);
             ctx.store.structs[sid.0].name = Some(typedef_name);
 
             cid
-        },
+        }
         _ => compile_type_expr(ctx, texpr),
     }
 }
@@ -5616,13 +5620,11 @@ fn gather_func_constraints<const ALLOW_GENERICS: bool>(
             } => x,
             _ => body,
         };
-        ctx.push_error(TypeError::ValuesContradict {
-            expectation_reason: "function body must match return type",
-            site: v,
-            found,
-            expected_place: v,
-            clash,
-        });
+        ctx.push_error(TypeError::FunctionOutputAnnotationMismatch {
+                output_type,
+                constrained: found,
+                clash,
+            });
     }
 
     //TODO limit f on params and out somehow
@@ -9755,11 +9757,7 @@ mod type_infer_tests {
         let clash = errs
             .iter()
             .find_map(|err| match err {
-                TypeError::ValuesContradict {
-                    expectation_reason: "function body must match return type",
-                    clash,
-                    ..
-                } => Some(*clash),
+                TypeError::FunctionOutputAnnotationMismatch { clash, .. } => Some(*clash),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("expected type mismatch, got errs={errs:?}"));
@@ -9798,11 +9796,7 @@ mod type_infer_tests {
         let clash = errs
             .iter()
             .find_map(|err| match err {
-                TypeError::ValuesContradict {
-                    expectation_reason: "function body must match return type",
-                    clash,
-                    ..
-                } => Some(*clash),
+                TypeError::FunctionOutputAnnotationMismatch { clash, .. } => Some(*clash),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("expected type mismatch, got errs={errs:?}"));

@@ -54,6 +54,7 @@ If both directions fail, `TypeClash` is produced with best-effort `found`/`wante
 
 - `ValuesContradict` (most expression-level mismatches),
 - `AnnotationMismatch` / `PatternAnnotationMismatch`,
+- `FunctionOutputAnnotationMismatch` (explicit `fn(..)->T` output annotation vs inferred body result),
 - `TypeClashBeforeMentioned` (typedef-related),
 - `FieldTypeMismatch`, `TypeDefPatternMismatch`, etc.
 
@@ -255,6 +256,7 @@ Other notable implemented branches:
 - `Value::Cast` intentionally does not require source/target equality (it gives target type identity).
 - `Value::TypeDef` ensures pattern has type `Type` and registers local typedef clusters.
 - `Value::Func` uses signature gather + body gather and unifies body with output cluster.
+  - when `fn` has an explicit output type (`-> T`) and body/result clashes with it, inference reports a dedicated annotation-style error (`FunctionOutputAnnotationMismatch`) instead of a generic `ValuesContradict`.
 
 ### Patterns and type expressions
 
