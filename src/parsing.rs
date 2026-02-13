@@ -285,8 +285,8 @@ const BP_MATCH_ARM: u32 = BP_PATTERN-2;
 const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
-const BP_POSTFIX_INC: u32 = 840;
-const BP_PREFIX: u32 = 850;
+const BP_POSTFIX_INC: u32 = 850;
+const BP_PREFIX: u32 = 840;
 
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {

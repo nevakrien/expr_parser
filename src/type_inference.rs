@@ -2271,6 +2271,26 @@ fn _try_absorb(
     }
 }
 
+fn force_type_if_distinct(
+    store: &mut TypeStore,
+    parent: &mut ClusterVec<CId>,
+    cluster: &mut ClusterVec<Cluster>,
+    func_defs: &mut Vec<FuncInfer>,
+    struct_infers: &mut Vec<StructInfer>,
+    tuple_infers: &mut Vec<TupleInfer>,
+    target: CId,
+    ty: TypeId,
+) -> Result<bool, TypeClash> {
+    let root = find_root(parent, target);
+    if let ResolveKind::Solved(t) = cluster[root].state{
+        if t==ty{
+            return Ok(false);
+        }
+    }
+    force_type(store,parent,cluster,func_defs,struct_infers,tuple_infers,target,ty)?;
+    Ok(true)
+}
+
 fn force_type(
     store: &mut TypeStore,
     parent: &mut ClusterVec<CId>,
@@ -6201,21 +6221,6 @@ fn classify_raw_pointer_operand(
     }
 }
 
-#[inline(always)]
-fn set_pointer_raw_if_unknown(cluster: &mut ClusterVec<Cluster>, cid: CId) -> bool {
-    let ResolveKind::Ptr { tgt, raw, mutable } = cluster[cid].state else {
-        return false;
-    };
-    if raw.is_some() {
-        return false;
-    }
-    cluster[cid].state = ResolveKind::Ptr {
-        tgt,
-        raw: Some(true),
-        mutable,
-    };
-    true
-}
 
 #[inline(always)]
 fn classify_operand(
@@ -6709,9 +6714,10 @@ fn resolve_operator_site(
         return ResolveOutcome::drop(false);
     }
 
-    if matches!(rhs_kind, OperandKind::UserStruct(_)) {
-        return ResolveOutcome::keep(false);
-    }
+    // if matches!(rhs_kind, OperandKind::UserStruct(_)) {
+    //     //TODO we need to enforce the constraint.
+    //     return ResolveOutcome::keep(false);
+    // }
 
     if lhs_kind == OperandKind::Unknown || rhs_kind == OperandKind::Unknown {
         return ResolveOutcome::keep(false);
@@ -6720,7 +6726,6 @@ fn resolve_operator_site(
     if matches!(op, Add | Sub) {
         let lhs_ptr = classify_raw_pointer_operand(store, parent, cluster, lhs);
         let rhs_ptr = classify_raw_pointer_operand(store, parent, cluster, rhs);
-        let lhs_int = cluster_is_int_like(store, parent, cluster, lhs);
         let rhs_int = cluster_is_int_like(store, parent, cluster, rhs);
 
         if op == Sub {
@@ -6730,19 +6735,10 @@ fn resolve_operator_site(
                     RawPointerOperandKind::RawPointer(rhs_raw),
                 )
                 | (
-                    RawPointerOperandKind::UnknownRawPointer(lhs_raw),
-                    RawPointerOperandKind::RawPointer(rhs_raw),
-                )
-                | (
                     RawPointerOperandKind::RawPointer(lhs_raw),
                     RawPointerOperandKind::UnknownRawPointer(rhs_raw),
                 )
-                | (
-                    RawPointerOperandKind::UnknownRawPointer(lhs_raw),
-                    RawPointerOperandKind::UnknownRawPointer(rhs_raw),
-                ) => {
-                    progress |= set_pointer_raw_if_unknown(cluster, lhs_raw);
-                    progress |= set_pointer_raw_if_unknown(cluster, rhs_raw);
+                => {
                     match unify_if_distinct(
                         store,
                         parent,
@@ -6796,93 +6792,34 @@ fn resolve_operator_site(
             }
         }
 
-        match (lhs_ptr, rhs_int) {
-            (RawPointerOperandKind::RawPointer(ptr), Some(true)) => {
-                match unify_if_distinct(
-                    store,
-                    parent,
-                    cluster,
-                    func_defs,
-                    struct_infers,
-                    tuple_infers,
-                    out,
-                    ptr,
-                ) {
-                    Ok(changed) => progress |= changed,
-                    Err(clash) => {
-                        errors.push(TypeError::ValuesContradict {
-                            expectation_reason:
-                                "operator result type must match pointer operand type",
-                            site: site.loc,
-                            found: site.lhs_val,
-                            expected_place: site.rhs_val,
-                            clash,
-                        });
-                        return ResolveOutcome::drop(false);
-                    }
-                }
-                return ResolveOutcome::drop(progress);
-            }
-            (RawPointerOperandKind::UnknownRawPointer(ptr), Some(true)) => {
-                progress |= set_pointer_raw_if_unknown(cluster, ptr);
-                match unify_if_distinct(
-                    store,
-                    parent,
-                    cluster,
-                    func_defs,
-                    struct_infers,
-                    tuple_infers,
-                    out,
-                    ptr,
-                ) {
-                    Ok(changed) => progress |= changed,
-                    Err(clash) => {
-                        errors.push(TypeError::ValuesContradict {
-                            expectation_reason:
-                                "operator result type must match pointer operand type",
-                            site: site.loc,
-                            found: site.lhs_val,
-                            expected_place: site.rhs_val,
-                            clash,
-                        });
-                        return ResolveOutcome::drop(false);
-                    }
-                }
-                return ResolveOutcome::drop(progress);
-            }
-            _ => {}
-        }
 
-        if op == Add {
-            match (rhs_ptr, lhs_int) {
+
+        if op == Add || op == Sub {
+            match (lhs_ptr, rhs_int) {
                 (RawPointerOperandKind::RawPointer(ptr), Some(true)) => {
-                    match unify_if_distinct(
+                    match force_type_if_distinct(
                         store,
                         parent,
                         cluster,
                         func_defs,
                         struct_infers,
                         tuple_infers,
-                        out,
-                        ptr,
-                    ) {
+                        rhs,
+                        BuiltinType::Usize.into(),
+                    ){
                         Ok(changed) => progress |= changed,
                         Err(clash) => {
                             errors.push(TypeError::ValuesContradict {
                                 expectation_reason:
-                                    "operator result type must match pointer operand type",
+                                    "pointer add may only happen with usize",
                                 site: site.loc,
                                 found: site.lhs_val,
                                 expected_place: site.rhs_val,
                                 clash,
                             });
-                            return ResolveOutcome::drop(false);
                         }
+
                     }
-                    return ResolveOutcome::drop(progress);
-                }
-                (RawPointerOperandKind::UnknownRawPointer(ptr), Some(true)) => {
-                    progress |= set_pointer_raw_if_unknown(cluster, ptr);
                     match unify_if_distinct(
                         store,
                         parent,
@@ -6897,13 +6834,12 @@ fn resolve_operator_site(
                         Err(clash) => {
                             errors.push(TypeError::ValuesContradict {
                                 expectation_reason:
-                                    "operator result type must match pointer operand type",
+                                    "pointer arithmetic preserves type",
                                 site: site.loc,
                                 found: site.lhs_val,
                                 expected_place: site.rhs_val,
                                 clash,
                             });
-                            return ResolveOutcome::drop(false);
                         }
                     }
                     return ResolveOutcome::drop(progress);
@@ -6912,46 +6848,6 @@ fn resolve_operator_site(
             }
         }
 
-        let lhs_pointerish = matches!(
-            lhs_ptr,
-            RawPointerOperandKind::RawPointer(_)
-                | RawPointerOperandKind::UnknownRawPointer(_)
-                | RawPointerOperandKind::NonRawPointer
-        );
-        let rhs_pointerish = matches!(
-            rhs_ptr,
-            RawPointerOperandKind::RawPointer(_)
-                | RawPointerOperandKind::UnknownRawPointer(_)
-                | RawPointerOperandKind::NonRawPointer
-        );
-        if lhs_pointerish || rhs_pointerish {
-            let lhs_can_be_raw = matches!(
-                lhs_ptr,
-                RawPointerOperandKind::RawPointer(_) | RawPointerOperandKind::UnknownRawPointer(_)
-            );
-            let rhs_can_be_raw = matches!(
-                rhs_ptr,
-                RawPointerOperandKind::RawPointer(_) | RawPointerOperandKind::UnknownRawPointer(_)
-            );
-            let could_still_succeed = (lhs_can_be_raw && rhs_int != Some(false))
-                || (op == Sub && lhs_can_be_raw && rhs_can_be_raw)
-                || (op == Add && rhs_can_be_raw && lhs_int != Some(false));
-            if could_still_succeed {
-                return ResolveOutcome::keep(progress);
-            }
-            errors.push(bin_op_overload_not_found_error(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                site,
-                lhs,
-                rhs,
-            ));
-            return ResolveOutcome::drop(progress);
-        }
     }
 
     // ----------------------------------------------------
@@ -9852,7 +9748,7 @@ mod type_infer_tests {
 
     #[test]
     fn raw_pointer_addition_resolves_to_pointer_type() {
-        let src = "f = fn(x:int){ let p:*const int = &x; let y:*const int = p + 1:int; };";
+        let src = "f = fn(x:int){ let p:*const int = &x; let y:*const int = p + 1; };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -9876,7 +9772,7 @@ mod type_infer_tests {
 
     #[test]
     fn raw_pointer_subtraction_resolves_to_pointer_type() {
-        let src = "f = fn(x:int){ let p:*int = &x; let y:*int = p - 1:int; };";
+        let src = "f = fn(x:int){ let p:*int = &x; let y:*int = p - 1; };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
