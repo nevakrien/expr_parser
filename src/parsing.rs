@@ -1013,7 +1013,11 @@ impl<'a> Parser<'a> {
                 return Err(self.err_open_delim(open, end_op));
             };
             args.push(exp);
-            self.try_operator(",")?;
+            if let Some(Token::Operator(op)) = self.peek_token()?.map(|l| &l.value)
+                && matches!(*op, "," | ";")
+            {
+                self.next_token()?;
+            }
         }
 
         *lhs = Located {
@@ -2509,6 +2513,43 @@ mod parse_tests {
                 }
             }
             _ => panic!("expected application expression"),
+        }
+
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn function_shorthand_with_block_body_and_tuple_ref_type() {
+        let src = "g2 = f(a:&(int,f64))->&int { let &(x,y) = a; x}";
+        let mut p = Parser::new(src, 0);
+
+        let expr = p.consume_stmt().unwrap();
+
+        match expr.value {
+            Expr::Bin(eq, args) => {
+                assert_eq!(eq.value, "=");
+                let (_, rhs) = &*args;
+
+                let Expr::Postfix(open, body_parts) = &rhs.value else {
+                    panic!("expected function shorthand body")
+                };
+                assert_eq!(open.value, "{");
+                assert_eq!(body_parts.len(), 3);
+
+                match &body_parts[1].value {
+                    Expr::Prefix(let_kw, let_args) => {
+                        assert_eq!(let_kw.value, "let");
+                        assert_eq!(let_args.len(), 2);
+                    }
+                    _ => panic!("expected let expression in block body"),
+                }
+
+                match &body_parts[2].value {
+                    Expr::Atom(Token::Ident(name)) => assert_eq!(name, "x"),
+                    _ => panic!("expected x tail expression"),
+                }
+            }
+            _ => panic!("expected assignment expression"),
         }
 
         assert!(p.is_empty());
