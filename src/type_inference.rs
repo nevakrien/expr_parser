@@ -52,6 +52,8 @@ pub struct TypeId(pub usize);
 pub const UNKNOWN_TYPE: TypeId = TypeId(usize::MAX);
 pub const UNKNOWN_INT_SIZE: TypeId = TypeId(usize::MAX - 1);
 pub const UNKNOWN_FLOAT_SIZE: TypeId = TypeId(usize::MAX - 2);
+pub const EXPANSION_STOPED: TypeId = TypeId(usize::MAX - 3);
+const EXPANSION_LIMIT :usize = 100;
 
 ///this type specifically has internals containing UNKNOWN_TYPE
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -365,6 +367,10 @@ impl TypeStore {
         }
         if t == UNKNOWN_FLOAT_SIZE {
             return "float?".to_string();
+        }
+
+        if t == EXPANSION_STOPED {
+            return "...".to_string();
         }
 
         match self.type_value(t) {
@@ -2685,12 +2691,14 @@ fn mock_type_from_cluster(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     cid: CId,
-    visiting: &mut std::collections::HashSet<CId>,
+    limit: &mut usize,
 ) -> TypeId {
-    let root = find_root(parent, cid);
-    if !visiting.insert(root) {
-        return UNKNOWN_TYPE;
+    if *limit == 0 {
+        return EXPANSION_STOPED;
     }
+    *limit -= 1;
+
+    let root = find_root(parent, cid);
 
     let ty = match cluster[root].state {
         ResolveKind::Solved(t) => t,
@@ -2704,7 +2712,7 @@ fn mock_type_from_cluster(
             struct_infers,
             tuple_infers,
             call,
-            visiting,
+            limit,
         ),
         ResolveKind::Struct(call) => make_struct_mock_inner(
             store,
@@ -2714,7 +2722,7 @@ fn mock_type_from_cluster(
             struct_infers,
             tuple_infers,
             call,
-            visiting,
+            limit,
         ),
         ResolveKind::Tuple(call) => make_tuple_mock_inner(
             store,
@@ -2724,7 +2732,7 @@ fn mock_type_from_cluster(
             struct_infers,
             tuple_infers,
             call,
-            visiting,
+            limit,
         ),
         ResolveKind::Array { element, size } => make_array_mock_inner(
             store,
@@ -2735,7 +2743,7 @@ fn mock_type_from_cluster(
             tuple_infers,
             element,
             size,
-            visiting,
+            limit,
         ),
         ResolveKind::Ptr { tgt, raw, mutable } => make_ptr_mock_inner(
             store,
@@ -2747,12 +2755,12 @@ fn mock_type_from_cluster(
             tgt,
             raw,
             mutable,
-            visiting,
+            limit,
         ),
         ResolveKind::Nothing | ResolveKind::Never => UNKNOWN_TYPE,
     };
 
-    visiting.remove(&root);
+    *limit += 1;
     ty
 }
 
@@ -2764,7 +2772,7 @@ fn make_func_mock_inner(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     call: FuncInferId,
-    visiting: &mut std::collections::HashSet<CId>,
+    limit: &mut usize,
 ) -> TypeId {
     let site = &func_defs[call.0];
     let params = site
@@ -2779,7 +2787,7 @@ fn make_func_mock_inner(
                 struct_infers,
                 tuple_infers,
                 input,
-                visiting,
+                limit,
             )
         })
         .collect::<Vec<_>>();
@@ -2791,7 +2799,7 @@ fn make_func_mock_inner(
         struct_infers,
         tuple_infers,
         site.output,
-        visiting,
+        limit,
     );
 
     store.intern(TypeValue::Func {
@@ -2810,7 +2818,7 @@ fn make_func_mock(
     tuple_infers: &Vec<TupleInfer>,
     call: FuncInferId,
 ) -> TypeId {
-    let mut visiting = std::collections::HashSet::new();
+    let mut limit = EXPANSION_LIMIT;
     make_func_mock_inner(
         store,
         parent,
@@ -2819,7 +2827,7 @@ fn make_func_mock(
         struct_infers,
         tuple_infers,
         call,
-        &mut visiting,
+        &mut limit,
     )
 }
 
@@ -2831,7 +2839,7 @@ fn make_struct_mock_inner(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     call: StructInferId,
-    visiting: &mut std::collections::HashSet<CId>,
+    limit: &mut usize,
 ) -> TypeId {
     let site = &struct_infers[call.0];
     let generics = site
@@ -2846,7 +2854,7 @@ fn make_struct_mock_inner(
                 struct_infers,
                 tuple_infers,
                 input,
-                visiting,
+                limit,
             )
         })
         .collect::<Vec<_>>();
@@ -2865,7 +2873,7 @@ fn make_struct_mock(
     tuple_infers: &Vec<TupleInfer>,
     call: StructInferId,
 ) -> TypeId {
-    let mut visiting = std::collections::HashSet::new();
+    let mut limit = EXPANSION_LIMIT;
     make_struct_mock_inner(
         store,
         parent,
@@ -2874,7 +2882,7 @@ fn make_struct_mock(
         struct_infers,
         tuple_infers,
         call,
-        &mut visiting,
+        &mut limit,
     )
 }
 
@@ -2886,7 +2894,7 @@ fn make_tuple_mock_inner(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     tuple: TupleInferId,
-    visiting: &mut std::collections::HashSet<CId>,
+    limit: &mut usize,
 ) -> TypeId {
     let items = tuple_infers[tuple.0]
         .items
@@ -2900,7 +2908,7 @@ fn make_tuple_mock_inner(
                 struct_infers,
                 tuple_infers,
                 item,
-                visiting,
+                limit,
             )
         })
         .collect::<Vec<_>>();
@@ -2916,7 +2924,7 @@ fn make_tuple_mock(
     tuple_infers: &Vec<TupleInfer>,
     tuple: TupleInferId,
 ) -> TypeId {
-    let mut visiting = std::collections::HashSet::new();
+    let mut limit = EXPANSION_LIMIT;
     make_tuple_mock_inner(
         store,
         parent,
@@ -2925,7 +2933,7 @@ fn make_tuple_mock(
         struct_infers,
         tuple_infers,
         tuple,
-        &mut visiting,
+        &mut limit,
     )
 }
 
@@ -2938,7 +2946,7 @@ fn make_array_mock_inner(
     tuple_infers: &Vec<TupleInfer>,
     element: CId,
     size: ArrayType,
-    visiting: &mut std::collections::HashSet<CId>,
+    limit: &mut usize,
 ) -> TypeId {
     let element = mock_type_from_cluster(
         store,
@@ -2948,7 +2956,7 @@ fn make_array_mock_inner(
         struct_infers,
         tuple_infers,
         element,
-        visiting,
+        limit,
     );
     store.intern(TypeValue::Array(element, size))
 }
@@ -2963,7 +2971,7 @@ fn make_array_mock(
     element: CId,
     size: ArrayType,
 ) -> TypeId {
-    let mut visiting = std::collections::HashSet::new();
+    let mut limit = EXPANSION_LIMIT;
     make_array_mock_inner(
         store,
         parent,
@@ -2973,7 +2981,7 @@ fn make_array_mock(
         tuple_infers,
         element,
         size,
-        &mut visiting,
+        &mut limit,
     )
 }
 
@@ -2987,7 +2995,7 @@ fn make_ptr_mock_inner(
     tgt: CId,
     raw: Option<bool>,
     mutable: Option<bool>,
-    visiting: &mut std::collections::HashSet<CId>,
+    limit: &mut usize,
 ) -> TypeId {
     let tgt = mock_type_from_cluster(
         store,
@@ -2997,7 +3005,7 @@ fn make_ptr_mock_inner(
         struct_infers,
         tuple_infers,
         tgt,
-        visiting,
+        limit,
     );
     store.intern(TypeValue::Ptr {
         tgt,
@@ -3017,7 +3025,7 @@ fn make_ptr_mock(
     raw: Option<bool>,
     mutable: Option<bool>,
 ) -> TypeId {
-    let mut visiting = std::collections::HashSet::new();
+    let mut limit = EXPANSION_LIMIT;
     make_ptr_mock_inner(
         store,
         parent,
@@ -3028,7 +3036,7 @@ fn make_ptr_mock(
         tgt,
         raw,
         mutable,
-        &mut visiting,
+        &mut limit,
     )
 }
 
