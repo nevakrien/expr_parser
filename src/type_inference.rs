@@ -7,7 +7,15 @@
 // 2) generics arent normalized and thus are only allowed globaly
 //
 // ================================================================
+// THEORY
+// ================================================================
+// this is a modified hindly miller that uses kinds.  
+// we do have constraint solving but we only unify on equality. 
+// most constrains place some sort of pending task.
+// and then later when enough type info is present we can apply unification.
+// ================================================================
 
+//borrow checker is a bitch so... not much we can do
 #![allow(clippy::too_many_arguments)]
 
 use crate::ErrorReporter;

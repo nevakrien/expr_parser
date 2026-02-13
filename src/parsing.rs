@@ -281,7 +281,7 @@ enum NonTerm {
 const BP_ASSIGN: u32 = 100;
 const BP_CONSTRUCT: u32 = 750;
 
-const BP_MATCH_ARM: u32 = 90;
+const BP_MATCH_ARM: u32 = BP_PATTERN-2;
 const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
@@ -1264,17 +1264,10 @@ impl<'a> Parser<'a> {
         let mut args = vec![subject];
 
         while self.try_operator("}")?.is_none() {
-            let arm_start = self.expr_start();
-            let Some(pat) = self.try_expr_bp(BP_PATTERN, NonTerm::Normal)? else {
+            let Some(exp) = self.try_expr()? else {
                 return Err(self.err_open_delim(open.clone(), "}"));
             };
-            let arrow = self.expect_operator("=>")?;
-            let body = self.consume_expr()?;
-
-            args.push(Located {
-                loc: self.produce_loc(arm_start),
-                value: Expr::Bin(arrow, Box::new((pat, body))),
-            });
+            args.push(exp);
 
             if let Some(Token::Operator(op)) = self.peek_token()?.map(|l| &l.value)
                 && matches!(*op, "," | ";")
