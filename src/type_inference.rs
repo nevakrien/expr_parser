@@ -6232,6 +6232,13 @@ fn classify_operand(
 ) -> OperandKind {
     let root = find_root(parent, cid);
     match cluster[root].state {
+         ResolveKind::IntLike
+        | ResolveKind::FloatLike
+        | ResolveKind::Func(_)
+        | ResolveKind::Array {.. }
+        | ResolveKind::Tuple(_)
+        => OperandKind::KnownNonUser,
+
         ResolveKind::Solved(t) => match store.type_value(t) {
             TypeValue::Struct { id, generics: _ } => {
                 OperandKind::UserStruct(store.struct_value(*id).name)
@@ -6242,12 +6249,16 @@ fn classify_operand(
             let sid = struct_infers[call_id.0].sid;
             OperandKind::UserStruct(store.struct_value(sid).name)
         }
-        ResolveKind::IntLike
-        | ResolveKind::FloatLike
-        | ResolveKind::Func(_)
-        | ResolveKind::Tuple(_)
-        | ResolveKind::Array { .. }
-        | ResolveKind::Ptr { .. } => OperandKind::KnownNonUser,
+        
+        ResolveKind::Ptr {raw:Some(true),.. } => OperandKind::KnownNonUser,
+        ResolveKind::Ptr {tgt,raw:Some(false),.. } => classify_operand(store,parent,cluster,struct_infers,tgt),
+        ResolveKind::Ptr{tgt,..}=>match classify_operand(store,parent,cluster,struct_infers,tgt){
+            OperandKind::KnownNonUser=>OperandKind::KnownNonUser,
+            _=>OperandKind::Unknown,
+        },
+
+
+
         ResolveKind::Nothing => OperandKind::Unknown,
 
         //for never its probably best if we treat it as an unresolved in the end
@@ -6584,7 +6595,7 @@ fn resolve_operator_site(
     let op = site.op;
 
     let lhs_kind = classify_operand(store, parent, cluster, struct_infers, lhs);
-    let rhs_kind = classify_operand(store, parent, cluster, struct_infers, rhs);
+    // let rhs_kind = classify_operand(store, parent, cluster, struct_infers, rhs);
 
     if let OperandKind::UserStruct(struct_name) = lhs_kind {
         let Some(struct_name) = struct_name else {
@@ -6719,11 +6730,20 @@ fn resolve_operator_site(
     //     return ResolveOutcome::keep(progress);
     // }
 
-    if lhs_kind == OperandKind::Unknown || rhs_kind == OperandKind::Unknown {
-        return ResolveOutcome::keep(progress);
-    }
-
     if matches!(op, Add | Sub) {
+
+        //there simply isnt any intresting operator on non user types other than pointer arithmetic
+        if matches!(lhs_kind,OperandKind::KnownNonUser){
+            if let ResolveKind::Ptr{ref mut raw,..} = cluster[lhs].state{
+                if matches!(raw,None) {
+                    progress=true;
+                    *raw=Some(true);
+                }else if matches!(raw,Some(false)) {
+                    //todo!("error")
+                }
+            }
+        }
+
         let lhs_ptr = classify_raw_pointer_operand(store, parent, cluster, lhs);
         let rhs_ptr = classify_raw_pointer_operand(store, parent, cluster, rhs);
         let rhs_int = cluster_is_int_like(store, parent, cluster, rhs);
@@ -6738,6 +6758,8 @@ fn resolve_operator_site(
                     RawPointerOperandKind::RawPointer(lhs_raw),
                     RawPointerOperandKind::UnknownRawPointer(rhs_raw),
                 )
+
+                //todo if lhs is non user and rhs is a bit pointer like we can hard force both to be raw and the same
                 => {
                     match unify_if_distinct(
                         store,
@@ -6792,62 +6814,72 @@ fn resolve_operator_site(
             }
         }
 
-        if op == Add || op == Sub {
-            match (lhs_ptr, rhs_int) {
-                (RawPointerOperandKind::RawPointer(ptr), Some(true)) => {
-                    match force_type_if_distinct(
-                        store,
-                        parent,
-                        cluster,
-                        func_defs,
-                        struct_infers,
-                        tuple_infers,
-                        rhs,
-                        BuiltinType::Usize.into(),
-                    ){
-                        Ok(changed) => progress |= changed,
-                        Err(clash) => {
-                            errors.push(TypeError::ValuesContradict {
-                                expectation_reason:
-                                    "pointer add may only happen with usize",
-                                site: site.loc,
-                                found: site.lhs_val,
-                                expected_place: site.rhs_val,
-                                clash,
-                            });
-                        }
 
+        match (lhs_ptr, rhs_int,op) {
+            (RawPointerOperandKind::RawPointer(ptr), Some(true),_) 
+            | (RawPointerOperandKind::RawPointer(ptr), _,Add) 
+            => {
+                match force_type_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    rhs,
+                    BuiltinType::Usize.into(),
+                ){
+                    Ok(changed) => progress |= changed,
+                    Err(clash) => {
+                        errors.push(TypeError::ValuesContradict {
+                            expectation_reason:
+                                "pointer add may only happen with usize",
+                            site: site.loc,
+                            found: site.lhs_val,
+                            expected_place: site.rhs_val,
+                            clash,
+                        });
                     }
-                    match unify_if_distinct(
-                        store,
-                        parent,
-                        cluster,
-                        func_defs,
-                        struct_infers,
-                        tuple_infers,
-                        out,
-                        ptr,
-                    ) {
-                        Ok(changed) => progress |= changed,
-                        Err(clash) => {
-                            errors.push(TypeError::ValuesContradict {
-                                expectation_reason:
-                                    "pointer arithmetic preserves type",
-                                site: site.loc,
-                                found: site.lhs_val,
-                                expected_place: site.rhs_val,
-                                clash,
-                            });
-                        }
-                    }
-                    return ResolveOutcome::drop(progress);
+
                 }
-                _ => {}
+                match unify_if_distinct(
+                    store,
+                    parent,
+                    cluster,
+                    func_defs,
+                    struct_infers,
+                    tuple_infers,
+                    out,
+                    ptr,
+                ) {
+                    Ok(changed) => progress |= changed,
+                    Err(clash) => {
+                        errors.push(TypeError::ValuesContradict {
+                            expectation_reason:
+                                "pointer arithmetic preserves type",
+                            site: site.loc,
+                            found: site.lhs_val,
+                            expected_place: site.rhs_val,
+                            clash,
+                        });
+                    }
+                }
+                return ResolveOutcome::drop(progress);
             }
+            _ => {}
         }
 
+        if matches!(lhs_ptr,RawPointerOperandKind::UnknownRawPointer(_) | RawPointerOperandKind::Unknown)
+        {
+            return ResolveOutcome::keep(progress)
+        }
     }
 
+    if matches!(lhs_kind,OperandKind::Unknown){
+        return ResolveOutcome::keep(progress);
+    }
+
+    // basic lit like operands
     // ----------------------------------------------------
     // 1) Early legality rejection (single helper)
     // ----------------------------------------------------
