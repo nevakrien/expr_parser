@@ -6623,7 +6623,7 @@ fn resolve_operator_site(
                     lhs,
                     rhs,
                 ));
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             };
 
             if overload_sig.params.len() != 2 {
@@ -6638,7 +6638,7 @@ fn resolve_operator_site(
                     lhs,
                     rhs,
                 ));
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
@@ -6694,7 +6694,7 @@ fn resolve_operator_site(
                     expected_place: site.rhs_val,
                     clash,
                 });
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             }
 
             return ResolveOutcome::drop(progress);
@@ -6711,16 +6711,16 @@ fn resolve_operator_site(
             lhs,
             rhs,
         ));
-        return ResolveOutcome::drop(false);
+        return ResolveOutcome::drop(progress);
     }
 
     // if matches!(rhs_kind, OperandKind::UserStruct(_)) {
     //     //TODO we need to enforce the constraint.
-    //     return ResolveOutcome::keep(false);
+    //     return ResolveOutcome::keep(progress);
     // }
 
     if lhs_kind == OperandKind::Unknown || rhs_kind == OperandKind::Unknown {
-        return ResolveOutcome::keep(false);
+        return ResolveOutcome::keep(progress);
     }
 
     if matches!(op, Add | Sub) {
@@ -6759,7 +6759,7 @@ fn resolve_operator_site(
                                 expected_place: site.rhs_val,
                                 clash,
                             });
-                            return ResolveOutcome::drop(false);
+                            return ResolveOutcome::drop(progress);
                         }
                     }
 
@@ -6782,7 +6782,7 @@ fn resolve_operator_site(
                                 expected_place: site.rhs_val,
                                 clash,
                             });
-                            return ResolveOutcome::drop(false);
+                            return ResolveOutcome::drop(progress);
                         }
                     }
 
@@ -6791,8 +6791,6 @@ fn resolve_operator_site(
                 _ => {}
             }
         }
-
-
 
         if op == Add || op == Sub {
             match (lhs_ptr, rhs_int) {
@@ -6869,7 +6867,7 @@ fn resolve_operator_site(
             lhs,
             rhs,
         ));
-        return ResolveOutcome::drop(false);
+        return ResolveOutcome::drop(progress);
     }
 
     // ----------------------------------------------------
@@ -6880,7 +6878,7 @@ fn resolve_operator_site(
     // - output = bool is already enforced in gather
     // ----------------------------------------------------
     if matches!(op, Eq | Ne | Lt | Le | Gt | Ge) {
-        return ResolveOutcome::drop(false);
+        return ResolveOutcome::drop(progress);
     }
 
     // ----------------------------------------------------
@@ -6903,7 +6901,7 @@ fn resolve_operator_site(
 
     if !(lhs_numeric && rhs_numeric) {
         //TODO handle other cases
-        return ResolveOutcome::keep(false);
+        return ResolveOutcome::keep(progress);
     }
 
     // (a) unify operands
@@ -6926,7 +6924,7 @@ fn resolve_operator_site(
                 expected_place: site.rhs_val,
                 clash,
             });
-            return ResolveOutcome::drop(false);
+            return ResolveOutcome::drop(progress);
         }
     }
 
@@ -6952,7 +6950,7 @@ fn resolve_operator_site(
                 expected_place: site.rhs_val,
                 clash,
             });
-            return ResolveOutcome::drop(false);
+            return ResolveOutcome::drop(progress);
         }
     }
 
@@ -7016,7 +7014,7 @@ fn resolve_unary_operator_site(
                     site,
                     input,
                 ));
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             };
 
             if overload_sig.params.len() != 1 {
@@ -7030,7 +7028,7 @@ fn resolve_unary_operator_site(
                     site,
                     input,
                 ));
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
@@ -7086,7 +7084,6 @@ fn resolve_unary_operator_site(
                     expected_place: site.loc,
                     clash,
                 });
-                return ResolveOutcome::drop(false);
             }
 
             return ResolveOutcome::drop(progress);
@@ -7102,11 +7099,11 @@ fn resolve_unary_operator_site(
             site,
             input,
         ));
-        return ResolveOutcome::drop(false);
+        return ResolveOutcome::drop(progress);
     }
 
     if operand_kind == OperandKind::Unknown {
-        return ResolveOutcome::keep(false);
+        return ResolveOutcome::keep(progress);
     }
 
     match op {
@@ -7122,7 +7119,7 @@ fn resolve_unary_operator_site(
                     site,
                     input,
                 ));
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             }
             match unify_if_distinct(
                 store,
@@ -7143,7 +7140,7 @@ fn resolve_unary_operator_site(
                         expected_place: site.loc,
                         clash,
                     });
-                    return ResolveOutcome::drop(false);
+                    return ResolveOutcome::drop(progress);
                 }
             }
         }
@@ -7164,9 +7161,9 @@ fn resolve_unary_operator_site(
                         site,
                         input,
                     ));
-                    return ResolveOutcome::drop(false);
+                    return ResolveOutcome::drop(progress);
                 }
-                _ => return ResolveOutcome::keep(false),
+                _ => return ResolveOutcome::keep(progress),
             }
 
             match unify_if_distinct(
@@ -7188,7 +7185,7 @@ fn resolve_unary_operator_site(
                         expected_place: site.loc,
                         clash,
                     });
-                    return ResolveOutcome::drop(false);
+                    return ResolveOutcome::drop(progress);
                 }
             }
         }
@@ -7206,9 +7203,9 @@ fn resolve_unary_operator_site(
                         site,
                         input,
                     ));
-                    return ResolveOutcome::drop(false);
+                    return ResolveOutcome::drop(progress);
                 }
-                None => return ResolveOutcome::keep(false),
+                None => return ResolveOutcome::keep(progress),
             }
 
             match unify_if_distinct(
@@ -7230,7 +7227,7 @@ fn resolve_unary_operator_site(
                         expected_place: site.loc,
                         clash,
                     });
-                    return ResolveOutcome::drop(false);
+                    return ResolveOutcome::drop(progress);
                 }
             }
         }
@@ -7283,11 +7280,11 @@ fn resolve_assign_pre_post_site(
                 struct_name,
                 site.loc,
             ) else {
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             };
 
             if overload_sig.params.len() != 1 {
-                return ResolveOutcome::drop(false);
+                return ResolveOutcome::drop(progress);
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
@@ -7342,7 +7339,6 @@ fn resolve_assign_pre_post_site(
                     expected_place: site.loc,
                     clash,
                 });
-                return ResolveOutcome::drop(false);
             }
 
             return ResolveOutcome::drop(progress);
