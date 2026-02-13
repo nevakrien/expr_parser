@@ -287,11 +287,13 @@ const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
 const BP_POSTFIX_INC: u32 = 850;
 const BP_PREFIX: u32 = 840;
+const BP_LIFETIME: u32 = BP_PREFIX;
 
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
     Some(match op {
-        "!" | "-" | "*" | "&" | "~" | "`" | "++" | "--" | "const" | "mut" => BP_PREFIX,
+        "`"=>BP_LIFETIME,
+        "!" | "-" | "*" | "&" | "~"  | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
     })
 }
@@ -1132,11 +1134,15 @@ impl<'a> Parser<'a> {
                 // generic prefix operator via BP
                 if let Some(bp) = prefix_bp(op, style) {
                     self.next_token()?.unwrap();
-                    let rhs = self.consume_expr_bp(bp, style)?;
+                    let mut ans = Vec::new();
+                    if op == "&" && self.peek_op()?.value==Some(Token::Operator("`")){
+                        ans.push(self.consume_expr_bp(BP_LIFETIME,NonTerm::NoConstruct)?);
+                    }
+                    let rhs = ans.push(self.consume_expr_bp(bp, style)?);
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
                         loc,
-                        value: Expr::Prefix(op_s, vec![rhs]),
+                        value: Expr::Prefix(op_s, ans),
                     }));
                 }
                 Ok(None)
@@ -1355,6 +1361,7 @@ impl<'a> Parser<'a> {
             value: Expr::Prefix(let_tok, vals),
         })
     }
+
 
     #[inline(always)]
     fn parse_after_struct(&mut self, start: usize, def_tok: LFixed) -> PResult<LExpr> {

@@ -661,6 +661,10 @@ impl Program {
                 self.lower_fn_expr(expr.loc, open, items)
             }
 
+            Expr::Prefix(open,items) if open.value == "&" => {
+                self.lower_addr_of(items)
+            }
+
             //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
             Expr::Postfix(open, items) => self.lower_postfix_op(expr.loc, open, items),
@@ -1211,6 +1215,11 @@ impl Program {
                 Ok(Pattern::Tuple(span))
             }
 
+            Expr::Prefix(open,items) if open.value=="`" =>  {
+                todo!("yay lifetime pattern");
+
+            }
+
             Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
@@ -1260,6 +1269,36 @@ impl Program {
         }
     }
 
+    #[inline(always)]
+    fn lower_addr_of(
+         &mut self,
+        mut items: Vec<LExpr>,
+    ) -> CResult<Value> {
+        let mut rhs_expr = items.pop().unwrap();
+        if let Some(_lifetime_expr) = items.pop(){
+            println!("found lifetime {_lifetime_expr:?}");
+        }
+
+
+        let mut kind = None;
+        if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value
+            && matches!(inner_op.value, "mut" | "const")
+        {
+            debug_assert_eq!(inner_items.len(), 1);
+            kind = Some(if inner_op.value == "mut" {
+                VarKind::Mut
+            } else {
+                VarKind::Const
+            });
+
+            let mut inner = inner_items.pop().unwrap();
+            std::mem::swap(&mut rhs_expr, &mut inner);
+        }
+
+        let rhs = self.lower_value(rhs_expr)?;
+        return Ok(Value::AddrOf(rhs, kind));
+    }
+
     // ===============================
     // Operator lowering helpers
     // ===============================
@@ -1275,7 +1314,7 @@ impl Program {
             todo!("this should not be a hard error")
         }
 
-        let mut rhs_expr = items.into_iter().next().unwrap();
+        let rhs_expr = items.into_iter().next().unwrap();
         let unop = match op.value {
             "-" => UnOp::Neg,
             "!" => UnOp::Not,
@@ -1285,23 +1324,7 @@ impl Program {
                 return Ok(Value::Deref(rhs));
             }
             "&" => {
-                let mut kind = None;
-                if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value
-                    && matches!(inner_op.value, "mut" | "const")
-                {
-                    debug_assert_eq!(inner_items.len(), 1);
-                    kind = Some(if inner_op.value == "mut" {
-                        VarKind::Mut
-                    } else {
-                        VarKind::Const
-                    });
-
-                    let mut inner = inner_items.pop().unwrap();
-                    std::mem::swap(&mut rhs_expr, &mut inner);
-                }
-
-                let rhs = self.lower_value(rhs_expr)?;
-                return Ok(Value::AddrOf(rhs, kind));
+                unreachable!()
             }
 
             "++" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Inc), vec![rhs_expr]),
@@ -1594,18 +1617,22 @@ impl Program {
             }
 
             Expr::Prefix(op, mut items) if matches!(op.value, "*" | "&") => {
-                if items.len() != 1 {
-                    return Err(CompileError::UnsupportedForm {
-                        loc,
-                        op_loc: Some(op.loc),
-                        op: Some(op.value),
-                        message: ERR_UNSUPPORTED_TYPE_EXPR,
-                    });
-                }
+                // if items.len() != 1 {
+                //     return Err(CompileError::UnsupportedForm {
+                //         loc,
+                //         op_loc: Some(op.loc),
+                //         op: Some(op.value),
+                //         message: ERR_UNSUPPORTED_TYPE_EXPR,
+                //     });
+                // }
 
                 let raw = op.value == "*";
                 let mut mutable = raw;
                 let mut inner = items.pop().unwrap();
+
+                if let Some(_lifetime_expr) = items.pop(){
+                    println!("found lifetime {_lifetime_expr:?}");
+                }
 
                 if let Expr::Prefix(ref inner_op, ref mut inner_items) = inner.value
                     && matches!(inner_op.value, "mut" | "const")
