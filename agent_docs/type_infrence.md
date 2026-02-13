@@ -59,6 +59,8 @@ If both directions fail, `TypeClash` is produced with best-effort `found`/`wante
 
 Important behavior: a clash does **not** terminate inference globally. Clusters stay separate and inference continues, which allows collecting additional unrelated hard errors.
 
+Orientation note: clash payloads should consistently mean `found = actual/inferred shape` and `wanted = required constraint`. In particular, `force_type`/`unify_*_with_type` paths now keep this same orientation for deferred placeholders (`Func`/`Struct`/`Tuple`/`Array`/`Ptr`) instead of flipping sides when a concrete type requirement fails.
+
 ### Where `force_type` is used
 
 `force_type` appears at places with one-way requirements (instead of symmetric equality):

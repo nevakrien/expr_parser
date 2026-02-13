@@ -2409,6 +2409,18 @@ fn unify_ptr_with_type(
     mutable: Option<bool>,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
+    let found_ptr = BadTypeId(make_ptr_mock(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        tgt,
+        raw,
+        mutable,
+    ));
+
     let TypeValue::Ptr {
         tgt: ty_tgt,
         raw: ty_raw,
@@ -2416,35 +2428,15 @@ fn unify_ptr_with_type(
     } = *store.type_value(ty)
     else {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: Some(BadTypeId(make_ptr_mock(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                tgt,
-                raw,
-                mutable,
-            ))),
+            found: Some(found_ptr),
+            wanted: Some(BadTypeId(ty)),
         });
     };
 
     if matches!(raw, Some(x) if x != ty_raw) || matches!(mutable, Some(x) if x != ty_mut) {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: Some(BadTypeId(make_ptr_mock(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                tgt,
-                raw,
-                mutable,
-            ))),
+            found: Some(found_ptr),
+            wanted: Some(BadTypeId(ty)),
         });
     }
 
@@ -2470,6 +2462,16 @@ fn unify_func_with_type(
     call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
+    let found_func = BadTypeId(make_func_mock(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        call,
+    ));
+
     let (cc, params, ret) = match store.type_value(ty) {
         TypeValue::Func {
             calling_convention,
@@ -2478,8 +2480,8 @@ fn unify_func_with_type(
         } => (*calling_convention, params.as_slice(), *ret),
         _ => {
             return Err(TypeClash {
-                found: Some(BadTypeId(ty)),
-                wanted: None,
+                found: Some(found_func),
+                wanted: Some(BadTypeId(ty)),
             });
         }
     };
@@ -2487,16 +2489,8 @@ fn unify_func_with_type(
     let infer_cc = func_defs[call.0].calling_convention;
     let Some(merged_cc) = merge_calling_convention(infer_cc, cc) else {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: Some(BadTypeId(make_func_mock(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                call,
-            ))),
+            found: Some(found_func),
+            wanted: Some(BadTypeId(ty)),
         });
     };
     func_defs[call.0].calling_convention = merged_cc;
@@ -2504,8 +2498,8 @@ fn unify_func_with_type(
     let input_len = func_defs[call.0].inputs.len();
     if params.len() != input_len {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: None,
+            found: Some(found_func),
+            wanted: Some(BadTypeId(ty)),
         });
     }
 
@@ -2560,12 +2554,22 @@ fn unify_struct_with_type(
     call: StructInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
+    let found_struct = BadTypeId(make_struct_mock(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        call,
+    ));
+
     let (sid, glen) = match store.type_value(ty) {
         TypeValue::Struct { id, generics } => (*id, generics.len()),
         _ => {
             return Err(TypeClash {
-                found: Some(BadTypeId(ty)),
-                wanted: None,
+                found: Some(found_struct),
+                wanted: Some(BadTypeId(ty)),
             });
         }
     };
@@ -2573,8 +2577,8 @@ fn unify_struct_with_type(
     let call_sid = struct_infers[call.0].sid;
     if call_sid != sid || struct_infers[call.0].generics.len() != glen {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: None,
+            found: Some(found_struct),
+            wanted: Some(BadTypeId(ty)),
         });
     }
 
@@ -2609,33 +2613,27 @@ fn unify_tuple_with_type(
     tuple: TupleInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
+    let found_tuple = BadTypeId(make_tuple_mock(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        tuple,
+    ));
+
     let ilen = tuple_infers[tuple.0].items.len();
     let TypeValue::Tuple(items) = store.type_value(ty) else {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: Some(BadTypeId(make_tuple_mock(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                tuple,
-            ))),
+            found: Some(found_tuple),
+            wanted: Some(BadTypeId(ty)),
         });
     };
     if items.len() != ilen {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: Some(BadTypeId(make_tuple_mock(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                tuple,
-            ))),
+            found: Some(found_tuple),
+            wanted: Some(BadTypeId(ty)),
         });
     }
 
@@ -2671,38 +2669,31 @@ fn unify_array_with_type(
     size: ArrayType,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
+    let found_array = BadTypeId(make_array_mock(
+        store,
+        parent,
+        cluster,
+        func_defs,
+        struct_infers,
+        tuple_infers,
+        element,
+        size,
+    ));
+
     let (ty_element, ty_size) = match store.type_value(ty) {
         TypeValue::Array(item, n) => (*item, *n),
         _ => {
             return Err(TypeClash {
-                found: Some(BadTypeId(ty)),
-                wanted: Some(BadTypeId(make_array_mock(
-                    store,
-                    parent,
-                    cluster,
-                    func_defs,
-                    struct_infers,
-                    tuple_infers,
-                    element,
-                    size,
-                ))),
+                found: Some(found_array),
+                wanted: Some(BadTypeId(ty)),
             });
         }
     };
 
     if ty_size != size {
         return Err(TypeClash {
-            found: Some(BadTypeId(ty)),
-            wanted: Some(BadTypeId(make_array_mock(
-                store,
-                parent,
-                cluster,
-                func_defs,
-                struct_infers,
-                tuple_infers,
-                element,
-                size,
-            ))),
+            found: Some(found_array),
+            wanted: Some(BadTypeId(ty)),
         });
     }
 
@@ -5354,38 +5345,31 @@ fn compile_struct_type<const ALLOW_GENERICS: bool>(
     output
 }
 
-fn maybe_set_struct_name_from_typedef(ctx: &mut InferState, typedef_name: NameId, c: CId) {
-    let root = find_root(&mut ctx.parent, c);
-    let sid = match ctx.cluster[root].state {
-        ResolveKind::Struct(rid) => Some(ctx.struct_infers[rid.0].sid),
-        ResolveKind::Solved(t) => match ctx.store.type_value(t) {
-            TypeValue::Struct { id, .. } => Some(*id),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    let Some(sid) = sid else {
-        return;
-    };
-
-    if ctx.store.structs[sid.0].name.is_none() {
-        ctx.store.structs[sid.0].name = Some(typedef_name);
-    }
-}
 
 fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
     ctx: &mut InferState,
     typedef_name: NameId,
     texpr: TExpId,
 ) -> CId {
-    let t = match ctx.program.type_expr(texpr) {
-        TypeExpr::Struct(def) => compile_struct_type::<ALLOW_STRUCT_GENERICS>(ctx, texpr, def),
-        _ => compile_type_expr(ctx, texpr),
-    };
+    match ctx.program.type_expr(texpr) {
+        TypeExpr::Struct(def) => {
+            let cid = compile_struct_type::<ALLOW_STRUCT_GENERICS>(ctx, texpr, def);
+            let sid = match ctx.cluster[cid].state {
+                ResolveKind::Struct(rid) => ctx.struct_infers[rid.0].sid,
+                ResolveKind::Solved(t) => match ctx.store.type_value(t) {
+                    TypeValue::Struct { id, .. } => *id,
+                    _ => unreachable!("struct def didnt return struct"),
+                },
+                _ => unreachable!("struct def didnt return struct"),
+            };
 
-    maybe_set_struct_name_from_typedef(ctx, typedef_name, t);
-    t
+            debug_assert_eq!(ctx.store.structs[sid.0].name,None);
+            ctx.store.structs[sid.0].name = Some(typedef_name);
+
+            cid
+        },
+        _ => compile_type_expr(ctx, texpr),
+    }
 }
 
 fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
@@ -8928,6 +8912,98 @@ mod type_infer_tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn if_condition_bool_mismatch_reports_found_pointer_expected_bool() {
+        let src = "f = fn(){ let x:int = 1; if &x { 1:int } else { 2:int } }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .unwrap_or_default();
+
+        let clash = errs.iter().find_map(|err| match err {
+            TypeError::ValuesContradict {
+                expectation_reason: "if condition must be bool",
+                clash,
+                ..
+            } => Some(*clash),
+            _ => None,
+        });
+        let clash = clash.expect("expected if-condition type mismatch");
+
+        let found = clash.found.expect("missing found type");
+        let wanted = clash.wanted.expect("missing expected type");
+
+        assert!(matches!(store.type_value(found.0), TypeValue::Ptr { .. }));
+        assert!(matches!(
+            store.type_value(wanted.0),
+            TypeValue::Builtin(BuiltinType::Bool)
+        ));
+    }
+
+    #[test]
+    fn calling_non_function_reports_found_function_expected_target_type() {
+        let src = "f = fn(){ let x:int = 1; x(2:int) }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .unwrap_or_default();
+
+        let clash = errs.iter().find_map(|err| match err {
+            TypeError::ValuesContradict {
+                expectation_reason: "called function with wrong signature",
+                clash,
+                ..
+            } => Some(*clash),
+            _ => None,
+        });
+        let clash = clash.expect("expected call-signature mismatch");
+
+        let found = clash.found.expect("missing found type");
+        let wanted = clash.wanted.expect("missing expected type");
+
+        assert!(matches!(store.type_value(found.0), TypeValue::Func { .. }));
+        assert!(matches!(
+            store.type_value(wanted.0),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn annotation_mismatch_reports_found_tuple_expected_annotation_type() {
+        let src = "f = fn(){ let t = (1:int, 2:int); t : int }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .unwrap_or_default();
+
+        let clash = errs.iter().find_map(|err| match err {
+            TypeError::AnnotationMismatch { clash, .. } => Some(*clash),
+            _ => None,
+        });
+        let clash = clash.expect("expected annotation mismatch");
+
+        let found = clash.found.expect("missing found type");
+        let wanted = clash.wanted.expect("missing expected type");
+
+        assert!(matches!(store.type_value(found.0), TypeValue::Tuple(_)));
+        assert!(matches!(
+            store.type_value(wanted.0),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
     }
 
     #[test]
