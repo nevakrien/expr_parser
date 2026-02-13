@@ -18,6 +18,7 @@ struct Entry {
 }
 
 pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
+    "static",
     "__free",
     "__deref",
     "__deref_mut",
@@ -97,6 +98,7 @@ fn known_stuff_works() {
     }
 }
 
+pub const STATIC_STR: StrId = get_known_strid("static");
 pub const ADD_STR: StrId = get_known_strid("__add");
 pub const SUB_STR: StrId = get_known_strid("__sub");
 pub const MUL_STR: StrId = get_known_strid("__mul");
@@ -222,7 +224,6 @@ impl StringInterner {
     }
 
     #[cold]
-    #[inline(always)]
     fn grow(&mut self) {
         let new_bucket_count = self.table.len() * 4;
         let old_table = std::mem::replace(
@@ -243,7 +244,6 @@ impl StringInterner {
         }
     }
 
-    #[inline(always)]
     fn insert_slow_path(&mut self, idx: usize, hash: u64, bytes: &[u8]) -> StrId {
         let id = StrId(self.spans.len());
         let off = self.bytes.len();

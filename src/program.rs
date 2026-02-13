@@ -5,7 +5,7 @@ use crate::error_messages::{
 };
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{LabelId, VarKind};
-use crate::ir::{Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
+use crate::ir::{Literal,LifeTimeId, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
@@ -86,9 +86,10 @@ pub struct Program {
     type_expr_locs: Vec<Loc>,
 
     names_strs: Vec<StrId>,
+    lifetime_strs: Vec<StrId>,
     pub str_intern: StringInterner,
 
-    pub scopes: Vec<IdHashMap<StrId, NameId>>,
+    pub scopes: Vec<(IdHashMap<StrId, NameId>,IdHashMap<StrId, LifeTimeId>)>,
     pub pending_names: IdHashMap<NameId, Vec<Loc>>,
     pub member_methods: IdHashMap<NameId, IdHashMap<StrId, ValId>>,
 
@@ -116,9 +117,10 @@ impl Program {
             type_expr_locs: Vec::new(),
 
             names_strs: Vec::new(),
+            lifetime_strs: Vec::new(),
             str_intern: StringInterner::new(),
 
-            scopes: vec![IdHashMap::default()],
+            scopes: vec![(IdHashMap::default(),IdHashMap::default())],
             pending_names: IdHashMap::default(),
             member_methods: IdHashMap::default(),
             label_names: Vec::new(),
@@ -224,12 +226,33 @@ impl Program {
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {
-        self.scopes.push(IdHashMap::default());
+        self.scopes.push((IdHashMap::default(),IdHashMap::default()));
     }
 
     /// Pop the current variable scope
     pub fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    pub fn try_get_lifetime(&self,name:StrId)->Option<LifeTimeId>{
+        for s in  self.scopes.iter().rev(){
+            if let Some(ans) = s.1.get(&name) {
+                return Some(*ans);
+            }
+        }
+
+        return None;
+    }
+
+    pub fn insert_new_lifetiime(&mut self, name: StrId) -> LifeTimeId {
+        let id = LifeTimeId(self.lifetime_strs.len());
+        self.lifetime_strs.push(name);
+        let scope = self
+            .scopes
+            .last_mut()
+            .expect("no scope available when inserting binding");
+        scope.1.insert(name, id);
+        id
     }
 
     /// Insert a new binding into the current (innermost) scope, always creating a fresh ID.
@@ -239,7 +262,7 @@ impl Program {
             .scopes
             .last_mut()
             .expect("no scope available when inserting binding");
-        value_scope.insert(name, id);
+        value_scope.0.insert(name, id);
         id
     }
 
@@ -247,7 +270,7 @@ impl Program {
     pub fn insert_value_in_global_scope(&mut self, name: StrId) -> NameId {
         let id = self.fresh_name_id(name);
         if let Some(value_scope) = self.scopes.first_mut() {
-            value_scope.insert(name, id);
+            value_scope.0.insert(name, id);
         } else {
             debug_assert!(false, "no scope available when inserting binding");
         }
@@ -292,7 +315,7 @@ impl Program {
     pub fn get_macro(&mut self, name: &str) -> Option<&Macro> {
         //TODO think if we wana do scopes
         let name = self.str_intern.intern(name);
-        let id = self.scopes[0].get(&name)?;
+        let id = self.scopes[0].0.get(&name)?;
         if let Some(Defined::Macro(ans)) = self.definitions.get(id) {
             Some(ans)
         } else {
@@ -318,12 +341,12 @@ impl Program {
     pub(crate) fn resolve_name(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
         let name = self.str_intern.intern(name);
         for value_scope in self.scopes.iter().skip(1).rev() {
-            if let Some(id) = value_scope.get(&name) {
+            if let Some(id) = value_scope.0.get(&name) {
                 return Ok(*id);
             }
         }
 
-        if let Some(id) = self.scopes[0].get(&name) {
+        if let Some(id) = self.scopes[0].0.get(&name) {
             //might still be empty.
             if let Some(spot) = self.pending_names.get_mut(id) {
                 spot.push(loc.clone())
@@ -578,7 +601,7 @@ impl Program {
                 if let Some(id) = self
                     .scopes
                     .last()
-                    .and_then(|scope| scope.get(&name))
+                    .and_then(|scope| scope.0.get(&name))
                     .copied()
                 {
                     if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
@@ -715,7 +738,7 @@ impl Program {
         let struct_name_id = self
             .scopes
             .first()
-            .and_then(|scope| scope.get(&self.str_intern.intern(struct_name)))
+            .and_then(|scope| scope.0.get(&self.str_intern.intern(struct_name)))
             .copied()
             .ok_or_else(|| CompileError::SimpleError {
                 loc: base.loc.clone(),

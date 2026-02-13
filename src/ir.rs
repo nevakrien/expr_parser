@@ -27,6 +27,9 @@ use crate::string_intern::StrId;
 pub struct NameId(pub usize);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct LifeTimeId(pub usize);
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct LabelId(pub usize);
 
 impl LabelId {
@@ -487,6 +490,8 @@ pub enum Pattern {
     Literal(Literal),
     /// Type annotation pattern (x:T)
     TypeAnnotation { pat: PatId, ty: TExpId },
+
+    LifeTime(LifeTimeId),
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -518,6 +523,7 @@ pub enum TypeExpr {
 
     Ptr {
         base: TExpId,
+        lifetime:Option<LifeTimeId>,
         raw: bool,
         mutable: bool,
     },
@@ -1216,7 +1222,15 @@ impl Program {
             }
 
             Expr::Prefix(open,items) if open.value=="`" =>  {
-                todo!("yay lifetime pattern");
+                let Some(Expr::Atom(Token::Ident(n))) = items.get(0).map(|x|&x.value) else {
+                    todo!("error");
+                };
+                if items.len() > 1 {
+                    todo!()
+                }
+                let s = self.str_intern.intern(n);
+                let life = self.insert_new_lifetiime(s);
+                Ok(Pattern::LifeTime(life))
 
             }
 
@@ -1630,9 +1644,27 @@ impl Program {
                 let mut mutable = raw;
                 let mut inner = items.pop().unwrap();
 
-                if let Some(_lifetime_expr) = items.pop(){
-                    println!("found lifetime {_lifetime_expr:?}");
-                }
+                let lifetime = match items.pop(){
+                    None=>None,
+                    Some(lexp)=>{
+                        let Expr::Prefix(op, mut items2) = lexp.value else {
+                            unreachable!()
+                        };
+                        if op.value!="`"{
+                            unreachable!()
+                        }
+                        let subexp = items2.pop().unwrap();
+                        let Expr::Atom(Token::Ident(n))  = subexp.value else {
+                            todo!()
+                        };
+                        let s = self.str_intern.intern(&n);
+                        let Some(life) = self.try_get_lifetime(s) else {
+                            todo!("emit some error")
+                        };
+
+                        Some(life)
+                    }
+                };
 
                 if let Expr::Prefix(ref inner_op, ref mut inner_items) = inner.value
                     && matches!(inner_op.value, "mut" | "const")
@@ -1650,7 +1682,7 @@ impl Program {
                 }
 
                 let base = self.lower_type_expr(inner)?;
-                Ok(TypeExpr::Ptr { base, raw, mutable })
+                Ok(TypeExpr::Ptr { base, raw, mutable,lifetime })
             }
 
             Expr::Prefix(open, items)
@@ -1960,7 +1992,7 @@ mod lowering_tests {
         let struct_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&struct_name))
+            .and_then(|scope| scope.0.get(&struct_name))
             .expect("missing struct name");
         let method_name = program.str_intern.intern("foo");
         let method_id = program
@@ -2187,7 +2219,7 @@ mod lowering_tests {
         let f_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&f_name))
+            .and_then(|scope| scope.0.get(&f_name))
             .expect("missing f binding");
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
@@ -2211,7 +2243,7 @@ mod lowering_tests {
         let f_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&f_name))
+            .and_then(|scope| scope.0.get(&f_name))
             .expect("missing f binding");
 
         let Defined::Func(value) = program
@@ -2250,7 +2282,7 @@ mod lowering_tests {
         let s_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&s_name))
+            .and_then(|scope| scope.0.get(&s_name))
             .expect("missing S binding");
 
         let Defined::Type(texp) = program
@@ -2280,13 +2312,13 @@ mod lowering_tests {
         let f_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&f_name))
+            .and_then(|scope| scope.0.get(&f_name))
             .expect("missing f binding");
         let g_name = program.str_intern.intern("g");
         let g_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&g_name))
+            .and_then(|scope| scope.0.get(&g_name))
             .expect("missing g binding");
 
         let f_def = program
@@ -2571,7 +2603,7 @@ mod lowering_tests {
         let f_id = *program
             .scopes
             .first()
-            .and_then(|scope| scope.get(&f_name))
+            .and_then(|scope| scope.0.get(&f_name))
             .expect("missing f binding");
 
         let Defined::Func(f_val) = program

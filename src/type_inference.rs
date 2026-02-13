@@ -5448,7 +5448,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
         }
 
         TypeExpr::Struct(def) => compile_struct_type::<false>(ctx, texpr, def),
-        TypeExpr::Ptr { base, raw, mutable } => {
+        TypeExpr::Ptr { base, raw, mutable, lifetime: _ } => {
             let tgt = compile_type_expr(ctx, base);
             let ans = ctx.new_cluster();
             ctx.cluster[ans].state = ResolveKind::Ptr {
