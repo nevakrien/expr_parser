@@ -1,8 +1,8 @@
 use crate::ir::NameId;
 use crate::program::Program;
 use crate::type_inference::{
-    BuiltinType, StructId, TypeId, TypeStore, TypeValue, UNKNOWN_FLOAT_SIZE, UNKNOWN_INT_SIZE,
-    UNKNOWN_TYPE,
+    ArrayType, BuiltinType, StructId, TypeId, TypeStore, TypeValue, UNKNOWN_FLOAT_SIZE,
+    UNKNOWN_INT_SIZE, UNKNOWN_TYPE,
 };
 use std::collections::HashMap;
 
@@ -213,10 +213,21 @@ impl<'a> LayoutComputer<'a> {
                 size: self.target.fn_ptr_size,
                 align: self.target.fn_ptr_align,
             }),
-            TypeValue::Ptr { .. } => Ok(Layout {
-                size: self.target.pointer_size,
-                align: self.target.pointer_align,
-            }),
+            TypeValue::Ptr { tgt, .. } => {
+                let is_unsized_array = matches!(
+                    self.store.type_value(*tgt),
+                    TypeValue::Array(_, ArrayType::Unsized)
+                );
+                let size = if is_unsized_array {
+                    self.target.pointer_size.saturating_mul(2)
+                } else {
+                    self.target.pointer_size
+                };
+                Ok(Layout {
+                    size,
+                    align: self.target.pointer_align,
+                })
+            }
             TypeValue::WithGenerics { .. } => Err(LayoutError::UnsupportedType { type_id }),
             TypeValue::Generic(gid) => {
                 let Some(mapped) = generics.get(gid.0) else {
@@ -234,11 +245,14 @@ impl<'a> LayoutComputer<'a> {
                     align: layout.align,
                 })
             }
-            TypeValue::Array(t, n) => {
-                let mut base = self.layout_type_inner(*t, field, generics)?;
-                base.size *= n;
-                Ok(base)
-            }
+            TypeValue::Array(t, size) => match size {
+                ArrayType::Sized(n) => {
+                    let mut base = self.layout_type_inner(*t, field, generics)?;
+                    base.size = base.size.saturating_mul(*n);
+                    Ok(base)
+                }
+                ArrayType::Unsized => Err(LayoutError::UnsupportedType { type_id }),
+            },
         }
     }
 
@@ -393,7 +407,7 @@ mod tests {
     use super::*;
     use crate::ir::StructLayoutSpec;
     use crate::program::Program;
-    use crate::type_inference::{GenId, StructRep, TypeStore, TypeValue};
+    use crate::type_inference::{ArrayType, GenId, StructRep, TypeStore, TypeValue};
 
     fn name(program: &mut Program, text: &str) -> NameId {
         let id = program.str_intern.intern(text);
@@ -460,6 +474,36 @@ mod tests {
         assert_eq!(layout.fields.len(), 1);
         assert_eq!(layout.fields[0].offset, 0);
         assert_eq!(layout.fields[0].layout.size, 8);
+    }
+
+    #[test]
+    fn layout_struct_field_raw_ptr_to_unsized_array_is_fat_pointer() {
+        let mut program = Program::new();
+        let mut store = TypeStore::new();
+
+        let data = name(&mut program, "data");
+        let (sid, tid) = store.simple_struct(None, vec![(data, UNKNOWN_TYPE)]);
+
+        let unsized_array = store.intern(TypeValue::Array(
+            BuiltinType::I32.into(),
+            ArrayType::Unsized,
+        ));
+        let ptr_unsized = store.intern(TypeValue::Ptr {
+            tgt: unsized_array,
+            raw: true,
+            mutable: true,
+        });
+        store.set_struct_fields(sid, vec![(data, ptr_unsized)]);
+
+        let target = TargetLayout::for_pointer_width(64).unwrap();
+        let layout = layout_struct(&store, target, tid).unwrap();
+
+        assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
+        assert_eq!(layout.fields.len(), 1);
+        assert_eq!(layout.fields[0].offset, 0);
+        assert_eq!(layout.fields[0].layout.size, 16);
+        assert_eq!(layout.fields[0].layout.align, 8);
     }
 
     #[test]

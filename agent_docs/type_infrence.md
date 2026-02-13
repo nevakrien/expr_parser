@@ -261,8 +261,8 @@ Critical type-expression fragility points:
   - easy place to introduce generic-id/scope bugs if specialization flow is modified.
 - `TypeExpr::Array`:
   - parser/lowering now produce `TypeExpr::Array(element, len)` from bracket type syntax,
-  - sized form `[T; N]` lowers to deferred `ResolveKind::Array { element, len }`,
-  - unsized form `[T]` is parsed but currently rejected in inference with a simple error (`unsized array types are not supported yet`).
+  - sized form `[T; N]` lowers to deferred `ResolveKind::Array { element, size: ArrayType::Sized(N) }`,
+  - unsized form `[T]` now lowers to deferred `ResolveKind::Array { element, size: ArrayType::Unsized }`.
 - pointer type expressions (`TypeExpr::Ptr`) feed directly into deferred pointer cluster states, so pointer semantics changes usually require touching both gather and deferred resolution helpers.
 
 Maintenance note: this whole gather layer is intentionally unfinished in places. Treat `NameRef`, `Call`, `Construct`, `TypeExpr::Index`, `AddrOf` (and future `Deref`) as priority review zones whenever adding type-system features, implicit conversions, or dispatch behavior.

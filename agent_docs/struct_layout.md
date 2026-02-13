@@ -89,7 +89,7 @@ Cycle details are produced by `cycle_path` using `visiting` snapshot.
 - `isize`/`usize` follow pointer width.
 - `str` uses target `str_size`/`str_align`.
 - function types layout as function pointers.
-- pointers layout as pointer size/alignment.
+- pointers layout as pointer size/alignment, except pointers to unsized arrays (`*[T]`, `&[T]`, `&mut [T]`) which are modeled as fat pointers (`2 * pointer_size`, pointer alignment).
 - `void` is zero-size align-1.
 
 ## Practical Extension Notes

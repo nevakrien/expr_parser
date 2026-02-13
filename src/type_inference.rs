@@ -131,11 +131,17 @@ impl TryFrom<TypeId> for BuiltinType {
     }
 };*/
 
+#[derive(Debug, Clone,Copy, PartialEq, Eq, Hash)]
+pub enum ArrayType {
+    Sized(usize),
+    Unsized
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeValue {
     Builtin(BuiltinType),
     Tuple(Vec<TypeId>),
-    Array(TypeId, usize),
+    Array(TypeId, ArrayType),
     Func {
         calling_convention: CallingConvention,
         params: Vec<TypeId>,
@@ -425,12 +431,20 @@ impl TypeStore {
                 }
             }
 
-            TypeValue::Array(inner, n) => {
+            TypeValue::Array(inner, ArrayType::Sized(n)) => {
                 format!(
                     "[{};{n}]",
                     self.get_type_string_nested(program, *inner, gen_count)
                 )
             }
+
+            TypeValue::Array(inner, ArrayType::Unsized) => {
+                format!(
+                    "[{}]",
+                    self.get_type_string_nested(program, *inner, gen_count)
+                )
+            }
+
             // TypeValue::Type => "Type".to_string(),
             TypeValue::WithGenerics { count, body } => {
                 let new_count = gen_count + count;
@@ -1116,7 +1130,7 @@ enum ResolveKind {
     Tuple(TupleInferId),
     Array {
         element: CId,
-        len: usize,
+        size: ArrayType,
     },
 
     Ptr {
@@ -1328,10 +1342,10 @@ fn new_array_instance(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     element: CId,
-    len: usize,
+    size: ArrayType,
 ) -> CId {
     let id = new_cluster(parent, cluster);
-    cluster[id].state = ResolveKind::Array { element, len };
+    cluster[id].state = ResolveKind::Array { element, size };
     id
 }
 
@@ -1465,8 +1479,8 @@ impl<'a> InferState<'a> {
         )
     }
 
-    fn new_array_instance(&mut self, element: CId, len: usize) -> CId {
-        new_array_instance(&mut self.parent, &mut self.cluster, element, len)
+    fn new_array_instance(&mut self, element: CId, size: ArrayType) -> CId {
+        new_array_instance(&mut self.parent, &mut self.cluster, element, size)
     }
 
     fn bind_val(&mut self, v: ValId, c: CId) {
@@ -2078,11 +2092,11 @@ fn _try_absorb(
         (
             Array {
                 element: dst_element,
-                len: dst_len,
+                size: dst_len,
             },
             Array {
                 element: src_element,
-                len: src_len,
+                size: src_len,
             },
         ) => {
             if dst_len != src_len {
@@ -2132,7 +2146,7 @@ fn _try_absorb(
             Ok(true)
         }
 
-        (Solved(t), Array { element, len }) => {
+        (Solved(t), Array { element, size }) => {
             unify_array_with_type(
                 store,
                 parent,
@@ -2141,7 +2155,7 @@ fn _try_absorb(
                 struct_infers,
                 tuple_infers,
                 element,
-                len,
+                size,
                 t,
             )?;
             Ok(true)
@@ -2235,7 +2249,7 @@ fn force_type(
             cluster[root].state = ResolveKind::Solved(ty);
             Ok(())
         }
-        ResolveKind::Array { element, len } => {
+        ResolveKind::Array { element, size } => {
             unify_array_with_type(
                 store,
                 parent,
@@ -2244,7 +2258,7 @@ fn force_type(
                 struct_infers,
                 tuple_infers,
                 element,
-                len,
+                size,
                 ty,
             )?;
             cluster[root].state = ResolveKind::Solved(ty);
@@ -2564,10 +2578,10 @@ fn unify_array_with_type(
     struct_infers: &mut Vec<StructInfer>,
     tuple_infers: &mut Vec<TupleInfer>,
     element: CId,
-    len: usize,
+    size: ArrayType,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let (ty_element, ty_len) = match store.type_value(ty) {
+    let (ty_element, ty_size) = match store.type_value(ty) {
         TypeValue::Array(item, n) => (*item, *n),
         _ => {
             return Err(TypeClash {
@@ -2580,13 +2594,13 @@ fn unify_array_with_type(
                     struct_infers,
                     tuple_infers,
                     element,
-                    len,
+                    size,
                 ))),
             });
         }
     };
 
-    if ty_len != len {
+    if ty_size != size {
         return Err(TypeClash {
             found: Some(BadTypeId(ty)),
             wanted: Some(BadTypeId(make_array_mock(
@@ -2597,7 +2611,7 @@ fn unify_array_with_type(
                 struct_infers,
                 tuple_infers,
                 element,
-                len,
+                size,
             ))),
         });
     }
@@ -2672,7 +2686,7 @@ fn mock_type_from_cluster(
             call,
             visiting,
         ),
-        ResolveKind::Array { element, len } => make_array_mock_inner(
+        ResolveKind::Array { element, size } => make_array_mock_inner(
             store,
             parent,
             cluster,
@@ -2680,7 +2694,7 @@ fn mock_type_from_cluster(
             struct_infers,
             tuple_infers,
             element,
-            len,
+            size,
             visiting,
         ),
         ResolveKind::Ptr { tgt, raw, mutable } => make_ptr_mock_inner(
@@ -2883,7 +2897,7 @@ fn make_array_mock_inner(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     element: CId,
-    len: usize,
+    size: ArrayType,
     visiting: &mut std::collections::HashSet<CId>,
 ) -> TypeId {
     let element = mock_type_from_cluster(
@@ -2896,7 +2910,7 @@ fn make_array_mock_inner(
         element,
         visiting,
     );
-    store.intern(TypeValue::Array(element, len))
+    store.intern(TypeValue::Array(element, size))
 }
 
 fn make_array_mock(
@@ -2907,7 +2921,7 @@ fn make_array_mock(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     element: CId,
-    len: usize,
+    size: ArrayType,
 ) -> TypeId {
     let mut visiting = std::collections::HashSet::new();
     make_array_mock_inner(
@@ -2918,7 +2932,7 @@ fn make_array_mock(
         struct_infers,
         tuple_infers,
         element,
-        len,
+        size,
         &mut visiting,
     )
 }
@@ -3082,9 +3096,9 @@ fn array_call_clash(
     struct_infers: &Vec<StructInfer>,
     tuple_infers: &Vec<TupleInfer>,
     dst_element: CId,
-    dst_len: usize,
+    dst_len: ArrayType,
     src_element: CId,
-    src_len: usize,
+    src_len: ArrayType,
 ) -> TypeClash {
     TypeClash {
         found: Some(BadTypeId(make_array_mock(
@@ -3150,7 +3164,7 @@ fn extract_bad_type(
             tuple_infers,
             call,
         ))),
-        ResolveKind::Array { element, len } => Some(BadTypeId(make_array_mock(
+        ResolveKind::Array { element, size } => Some(BadTypeId(make_array_mock(
             store,
             parent,
             cluster,
@@ -3158,7 +3172,7 @@ fn extract_bad_type(
             struct_infers,
             tuple_infers,
             element,
-            len,
+            size,
         ))),
         ResolveKind::Ptr { tgt, raw, mutable } => Some(BadTypeId(make_ptr_mock(
             store,
@@ -4967,7 +4981,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 ctx.new_cluster()
             };
 
-            let array = ctx.new_array_instance(element, values.len());
+            let array = ctx.new_array_instance(element, ArrayType::Sized(values.len()));
             ctx.bind_val(v, array);
             array
         }
@@ -5229,15 +5243,8 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
         }
         TypeExpr::Array(element, len) => {
             let element = compile_type_expr(ctx, element);
-            let Some(len) = len else {
-                let loc = ctx.program.type_expr_loc(texpr);
-                ctx.push_error(TypeError::Simple {
-                    loc,
-                    message: "unsized array types are not supported yet",
-                });
-                return ctx.new_cluster();
-            };
-            ctx.new_array_instance(element, len)
+            let size = len.map_or(ArrayType::Unsized, ArrayType::Sized);
+            ctx.new_array_instance(element, size)
         }
         TypeExpr::Index { base, args } => {
             let generics = args
@@ -7452,14 +7459,14 @@ fn try_resolve_array_type(
     parent: &mut ClusterVec<CId>,
     cluster: &mut ClusterVec<Cluster>,
     element: CId,
-    len: usize,
+    size: ArrayType,
 ) -> Option<TypeId> {
     let root = find_root(parent, element);
     let element = match cluster[root].state {
         ResolveKind::Solved(t) => t,
         _ => return None,
     };
-    Some(store.intern(TypeValue::Array(element, len)))
+    Some(store.intern(TypeValue::Array(element, size)))
 }
 
 fn try_resolve_ptr_type(
@@ -7509,8 +7516,8 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
                 &mut ctx.tuple_infers,
                 call,
             ),
-            ResolveKind::Array { element, len } => {
-                try_resolve_array_type(ctx.store, &mut ctx.parent, &mut ctx.cluster, element, len)
+            ResolveKind::Array { element, size } => {
+                try_resolve_array_type(ctx.store, &mut ctx.parent, &mut ctx.cluster, element, size)
             }
             ResolveKind::Ptr { tgt, raw, mutable } => try_resolve_ptr_type(
                 ctx.store,
@@ -8291,10 +8298,10 @@ mod type_infer_tests {
         let src = "f = fn(){ [1:int, 2:int, 3:int] }";
         let mut store = TypeStore::new();
         let ty = infer_fn_body(src, &mut store).unwrap();
-        let TypeValue::Array(item, len) = *store.type_value(ty) else {
+        let TypeValue::Array(item, size) = *store.type_value(ty) else {
             panic!("expected array type")
         };
-        assert_eq!(len, 3);
+        assert_eq!(size, ArrayType::Sized(3));
         assert!(matches!(
             store.type_value(item),
             TypeValue::Builtin(BuiltinType::Int)
@@ -8323,10 +8330,10 @@ mod type_infer_tests {
         let src = "f = fn(){ let a:[int;3] = [1:int, 2:int, 3:int]; a }";
         let mut store = TypeStore::new();
         let ty = infer_fn_body(src, &mut store).unwrap();
-        let TypeValue::Array(item, len) = *store.type_value(ty) else {
+        let TypeValue::Array(item, size) = *store.type_value(ty) else {
             panic!("expected array type")
         };
-        assert_eq!(len, 3);
+        assert_eq!(size, ArrayType::Sized(3));
         assert!(matches!(
             store.type_value(item),
             TypeValue::Builtin(BuiltinType::Int)
@@ -8334,16 +8341,22 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn unsized_array_type_expression_is_rejected_for_now() {
+    fn unsized_array_type_expression_resolves_in_global_types() {
+        let src = "type A = [int]; f = fn(){}";
+        let program = gather_program(src);
         let mut store = TypeStore::new();
-        let errs = infer_fn_body("f = fn(){ let a:[int] = [1:int]; a }", &mut store).unwrap_err();
-        assert!(errs.iter().any(|err| matches!(
-            err,
-            TypeError::Simple {
-                message: "unsized array types are not supported yet",
-                ..
-            }
-        )));
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let ty = find_typedef_type_by_name(&program, &solved_types, "A");
+        let TypeValue::Array(item, size) = *store.type_value(ty) else {
+            panic!("expected array typedef")
+        };
+        assert_eq!(size, ArrayType::Unsized);
+        assert!(matches!(
+            store.type_value(item),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
     }
 
     #[test]
