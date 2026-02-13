@@ -852,10 +852,7 @@ pub fn infer_global_types<'a>(
             continue;
         };
 
-        let t = match ctx.program.type_expr(*texp) {
-            TypeExpr::Struct(def) => compile_struct_type::<true>(&mut ctx, *texp, def),
-            _ => compile_type_expr(&mut ctx, *texp),
-        };
+        let t = do_typedef::<true>(&mut ctx, *n, *texp);
         if let Some(previous) = ctx.local_types.insert(*n, t)
             && let Err(clash) = ctx.unify(previous, t)
         {
@@ -4260,11 +4257,14 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     clash,
                 });
             }
-            let t = compile_type_expr(ctx, ty);
-            ctx.typedef_cluster.push((ty, t));
-            if let Some(n) = n {
+            let t = if let Some(n) = n {
+                let t = do_typedef::<false>(ctx, n, ty);
                 ctx.local_types.insert(n, t);
-            }
+                t
+            } else {
+                compile_type_expr(ctx, ty)
+            };
+            ctx.typedef_cluster.push((ty, t));
             p
         }
 
@@ -5352,6 +5352,40 @@ fn compile_struct_type<const ALLOW_GENERICS: bool>(
         sid,
     });
     output
+}
+
+fn maybe_set_struct_name_from_typedef(ctx: &mut InferState, typedef_name: NameId, c: CId) {
+    let root = find_root(&mut ctx.parent, c);
+    let sid = match ctx.cluster[root].state {
+        ResolveKind::Struct(rid) => Some(ctx.struct_infers[rid.0].sid),
+        ResolveKind::Solved(t) => match ctx.store.type_value(t) {
+            TypeValue::Struct { id, .. } => Some(*id),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let Some(sid) = sid else {
+        return;
+    };
+
+    if ctx.store.structs[sid.0].name.is_none() {
+        ctx.store.structs[sid.0].name = Some(typedef_name);
+    }
+}
+
+fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
+    ctx: &mut InferState,
+    typedef_name: NameId,
+    texpr: TExpId,
+) -> CId {
+    let t = match ctx.program.type_expr(texpr) {
+        TypeExpr::Struct(def) => compile_struct_type::<ALLOW_STRUCT_GENERICS>(ctx, texpr, def),
+        _ => compile_type_expr(ctx, texpr),
+    };
+
+    maybe_set_struct_name_from_typedef(ctx, typedef_name, t);
+    t
 }
 
 fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
@@ -8293,15 +8327,6 @@ fn finalize(ctx: &mut InferState) {
     }
 
     for sdef in ctx.struct_defs.iter() {
-        if ctx.store.structs[sdef.sid.0].name.is_none()
-            && let Some((name, _)) = ctx
-                .program
-                .definitions
-                .iter()
-                .find(|(_, def)| matches!(def, Defined::Type(texp) if *texp == sdef.loc))
-        {
-            ctx.store.structs[sdef.sid.0].name = Some(*name);
-        }
         for (i, (_n, c)) in sdef.fields.iter().enumerate() {
             let root = find_root(parent, *c);
             if let ResolveKind::Solved(t) = cluster[root].state {

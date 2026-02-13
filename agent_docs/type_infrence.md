@@ -146,6 +146,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 ### Struct representation
 
 - `StructRep` contains optional name, field list, generic count, and a layout spec (`Hot` vs `C` for `cstruct`).
+- Typedef-driven struct names are now assigned during typedef compilation (`do_typedef`), by checking the compiled cluster for either `ResolveKind::Struct` or a solved `TypeValue::Struct` and setting `StructRep.name` only when currently unset.
 - Recursive structs are supported by creating struct ids early, then resolving field types in `finalize`.
 
 ## Internal Constraint Engine
@@ -291,7 +292,7 @@ Maintenance note: this whole gather layer is intentionally unfinished in places.
 Then `finalize`:
 
 - commits solved typedef/value/pattern types into `SolvedTypes`,
-- writes finalized struct field types and fills missing struct names,
+- writes finalized struct field types,
 - wraps generic function values into `WithGenerics`,
 - emits unresolved errors once per unresolved root (to reduce duplicate noise),
 - finalizes `SolvedTypes.member_method_types` from deferred member/operator call sites,

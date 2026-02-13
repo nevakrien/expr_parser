@@ -27,22 +27,100 @@ fn write_line(writer: &mut BufWriter<File>, line_count: &mut usize, line: &str) 
     *line_count += 1;
 }
 
+fn write_noise_block(writer: &mut BufWriter<File>, line_count: &mut usize, rng: &mut Rng) {
+    match rng.range(8) {
+        0 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let cl = fn(x:int)->int { x + 1:int }; cl(3:int); id(seed); };",
+            );
+        }
+        1 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let pick = fn(a:int, b:int)->int { a + b }; pick(2:int, 5:int); id(extra); };",
+            );
+        }
+        2 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let local = fn(x:int)->int { x - 1:int }; local(9:int); let keep = pick_left(seed, seed); id(keep); };",
+            );
+        }
+        3 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let call = fn(x:int)->int { x }; call(0:int); let v = id(extra); id(v); };",
+            );
+        }
+        4 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let p = Pair{ left = 1:int, right = 2:int }; p.left + p.right; let keep = id(seed); id(keep); };",
+            );
+        }
+        5 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let v = Vec2{ x = 3:int, y = 4:int }; let w = Vec2{ x = 1:int, y = 2:int }; let z = v + w; z.norm1(); id(extra); };",
+            );
+        }
+        6 => {
+            write_line(
+                writer,
+                line_count,
+                "    { let cond = (1:int + 2:int) == 3:int; if cond { id(seed); } else { id(seed); }; id(extra); };",
+            );
+        }
+        _ => {
+            write_line(
+                writer,
+                line_count,
+                "    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };",
+            );
+        }
+    }
+}
+
 fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
     let lines = [
-        "inc = macro(x) { x + 1:int };",
-        "dec = macro(x) { x - 1:int };",
-        "add = macro(a, b) { a + b };",
-        "mul = macro(a, b) { a * b };",
-        "bitmix = macro(a, b) { (a & b) ^ (a | b) };",
-        "to_int = macro(x) { x as int };",
-        "to_float = macro(x) { x as float };",
-        "type Pair = struct[T, U] { a:T, b:U };",
-        "type Box = struct[T] { value:T };",
-        "type Point = struct{ x:int, y:int };",
+        "free = cfn(p:*void);",
+        "opaque_alloc = cfn(n:usize)->*void;",
         "id = fn[T](x:T)->T { x };",
-        "wrap = fn[T](x:T)->Box[T] { Box{ value = x } };",
-        "make_pair = fn[A, B](a:A, b:B)->Pair[A, B] { Pair{ a = a, b = b } };",
-        "make_point = fn(a:int, b:int)->Point { Point{ x = a, y = b } };",
+        "pick_left = fn[A, B](a:A, _b:B)->A { a };",
+        "cast_void = fn[T](p:*T)->*void { p as *void };",
+        "late_score = fn(l:Late)->int { l.value + 1:int };",
+        "Pair = struct[A, B] { left:A, right:B };",
+        "Vec2 = struct { x:int, y:int };",
+        "Node = struct { value:int };",
+        "Point = struct { x:int, y:int };",
+        "Box = struct[T] { ptr:*T };",
+        "Wrap = struct[T] { boxed:Box[T] };",
+        "Deep = struct[T] { inner:Wrap[T] };",
+        "ArrBox = struct { arr:[int;4] };",
+        "Late = struct { value:int };",
+        "Pair.swap = fn[A, B](p:Pair[A, B])->Pair[B, A] { Pair{ left = p.right, right = p.left } };",
+        "Vec2.__add = fn(a:Vec2, b:Vec2)->Vec2 { Vec2{ x = a.x + b.x, y = a.y + b.y } };",
+        "Vec2.__sub = fn(a:Vec2, b:Vec2)->Vec2 { Vec2{ x = a.x - b.x, y = a.y - b.y } };",
+        "Vec2.norm1 = fn(v:Vec2)->int { v.x + v.y };",
+        "Point.sum = fn(p:Point)->int { p.x + p.y };",
+        "Point.shift = fn(p:Point, dx:int, dy:int)->Point { Point{ x = p.x + dx, y = p.y + dy } };",
+        "Box.__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };",
+        "Box.__deref = fn[T](b:&const Box[T])->&T { &*b.ptr };",
+        "Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*b.ptr };",
+        "Box.get = fn[T](b:Box[T])->T { *b };",
+        "Wrap.__deref = fn[T](w:&const Wrap[T])->&Box[T] { &w.boxed };",
+        "Wrap.__deref_mut = fn[T](w:&mut Wrap[T])->&mut Box[T] { &mut w.boxed };",
+        "Deep.__deref = fn[T](d:&const Deep[T])->&Wrap[T] { &d.inner };",
+        "Deep.__deref_mut = fn[T](d:&mut Deep[T])->&mut Wrap[T] { &mut d.inner };",
+        "ArrBox.__deref = fn(a:&const ArrBox)->&[int;4] { &a.arr };",
+        "ArrBox.__deref_mut = fn(a:&mut ArrBox)->&mut [int;4] { &mut a.arr };",
     ];
 
     for line in lines {
@@ -50,81 +128,205 @@ fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
     }
 }
 
-fn write_int_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str) {
+fn write_dynamic_struct(writer: &mut BufWriter<File>, line_count: &mut usize, idx: usize) {
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:int, b:int)->int {{"),
+        &format!("S{idx} = struct {{ value:int, delta:int }};"),
     );
-    write_line(writer, line_count, "    let x = inc(a);");
-    write_line(writer, line_count, "    let y = bitmix(x, b);");
-    write_line(writer, line_count, "    let z = add(y, 3:int);");
-    write_line(writer, line_count, "    let w = (z & 1) == 0;");
-    write_line(writer, line_count, "    if w { z } else { dec(z) }");
+    write_line(
+        writer,
+        line_count,
+        &format!(
+            "S{idx}.score = fn[T, U](s:S{idx}, seed:T, extra:U)->int {{ {{ let c = fn(x:int)->int {{ x + 1:int }}; c(s.value); id(seed); id(extra); }}; s.value + s.delta }};"
+        ),
+    );
+}
+
+fn write_box_chain_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
+    write_line(
+        writer,
+        line_count,
+        &format!("{name} = fn[T, U](seed:T, extra:U, b:Box[Box[Node]])->int {{"),
+    );
+    write_line(writer, line_count, "    let out = b->value;");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    out");
     write_line(writer, line_count, "};");
 }
 
-fn write_float_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str) {
+fn write_deep_chain_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:float, b:float)->float {{"),
+        &format!("{name} = fn[T, U](seed:T, extra:U, d:Deep[Node])->int {{"),
     );
-    write_line(writer, line_count, "    let x = add(a, b);");
-    write_line(writer, line_count, "    let y = mul(x, 1.25:float);");
-    write_line(writer, line_count, "    let z = to_int(y);");
-    write_line(writer, line_count, "    let w = to_float(z);");
-    write_line(writer, line_count, "    add(w, y)");
+    write_line(writer, line_count, "    let out = d->value;");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    out");
     write_line(writer, line_count, "};");
 }
 
-fn write_mixed_math(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str) {
+fn write_vec_overload_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:int, b:float)->float {{"),
+        &format!("{name} = fn[T, U](seed:T, extra:U, a:Vec2, b:Vec2)->int {{"),
     );
-    write_line(writer, line_count, "    let x = to_float(a);");
-    write_line(writer, line_count, "    let y = add(x, b);");
-    write_line(writer, line_count, "    let z = to_int(y);");
-    write_line(writer, line_count, "    let q = id(z);");
-    write_line(writer, line_count, "    let r = (fn(x)->int { x + 1 })(q);");
-    write_line(writer, line_count, "    to_float(r)");
+    write_line(writer, line_count, "    let c = a + b;");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    let d = c - a;");
+    write_line(writer, line_count, "    d.norm1()");
     write_line(writer, line_count, "};");
 }
 
-fn write_point_fn(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str) {
+fn write_pair_swap_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:int, b:int)->Point {{"),
+        &format!("{name} = fn[T, U](seed:T, extra:U, b:Box[Pair[int, bool]])->int {{"),
     );
-    write_line(writer, line_count, "    let p = Point{ x = a, y = b };");
-    write_line(writer, line_count, "    p");
+    write_line(writer, line_count, "    let p = b->swap();");
+    write_noise_block(writer, line_count, rng);
+    write_line(
+        writer,
+        line_count,
+        "    if p.left { p.right } else { 0:int }",
+    );
     write_line(writer, line_count, "};");
 }
 
-fn write_pair_fn(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str) {
+fn write_array_index_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:int, b:float)->Pair[int,float] {{"),
+        &format!("{name} = fn[T, U](seed:T, extra:U, a:ArrBox)->int {{"),
     );
-    write_line(writer, line_count, "    let p = Pair{ a = a, b = b };");
-    write_line(writer, line_count, "    let _ = wrap(a);");
-    write_line(writer, line_count, "    let _ = make_pair(a, b);");
-    write_line(writer, line_count, "    p");
+    write_line(writer, line_count, "    let x = a[1:usize];");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    x + a[2:usize]");
     write_line(writer, line_count, "};");
 }
 
-fn write_bool_fn(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str) {
+fn write_point_shift_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
     write_line(
         writer,
         line_count,
-        &format!("{name} = fn(a:int, b:int)->bool {{"),
+        &format!("{name} = fn[T, U](seed:T, extra:U, w:Wrap[Point])->int {{"),
     );
-    write_line(writer, line_count, "    let x:int = add(a, b);");
-    write_line(writer, line_count, "    (x & 1:int) == 0:int");
+    write_line(writer, line_count, "    let q = w->shift(1:int, 2:int);");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    q.sum()");
+    write_line(writer, line_count, "};");
+}
+
+fn write_cast_fn(writer: &mut BufWriter<File>, line_count: &mut usize, name: &str, rng: &mut Rng) {
+    write_line(
+        writer,
+        line_count,
+        &format!("{name} = fn[T, U](seed:T, extra:U, p:*Point)->*void {{"),
+    );
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    cast_void(p)");
+    write_line(writer, line_count, "};");
+}
+
+fn write_generic_box_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
+    write_line(
+        writer,
+        line_count,
+        &format!("{name} = fn[T, U](seed:T, extra:U, b:Box[T], fallback:T)->T {{"),
+    );
+    write_line(writer, line_count, "    let x = b.get();");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    let _ = id(extra);");
+    write_line(writer, line_count, "    pick_left(x, fallback)");
+    write_line(writer, line_count, "};");
+}
+
+fn write_late_type_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
+    write_line(
+        writer,
+        line_count,
+        &format!("{name} = fn[T, U](seed:T, extra:U, v:int)->int {{"),
+    );
+    write_line(writer, line_count, "    let l = Late{ value = v };");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    late_score(l)");
+    write_line(writer, line_count, "};");
+}
+
+fn write_alloc_cast_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    rng: &mut Rng,
+) {
+    write_line(
+        writer,
+        line_count,
+        &format!("{name} = fn[T, U](seed:T, extra:U)->*Node {{"),
+    );
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    opaque_alloc(8:usize) as *Node");
+    write_line(writer, line_count, "};");
+}
+
+fn write_dynamic_struct_use_fn(
+    writer: &mut BufWriter<File>,
+    line_count: &mut usize,
+    name: &str,
+    sid: usize,
+    rng: &mut Rng,
+) {
+    write_line(
+        writer,
+        line_count,
+        &format!("{name} = fn[T, U](seed:T, extra:U, s:S{sid})->int {{"),
+    );
+    write_line(writer, line_count, "    let base = s.score(seed, extra);");
+    write_noise_block(writer, line_count, rng);
+    write_line(writer, line_count, "    base");
     write_line(writer, line_count, "};");
 }
 
@@ -145,21 +347,39 @@ fn main() {
 
     let mut rng = Rng::new(0xBADA_5515);
     let mut function_count = 0usize;
+    let mut struct_count = 0usize;
+    let mut dynamic_structs: Vec<usize> = Vec::new();
+
     while line_count < target_lines {
+        if dynamic_structs.is_empty() || rng.range(4) == 0 {
+            write_dynamic_struct(&mut writer, &mut line_count, struct_count);
+            dynamic_structs.push(struct_count);
+            struct_count += 1;
+            if line_count >= target_lines {
+                break;
+            }
+        }
+
         let name = format!("f_{function_count}");
-        match rng.range(6) {
-            0 => write_int_math(&mut writer, &mut line_count, &name),
-            1 => write_float_math(&mut writer, &mut line_count, &name),
-            2 => write_mixed_math(&mut writer, &mut line_count, &name),
-            3 => write_point_fn(&mut writer, &mut line_count, &name),
-            4 => write_pair_fn(&mut writer, &mut line_count, &name),
-            _ => write_bool_fn(&mut writer, &mut line_count, &name),
+        let sid = dynamic_structs[rng.range(dynamic_structs.len() as u32) as usize];
+        match rng.range(11) {
+            0 => write_box_chain_fn(&mut writer, &mut line_count, &name, &mut rng),
+            1 => write_deep_chain_fn(&mut writer, &mut line_count, &name, &mut rng),
+            2 => write_vec_overload_fn(&mut writer, &mut line_count, &name, &mut rng),
+            3 => write_pair_swap_fn(&mut writer, &mut line_count, &name, &mut rng),
+            4 => write_array_index_fn(&mut writer, &mut line_count, &name, &mut rng),
+            5 => write_point_shift_fn(&mut writer, &mut line_count, &name, &mut rng),
+            6 => write_cast_fn(&mut writer, &mut line_count, &name, &mut rng),
+            7 => write_generic_box_fn(&mut writer, &mut line_count, &name, &mut rng),
+            8 => write_late_type_fn(&mut writer, &mut line_count, &name, &mut rng),
+            9 => write_alloc_cast_fn(&mut writer, &mut line_count, &name, &mut rng),
+            _ => write_dynamic_struct_use_fn(&mut writer, &mut line_count, &name, sid, &mut rng),
         }
         function_count += 1;
     }
 
     println!(
-        "Wrote {} functions to {} (total lines {}, target lines {})",
-        function_count, output_path, line_count, target_lines
+        "Wrote {} functions and {} dynamic structs to {} (total lines {}, target lines {})",
+        function_count, struct_count, output_path, line_count, target_lines
     );
 }

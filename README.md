@@ -216,6 +216,9 @@ this was while till keeping some heap
 cargo run --release --example generate_typecheck_benchmark_data -- typecheck_benchmark_data.txt 100000
 cargo run --release --example file_typecheck_benchmark -- typecheck_benchmark_data.txt
 
+legacy generator (pre smart-deref/method benchmark mix):
+cargo run --release --example generate_typecheck_benchmark_data_old -- typecheck_benchmark_data.txt 100000
+
 originally wrote a pretty bad algorithmic bug of runing O(n) in a loop causing O(n^2).
 after doing this we are up to 900k lines checked per second. at the start we were at 5k.
 reserving the hashmap ahead of time got us to around 25k and moving to indecies moved us to 32k.
