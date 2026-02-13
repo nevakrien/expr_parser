@@ -181,6 +181,7 @@ Main orchestration is two-phase:
 2. `infer_value_internals`
   - resolves function body internals or arbitrary value internals,
   - reconciles with known global signatures when present.
+  - for function values, local signature/body gathering now anchors to the already-solved global signature before body constraints; if the known global type is `WithGenerics`, inference first unwraps to the inner function body type for unification, avoiding "expected unknown"-style return mismatches.
 
 `run_typechecker` runs global pass, then member methods, then global functions, reporting through `ErrorReporter` and returning solved data or error count.
 
@@ -223,6 +224,7 @@ Important fragile/unfinished expression areas:
   - supports builtin pointer dereference,
   - also supports struct-based smart-pointer style dereference through member methods `__deref` and `__deref_mut`,
   - when both methods exist, dereference target types are constrained to agree,
+  - the deref expression now owns a dedicated output cluster and immediately tries a `pointee -> output` unification when the source is already resolvable,
   - when deref starts from an unresolved `Nothing` source, it records a pending pointer-like constraint (`source -> target`) and resolves it in the middle solver instead of eagerly forcing the source to pointer.
 - `Value::Access`:
   - supports struct field lookup from solved and deferred struct states,
@@ -314,6 +316,7 @@ Then `finalize`:
   - This means operator overload resolution now constrains lhs/rhs/output directly from method signatures (instead of only reporting overload presence).
   - On successful resolution, operator sites are also recorded in `SolvedTypes.member_method_types` so tooling can recover the selected member name and full (uncurried) method signature.
 - Deferred operator queues are now drained with `retain_mut`: resolved sites (including successful overload application and hard errors) are removed, while only truly pending/unknown sites are retained for future solver rounds.
+- Deferred deref/member/index result unifications now use `actual_result -> constrained_output` ordering so clash payloads read naturally as `found <actual>, expected <constraint>`.
 - Operator overload resolution assumes global signatures are already solved before function-body inference (`infer_global_types` first); missing method type/function-shape in this stage is treated as an internal-invariant violation (`unreachable!`).
 - Even though runtime/operator-call dispatch is still TODO, signature validation now enforces shape rules for special member names:
   - binary overload names (`__add`, `__sub`, etc.): `self`-like first parameter + exactly one extra parameter,

@@ -53,7 +53,7 @@ pub const UNKNOWN_TYPE: TypeId = TypeId(usize::MAX);
 pub const UNKNOWN_INT_SIZE: TypeId = TypeId(usize::MAX - 1);
 pub const UNKNOWN_FLOAT_SIZE: TypeId = TypeId(usize::MAX - 2);
 pub const EXPANSION_STOPED: TypeId = TypeId(usize::MAX - 3);
-const EXPANSION_LIMIT :usize = 100;
+const EXPANSION_LIMIT: usize = 100;
 
 ///this type specifically has internals containing UNKNOWN_TYPE
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -467,7 +467,7 @@ impl TypeStore {
 
             //TODO cover cases where we do know the name
             TypeValue::Struct { id, generics } => {
-                self.format_struct_display(program, *id, generics)
+                self.format_struct_display(program, *id, generics, gen_count)
             }
         }
     }
@@ -477,14 +477,22 @@ impl TypeStore {
         program: &Program,
         sid: StructId,
         generics: &[TypeId],
+        gen_count: usize,
     ) -> String {
         let base = match self.struct_value(sid).name {
-            Some(name) => program.name_string(name).to_string(),
-            None => "UnamedStruct".to_string(),
+            Some(name) => program.name_string(name),
+            None => "UnamedStruct",
         };
-        let base = format!("{}{}", base, subscript_id(sid.0));
+        let mut base = format!("{}{}", base, subscript_id(sid.0));
         if !generics.is_empty() {
-            //TODO add to base all the generics if there are any base<>
+            let args = generics
+                .iter()
+                .map(|id| self.get_type_string_nested(program, *id, gen_count))
+                .collect::<Vec<_>>()
+                .join(", ");
+            base.push('[');
+            base.push_str(&args);
+            base.push(']');
         }
         base
     }
@@ -803,11 +811,15 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         }
     }
 
-    for (_, def) in program.definitions.iter() {
+    for (_n, def) in program.definitions.iter() {
         let Defined::Func(v) = def else {
             continue;
         };
         function_checked += 1;
+
+        // println!("working on {}",program.name_string(*n));
+        // unsafe { std::arch::asm!("int3"); }
+
         let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *v) else {
             continue;
         };
@@ -947,19 +959,54 @@ pub fn infer_value_internals<'a>(
             output_type,
             body,
         } => {
-            gather_func_constraints::<true>(
+            let (found_sig, output) = gather_func_signature::<true>(
                 &mut ctx,
                 value,
                 calling_convention,
                 generics,
                 params,
                 output_type,
-                body,
-            )
-            //this case we have a fully known type so no unify.
-            //further a unify here is wrong
-            //this is because we solved this as Func<> but its actually a WithGenrics
-            //this is fine for our local work as we pretend that generics are concrete
+            );
+
+            if let Some(known) = known {
+                let known_sig = match *ctx.store.type_value(known) {
+                    TypeValue::WithGenerics { body, .. } => body,
+                    _ => known,
+                };
+                let known_sig = ctx.new_solved(known_sig);
+                if let Err(clash) = ctx.unify(found_sig, known_sig) {
+                    ctx.push_error(TypeError::ValuesContradict {
+                        expectation_reason:
+                            "function signature should match previously solved global signature",
+                        site: value,
+                        found: value,
+                        expected_place: value,
+                        clash,
+                    });
+                }
+            }
+
+            if let Some(body) = body {
+                let body_cluster = gather_constraints(&mut ctx, body, Some(output));
+                if let Err(clash) = ctx.unify(body_cluster, output) {
+                    let found = match ctx.program.value(body) {
+                        Value::Block {
+                            statements: _,
+                            return_value: Some(x),
+                        } => x,
+                        _ => body,
+                    };
+                    ctx.push_error(TypeError::ValuesContradict {
+                        expectation_reason: "function body must match return type",
+                        site: value,
+                        found,
+                        expected_place: value,
+                        clash,
+                    });
+                }
+            }
+
+            found_sig
         }
         _ => {
             let found = gather_constraints(&mut ctx, value, None);
@@ -4235,27 +4282,27 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
         }
 
         Value::Deref(base) => {
+            let output = ctx.new_cluster();
+            ctx.bind_val(v, output);
+
             let src = gather_constraints(ctx, base, current_output);
             let src = find_root(&mut ctx.parent, src);
-            let tgt = match ctx.cluster[src].state {
-                ResolveKind::Ptr { tgt, .. } => tgt,
+            let resolved_target = match ctx.cluster[src].state {
+                ResolveKind::Ptr { tgt, .. } => Some(tgt),
                 ResolveKind::Nothing => {
-                    let tgt = ctx.new_cluster();
                     ctx.pointer_likes.push(PendingPointerLike {
                         site: v,
                         source: src,
-                        target: tgt,
+                        target: output,
                         source_value: base,
                     });
-                    tgt
+                    None
                 }
                 ResolveKind::Struct(rid) => {
                     let sid = ctx.struct_infers[rid.0].sid;
                     let Some(struct_name) = ctx.store.struct_value(sid).name else {
-                        let ans = ctx.new_cluster();
                         push_cannot_deref_error(ctx, v, base, src);
-                        ctx.bind_val(v, ans);
-                        return ans;
+                        return output;
                     };
 
                     let Some(target) = resolve_struct_deref_target(
@@ -4273,24 +4320,20 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         src,
                         struct_name,
                     ) else {
-                        let ans = ctx.new_cluster();
                         push_cannot_deref_error(ctx, v, base, src);
-                        ctx.bind_val(v, ans);
-                        return ans;
+                        return output;
                     };
 
-                    target.target
+                    Some(target.target)
                 }
                 ResolveKind::Solved(t) => {
                     let solved = ctx.store.type_value(t).clone();
                     match solved {
-                        TypeValue::Ptr { tgt, .. } => ctx.new_solved(tgt),
+                        TypeValue::Ptr { tgt, .. } => Some(ctx.new_solved(tgt)),
                         TypeValue::Struct { id, .. } => {
                             let Some(struct_name) = ctx.store.struct_value(id).name else {
-                                let ans = ctx.new_cluster();
                                 push_cannot_deref_error(ctx, v, base, src);
-                                ctx.bind_val(v, ans);
-                                return ans;
+                                return output;
                             };
 
                             let Some(target) = resolve_struct_deref_target(
@@ -4308,31 +4351,37 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                                 src,
                                 struct_name,
                             ) else {
-                                let ans = ctx.new_cluster();
                                 push_cannot_deref_error(ctx, v, base, src);
-                                ctx.bind_val(v, ans);
-                                return ans;
+                                return output;
                             };
 
-                            target.target
+                            Some(target.target)
                         }
                         _ => {
-                            let ans = ctx.new_cluster();
                             push_cannot_deref_error(ctx, v, base, src);
-                            ctx.bind_val(v, ans);
-                            return ans;
+                            return output;
                         }
                     }
                 }
                 _ => {
-                    let ans = ctx.new_cluster();
                     push_cannot_deref_error(ctx, v, base, src);
-                    ctx.bind_val(v, ans);
-                    return ans;
+                    return output;
                 }
             };
-            ctx.bind_val(v, tgt);
-            tgt
+
+            if let Some(tgt) = resolved_target
+                && let Err(clash) = ctx.unify(tgt, output)
+            {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "dereference result must match pointee type",
+                    site: v,
+                    found: base,
+                    expected_place: v,
+                    clash,
+                });
+            }
+
+            output
         }
 
         Value::Assign { op, target } => {
@@ -7677,8 +7726,8 @@ fn resolve_index_site(
         func_defs,
         struct_infers,
         tuple_infers,
-        site.output,
         element,
+        site.output,
     ) {
         Ok(changed) => progress |= changed,
         Err(clash) => {
@@ -7967,8 +8016,8 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
             func_defs,
             struct_infers,
             tuple_infers,
-            pending.target,
             result,
+            pending.target,
         ) {
             Ok(changed) => {
                 progress |= changed;
@@ -8114,8 +8163,8 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
                     func_defs,
                     struct_infers,
                     tuple_infers,
-                    pending.output,
                     result,
+                    pending.output,
                 ) {
                     Ok(changed) => progress |= changed,
                     Err(clash) => {
@@ -8834,7 +8883,7 @@ mod type_infer_tests {
         assert_eq!(
             chain,
             vec![
-                "Box₀".to_string(),
+                "Box₀[[int]]".to_string(),
                 "&mut [int]".to_string(),
                 "[int]".to_string(),
             ],
@@ -9587,6 +9636,105 @@ mod type_infer_tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn deref_return_mismatch_reports_concrete_box_type() {
+        let src = "Box = struct[T]{ptr:*T}; Box.__deref = fn[T](b:&Box[T])->&T{&*b.ptr}; f = fn(b:Box[Box[Box[int]]])->int { *b };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .unwrap_or_default();
+
+        let clash = errs
+            .iter()
+            .find_map(|err| match err {
+                TypeError::ValuesContradict {
+                    expectation_reason: "function body must match return type",
+                    clash,
+                    ..
+                } => Some(*clash),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected type mismatch, got errs={errs:?}"));
+
+        let found = clash
+            .found
+            .unwrap_or_else(|| panic!("expected found side in clash: {clash:?}"));
+        let wanted = clash
+            .wanted
+            .unwrap_or_else(|| panic!("expected wanted side in clash: {clash:?}"));
+        assert_ne!(found.0, UNKNOWN_TYPE, "found side should not be unknown");
+        assert_ne!(wanted.0, UNKNOWN_TYPE, "wanted side should not be unknown");
+
+        let found_s = store.get_bad_type_string(&program, found);
+        let wanted_s = store.get_bad_type_string(&program, wanted);
+        assert!(
+            (found_s == "int" && wanted_s.contains("Box"))
+                || (wanted_s == "int" && found_s.contains("Box")),
+            "expected int-vs-Box mismatch, got found={found_s}, wanted={wanted_s}"
+        );
+    }
+
+    #[test]
+    fn generic_deref_return_mismatch_uses_correct_generic_slot() {
+        let src = "Box = struct[T]{ptr:*T}; Box.__deref = fn[T](b:&Box[T])->&T{&*b.ptr}; f = fn[T0,T1,T2](b:Box[Box[T2]])->T1 { *b };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .unwrap_or_default();
+
+        let clash = errs
+            .iter()
+            .find_map(|err| match err {
+                TypeError::ValuesContradict {
+                    expectation_reason: "function body must match return type",
+                    clash,
+                    ..
+                } => Some(*clash),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected type mismatch, got errs={errs:?}"));
+
+        let found = clash
+            .found
+            .unwrap_or_else(|| panic!("expected found side in clash: {clash:?}"));
+        let wanted = clash
+            .wanted
+            .unwrap_or_else(|| panic!("expected wanted side in clash: {clash:?}"));
+        assert_ne!(found.0, UNKNOWN_TYPE, "found side should not be unknown");
+        assert_ne!(wanted.0, UNKNOWN_TYPE, "wanted side should not be unknown");
+
+        let found_s = store.get_bad_type_string(&program, found);
+        let wanted_s = store.get_bad_type_string(&program, wanted);
+
+        let (ret_side, box_side) = if found_s == "T1" {
+            (found_s, wanted_s)
+        } else if wanted_s == "T1" {
+            (wanted_s, found_s)
+        } else {
+            panic!("expected one side to be T1, got found={found_s}, wanted={wanted_s}");
+        };
+
+        assert_eq!(ret_side, "T1");
+        assert!(
+            box_side.contains("Box") && box_side.contains("T2"),
+            "expected box side to mention Box[T2], got {box_side}"
+        );
+        assert!(
+            !box_side.contains("T0") && !box_side.contains("T1"),
+            "box side should not use wrong generic slot, got {box_side}"
+        );
     }
 
     #[test]

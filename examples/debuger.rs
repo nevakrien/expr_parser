@@ -2,13 +2,19 @@ use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
+use std::arch::asm;
 
 const SOURCE: &str = r#"
-S=struct{x:int}
-f=fn(){
-    let s=S{2};
-    let i = 1+s.x;
-}
+free = cfn(p:*void);
+Box = struct[T]{ptr:*T};
+Box.__free = fn[T](b:&mut Box[T]){free(b->ptr as *void)}
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+Box.get = fn[T](b:Box[T])->T {*b}
+
+
+f=fn(b:Box[Box[Box[int]]])->int {*b}
+
 "#;
 
 fn main() {
@@ -24,6 +30,7 @@ fn main() {
         return;
     }
 
+    // unsafe{asm!("int3");}
     if let Ok((result, _)) = run_typechecker(&program, &mut reporter) {
         if let Err(type_error_count) = result {
             println!("Type errors: {type_error_count}");

@@ -1,0 +1,545 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in library 'expr_parser'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--lib",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "expr_parser",
+                    "kind": "lib"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug executable 'expr_parser'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--bin=expr_parser",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "expr_parser",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in executable 'expr_parser'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--bin=expr_parser",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "expr_parser",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'debuger'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=debuger",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "debuger",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'debuger'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=debuger",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "debuger",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'file_lower_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=file_lower_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_lower_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'file_lower_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=file_lower_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_lower_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'file_lower_benchmark_include_str'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=file_lower_benchmark_include_str",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_lower_benchmark_include_str",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'file_lower_benchmark_include_str'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=file_lower_benchmark_include_str",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_lower_benchmark_include_str",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'file_parser_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=file_parser_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_parser_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'file_parser_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=file_parser_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_parser_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'file_typecheck_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=file_typecheck_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_typecheck_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'file_typecheck_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=file_typecheck_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "file_typecheck_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'generate_benchmark_data'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=generate_benchmark_data",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "generate_benchmark_data",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'generate_benchmark_data'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=generate_benchmark_data",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "generate_benchmark_data",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'generate_lower_benchmark_data'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=generate_lower_benchmark_data",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "generate_lower_benchmark_data",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'generate_lower_benchmark_data'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=generate_lower_benchmark_data",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "generate_lower_benchmark_data",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'generate_typecheck_benchmark_data'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=generate_typecheck_benchmark_data",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "generate_typecheck_benchmark_data",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'generate_typecheck_benchmark_data'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=generate_typecheck_benchmark_data",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "generate_typecheck_benchmark_data",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'lexer_peek_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=lexer_peek_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "lexer_peek_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'lexer_peek_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=lexer_peek_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "lexer_peek_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'macro_expansion_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=macro_expansion_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "macro_expansion_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'macro_expansion_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=macro_expansion_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "macro_expansion_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'no_macros_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=no_macros_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "no_macros_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'no_macros_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=no_macros_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "no_macros_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'parser_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=parser_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "parser_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'parser_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=parser_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "parser_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug example 'typechecker_benchmark'",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--example=typechecker_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "typechecker_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug unit tests in example 'typechecker_benchmark'",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--no-run",
+                    "--example=typechecker_benchmark",
+                    "--package=expr_parser"
+                ],
+                "filter": {
+                    "name": "typechecker_benchmark",
+                    "kind": "example"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}
