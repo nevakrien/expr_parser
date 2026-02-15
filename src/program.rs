@@ -244,7 +244,7 @@ impl Program {
             }
         }
 
-        return None;
+        None
     }
 
     pub fn insert_new_lifetiime(&mut self, name: StrId) -> LifeTimeId {

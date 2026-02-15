@@ -1418,14 +1418,7 @@ struct ExternState<'a> {
 }
 
 impl<'a> ExternState<'a> {
-    fn new(ans: &'a mut SolvedTypes, store: &'a mut TypeStore, program: &'a Program) -> Self {
-        Self {
-            store,
-            program,
-            errors: Vec::new(),
-            ans,
-        }
-    }
+
 
     fn push_error(&mut self, err: TypeError) {
         self.errors.push(err);
@@ -1496,11 +1489,6 @@ impl TypeCore {
         id
     }
 
-    fn new_solved(&mut self, t: TypeId) -> CId {
-        let id = self.new_cluster();
-        self.cluster[id].state = ResolveKind::Solved(t);
-        id
-    }
 }
 
 struct TypeExtra {
@@ -1611,9 +1599,6 @@ impl TypeState {
     // union-find operations
     // =========================================================
 
-    fn find_root(&mut self, c: CId) -> CId {
-        find_root(&mut self.core.parent, c)
-    }
 
     fn unify(&mut self, ex: &mut ExternState<'_>, a: CId, b: CId) -> Result<CId, TypeClash> {
         unify_clusters(ex, self, a, b)
@@ -2099,11 +2084,10 @@ fn force_type_if_distinct(
 ) -> Result<bool, TypeClash> {
     let root = types.root(target);
 
-    if let ResolveKind::Solved(t) = types.cluster_state(root) {
-        if t == ty {
+    if let ResolveKind::Solved(t) = types.cluster_state(root)
+        && t == ty {
             return Ok(false);
         }
-    }
 
     force_type(ex, types, target, ty)?;
     Ok(true)
@@ -2719,72 +2703,6 @@ fn make_ptr_mock(
 ) -> TypeId {
     let mut limit = EXPANSION_LIMIT;
     make_ptr_mock_inner(ex, core, extra, tgt, raw, mutable, &mut limit)
-}
-
-fn func_call_clash(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    dst_call: FuncInferId,
-    src_call: FuncInferId,
-) -> TypeClash {
-    TypeClash {
-        found: Some(BadTypeId(make_func_mock(ex, core, extra, src_call))),
-        wanted: Some(BadTypeId(make_func_mock(ex, core, extra, dst_call))),
-    }
-}
-
-fn struct_call_clash(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    dst_call: StructInferId,
-    src_call: StructInferId,
-) -> TypeClash {
-    TypeClash {
-        found: Some(BadTypeId(make_struct_mock(ex, core, extra, src_call))),
-        wanted: Some(BadTypeId(make_struct_mock(ex, core, extra, dst_call))),
-    }
-}
-
-fn tuple_call_clash(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    dst_tuple: TupleInferId,
-    src_tuple: TupleInferId,
-) -> TypeClash {
-    TypeClash {
-        found: Some(BadTypeId(make_tuple_mock(ex, core, extra, src_tuple))),
-        wanted: Some(BadTypeId(make_tuple_mock(ex, core, extra, dst_tuple))),
-    }
-}
-
-fn array_call_clash(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    dst_element: CId,
-    dst_len: ArrayType,
-    src_element: CId,
-    src_len: ArrayType,
-) -> TypeClash {
-    TypeClash {
-        found: Some(BadTypeId(make_array_mock(
-            ex,
-            core,
-            extra,
-            src_element,
-            src_len,
-        ))),
-        wanted: Some(BadTypeId(make_array_mock(
-            ex,
-            core,
-            extra,
-            dst_element,
-            dst_len,
-        ))),
-    }
 }
 
 fn extract_bad_type(
@@ -5918,16 +5836,15 @@ fn resolve_operator_site(
 
     if matches!(op, Add | Sub) {
         //there simply isnt any intresting operator on non user types other than pointer arithmetic
-        if matches!(lhs_kind, OperandKind::KnownNonUser) {
-            if let ResolveKind::Ptr { ref mut raw, .. } = types.core.cluster[lhs].state {
-                if matches!(raw, None) {
+        if matches!(lhs_kind, OperandKind::KnownNonUser)
+            && let ResolveKind::Ptr { ref mut raw, .. } = types.core.cluster[lhs].state {
+                if raw.is_none() {
                     progress = true;
                     *raw = Some(true);
                 } else if matches!(raw, Some(false)) {
                     //todo!("error")
                 }
             }
-        }
 
         let lhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, lhs);
         let rhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, rhs);

@@ -1237,7 +1237,7 @@ impl Program {
             }
 
             Expr::Prefix(open, items) if open.value == "`" => {
-                let Some(Expr::Atom(Token::Ident(n))) = items.get(0).map(|x| &x.value) else {
+                let Some(Expr::Atom(Token::Ident(n))) = items.first().map(|x| &x.value) else {
                     todo!("error");
                 };
                 if items.len() > 1 {
@@ -1321,7 +1321,7 @@ impl Program {
         }
 
         let rhs = self.lower_value(rhs_expr)?;
-        return Ok(Value::AddrOf(rhs, kind));
+        Ok(Value::AddrOf(rhs, kind))
     }
 
     // ===============================

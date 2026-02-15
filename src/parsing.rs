@@ -1138,7 +1138,7 @@ impl<'a> Parser<'a> {
                     if op == "&" && self.peek_op()?.value == Some(Token::Operator("`")) {
                         ans.push(self.consume_expr_bp(BP_LIFETIME, NonTerm::NoConstruct)?);
                     }
-                    let rhs = ans.push(self.consume_expr_bp(bp, style)?);
+                    ans.push(self.consume_expr_bp(bp, style)?);
                     let loc = self.produce_loc(start);
                     return Ok(Some(Located {
                         loc,
