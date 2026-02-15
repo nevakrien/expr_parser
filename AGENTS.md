@@ -28,7 +28,7 @@
 - When adding a new complex subsystem, add a new `agent_docs/<subsystem>.md` file so future agents have a focused starting point.
 
 ### Current docs index
-- `agent_docs/type_infrence.md`: detailed guide to `src/type_inference.rs`, including unification/clash behavior, specialization, generic-scope risks, and gather-layer fragility/extension points.
+- `agent_docs/type_inference.md`: detailed guide to `src/type_inference.rs`, including unification/clash behavior, specialization, generic-scope risks, and gather-layer fragility/extension points.
 - `agent_docs/cli_debugging.md`: practical guide to using the REPL/CLI to inspect parsed AST shape, inferred types, and typechecker diagnostics while investigating behavior.
 - `agent_docs/language_semantics.md`: language-level behavior across parser/lowering/type inference, including `fn` vs `cfn`, `struct` vs `cstruct`, and `. / :: / ->` member-access semantics.
 - `agent_docs/ir_lowering.md`: IR data model and lowering behavior in `src/ir.rs`, including span arenas, expression lowering rules, and control-flow edge cases.

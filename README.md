@@ -89,12 +89,12 @@ Point() = fn()->Point {Point{0,0}}
 ```
 
 # Type System
-currently we have basic generics and automatic infrence, and we would have some level of operator overloading.
+currently we have basic generics and automatic inference, and we would have some level of operator overloading.
 with everything being required to be monomorphic in the end so we can get C++/Rust level inlining everywhere.
 
-not all the features are implemented but we are slowly adding things to the languge.
+not all the features are implemented but we are slowly adding things to the language.
 
-we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being infered.
+we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being inferred.
 this keeps the system simple enough with union-find rules. for example all casts are assumed to always be legal for unioning purposes, and they are later verified to be what we think it should be.
 
 this already lets us have a smart pointer with something like this 

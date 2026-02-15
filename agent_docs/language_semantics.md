@@ -1,7 +1,7 @@
 # Language Semantics Notes
 
 This document captures language-level behavior that spans parsing/lowering/type-inference boundaries.
-Use this as the first reference for syntax/meaning questions; use `agent_docs/type_infrence.md` for solver internals.
+Use this as the first reference for syntax/meaning questions; use `agent_docs/type_inference.md` for solver internals.
 
 ## Function Syntax and Calling Convention
 

@@ -78,7 +78,7 @@ struct PendingLabel {
 pub struct Program {
     pub definitions: IdHashMap<NameId, Defined>,
     definition_locs: IdHashMap<NameId, Loc>,
-    // pub current_infrence: Vec<TypeInfo>,
+    // pub current_inference: Vec<TypeInfo>,
     // pub type_store: TypeStore,
     pub values: Vec<Value>,
     pub patterns: Vec<Pattern>,

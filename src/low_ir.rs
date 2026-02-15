@@ -27,7 +27,7 @@ enum Operation {
     ///these are auto generated at end of scope for values that have __free
     ///expressions like x; are statments to drop a value now
     ///they are diffrent to calling an empty function
-    ///because x; also explictly drops refrences asserting they arent used anymore
+    ///because x; also explicitly drops references asserting they arent used anymore
     Drop(IRV),
 
     Borrow(IRV),

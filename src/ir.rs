@@ -20,7 +20,7 @@ use crate::string_intern::StrId;
 //this file needs to move Value and Pattern into a dense array
 //note that currently the only major diffrence between Value and Pattern is Bind
 //the one place which actually reads them would become simpler if we merge the 2.
-//would actually remove a lot of semi duplicate code from type infrence
+//would actually remove a lot of semi duplicate code from type inference
 
 /// Unique identifier for names in the IR
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

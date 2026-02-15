@@ -1691,7 +1691,7 @@ fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
 
 ///tries to combine 2 clusters
 ///on fail produces a type_clash and keeps the 2 seprate
-///infrence can continye with the 2 types seperated for the purpose of gathering more errors (obviously not Unresolved style errors)
+///inference can continue with the 2 types separated for the purpose of gathering more errors (obviously not Unresolved style errors)
 fn unify_clusters(
     ex: &mut ExternState,
     types: &mut TypeState,
