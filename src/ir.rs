@@ -344,6 +344,7 @@ pub enum Value {
     Wildcard,
 
     LabelDecl(LabelId),
+    // LifeTime(LifeTimeId),
 
     Tuple(ValueSpan),
     Array(ValueSpan),
@@ -609,6 +610,18 @@ impl Program {
             Expr::Prefix(open, items) if open.value == "(" || open.value == "[" => {
                 self.lower_tuple_expr(expr.loc, items, open.value)
             }
+
+            // Expr::Prefix(open,mut items) if open.value=="`"=>{
+            //     let subexp = items.pop().unwrap();
+            //     let Expr::Atom(Token::Ident(n))  = subexp.value else {
+            //         todo!()
+            //     };
+            //     let s = self.str_intern.intern(&n);
+            //     let Some(life) = self.try_get_lifetime(s) else {
+            //         todo!("emit some error")
+            //     };
+            //     Ok(Value::LifeTime(life))
+            // }
 
             // call: <base>(args...)
             Expr::Postfix(open, items) if matches!(open.value, "(" | "[" | "{") => {
@@ -904,9 +917,9 @@ impl Program {
         };
 
         let cond = self.lower_value(cond_expr)?;
-        let then = self.lower_value(then_expr)?;
+        let then = self.with_scope(|p| p.lower_value(then_expr))?;
         let els = if let Some(else_expr) = else_expr {
-            Some(self.lower_value(else_expr)?)
+            Some(self.with_scope(|p| p.lower_value(else_expr))?)
         } else {
             None
         };
@@ -927,10 +940,12 @@ impl Program {
         let cond_expr = items.next().unwrap();
         let then_expr = items.next().unwrap();
 
-        let cond = self.lower_value(cond_expr)?;
-        let body = self.lower_value(then_expr)?;
-        let _ = loc;
-        Ok(Value::While { cond, body })
+        self.with_scope(|p|{
+            let cond = p.lower_value(cond_expr)?;
+            let body = p.lower_value(then_expr)?;
+            let _ = loc;
+            Ok(Value::While { cond, body })
+        })   
     }
 
     #[inline(always)]
@@ -1290,7 +1305,8 @@ impl Program {
     ) -> CResult<Value> {
         let mut rhs_expr = items.pop().unwrap();
         if let Some(_lifetime_expr) = items.pop(){
-            println!("found lifetime {_lifetime_expr:?}");
+            // println!("found lifetime {_lifetime_expr:?}");
+            todo!("we are not specifying lifetimes here")
         }
 
 

@@ -5180,6 +5180,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
         Value::Labeled { .. } => unreachable!("bug tried compiling labeled normally"),
         Value::MatchArm(_) => unreachable!("bug tried compiling match arm normally"),
+        // Value::LifeTime(_) => todo!("some sort of error? maybe we actualy have a type for lifetime"),
     }
 }
 
@@ -5297,6 +5298,9 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
             ctx.bind_pat(p, c);
             c
         }
+
+        //hack for  now
+        Pattern::LifeTime(_id)=>{ctx.new_cluster()}
 
         _ => todo!(),
     }
