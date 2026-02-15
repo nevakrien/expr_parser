@@ -18,12 +18,11 @@ impl Cache<usize> for &ErrorReporter {
     type Storage = String;
 
     fn fetch(&mut self, id: &usize) -> Result<&Source<String>, Box<dyn std::fmt::Debug + '_>> {
-        if let Some(ans) = self.sources.get(id){
+        if let Some(ans) = self.sources.get(id) {
             Ok(ans)
-        }else{
+        } else {
             Err(Box::new(format!("missing source for file {id}")))
         }
-        
     }
 
     fn display<'b>(&self, id: &'b usize) -> Option<Box<dyn std::fmt::Display + 'b>> {
@@ -42,10 +41,7 @@ impl ErrorReporter {
         self.sources.insert(file_id, Source::from(source));
     }
 
-    fn print_report(
-        &self,
-        report: Report<(usize, std::ops::Range<usize>)>,
-    ) -> io::Result<()> {
+    fn print_report(&self, report: Report<(usize, std::ops::Range<usize>)>) -> io::Result<()> {
         report.print(self)
     }
 
@@ -94,7 +90,7 @@ impl ErrorReporter {
                             .with_message(format!("expected `{}`", close)),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
         }
     }
@@ -140,7 +136,7 @@ impl ErrorReporter {
                     );
                 }
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             CompileError::UnresolvedLabel { locs, name } => {
                 let Some(primary) = locs.first() else {
@@ -157,7 +153,7 @@ impl ErrorReporter {
                     );
                 }
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             CompileError::SimpleError { loc, .. } | CompileError::Arity { loc, .. } => {
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
@@ -191,7 +187,7 @@ impl ErrorReporter {
                     );
                 }
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             CompileError::RepeatedGlobalAssignment {
                 name,
@@ -211,7 +207,7 @@ impl ErrorReporter {
                             .with_color(Color::Yellow),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
 
             CompileError::RepeatedGlobalAssignment {
@@ -227,7 +223,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
 
             CompileError::Parse(parse_error) => self.report_parse_error(parse_error),
@@ -246,7 +242,7 @@ impl ErrorReporter {
                     .with_message(*message)
                     .with_label(Label::new((loc.file, loc.range.clone())).with_message("here"));
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::UnknownBuiltinMemberMethod { site, method } => {
                 let loc = program.value_loc(*site);
@@ -259,7 +255,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::Unresolved { value } => {
                 let loc = program.value_loc(*value);
@@ -270,7 +266,7 @@ impl ErrorReporter {
                             .with_message("type is needed here"),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::UnresolvedPattern { pattern } => {
                 let loc = program.pattern_loc(*pattern);
@@ -281,14 +277,14 @@ impl ErrorReporter {
                             .with_message("pattern type is needed here"),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::UnresolvedTypeExpr { expr } => {
                 let loc = program.type_expr_loc(*expr);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("could not infer state type");
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::UnknownField { field, site } => {
                 let loc = program.value_loc(*site);
@@ -301,7 +297,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::DuplicateField { field, site } => {
                 let loc = program.value_loc(*site);
@@ -314,7 +310,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::FieldAlreadyPositional { field, site } => {
                 let loc = program.value_loc(*site);
@@ -330,7 +326,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::MissingField { field, site } => {
                 let loc = program.value_loc(*site);
@@ -343,7 +339,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::TooManyArguments {
                 site,
@@ -361,7 +357,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::FieldTypeMismatch {
                 field,
@@ -384,7 +380,7 @@ impl ErrorReporter {
                             .with_color(Color::Cyan),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::ConstructorBaseNotGlobal { site } => {
                 let loc = program.value_loc(*site);
@@ -396,7 +392,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::ConstructorBaseNotTypeName { site } => {
                 let loc = program.value_loc(*site);
@@ -408,7 +404,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::ConstructorBaseNotStruct { site, found } => {
                 let loc = program.value_loc(*site);
@@ -423,7 +419,7 @@ impl ErrorReporter {
                             .with_color(Color::Red),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::ExpectedTypeExpr { type_expr } => {
                 let loc = program.type_expr_loc(*type_expr);
@@ -433,7 +429,7 @@ impl ErrorReporter {
                         Label::new((loc.file, loc.range.clone())).with_message("is this a type?"),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::ValuesContradict {
                 expectation_reason,
@@ -468,7 +464,7 @@ impl ErrorReporter {
                         .with_color(Color::Cyan),
                 );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::BinOpOverloadNotFound {
                 site,
@@ -505,7 +501,7 @@ impl ErrorReporter {
                         .with_color(Color::Cyan),
                 );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::UnOpOverloadNotFound {
                 site,
@@ -532,7 +528,7 @@ impl ErrorReporter {
                         .with_color(Color::Yellow),
                 );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::CannotDeref {
                 site,
@@ -556,7 +552,7 @@ impl ErrorReporter {
                             .with_color(Color::Yellow),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::AnnotationMismatch {
                 annotation,
@@ -580,10 +576,10 @@ impl ErrorReporter {
                             .with_color(Color::Yellow),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::FunctionOutputAnnotationMismatch {
-                output_type:Some(annotation),
+                output_type: Some(annotation),
                 constrained,
                 clash,
             } => {
@@ -604,28 +600,32 @@ impl ErrorReporter {
                             .with_color(Color::Yellow),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
             TypeError::FunctionOutputAnnotationMismatch {
-                output_type:None,
+                output_type: None,
                 constrained,
                 clash,
             } => {
                 let constrained_loc = program.value_loc(*constrained);
                 let (found_msg, expected_msg) = clash_messages(program, store, *clash);
 
-                let report = Report::build(ReportKind::Error, constrained_loc.file, constrained_loc.range.start)
-                    .with_message("expected a void output for this function")
-                    .with_label(
-                        Label::new((constrained_loc.file, constrained_loc.range.clone()))
-                            .with_message(expected_msg)
-                            .with_color(Color::Cyan),
-                    )
-                    .with_label(
-                        Label::new((constrained_loc.file, constrained_loc.range.clone()))
-                            .with_message(found_msg)
-                            .with_color(Color::Yellow),
-                    );
+                let report = Report::build(
+                    ReportKind::Error,
+                    constrained_loc.file,
+                    constrained_loc.range.start,
+                )
+                .with_message("expected a void output for this function")
+                .with_label(
+                    Label::new((constrained_loc.file, constrained_loc.range.clone()))
+                        .with_message(expected_msg)
+                        .with_color(Color::Cyan),
+                )
+                .with_label(
+                    Label::new((constrained_loc.file, constrained_loc.range.clone()))
+                        .with_message(found_msg)
+                        .with_color(Color::Yellow),
+                );
 
                 self.print_report(report.finish())
             }
@@ -651,7 +651,7 @@ impl ErrorReporter {
                             .with_color(Color::Yellow),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
 
             TypeError::TypeDefPatternMismatch { pattern, clash } => {
@@ -671,7 +671,7 @@ impl ErrorReporter {
                             .with_color(Color::Cyan),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
 
             TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
@@ -694,7 +694,7 @@ impl ErrorReporter {
                             .with_color(Color::Cyan),
                     );
 
-                self.print_report( report.finish())
+                self.print_report(report.finish())
             }
         }
     }

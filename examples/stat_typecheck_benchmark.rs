@@ -6,13 +6,9 @@ use std::time::{Duration, Instant};
 
 const ITERATIONS: usize = 20;
 
-static FILE_CONTENT: &str =
-    include_str!("../typecheck_benchmark_data.txt");
+static FILE_CONTENT: &str = include_str!("../typecheck_benchmark_data.txt");
 
-fn run_once(
-    file_content: &str,
-    reporter: &mut ErrorReporter,
-) -> (Duration, usize, usize, usize) {
+fn run_once(file_content: &str, reporter: &mut ErrorReporter) -> (Duration, usize, usize, usize) {
     let start = Instant::now();
 
     let mut program = Program::new();
@@ -75,18 +71,13 @@ fn main() {
     }
 
     // -------- Statistics --------
-    let times: Vec<f64> = durations
-        .iter()
-        .map(|d| d.as_secs_f64())
-        .collect();
+    let times: Vec<f64> = durations.iter().map(|d| d.as_secs_f64()).collect();
 
     let n = times.len() as f64;
     let mean = times.iter().sum::<f64>() / n;
 
     let variance = if n > 1.0 {
-        times.iter()
-            .map(|t| (t - mean).powi(2))
-            .sum::<f64>() / (n - 1.0)
+        times.iter().map(|t| (t - mean).powi(2)).sum::<f64>() / (n - 1.0)
     } else {
         0.0
     };
@@ -108,10 +99,7 @@ fn main() {
     println!("\nTiming:");
     println!("  Mean time: {:.6} sec", mean);
     println!("  Sample stddev: {:.6} sec", stddev);
-    println!(
-        "  Relative stddev: {:.2} %",
-        (stddev / mean) * 100.0
-    );
+    println!("  Relative stddev: {:.2} %", (stddev / mean) * 100.0);
 
     println!("\nThroughput (based on mean):");
     println!("  Lines per second: {:.2}", lines_per_second);

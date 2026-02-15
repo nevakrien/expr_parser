@@ -111,7 +111,8 @@ fn collect_defined_names(expr: &LExpr, out: &mut Vec<String>) {
 fn lookup_global_name_id(program: &Program, name: &str) -> Option<NameId> {
     let scope = program.scopes.first()?;
     scope
-        .0.iter()
+        .0
+        .iter()
         .find_map(|(sid, id)| (program.str_intern.resolve(*sid) == name).then_some(*id))
 }
 

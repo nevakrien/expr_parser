@@ -347,3 +347,43 @@ Then `finalize`:
 - `TypeError` is intentionally detailed and source-oriented; clashes carry `found`/`wanted` type payloads.
 - Engine prefers collecting multiple deterministic hard errors over bailing early.
 - Inline tests cover happy paths and representative failure modes (unresolveds, annotation/branch mismatch, generic specialization, recursive structs, operator legality).
+
+## InferState Refactoring (In Progress)
+
+### Goal
+Reduce the number of arguments in internal helper functions by grouping related state parts into structs that can be passed as a single `&mut` reference instead of many individual `&mut` parts.
+
+### State Structure
+```
+InferState
+├── ExternState   (store, program, errors, ans)
+├── SearchState   (val_cluster, pat_cluster, typedef_cluster, local_types, names)
+├── TypeState
+│   ├── TypeCore  (parent, cluster) - union-find
+│   └── TypeExtra (func_defs, struct_defs, struct_infers, tuple_infers)
+└── ReqState      (bin_op_sites, un_op_sites, pending_specializations, member_method_type_sites, etc.)
+```
+
+### Refactoring Rules
+1. Functions should take only the state structs they actually need, not the whole `InferState`
+2. If a function needs `parent` and `cluster`, it should take `&mut TypeCore` instead
+3. If a function needs `struct_infers` and `tuple_infers`, it should take `&mut TypeExtra` instead
+4. Keep the refactoring to signatures only first, then fix calling sites, then bodies
+
+### Functions Still Needing Refactoring (as of 2026-02-15)
+
+Priority order:
+1. `try_resolve_member_access` (line 3304) - takes ~14 individual args
+2. `resolve_member_method_access` (line 3011) - takes ex, search, types, req
+3. `try_resolve_struct_deref_method` (line 3114) - takes ex, types
+4. `resolve_struct_deref_target` (line 3202) - takes ex, types
+5. `resolve_member_overload_signature` (line 5925) - takes ~8 individual args
+6. `make_member_closure` (line 5969) - takes ~8 individual args
+7. `resolve_operator_site` (line 6015) - takes ~11 individual args
+8. `resolve_unary_operator_site` (line 6432) - needs review
+9. `resolve_assign_pre_post_site` (line 6711) - needs review
+10. Various `extract_bad_type`, `bin_op_overload_not_found_error`, etc.
+
+### Helper Methods to Add (as needed)
+- Accessors on `TypeCore`: `parent()`, `cluster()`, `find_root()`, `new_cluster()`, etc.
+- Accessors on `TypeExtra`: `func_defs()`, `struct_infers()`, `tuple_infers()`, etc.

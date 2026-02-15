@@ -345,7 +345,6 @@ pub enum Value {
 
     LabelDecl(LabelId),
     // LifeTime(LifeTimeId),
-
     Tuple(ValueSpan),
     Array(ValueSpan),
 
@@ -490,7 +489,10 @@ pub enum Pattern {
     /// Literal value pattern
     Literal(Literal),
     /// Type annotation pattern (x:T)
-    TypeAnnotation { pat: PatId, ty: TExpId },
+    TypeAnnotation {
+        pat: PatId,
+        ty: TExpId,
+    },
 
     LifeTime(LifeTimeId),
     //==== TODOS: ========
@@ -524,7 +526,7 @@ pub enum TypeExpr {
 
     Ptr {
         base: TExpId,
-        lifetime:Option<LifeTimeId>,
+        lifetime: Option<LifeTimeId>,
         raw: bool,
         mutable: bool,
     },
@@ -680,9 +682,7 @@ impl Program {
                 self.lower_fn_expr(expr.loc, open, items)
             }
 
-            Expr::Prefix(open,items) if open.value == "&" => {
-                self.lower_addr_of(items)
-            }
+            Expr::Prefix(open, items) if open.value == "&" => self.lower_addr_of(items),
 
             //fallbacks
             Expr::Prefix(open, items) => self.lower_prefix_op(expr.loc, open, items),
@@ -940,12 +940,12 @@ impl Program {
         let cond_expr = items.next().unwrap();
         let then_expr = items.next().unwrap();
 
-        self.with_scope(|p|{
+        self.with_scope(|p| {
             let cond = p.lower_value(cond_expr)?;
             let body = p.lower_value(then_expr)?;
             let _ = loc;
             Ok(Value::While { cond, body })
-        })   
+        })
     }
 
     #[inline(always)]
@@ -1236,8 +1236,8 @@ impl Program {
                 Ok(Pattern::Tuple(span))
             }
 
-            Expr::Prefix(open,items) if open.value=="`" =>  {
-                let Some(Expr::Atom(Token::Ident(n))) = items.get(0).map(|x|&x.value) else {
+            Expr::Prefix(open, items) if open.value == "`" => {
+                let Some(Expr::Atom(Token::Ident(n))) = items.get(0).map(|x| &x.value) else {
                     todo!("error");
                 };
                 if items.len() > 1 {
@@ -1246,7 +1246,6 @@ impl Program {
                 let s = self.str_intern.intern(n);
                 let life = self.insert_new_lifetiime(s);
                 Ok(Pattern::LifeTime(life))
-
             }
 
             Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
@@ -1299,16 +1298,12 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_addr_of(
-         &mut self,
-        mut items: Vec<LExpr>,
-    ) -> CResult<Value> {
+    fn lower_addr_of(&mut self, mut items: Vec<LExpr>) -> CResult<Value> {
         let mut rhs_expr = items.pop().unwrap();
-        if let Some(_lifetime_expr) = items.pop(){
+        if let Some(_lifetime_expr) = items.pop() {
             // println!("found lifetime {_lifetime_expr:?}");
             todo!("we are not specifying lifetimes here")
         }
-
 
         let mut kind = None;
         if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value
@@ -1660,17 +1655,17 @@ impl Program {
                 let mut mutable = raw;
                 let mut inner = items.pop().unwrap();
 
-                let lifetime = match items.pop(){
-                    None=>None,
-                    Some(lexp)=>{
+                let lifetime = match items.pop() {
+                    None => None,
+                    Some(lexp) => {
                         let Expr::Prefix(op, mut items2) = lexp.value else {
                             unreachable!()
                         };
-                        if op.value!="`"{
+                        if op.value != "`" {
                             unreachable!()
                         }
                         let subexp = items2.pop().unwrap();
-                        let Expr::Atom(Token::Ident(n))  = subexp.value else {
+                        let Expr::Atom(Token::Ident(n)) = subexp.value else {
                             todo!()
                         };
                         let s = self.str_intern.intern(&n);
@@ -1698,7 +1693,12 @@ impl Program {
                 }
 
                 let base = self.lower_type_expr(inner)?;
-                Ok(TypeExpr::Ptr { base, raw, mutable,lifetime })
+                Ok(TypeExpr::Ptr {
+                    base,
+                    raw,
+                    mutable,
+                    lifetime,
+                })
             }
 
             Expr::Prefix(open, items)

@@ -281,7 +281,7 @@ enum NonTerm {
 const BP_ASSIGN: u32 = 100;
 const BP_CONSTRUCT: u32 = 750;
 
-const BP_MATCH_ARM: u32 = BP_PATTERN-2;
+const BP_MATCH_ARM: u32 = BP_PATTERN - 2;
 const BP_PATTERN: u32 = 110;
 const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
@@ -292,8 +292,8 @@ const BP_LIFETIME: u32 = BP_PREFIX;
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
     Some(match op {
-        "`"=>BP_LIFETIME,
-        "!" | "-" | "*" | "&" | "~"  | "++" | "--" | "const" | "mut" => BP_PREFIX,
+        "`" => BP_LIFETIME,
+        "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
     })
 }
@@ -1135,8 +1135,8 @@ impl<'a> Parser<'a> {
                 if let Some(bp) = prefix_bp(op, style) {
                     self.next_token()?.unwrap();
                     let mut ans = Vec::new();
-                    if op == "&" && self.peek_op()?.value==Some(Token::Operator("`")){
-                        ans.push(self.consume_expr_bp(BP_LIFETIME,NonTerm::NoConstruct)?);
+                    if op == "&" && self.peek_op()?.value == Some(Token::Operator("`")) {
+                        ans.push(self.consume_expr_bp(BP_LIFETIME, NonTerm::NoConstruct)?);
                     }
                     let rhs = ans.push(self.consume_expr_bp(bp, style)?);
                     let loc = self.produce_loc(start);
@@ -1361,7 +1361,6 @@ impl<'a> Parser<'a> {
             value: Expr::Prefix(let_tok, vals),
         })
     }
-
 
     #[inline(always)]
     fn parse_after_struct(&mut self, start: usize, def_tok: LFixed) -> PResult<LExpr> {

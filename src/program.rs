@@ -5,7 +5,9 @@ use crate::error_messages::{
 };
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{LabelId, VarKind};
-use crate::ir::{Literal,LifeTimeId, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan};
+use crate::ir::{
+    LifeTimeId, Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan,
+};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
@@ -89,7 +91,7 @@ pub struct Program {
     lifetime_strs: Vec<StrId>,
     pub str_intern: StringInterner,
 
-    pub scopes: Vec<(IdHashMap<StrId, NameId>,IdHashMap<StrId, LifeTimeId>)>,
+    pub scopes: Vec<(IdHashMap<StrId, NameId>, IdHashMap<StrId, LifeTimeId>)>,
     pub pending_names: IdHashMap<NameId, Vec<Loc>>,
     pub member_methods: IdHashMap<NameId, IdHashMap<StrId, ValId>>,
 
@@ -120,7 +122,7 @@ impl Program {
             lifetime_strs: Vec::new(),
             str_intern: StringInterner::new(),
 
-            scopes: vec![(IdHashMap::default(),IdHashMap::default())],
+            scopes: vec![(IdHashMap::default(), IdHashMap::default())],
             pending_names: IdHashMap::default(),
             member_methods: IdHashMap::default(),
             label_names: Vec::new(),
@@ -226,7 +228,8 @@ impl Program {
 
     /// Push a new variable scope onto the stack
     pub fn push_scope(&mut self) {
-        self.scopes.push((IdHashMap::default(),IdHashMap::default()));
+        self.scopes
+            .push((IdHashMap::default(), IdHashMap::default()));
     }
 
     /// Pop the current variable scope
@@ -234,8 +237,8 @@ impl Program {
         self.scopes.pop();
     }
 
-    pub fn try_get_lifetime(&self,name:StrId)->Option<LifeTimeId>{
-        for s in  self.scopes.iter().rev(){
+    pub fn try_get_lifetime(&self, name: StrId) -> Option<LifeTimeId> {
+        for s in self.scopes.iter().rev() {
             if let Some(ans) = s.1.get(&name) {
                 return Some(*ans);
             }
