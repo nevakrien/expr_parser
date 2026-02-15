@@ -90,6 +90,43 @@ Main `ctx.force_type(...)` call sites are concentrated in:
 - `if`/`while` condition bool checks,
 - non-generic constructor field typing.
 
+
+# IMPORTANT Operation Order
+It's important that inference remain order-independent. 
+Errors emitted can be order-dependent, but whether or not a solve is reached must be independent.
+
+This means that unification of types must happen only when they MUST absolutely be exactly equal and under no circumstances.
+It's also critical that explicit checks over ResolveKind treat states like Unknown correctly.
+
+For example, when trying to check if a type is a pointer:
+```rust
+if let ResolveKind::Ptr{..} = state {
+  // Good: try to find a pointer
+}else{
+  // Bad: assume it's never a pointer
+}
+```
+
+This pattern is wrong if:
+1. The state happens to be `Solved` with some pointer type.
+2. The state happens to be `Unsolved` and will later solve to a pointer.
+3. Depending on why we check, a struct solved to a user type that implements deref can also be correct.
+
+To cover unsolved cases, it's a good idea to push the current information into some sort of queue in ReqState, and then later in the solve loop check whether the unsolved has been resolved.
+
+# IMPORTANT Correctness
+It's important to note that ONLY once all requirements have been checked against the CURRENT state can we say that there are no hard errors.
+Suppose we have:
+```
+x+y
+```
+in our code when both are currently unsolved.
+Later we solve x as `fn()->int` and y as `usize`.
+The bin_op resolution needs to check this expression so that we get the error.
+
+So it is vital that all methods in the main solver verify anything they need.
+It's also critical that new requirements must be put into the Reqs struct and only be pulled out once verified.
+
 ## Generic and Specialization Model (Critical)
 
 ### Where generics are allowed to appear
@@ -158,7 +195,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 
 - Cluster id: `CId`.
 - `ResolveKind` cluster states:
-  - `Solved(TypeId)`, `Nothing`,
+  - `Solved(TypeId)`, `Nothing`, `Never`,
   - weak literals: `IntLike`, `FloatLike`,
   - deferred structures: `Func(FuncInferId)`, `Struct(StructInferId)`, `Tuple(TupleInferId)`, `Array { element, len }`, `Ptr { ... }`.
 - `InferState` holds:
@@ -174,6 +211,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 When unresolved clusters must still be printed in errors, mock builders (`mock_type_from_cluster`, `make_func_mock`, `make_struct_mock`, `make_ptr_mock`) synthesize best-effort type shapes.
 
 ## Inference Pipeline
+
 
 Main orchestration is two-phase:
 
@@ -257,6 +295,9 @@ Other notable implemented branches:
 - `Value::TypeDef` ensures pattern has type `Type` and registers local typedef clusters.
 - `Value::Func` uses signature gather + body gather and unifies body with output cluster.
   - when `fn` has an explicit output type (`-> T`) and body/result clashes with it, inference reports a dedicated annotation-style error (`FunctionOutputAnnotationMismatch`) instead of a generic `ValuesContradict`.
+- `Value::Goto`, `Value::Break`, `Value::Continue`, `Value::LabelDecl`:
+  - all produce `ResolveKind::Never` clusters,
+  - `Never` absorbs into any other type during unification, allowing inference to continue past control flow.
 
 ### Patterns and type expressions
 
@@ -292,6 +333,9 @@ Maintenance note: this whole gather layer is intentionally unfinished in places.
 4. `resolve_pending_indexes`
 5. `resolve_pending_member_accesses`
 6. `resolve_pending_specializations`
+
+It's important that these updates remain order-independent.
+Errors emitted can be order-dependent, but whether or not a solve is reached must be independent.
 
 Then `finalize`:
 
@@ -351,9 +395,9 @@ Then `finalize`:
 ## InferState Refactoring (In Progress)
 
 ### Goal
-Reduce the number of arguments in internal helper functions by grouping related state parts into structs that can be passed as a single `&mut` reference instead of many individual `&mut` parts.
+The refactoring goal was to reduce the number of arguments in internal helper functions by grouping related state parts into structs that can be passed as a single `&mut` reference instead of many individual `&mut` parts.
 
-### State Structure
+### State Structure (Current)
 ```
 InferState
 ├── ExternState   (store, program, errors, ans)
@@ -363,27 +407,3 @@ InferState
 │   └── TypeExtra (func_defs, struct_defs, struct_infers, tuple_infers)
 └── ReqState      (bin_op_sites, un_op_sites, pending_specializations, member_method_type_sites, etc.)
 ```
-
-### Refactoring Rules
-1. Functions should take only the state structs they actually need, not the whole `InferState`
-2. If a function needs `parent` and `cluster`, it should take `&mut TypeCore` instead
-3. If a function needs `struct_infers` and `tuple_infers`, it should take `&mut TypeExtra` instead
-4. Keep the refactoring to signatures only first, then fix calling sites, then bodies
-
-### Functions Still Needing Refactoring (as of 2026-02-15)
-
-Priority order:
-1. `try_resolve_member_access` (line 3304) - takes ~14 individual args
-2. `resolve_member_method_access` (line 3011) - takes ex, search, types, req
-3. `try_resolve_struct_deref_method` (line 3114) - takes ex, types
-4. `resolve_struct_deref_target` (line 3202) - takes ex, types
-5. `resolve_member_overload_signature` (line 5925) - takes ~8 individual args
-6. `make_member_closure` (line 5969) - takes ~8 individual args
-7. `resolve_operator_site` (line 6015) - takes ~11 individual args
-8. `resolve_unary_operator_site` (line 6432) - needs review
-9. `resolve_assign_pre_post_site` (line 6711) - needs review
-10. Various `extract_bad_type`, `bin_op_overload_not_found_error`, etc.
-
-### Helper Methods to Add (as needed)
-- Accessors on `TypeCore`: `parent()`, `cluster()`, `find_root()`, `new_cluster()`, etc.
-- Accessors on `TypeExtra`: `func_defs()`, `struct_infers()`, `tuple_infers()`, etc.
