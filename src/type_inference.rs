@@ -4552,6 +4552,13 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
+    // Reject struct definitions in local scope.
+    // The type inference is monomorphic (rank-1, no higher-ranked types)
+    // and performs type inference by unification, which fundamentally cannot
+    // handle generic type parameters inside function bodies - we would need
+    // higher-rank polymorphism (rank-2+) or a more expressive constraint system.
+    // Generic types are only allowed at the top-level where they are explicitly
+    // declared and can be monomorphized at instantiation sites.
     if !GLOBAL_SCOPE {
         let loc = ctx.ex.program.type_expr_loc(texpr);
         ctx.ex.push_error(TypeError::Simple {
@@ -4739,9 +4746,11 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             };
 
             let Some(def) = ctx.ex.program.definitions.get(&name) else {
-                //we dont allow generics on local structs
-                //so this is either not a struct at all
-                //or a struct with no generics
+                // Reject type specialization (e.g., `MyStruct[int]`) on local types.
+                // The type inference is monomorphic (rank-1) - we cannot track
+                // generic type parameters inside function bodies. Only global types
+                // can be specialized since they are defined at the top level where
+                // we can properly monomorphize them at use sites.
                 let loc = ctx.ex.program.type_expr_loc(base);
                 ctx.push_error(TypeError::Simple {
                     loc,
@@ -4867,6 +4876,13 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
+    // Reject generic functions in local scope.
+    // The type inference is monomorphic (rank-1, no higher-ranked types)
+    // and performs type inference by unification, which fundamentally cannot
+    // handle generic type parameters inside function bodies - we would need
+    // higher-rank polymorphism (rank-2+) or a more expressive constraint system.
+    // Generic functions are only allowed at the top-level where they can be
+    // monomorphized at each call site.
     if !GLOBAL_SCOPE && !generics.is_empty() {
         let loc = generics
             .ids()
@@ -9100,6 +9116,23 @@ mod type_infer_tests {
             errs.iter()
                 .any(|err| matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }))
         );
+    }
+
+    ///structs in body open us up to qualified structures having generics
+    ///we also dont do de bjurn ids so it would be a mess
+    #[test]
+    fn reject_structs_in_body(){
+        let mut store = TypeStore::new();
+        let _errs = infer_fn_body("f=fn(){ type S = struct[T]{x:T} }", &mut store).unwrap_err();
+    }
+
+    ///nested generics mean rank-n types, these arent necirally monomorphic at runtime
+    ///there may be an argument to weaken this limitation for lifetimes but currently too neich
+    ///we also dont do de bjurn ids so it would be a mess
+    #[test]
+    fn reject_generic_closures_in_body(){
+        let mut store = TypeStore::new();
+        let _errs = infer_fn_body("f=fn(){ let g = fn[T](x:T)->T{x}; }", &mut store).unwrap_err();
     }
 
     //  #[test]
