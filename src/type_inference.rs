@@ -4459,15 +4459,15 @@ fn gather_pattern_constraints_and_name(ctx: &mut InferState, p: PatId) -> (CId, 
 }
 
 #[inline(always)]
-fn gather_pattern_constraints_with_generics<const ALLOW_GENERICS: bool>(
+fn gather_pattern_constraints_with_generics<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     p: PatId,
 ) -> CId {
-    let (x, _) = gather_pattern_constraints_and_name_with_generics::<ALLOW_GENERICS>(ctx, p);
+    let (x, _) = gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, p);
     x
 }
 
-fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool>(
+fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     p: PatId,
 ) -> (CId, Option<NameId>) {
@@ -4486,7 +4486,7 @@ fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool>
 
         Pattern::TypeAnnotation { pat, ty } => {
             let (c, n) =
-                gather_pattern_constraints_and_name_with_generics::<ALLOW_GENERICS>(ctx, pat);
+                gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, pat);
             let t = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(c, t) {
@@ -4504,7 +4504,7 @@ fn gather_pattern_constraints_and_name_with_generics<const ALLOW_GENERICS: bool>
         Pattern::Tuple(items) => {
             let item_clusters = items
                 .ids()
-                .map(|item| gather_pattern_constraints_with_generics::<ALLOW_GENERICS>(ctx, item))
+                .map(|item| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, item))
                 .collect::<Vec<_>>();
             let tuple = ctx.new_tuple_instance(item_clusters);
             ctx.bind_pat(p, tuple);
@@ -4546,7 +4546,7 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
 
 ///in order to break recursion this function MUST return a concrete type
 ///the returned struct is not fully realized yet and its fields are gona be handeled later
-fn compile_struct_type<const ALLOW_GENERICS: bool>(
+fn compile_struct_type<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     texpr: TExpId,
     StructLike {
@@ -4555,15 +4555,11 @@ fn compile_struct_type<const ALLOW_GENERICS: bool>(
         fields,
     }: StructLike,
 ) -> CId {
-    if !ALLOW_GENERICS && !generics.is_empty() {
-        let loc = generics
-            .ids()
-            .next()
-            .map(|pat| ctx.ex.program.pattern_loc(pat))
-            .unwrap_or_else(|| ctx.ex.program.type_expr_loc(texpr));
+    if !GLOBAL_SCOPE  {
+        let loc = ctx.ex.program.type_expr_loc(texpr);
         ctx.ex.push_error(TypeError::Simple {
             loc,
-            message: "generic struct types are only allowed at the top level",
+            message: "struct types are only allowed at the top level",
         });
     }
 
@@ -4814,7 +4810,7 @@ fn get_type_name(prog: &Program, t: TExpId) -> Option<NameId> {
     }
 }
 
-fn gather_func_signature<const ALLOW_GENERICS: bool>(
+fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     v: ValId,
     calling_convention: CallingConvention,
@@ -4822,7 +4818,7 @@ fn gather_func_signature<const ALLOW_GENERICS: bool>(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
-    if !ALLOW_GENERICS && !generics.is_empty() {
+    if !GLOBAL_SCOPE && !generics.is_empty() {
         let loc = generics
             .ids()
             .next()
@@ -4838,13 +4834,13 @@ fn gather_func_signature<const ALLOW_GENERICS: bool>(
         gather_generic_constraints(ctx, pat, GenId(i));
     }
 
-    if ALLOW_GENERICS && !generics.is_empty() {
+    if !generics.is_empty() {
         ctx.req.generic_func_values.push((v, generics.len()));
     }
 
     let inputs = params
         .ids()
-        .map(|pat| gather_pattern_constraints_with_generics::<ALLOW_GENERICS>(ctx, pat))
+        .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
         .collect::<Vec<_>>();
 
     let output = if let Some(x) = output_type {
@@ -4863,7 +4859,7 @@ fn gather_func_signature<const ALLOW_GENERICS: bool>(
     (f, output)
 }
 
-fn gather_func_constraints<const ALLOW_GENERICS: bool>(
+fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     v: ValId,
     calling_convention: CallingConvention,
@@ -4872,7 +4868,7 @@ fn gather_func_constraints<const ALLOW_GENERICS: bool>(
     output_type: Option<TExpId>,
     body: Option<ValId>,
 ) -> CId {
-    let (f, output) = gather_func_signature::<ALLOW_GENERICS>(
+    let (f, output) = gather_func_signature::<GLOBAL_SCOPE>(
         ctx,
         v,
         calling_convention,
