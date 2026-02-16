@@ -525,6 +525,12 @@ pub enum TypeExpr {
         mutable: bool,
     },
 
+    Func {
+        calling_convention: CallingConvention,
+        params: TypeExprSpan,
+        output_type: Option<TExpId>,
+    },
+
     Array(TExpId, Option<usize>),
 
     Enum(StructLike),
@@ -1703,6 +1709,10 @@ impl Program {
                 self.lower_struct_like_type_expr(open, items)
             }
 
+            Expr::Prefix(open, items) if open.value == "fn" || open.value == "cfn" => {
+                self.lower_fn_type_expr(expr.loc, open, items)
+            }
+
             Expr::Atom(Token::Operator(op)) => Err(CompileError::UnsupportedForm {
                 loc: loc.clone(),
                 op_loc: Some(loc),
@@ -1731,6 +1741,75 @@ impl Program {
                 message: "this type expression form is not supported yet",
             }),
         }
+    }
+
+    #[inline(always)]
+    fn lower_fn_type_expr(&mut self, loc: Loc, fn_kw: LFixed, items: Vec<LExpr>) -> CResult<TypeExpr> {
+        debug_assert!(
+            (1..=3).contains(&items.len()),
+            "fn expects optional generics, signature, and optional body"
+        );
+
+        let mut items = items.into_iter().peekable();
+
+        if let Some(peek) = items.peek()
+            && matches!(&peek.value, Expr::Prefix(open, _) if open.value == "[")
+        {
+            let generics_expr = items.next().unwrap();
+            return Err(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(generics_expr.loc),
+                    op: Some("["),
+                    message: "functions type expressions may not contain generics (may be added later for some subset)",
+                });
+        }
+
+        let sig_expr = items.next().expect("fn missing signature");
+        if let Some(body_expr) = items.next() {
+            return Err(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(body_expr.loc),
+                    op: None,
+                    message: "functions type expressions dont have a body",
+                });
+        }
+
+        let (params_expr, ret_expr) = match sig_expr.value {
+            Expr::Bin(arrow, pair) if arrow.value == "->" => {
+                let (lhs, rhs) = *pair;
+                (lhs, Some(rhs))
+            }
+            _ => (sig_expr, None),
+        };
+
+        let Expr::Prefix(p_open, param_items) = params_expr.value else {
+            debug_assert!(false, "fn signature does not start with parameter list");
+            unreachable!();
+        };
+        debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
+
+        let calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
+
+
+
+        let params_span = self.reserve_type_expr_span(param_items.len());
+        for (index, param) in param_items.into_iter().enumerate() {
+            //TODO support type anotation
+            let target = params_span.at(index);
+            self.lower_type_expr_into(target, param)?;
+        }
+
+        let output_type = match ret_expr {
+            Some(e) => Some(self.lower_type_expr(e)?),
+            None => None,
+        };
+
+
+        Ok(TypeExpr::Func {
+            calling_convention,
+            params: params_span,
+            output_type,
+        })
     }
 
     fn lower_struct_like_type_expr(&mut self, kw: LFixed, items: Vec<LExpr>) -> CResult<TypeExpr> {

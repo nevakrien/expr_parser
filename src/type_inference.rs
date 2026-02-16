@@ -1272,8 +1272,6 @@ enum ResolveKind {
 
 #[derive(Debug)]
 struct FuncInfer {
-    #[allow(dead_code)]
-    loc: ValId,
     calling_convention: CallingConvention,
     inputs: Vec<CId>,
     output: CId,
@@ -2768,7 +2766,6 @@ fn specialize_type(
             types.extra.func_defs.push(FuncInfer {
                 inputs,
                 output,
-                loc,
                 calling_convention,
             });
 
@@ -3967,7 +3964,6 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 let output = ctx.new_cluster();
 
                 let found = ctx.new_func(FuncInfer {
-                    loc: v,
                     calling_convention: CallingConvention::Unknown,
                     inputs,
                     output,
@@ -4698,6 +4694,17 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             };
             ans
         }
+        TypeExpr::Func { calling_convention, params, output_type }=> {
+            let inputs = params
+                .ids()
+                .map(|arg| compile_type_expr(ctx, arg))
+                .collect::<Vec<_>>();
+            let output = output_type.map(|o|compile_type_expr(ctx,o))
+            .unwrap_or_else(||ctx.new_solved(BuiltinType::Void.into()));
+            ctx.new_func(FuncInfer{
+                calling_convention,inputs,output
+            })
+        }
         TypeExpr::Array(element, len) => {
             let element = compile_type_expr(ctx, element);
             let size = len.map_or(ArrayType::Unsized, ArrayType::Sized);
@@ -4834,7 +4841,6 @@ fn type_check_func_signature(
         calling_convention,
         inputs,
         output,
-        loc: v,
     });
     ctx.bind_val(v, f);
     main_solver(ctx);
@@ -4890,7 +4896,6 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         calling_convention,
         inputs,
         output,
-        loc: v,
     });
 
     if !GLOBAL_SCOPE {
@@ -5771,7 +5776,6 @@ fn make_member_closure(
     unify_if_distinct(ex, types, self_param, self_input)?;
 
     Ok(types.new_func(FuncInfer {
-        loc,
         calling_convention: CallingConvention::Unknown,
         inputs: params,
         output: ret,
@@ -5830,7 +5834,6 @@ fn resolve_operator_site(
                 let full_method = overload_sig.full_method;
                 let method_closure = make_member_closure(ex, types, lhs, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
-                    loc: site.loc,
                     calling_convention: CallingConvention::Unknown,
                     inputs: vec![rhs],
                     output: out,
@@ -6114,7 +6117,6 @@ fn resolve_unary_operator_site(
                 let full_method = overload_sig.full_method;
                 let method_closure = make_member_closure(ex, types, input, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
-                    loc: site.loc,
                     calling_convention: CallingConvention::Unknown,
                     inputs: Vec::new(),
                     output: out,
@@ -6273,7 +6275,6 @@ fn resolve_assign_pre_post_site(
                 let method_closure =
                     make_member_closure(ex, types, target, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
-                    loc: site.loc,
                     calling_convention: CallingConvention::Unknown,
                     inputs: Vec::new(),
                     output: target,
@@ -8088,6 +8089,13 @@ mod type_infer_tests {
             }
         )));
     }
+
+    #[test]
+    fn can_understand_function_type_exprs() {
+        let mut store = TypeStore::new();
+        infer_fn("f = fn(g:fn(int)->int)->int {g(2)}", &mut store).unwrap();
+    }
+
 
     /* ------------------------------------------------------------
      * Error cases
