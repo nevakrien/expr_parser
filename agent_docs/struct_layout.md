@@ -70,7 +70,7 @@ Cycle details are produced by `cycle_path` using `visiting` snapshot.
 
 `LayoutError::UnsupportedType` includes cases like:
 
-- `TypeValue::WithGenerics { ... }`
+- `TypeValue::Func { generics > 0, ... }`
 - `BuiltinType::Type`
 - malformed generic mapping
 

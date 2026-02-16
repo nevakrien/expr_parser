@@ -136,7 +136,7 @@ Generic binders are intentionally constrained because generic IDs are local/sequ
 - Function generics:
   - introduced by function generic pattern list,
   - effectively allowed only in top-level generic function signatures (`gather_func_signature::<true>` in global pass),
-  - recorded and wrapped as `TypeValue::WithGenerics { count, body }` during `finalize`.
+  - recorded directly on the function type as `TypeValue::Func { generics, ... }`.
 - Struct generics:
   - introduced in top-level struct type definitions (`compile_struct_type::<true>` in global typedef pass),
   - stored as `TypeValue::Struct { id, generics: [Generic(GenId(...))] }` template shape.
@@ -158,7 +158,7 @@ Specialization avoids that by replacing generic placeholders with fresh local cl
 
 ### Core specialization flow
 
-1. Start from template type (`WithGenerics.body` or generic struct template).
+1. Start from template type (`TypeValue::Func` with non-zero `generics`, or generic struct template).
 2. Allocate fresh cluster list for generic arguments.
 3. Run `specialize_type` recursively to substitute every `TypeValue::Generic` occurrence.
 4. Unify/force substituted result against call-site or annotation constraints.
@@ -176,7 +176,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 ### Type shapes and storage
 
 - `BuiltinType`: primitive set (`int`, sized ints, floats, `bool`, `str`, `void`, `Type`).
-- `TypeValue`: builtins, tuple, array, function, pointer, generic binder (`WithGenerics`), generic param (`Generic`), struct instance (`Struct`).
+- `TypeValue`: builtins, tuple, array, function, pointer, generic param (`Generic`), struct instance (`Struct`).
   - function types now carry an explicit calling convention (`Hot`, `C`, `Unknown`), so diagnostics can print `fn`, `cfn`, or `fn?`.
 - `TypeStore`: interned type arena + struct table.
   - builtins are interned first,
@@ -223,7 +223,7 @@ Main orchestration is two-phase:
 2. `infer_value_internals`
   - resolves function body internals or arbitrary value internals,
   - reconciles with known global signatures when present.
-  - for function values, local signature/body gathering now anchors to the already-solved global signature before body constraints; if the known global type is `WithGenerics`, inference first unwraps to the inner function body type for unification, avoiding "expected unknown"-style return mismatches.
+  - for function values, local signature/body gathering now anchors to the already-solved global signature before body constraints by unifying directly with the solved `TypeValue::Func` shape.
 
 `run_typechecker` runs global pass, then member methods, then global functions, reporting through `ErrorReporter` and returning solved data or error count.
 
@@ -341,7 +341,7 @@ Then `finalize`:
 
 - commits solved typedef/value/pattern types into `SolvedTypes`,
 - writes finalized struct field types,
-- wraps generic function values into `WithGenerics`,
+- keeps generic function values as `TypeValue::Func` with a non-zero `generics` count,
 - emits unresolved errors once per unresolved root (to reduce duplicate noise),
 - finalizes `SolvedTypes.member_method_types` from deferred member/operator call sites,
 - finalizes `SolvedTypes.implicit_derefs` for value sites that used implicit dereference hops (member access + index),
@@ -359,7 +359,7 @@ Then `finalize`:
 - Non-raw references (`&T`, `&mut T`) are intentionally rejected for builtin pointer arithmetic and still produce overload-not-found diagnostics.
 - User-struct operator overloads are now enforced through solved member-method signatures:
   - Resolver looks up the method (`__add`, `__neg`, etc.) on the lhs struct type.
-  - It reads the method type from `SolvedTypes`, specializes `WithGenerics` into fresh local clusters (`solved_type_to_specialized_local`), then unifies against an expected function shape for the operator site.
+  - It reads the method type from `SolvedTypes`, and when the solved function type has non-zero `generics`, specializes it into fresh local clusters (`solved_type_to_specialized_local`) before unifying against the expected function shape for the operator site.
   - Receiver currying is centralized in `make_member_closure`: it unifies `self` (including `&self` / `&mut self` via explicit `ResolveKind::Ptr` clusters) and returns a closure-like function cluster with `self` removed from the parameter list.
   - Both binary and unary operator resolution now reuse this same closure helper, then unify that closure against an expected function shape for the operator site.
   - This means operator overload resolution now constrains lhs/rhs/output directly from method signatures (instead of only reporting overload presence).
@@ -374,7 +374,7 @@ Then `finalize`:
   - `__deref`: first parameter must be `&self`, no extra parameters, and return type must be a non-raw shared reference (`&T`).
   - `__deref_mut`: first parameter must be `&mut self`, no extra parameters, and return type must be a non-raw mutable reference (`&mut T`).
   - if both `__deref` and `__deref_mut` exist on the same struct, both must dereference to the same `T` target.
-- The validation is now based on solved global function type signatures (`TypeValue::Func` / `TypeValue::WithGenerics` body), not raw signature clusters.
+- The validation is now based on solved global function type signatures (`TypeValue::Func`), not raw signature clusters.
 - Member method names that start with `__` and do not end with `_` are treated as reserved builtin names; unknown reserved names emit a dedicated type error.
 
 ## Near-Term Roadmap / Intent

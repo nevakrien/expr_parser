@@ -13,7 +13,7 @@ Use this as the first reference for syntax/meaning questions; use `agent_docs/ty
 
 Type-level representation:
 
-- Function types carry calling convention in `TypeValue::Func { calling_convention, ... }`.
+- Function types carry calling convention and generic arity in `TypeValue::Func { calling_convention, generics, ... }`.
 - Known conventions print as `fn(...) -> ...` or `cfn(...) -> ...`.
 - Unknown convention placeholders print as `fn?(...) -> ...`.
 

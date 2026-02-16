@@ -209,10 +209,15 @@ impl<'a> LayoutComputer<'a> {
         match self.store.type_value(type_id) {
             TypeValue::Builtin(builtin) => self.layout_builtin(*builtin),
             TypeValue::Tuple(items) => self.layout_tuple(items, generics),
-            TypeValue::Func { .. } => Ok(Layout {
-                size: self.target.fn_ptr_size,
-                align: self.target.fn_ptr_align,
-            }),
+            TypeValue::Func { generics, .. } => {
+                if *generics != 0 {
+                    return Err(LayoutError::UnsupportedType { type_id });
+                }
+                Ok(Layout {
+                    size: self.target.fn_ptr_size,
+                    align: self.target.fn_ptr_align,
+                })
+            }
             TypeValue::Ptr { tgt, .. } => {
                 let is_unsized_array = matches!(
                     self.store.type_value(*tgt),
@@ -228,7 +233,6 @@ impl<'a> LayoutComputer<'a> {
                     align: self.target.pointer_align,
                 })
             }
-            TypeValue::WithGenerics { .. } => Err(LayoutError::UnsupportedType { type_id }),
             TypeValue::Generic(gid) => {
                 let Some(mapped) = generics.get(gid.0) else {
                     return Err(LayoutError::UnsupportedType { type_id });

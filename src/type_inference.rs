@@ -151,6 +151,7 @@ pub enum TypeValue {
     Array(TypeId, ArrayType),
     Func {
         calling_convention: CallingConvention,
+        generics: usize,
         params: Vec<TypeId>,
         ret: TypeId,
     },
@@ -158,11 +159,6 @@ pub enum TypeValue {
         tgt: TypeId,
         raw: bool,
         mutable: bool,
-    },
-    WithGenerics {
-        count: usize,
-        ///note that the body can refer to external generics
-        body: TypeId,
     },
     Generic(GenId),
     // Specialized {
@@ -411,6 +407,7 @@ impl TypeStore {
             }
             TypeValue::Func {
                 calling_convention,
+                generics,
                 params,
                 ret,
             } => {
@@ -424,9 +421,19 @@ impl TypeStore {
                     CallingConvention::C => "cfn",
                     CallingConvention::Unknown => "fn?",
                 };
+                let generic_params = if *generics == 0 {
+                    String::new()
+                } else {
+                    let pars = (gen_count..(gen_count + generics))
+                        .map(|i| format!("T{i}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("[{pars}]")
+                };
                 format!(
-                    "{}({}) -> {}",
+                    "{}{}({}) -> {}",
                     fn_kw,
+                    generic_params,
                     params,
                     self.get_type_string_nested(program, *ret, gen_count)
                 )
@@ -457,17 +464,6 @@ impl TypeStore {
             }
 
             // TypeValue::Type => "Type".to_string(),
-            TypeValue::WithGenerics { count, body } => {
-                let new_count = gen_count + count;
-                let pars = (gen_count..new_count)
-                    .map(|i| format!("T{i}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!(
-                    "for<{pars}> {}",
-                    self.get_type_string_nested(program, *body, new_count)
-                )
-            }
             TypeValue::Generic(g) => format!("T{}", g.0),
 
             //TODO cover cases where we do know the name
@@ -976,11 +972,7 @@ pub fn infer_value_internals<'a>(
             );
 
             if let Some(known) = known {
-                let known_sig = match *ctx.ex.store.type_value(known) {
-                    TypeValue::WithGenerics { body, .. } => body,
-                    _ => known,
-                };
-                let known_sig = ctx.new_solved(known_sig);
+                let known_sig = ctx.new_solved(known);
                 if let Err(clash) = ctx.unify(found_sig, known_sig) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason:
@@ -1273,6 +1265,7 @@ enum ResolveKind {
 #[derive(Debug)]
 struct FuncInfer {
     calling_convention: CallingConvention,
+    generics: usize,
     inputs: Vec<CId>,
     output: CId,
 }
@@ -2233,12 +2226,13 @@ fn unify_func_with_type(
 ) -> Result<(), TypeClash> {
     let found_func = BadTypeId(make_func_mock(ex, &mut types.core, &types.extra, call));
 
-    let (cc, params, ret) = match ex.store.type_value(ty) {
+    let (cc, generics, params, ret) = match ex.store.type_value(ty) {
         TypeValue::Func {
             calling_convention,
+            generics,
             params,
             ret,
-        } => (*calling_convention, params.as_slice(), *ret),
+        } => (*calling_convention, *generics, params.as_slice(), *ret),
         _ => {
             return Err(TypeClash {
                 found: Some(found_func),
@@ -2256,6 +2250,13 @@ fn unify_func_with_type(
     };
 
     types.extra.func_defs[call.0].calling_convention = merged_cc;
+
+    if types.extra.func_defs[call.0].generics != generics {
+        return Err(TypeClash {
+            found: Some(found_func),
+            wanted: Some(BadTypeId(ty)),
+        });
+    }
 
     let input_len = types.extra.func_defs[call.0].inputs.len();
     if params.len() != input_len {
@@ -2427,6 +2428,7 @@ fn try_resolve_func_type(
 
     Some(ex.store.intern(TypeValue::Func {
         calling_convention: func.calling_convention,
+        generics: func.generics,
         params,
         ret,
     }))
@@ -2579,6 +2581,7 @@ fn make_func_mock_inner(
 
     ex.store.intern(TypeValue::Func {
         calling_convention: site.calling_convention,
+        generics: site.generics,
         params,
         ret,
     })
@@ -2751,6 +2754,7 @@ fn specialize_type(
 
         TypeValue::Func {
             calling_convention,
+            generics: _,
             params,
             ret,
         } => {
@@ -2764,6 +2768,7 @@ fn specialize_type(
             // create FuncInfer
             let call_id = FuncInferId(types.extra.func_defs.len());
             types.extra.func_defs.push(FuncInfer {
+                generics: 0,
                 inputs,
                 output,
                 calling_convention,
@@ -2863,10 +2868,6 @@ fn specialize_type(
             });
             id
         }
-
-        TypeValue::WithGenerics { .. } => unreachable!(
-            "we only support generis outer most scope. this style of thing is a rank2 type and they can not be monomorphised in general"
-        ),
     }
 }
 
@@ -2880,8 +2881,10 @@ fn solved_type_to_specialized_local(
     t: TypeId,
     loc: ValId,
 ) -> CId {
-    if let TypeValue::WithGenerics { count, body } = *ex.store.type_value(t) {
-        let gens: Vec<_> = (0..count)
+    if let TypeValue::Func { generics, .. } = *ex.store.type_value(t)
+        && generics != 0
+    {
+        let gens: Vec<_> = (0..generics)
             .map(|_| {
                 let id = CId(types.core.parent.len());
                 types.core.parent.0.push(id);
@@ -2892,7 +2895,7 @@ fn solved_type_to_specialized_local(
             })
             .collect();
 
-        return specialize_type(ex, types, body, &gens, loc);
+        return specialize_type(ex, types, t, &gens, loc);
     }
 
     let id = CId(types.core.parent.len());
@@ -3965,6 +3968,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
                 let found = ctx.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
+                    generics: 0,
                     inputs,
                     output,
                 });
@@ -4694,15 +4698,23 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             };
             ans
         }
-        TypeExpr::Func { calling_convention, params, output_type }=> {
+        TypeExpr::Func {
+            calling_convention,
+            params,
+            output_type,
+        } => {
             let inputs = params
                 .ids()
                 .map(|arg| compile_type_expr(ctx, arg))
                 .collect::<Vec<_>>();
-            let output = output_type.map(|o|compile_type_expr(ctx,o))
-            .unwrap_or_else(||ctx.new_solved(BuiltinType::Void.into()));
-            ctx.new_func(FuncInfer{
-                calling_convention,inputs,output
+            let output = output_type
+                .map(|o| compile_type_expr(ctx, o))
+                .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()));
+            ctx.new_func(FuncInfer {
+                calling_convention,
+                generics: 0,
+                inputs,
+                output,
             })
         }
         TypeExpr::Array(element, len) => {
@@ -4839,22 +4851,12 @@ fn type_check_func_signature(
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
+        generics: generics.len(),
         inputs,
         output,
     });
     ctx.bind_val(v, f);
     main_solver(ctx);
-    if !generics.is_empty() {
-        let Some(tid) = ctx.ex.ans.type_of(v) else {
-            return;
-        };
-
-        let new_tid = ctx.ex.store.intern(TypeValue::WithGenerics {
-            body: tid,
-            count: generics.len(),
-        });
-        ctx.ex.ans.set_val(v, new_tid);
-    }
 }
 
 fn gather_func_signature<const GLOBAL_SCOPE: bool>(
@@ -4894,6 +4896,7 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
+        generics: if GLOBAL_SCOPE { generics.len() } else { 0 },
         inputs,
         output,
     });
@@ -5006,12 +5009,7 @@ fn is_named_struct_type(store: &TypeStore, ty: TypeId, struct_name: NameId) -> b
 
 #[inline(always)]
 fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeId], TypeId)> {
-    let fn_ty = match store.type_value(ty) {
-        TypeValue::WithGenerics { body, .. } => *body,
-        _ => ty,
-    };
-
-    match store.type_value(fn_ty) {
+    match store.type_value(ty) {
         TypeValue::Func { params, ret, .. } => Some((params.as_slice(), *ret)),
         _ => None,
     }
@@ -5761,7 +5759,7 @@ fn make_member_closure(
     types: &mut TypeState,
     receiver: CId,
     method: ResolvedMemberOverload,
-    loc: ValId,
+    _loc: ValId,
 ) -> Result<CId, TypeClash> {
     let ResolvedMemberOverload {
         mut params,
@@ -5777,6 +5775,7 @@ fn make_member_closure(
 
     Ok(types.new_func(FuncInfer {
         calling_convention: CallingConvention::Unknown,
+        generics: 0,
         inputs: params,
         output: ret,
     }))
@@ -5835,6 +5834,7 @@ fn resolve_operator_site(
                 let method_closure = make_member_closure(ex, types, lhs, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
+                    generics: 0,
                     inputs: vec![rhs],
                     output: out,
                 });
@@ -6118,6 +6118,7 @@ fn resolve_unary_operator_site(
                 let method_closure = make_member_closure(ex, types, input, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
+                    generics: 0,
                     inputs: Vec::new(),
                     output: out,
                 });
@@ -6276,6 +6277,7 @@ fn resolve_assign_pre_post_site(
                     make_member_closure(ex, types, target, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
+                    generics: 0,
                     inputs: Vec::new(),
                     output: target,
                 });
@@ -7666,6 +7668,7 @@ mod type_infer_tests {
         let f_ty = solved_types.type_of(f).expect("missing f type");
         let TypeValue::Func {
             calling_convention,
+            generics: _,
             params,
             ret,
         } = store.type_value(f_ty)
@@ -7737,6 +7740,7 @@ mod type_infer_tests {
         let mut store = TypeStore::new();
         let ty = store.intern(TypeValue::Func {
             calling_convention: CallingConvention::Unknown,
+            generics: 0,
             params: vec![BuiltinType::Int.into()],
             ret: BuiltinType::Int.into(),
         });
@@ -7770,22 +7774,35 @@ mod type_infer_tests {
         let f_ty = solved_types.type_of(f).unwrap();
 
         match store.type_value(f_ty) {
-            TypeValue::WithGenerics { count, body } => {
-                assert_eq!(*count, 1);
-                match store.type_value(*body) {
-                    TypeValue::Func { params, ret, .. } => {
-                        assert_eq!(params.len(), 1);
-                        assert_eq!(params[0], *ret);
-                        match store.type_value(params[0]) {
-                            TypeValue::Generic(gid) => assert_eq!(gid.0, 0),
-                            other => panic!("expected generic param, got {:?}", other),
-                        }
-                    }
-                    other => panic!("expected func type, got {:?}", other),
+            TypeValue::Func {
+                generics,
+                params,
+                ret,
+                ..
+            } => {
+                assert_eq!(*generics, 1);
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0], *ret);
+                match store.type_value(params[0]) {
+                    TypeValue::Generic(gid) => assert_eq!(gid.0, 0),
+                    other => panic!("expected generic param, got {:?}", other),
                 }
             }
-            other => panic!("expected WithGenerics, got {:?}", other),
+            other => panic!("expected func type, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn generic_function_prints_generic_arity_on_func_type() {
+        let src = "f = fn[T](x:T)->T { x }";
+        let mut store = TypeStore::new();
+        let program = gather_program(src);
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = extract_single_fn(&program);
+        let f_ty = solved_types.type_of(f).unwrap();
+
+        assert_eq!(store.get_type_string(&program, f_ty), "fn[T0](T0) -> T0");
     }
 
     #[test]
@@ -8095,7 +8112,6 @@ mod type_infer_tests {
         let mut store = TypeStore::new();
         infer_fn("f = fn(g:fn(int)->int)->int {g(2)}", &mut store).unwrap();
     }
-
 
     /* ------------------------------------------------------------
      * Error cases

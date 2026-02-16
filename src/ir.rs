@@ -1744,7 +1744,12 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_fn_type_expr(&mut self, loc: Loc, fn_kw: LFixed, items: Vec<LExpr>) -> CResult<TypeExpr> {
+    fn lower_fn_type_expr(
+        &mut self,
+        loc: Loc,
+        fn_kw: LFixed,
+        items: Vec<LExpr>,
+    ) -> CResult<TypeExpr> {
         debug_assert!(
             (1..=3).contains(&items.len()),
             "fn expects optional generics, signature, and optional body"
@@ -1757,21 +1762,21 @@ impl Program {
         {
             let generics_expr = items.next().unwrap();
             return Err(CompileError::UnsupportedForm {
-                    loc,
-                    op_loc: Some(generics_expr.loc),
-                    op: Some("["),
-                    message: "functions type expressions may not contain generics (may be added later for some subset)",
-                });
+                loc,
+                op_loc: Some(generics_expr.loc),
+                op: Some("["),
+                message: "functions type expressions may not contain generics (may be added later for some subset)",
+            });
         }
 
         let sig_expr = items.next().expect("fn missing signature");
         if let Some(body_expr) = items.next() {
             return Err(CompileError::UnsupportedForm {
-                    loc,
-                    op_loc: Some(body_expr.loc),
-                    op: None,
-                    message: "functions type expressions dont have a body",
-                });
+                loc,
+                op_loc: Some(body_expr.loc),
+                op: None,
+                message: "functions type expressions dont have a body",
+            });
         }
 
         let (params_expr, ret_expr) = match sig_expr.value {
@@ -1790,8 +1795,6 @@ impl Program {
 
         let calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
 
-
-
         let params_span = self.reserve_type_expr_span(param_items.len());
         for (index, param) in param_items.into_iter().enumerate() {
             //TODO support type anotation
@@ -1803,7 +1806,6 @@ impl Program {
             Some(e) => Some(self.lower_type_expr(e)?),
             None => None,
         };
-
 
         Ok(TypeExpr::Func {
             calling_convention,
