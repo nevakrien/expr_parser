@@ -1034,6 +1034,11 @@ pub fn infer_value_internals<'a>(
     };
 
     main_solver(&mut ctx);
+
+    //this debug assert is mostly meaningless
+    //it shouldnt even be SET by us in the firstplace
+    //we specifically do NOT bind_val and finalize cant handle generics
+    //so this trigers as soon as we fuckup and bind_val ourselvs on anything with generics
     if let Some(known) = known {
         debug_assert_eq!(known, ctx.ex.ans.type_of(value).unwrap())
     }
