@@ -900,7 +900,7 @@ pub fn infer_global_types<'a>(
             } = ctx.ex.program.value(*m)
             {
                 ctx.clear_local_state();
-                let _ = gather_func_signature::<true>(
+                let _ = type_check_func_signature(
                     &mut ctx,
                     *m,
                     calling_convention,
@@ -908,7 +908,6 @@ pub fn infer_global_types<'a>(
                     params,
                     output_type,
                 );
-                main_solver(&mut ctx);
                 check_special_member_method_signature(&mut ctx, *m, *struct_name, *method_name);
             };
         }
@@ -932,7 +931,7 @@ pub fn infer_global_types<'a>(
         } = ctx.ex.program.value(*v)
         {
             ctx.clear_local_state();
-            let _ = gather_func_signature::<true>(
+            type_check_func_signature(
                 &mut ctx,
                 *v,
                 calling_convention,
@@ -940,7 +939,6 @@ pub fn infer_global_types<'a>(
                 params,
                 output_type,
             );
-            main_solver(&mut ctx);
         };
     }
 
@@ -1616,7 +1614,7 @@ struct ReqState {
     un_op_sites: Vec<UnOpSite>,
     assign_pre_post_sites: Vec<AssignPrePostSite>,
 
-    generic_func_values: Vec<(ValId, usize)>,
+    //generic_func_values: Vec<(ValId, usize)>,
     pending_specializations: Vec<PendingSpecialization>,
     member_method_type_sites: Vec<PendingMemberMethodType>,
     member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
@@ -1633,7 +1631,6 @@ impl ReqState {
             un_op_sites: Vec::new(),
             assign_pre_post_sites: Vec::new(),
 
-            generic_func_values: Vec::new(),
             pending_specializations: Vec::new(),
             member_method_type_sites: Vec::new(),
             member_access_implicit_deref_sites: Vec::new(),
@@ -1649,7 +1646,6 @@ impl ReqState {
             bin_op_sites,
             un_op_sites,
             assign_pre_post_sites,
-            generic_func_values,
             pending_specializations,
             member_method_type_sites,
             member_access_implicit_deref_sites,
@@ -1663,7 +1659,6 @@ impl ReqState {
         un_op_sites.clear();
         assign_pre_post_sites.clear();
 
-        generic_func_values.clear();
         pending_specializations.clear();
         member_method_type_sites.clear();
         member_access_implicit_deref_sites.clear();
@@ -4810,6 +4805,51 @@ fn get_type_name(prog: &Program, t: TExpId) -> Option<NameId> {
     }
 }
 
+fn type_check_func_signature(
+    ctx: &mut InferState,
+    v: ValId,
+    calling_convention: CallingConvention,
+    generics: PatternSpan,
+    params: PatternSpan,
+    output_type: Option<TExpId>,
+){
+
+    for (i, pat) in generics.ids().enumerate() {
+        gather_generic_constraints(ctx, pat, GenId(i));
+    }
+
+    let inputs = params
+        .ids()
+        .map(|pat| gather_pattern_constraints_with_generics::<true>(ctx, pat))
+        .collect::<Vec<_>>();
+
+    let output = if let Some(x) = output_type {
+        compile_type_expr(ctx, x)
+    } else {
+        ctx.new_solved(BuiltinType::Void.into())
+    };
+
+    let f = ctx.new_func(FuncInfer {
+        calling_convention,
+        inputs,
+        output,
+        loc: v,
+    });
+    ctx.bind_val(v, f);
+    main_solver(ctx);
+    if !generics.is_empty() {
+        let Some(tid) = ctx.ex.ans.type_of(v) else{
+            return;
+        };
+
+        let new_tid = ctx.ex.store.intern(TypeValue::WithGenerics{
+            body:tid,
+            count:generics.len()
+        });
+        ctx.ex.ans.set_val(v,new_tid);
+    }
+}
+
 fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     v: ValId,
@@ -4834,10 +4874,6 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         gather_generic_constraints(ctx, pat, GenId(i));
     }
 
-    if !generics.is_empty() {
-        ctx.req.generic_func_values.push((v, generics.len()));
-    }
-
     let inputs = params
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
@@ -4855,7 +4891,10 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         output,
         loc: v,
     });
-    ctx.bind_val(v, f);
+
+    if !GLOBAL_SCOPE {
+        ctx.bind_val(v, f);
+    }
     (f, output)
 }
 
@@ -6796,16 +6835,7 @@ fn finalize(ctx: &mut InferState) {
             }
         }
     }
-    for (v, count) in ctx.req.generic_func_values.iter() {
-        let Some(spot) = ans.val_types.get_mut(v.0) else {
-            unreachable!("bug func value not also a value");
-        };
-        let body = *spot;
-        *spot = ctx.ex.store.intern(TypeValue::WithGenerics {
-            body,
-            count: *count,
-        });
-    }
+    
     for (p, c) in pat_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {
