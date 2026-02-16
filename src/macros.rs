@@ -1,8 +1,11 @@
 use crate::Expr;
 use crate::Token;
-use crate::error_messages::{ERR_MACRO_NEEDS_BODY, ERR_MACRO_PARAM_IDENT, ERR_MACRO_SIGNATURE};
 use crate::parsing::{LExpr, Loc, Located};
 use crate::program::{CResult, CompileError, Program};
+
+const MACRO_NEEDS_BODY_MSG: &str = "macro definitions require both a parameter list and a body";
+const MACRO_PARAM_IDENT_MSG: &str = "macro parameters must be identifiers";
+const MACRO_SIGNATURE_MSG: &str = "macro signature must be written inside parentheses";
 
 #[derive(Debug)]
 pub struct Macro {
@@ -16,7 +19,7 @@ impl Macro {
         if args.len() < 2 {
             return Err(CompileError::SimpleError {
                 loc,
-                s: ERR_MACRO_NEEDS_BODY,
+                s: MACRO_NEEDS_BODY_MSG,
             });
         }
 
@@ -33,7 +36,7 @@ impl Macro {
                         _ => {
                             return Err(CompileError::SimpleError {
                                 loc: param_expr.loc.clone(),
-                                s: ERR_MACRO_PARAM_IDENT,
+                                s: MACRO_PARAM_IDENT_MSG,
                             });
                         }
                     }
@@ -43,7 +46,7 @@ impl Macro {
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: params_expr.loc.clone(),
-                    s: ERR_MACRO_SIGNATURE,
+                    s: MACRO_SIGNATURE_MSG,
                 });
             }
         };
@@ -176,7 +179,6 @@ pub fn expand_macros_recursive(expr: &mut LExpr, program: &mut Program) -> CResu
 mod tests {
     use super::*;
     use crate::Parser;
-    use crate::error_messages::ERR_MACRO_NEEDS_BODY;
     use crate::parsing::Expr;
     use crate::program::{CompileError, Program};
 
@@ -241,7 +243,7 @@ mod tests {
         assert!(matches!(
             err,
             CompileError::SimpleError {
-                s: ERR_MACRO_NEEDS_BODY,
+                s: MACRO_NEEDS_BODY_MSG,
                 ..
             }
         ));

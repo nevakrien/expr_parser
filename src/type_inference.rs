@@ -1421,8 +1421,6 @@ struct ExternState<'a> {
 }
 
 impl<'a> ExternState<'a> {
-
-
     fn push_error(&mut self, err: TypeError) {
         self.errors.push(err);
     }
@@ -1491,7 +1489,6 @@ impl TypeCore {
         });
         id
     }
-
 }
 
 struct TypeExtra {
@@ -1601,7 +1598,6 @@ impl TypeState {
     // =========================================================
     // union-find operations
     // =========================================================
-
 
     fn unify(&mut self, ex: &mut ExternState<'_>, a: CId, b: CId) -> Result<CId, TypeClash> {
         unify_clusters(ex, self, a, b)
@@ -2085,9 +2081,10 @@ fn force_type_if_distinct(
     let root = types.root(target);
 
     if let ResolveKind::Solved(t) = types.cluster_state(root)
-        && t == ty {
-            return Ok(false);
-        }
+        && t == ty
+    {
+        return Ok(false);
+    }
 
     force_type(ex, types, target, ty)?;
     Ok(true)
@@ -4555,7 +4552,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
-    if !GLOBAL_SCOPE  {
+    if !GLOBAL_SCOPE {
         let loc = ctx.ex.program.type_expr_loc(texpr);
         ctx.ex.push_error(TypeError::Simple {
             loc,
@@ -4817,8 +4814,7 @@ fn type_check_func_signature(
     generics: PatternSpan,
     params: PatternSpan,
     output_type: Option<TExpId>,
-){
-
+) {
     for (i, pat) in generics.ids().enumerate() {
         gather_generic_constraints(ctx, pat, GenId(i));
     }
@@ -4843,15 +4839,15 @@ fn type_check_func_signature(
     ctx.bind_val(v, f);
     main_solver(ctx);
     if !generics.is_empty() {
-        let Some(tid) = ctx.ex.ans.type_of(v) else{
+        let Some(tid) = ctx.ex.ans.type_of(v) else {
             return;
         };
 
-        let new_tid = ctx.ex.store.intern(TypeValue::WithGenerics{
-            body:tid,
-            count:generics.len()
+        let new_tid = ctx.ex.store.intern(TypeValue::WithGenerics {
+            body: tid,
+            count: generics.len(),
         });
-        ctx.ex.ans.set_val(v,new_tid);
+        ctx.ex.ans.set_val(v, new_tid);
     }
 }
 
@@ -5877,14 +5873,15 @@ fn resolve_operator_site(
     if matches!(op, Add | Sub) {
         //there simply isnt any intresting operator on non user types other than pointer arithmetic
         if matches!(lhs_kind, OperandKind::KnownNonUser)
-            && let ResolveKind::Ptr { ref mut raw, .. } = types.core.cluster[lhs].state {
-                if raw.is_none() {
-                    progress = true;
-                    *raw = Some(true);
-                } else if matches!(raw, Some(false)) {
-                    //todo!("error")
-                }
+            && let ResolveKind::Ptr { ref mut raw, .. } = types.core.cluster[lhs].state
+        {
+            if raw.is_none() {
+                progress = true;
+                *raw = Some(true);
+            } else if matches!(raw, Some(false)) {
+                //todo!("error")
             }
+        }
 
         let lhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, lhs);
         let rhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, rhs);
@@ -6840,7 +6837,7 @@ fn finalize(ctx: &mut InferState) {
             }
         }
     }
-    
+
     for (p, c) in pat_cluster.iter() {
         let root = find_root(parent, *c);
         if let ResolveKind::Solved(t) = cluster[root].state {

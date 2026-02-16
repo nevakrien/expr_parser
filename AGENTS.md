@@ -4,7 +4,6 @@
 - `src/main.rs` hosts the REPL entry point and pretty-printing helpers.
 - `src/parsing.rs` contains tokens, AST types, lexer, and parser logic.
 - `src/error_reporting.rs` centralizes error formatting with `ariadne`.
-- `src/error_messages.rs` provides shared error message constants.
 - `src/macros.rs` implements unhygienic macro system with parameter substitution.
 - `src/program.rs` provides Program struct and high-level parsing with macro expansion.
 - `src/ir.rs` contains  first IR design (not full implemented yet).

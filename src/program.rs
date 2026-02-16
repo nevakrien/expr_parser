@@ -1,13 +1,9 @@
-use crate::error_messages::{
-    ERR_EXPECTED_DEFINITION_VALUE, ERR_EXPECTED_SIMPLE_NAME, ERR_LABEL_ALREADY_DEFINED,
-    ERR_LABEL_OUTSIDE_FUNCTION, ERR_MEMBER_METHOD_NAME_COLLISION, ERR_MEMBER_METHOD_REQUIRES_FN,
-    ERR_MEMBER_METHOD_REQUIRES_STRUCT,
-};
 use crate::identity_hasher::IdHashMap;
-use crate::ir::{LabelId, VarKind};
 use crate::ir::{
-    LifeTimeId, Literal, NameId, PatId, Pattern, PatternSpan, ValId, Value, ValueSpan,
+    LABEL_ALREADY_DEFINED_MSG, LifeTimeId, Literal, MEMBER_METHOD_COLLISION_MSG, NameId, PatId,
+    Pattern, PatternSpan, ValId, Value, ValueSpan,
 };
+use crate::ir::{LabelId, VarKind};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
@@ -510,7 +506,7 @@ impl Program {
             let Some(labels) = self.function_labels.last_mut() else {
                 return Err(CompileError::SimpleError {
                     loc: loc.clone(),
-                    s: ERR_LABEL_OUTSIDE_FUNCTION,
+                    s: "goto statements must stay inside function bodies",
                 });
             };
 
@@ -551,7 +547,7 @@ impl Program {
             let Some(labels) = self.function_labels.last_mut() else {
                 return Err(CompileError::SimpleError {
                     loc: loc.clone(),
-                    s: ERR_LABEL_OUTSIDE_FUNCTION,
+                    s: "labels must be declared inside function bodies",
                 });
             };
 
@@ -559,7 +555,7 @@ impl Program {
                 if state.defined_loc.is_some() {
                     return Err(CompileError::SimpleError {
                         loc: loc.clone(),
-                        s: ERR_LABEL_ALREADY_DEFINED,
+                        s: LABEL_ALREADY_DEFINED_MSG,
                     });
                 }
                 state.defined_loc = Some(loc.clone());
@@ -625,7 +621,7 @@ impl Program {
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: lhs.loc,
-                    s: ERR_EXPECTED_SIMPLE_NAME,
+                    s: "the left-hand side of a global assignment must be a bare identifier",
                 });
             }
         };
@@ -645,13 +641,13 @@ impl Program {
             let Expr::Prefix(fn_kw, _) = &rhs_value else {
                 return Err(CompileError::SimpleError {
                     loc: rhs_loc,
-                    s: ERR_MEMBER_METHOD_REQUIRES_FN,
+                    s: "member methods must be defined with `fn` or `cfn` literals",
                 });
             };
             if fn_kw.value != "fn" && fn_kw.value != "cfn" {
                 return Err(CompileError::SimpleError {
                     loc: rhs_loc,
-                    s: ERR_MEMBER_METHOD_REQUIRES_FN,
+                    s: "member methods must be defined with `fn` or `cfn` literals",
                 });
             }
 
@@ -668,7 +664,7 @@ impl Program {
                 std::collections::hash_map::Entry::Occupied(_) => {
                     return Err(CompileError::SimpleError {
                         loc: rhs_loc,
-                        s: ERR_MEMBER_METHOD_NAME_COLLISION,
+                        s: MEMBER_METHOD_COLLISION_MSG,
                     });
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -713,7 +709,7 @@ impl Program {
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: rhs_loc,
-                    s: ERR_EXPECTED_DEFINITION_VALUE,
+                    s: "global definitions must assign a macro, function, or type literal",
                 });
             }
         };
@@ -745,7 +741,7 @@ impl Program {
             .copied()
             .ok_or_else(|| CompileError::SimpleError {
                 loc: base.loc.clone(),
-                s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+                s: "member methods must be attached to a struct type",
             })?;
 
         let texp = match self.definitions.get(&struct_name_id) {
@@ -753,7 +749,7 @@ impl Program {
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: base.loc.clone(),
-                    s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+                    s: "member methods must be attached to a struct type",
                 });
             }
         };
@@ -761,7 +757,7 @@ impl Program {
         let TypeExpr::Struct(def) = self.type_expr(texp) else {
             return Err(CompileError::SimpleError {
                 loc: base.loc.clone(),
-                s: ERR_MEMBER_METHOD_REQUIRES_STRUCT,
+                s: "member methods must be attached to a struct type",
             });
         };
 
@@ -773,7 +769,7 @@ impl Program {
             {
                 return Err(CompileError::SimpleError {
                     loc: method.loc.clone(),
-                    s: ERR_MEMBER_METHOD_NAME_COLLISION,
+                    s: MEMBER_METHOD_COLLISION_MSG,
                 });
             }
         }

@@ -7,12 +7,6 @@
  * - Avoid solver needing to rediscover operands
  * - Allow linear passes over IR
  */
-use crate::error_messages::{
-    ERR_ACCESS_EXPECTS_NAME, ERR_GOTO_OUTSIDE_FUNCTION, ERR_INVALID_MATCH_ARM,
-    ERR_LABEL_NAME_REQUIRED, ERR_LABEL_OUTSIDE_FUNCTION, ERR_MATCH_ARM_NEEDS_VALUE,
-    ERR_PIPE_REQUIRES_CALL, ERR_POS_ARG_AFTER_NAMED, ERR_UNSUPPORTED_EXPRESSION,
-    ERR_UNSUPPORTED_EXPRESSION_ATOM, ERR_UNSUPPORTED_PATTERN, ERR_UNSUPPORTED_TYPE_EXPR,
-};
 use crate::parsing::{Expr, LExpr, LFixed, Loc, Located, Token};
 use crate::program::{CResult, CompileError, Program};
 use crate::string_intern::StrId;
@@ -553,6 +547,15 @@ pub struct StructLike {
     pub fields: PatternSpan,
 }
 
+//these we look for in tests so...
+pub(crate) const ACCESS_EXPECTS_NAME_MSG: &str =
+    "access expressions require a simple identifier after the operator";
+pub(crate) const MEMBER_METHOD_COLLISION_MSG: &str =
+    "member method name collides with an existing field or method";
+pub(crate) const LABEL_NAME_REQUIRED_MSG: &str = "goto requires a direct label literal like `name`";
+pub(crate) const LABEL_ALREADY_DEFINED_MSG: &str =
+    "label already exists in this function; choose a new name";
+
 impl Program {
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
@@ -715,7 +718,7 @@ impl Program {
                     loc: loc.clone(),
                     op_loc: Some(loc.clone()),
                     op: Some(op),
-                    message: ERR_UNSUPPORTED_EXPRESSION_ATOM,
+                    message: "operators cannot appear as standalone atoms; wrap them inside a full expression",
                 });
             }
         };
@@ -734,7 +737,7 @@ impl Program {
                         if !this.in_function_body() {
                             return Err(CompileError::SimpleError {
                                 loc: item.loc,
-                                s: ERR_LABEL_OUTSIDE_FUNCTION,
+                                s: "labels can only be defined inside function bodies",
                             });
                         }
 
@@ -861,7 +864,7 @@ impl Program {
                 // Positional arguments after named ones break the contiguous split.
                 return Err(CompileError::SimpleError {
                     loc: arg_loc,
-                    s: ERR_POS_ARG_AFTER_NAMED,
+                    s: "positional arguments must come before named ones",
                 });
             }
         }
@@ -878,7 +881,7 @@ impl Program {
         if items.len() < 2 {
             return Err(CompileError::SimpleError {
                 loc,
-                s: ERR_MATCH_ARM_NEEDS_VALUE,
+                s: "match expressions require a value and at least one arm",
             });
         }
 
@@ -950,12 +953,12 @@ impl Program {
 
     #[inline(always)]
     fn lower_break_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> CResult<Value> {
-        if !items.is_empty() {
+        if items.len() > 1 {
             return Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_EXPRESSION,
+                message: "break can only supply zero or one value",
             });
         }
         Ok(Value::Break)
@@ -968,7 +971,7 @@ impl Program {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_EXPRESSION,
+                message: "continue cannot take any values",
             });
         }
         Ok(Value::Continue)
@@ -981,7 +984,7 @@ impl Program {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_EXPRESSION,
+                message: "return accepts at most one value",
             });
         }
 
@@ -1004,7 +1007,7 @@ impl Program {
         if !self.in_function_body() {
             return Err(CompileError::SimpleError {
                 loc,
-                s: ERR_GOTO_OUTSIDE_FUNCTION,
+                s: "goto statements must stay inside function bodies",
             });
         }
         if items.len() != 1 {
@@ -1012,7 +1015,7 @@ impl Program {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_EXPRESSION,
+                message: "goto requires a single label argument",
             });
         }
 
@@ -1020,7 +1023,7 @@ impl Program {
         let Some(label_name) = Self::extract_label_name(&label_expr) else {
             return Err(CompileError::SimpleError {
                 loc: label_expr.loc,
-                s: ERR_LABEL_NAME_REQUIRED,
+                s: LABEL_NAME_REQUIRED_MSG,
             });
         };
 
@@ -1162,7 +1165,7 @@ impl Program {
             _ => {
                 return Err(CompileError::SimpleError {
                     loc: rhs.loc,
-                    s: ERR_ACCESS_EXPECTS_NAME,
+                    s: ACCESS_EXPECTS_NAME_MSG,
                 });
             }
         };
@@ -1202,6 +1205,13 @@ impl Program {
                 Ok(Pattern::Bind(id, m))
             }
 
+            Expr::Atom(_) => Err(CompileError::UnsupportedForm {
+                loc,
+                op_loc: None,
+                op: None,
+                message: "got a literal that isnt a name in a pattern",
+            }),
+
             // Pattern with type annotation: x:T
             Expr::Bin(op, pair) if op.value == ":" => {
                 let (pat_expr, ty_expr) = *pair;
@@ -1217,7 +1227,7 @@ impl Program {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_PATTERN,
+                message: "this pattern expression is not supported",
             }),
 
             Expr::Prefix(open, mut items) if open.value == "mut" => {
@@ -1252,14 +1262,7 @@ impl Program {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_PATTERN,
-            }),
-
-            Expr::Atom(_) => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: None,
-                op: None,
-                message: ERR_UNSUPPORTED_PATTERN,
+                message: "this pattern expression is not supported",
             }),
         }
     }
@@ -1278,21 +1281,21 @@ impl Program {
                 loc: expr.loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_INVALID_MATCH_ARM,
+                message: "match arms must be written as `<pattern> => <expr>`",
             }),
 
             Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
                 loc: expr.loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_INVALID_MATCH_ARM,
+                message: "match arms must be written as `<pattern> => <expr>`",
             }),
 
             _ => Err(CompileError::UnsupportedForm {
                 loc: expr.loc,
                 op_loc: None,
                 op: None,
-                message: ERR_INVALID_MATCH_ARM,
+                message: "match arms must be written as `<pattern> => <expr>`",
             }),
         }
     }
@@ -1360,7 +1363,7 @@ impl Program {
                     loc,
                     op_loc: Some(op.loc),
                     op: Some(op.value),
-                    message: ERR_UNSUPPORTED_EXPRESSION,
+                    message: "this prefix operator is not supported as a value",
                 });
             }
         };
@@ -1392,7 +1395,7 @@ impl Program {
                 loc: _loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_EXPRESSION,
+                message: "this postfix operator is not supported by the IR lowering",
             }),
         }
     }
@@ -1502,7 +1505,7 @@ impl Program {
                     loc,
                     op_loc: Some(op.loc),
                     op: Some(op.value),
-                    message: ERR_UNSUPPORTED_EXPRESSION,
+                    message: "this binary operator is not supported as a value",
                 });
             }
         };
@@ -1525,7 +1528,7 @@ impl Program {
                 if items.is_empty() {
                     return Err(CompileError::SimpleError {
                         loc,
-                        s: ERR_PIPE_REQUIRES_CALL,
+                        s: "pipe (`|>`) requires a call expression on the right-hand side",
                     });
                 }
 
@@ -1535,7 +1538,7 @@ impl Program {
             }
             _ => Err(CompileError::SimpleError {
                 loc,
-                s: ERR_PIPE_REQUIRES_CALL,
+                s: "pipe (`|>`) requires a call expression on the right-hand side",
             }),
         }
     }
@@ -1583,7 +1586,7 @@ impl Program {
                         loc,
                         op_loc: Some(open.loc),
                         op: Some(open.value),
-                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                        message: "array type expressions must specify an element type and optional literal length",
                     });
                 }
 
@@ -1596,7 +1599,7 @@ impl Program {
                                     loc,
                                     op_loc: Some(open.loc),
                                     op: Some(open.value),
-                                    message: ERR_UNSUPPORTED_TYPE_EXPR,
+                                    message: "array length must be a non-negative integer literal",
                                 });
                             };
                             Some(n)
@@ -1606,7 +1609,7 @@ impl Program {
                                 loc,
                                 op_loc: Some(open.loc),
                                 op: Some(open.value),
-                                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                                message: "array types with non-literal lengths are not supported",
                             });
                         }
                     }
@@ -1623,7 +1626,7 @@ impl Program {
                         loc,
                         op_loc: Some(open.loc),
                         op: Some(open.value),
-                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                        message: "type indexing with brackets is not supported yet",
                     });
                 }
 
@@ -1643,13 +1646,6 @@ impl Program {
 
             Expr::Prefix(op, mut items) if matches!(op.value, "*" | "&") => {
                 // if items.len() != 1 {
-                //     return Err(CompileError::UnsupportedForm {
-                //         loc,
-                //         op_loc: Some(op.loc),
-                //         op: Some(op.value),
-                //         message: ERR_UNSUPPORTED_TYPE_EXPR,
-                //     });
-                // }
 
                 let raw = op.value == "*";
                 let mut mutable = raw;
@@ -1685,7 +1681,7 @@ impl Program {
                             loc,
                             op_loc: Some(inner_op.loc.clone()),
                             op: Some(inner_op.value),
-                            message: ERR_UNSUPPORTED_TYPE_EXPR,
+                            message: "pointer qualifiers must wrap exactly one inner type",
                         });
                     }
                     mutable = inner_op.value == "mut";
@@ -1711,28 +1707,28 @@ impl Program {
                 loc: loc.clone(),
                 op_loc: Some(loc),
                 op: Some(op),
-                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                message: "operators cannot be used as standalone type expressions",
             }),
 
             Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                message: "operators cannot be used as standalone type expressions",
             }),
 
             Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
-                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                message: "operators cannot be used as standalone type expressions",
             }),
 
             _ => Err(CompileError::UnsupportedForm {
                 loc,
                 op_loc: None,
                 op: None,
-                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                message: "this type expression form is not supported yet",
             }),
         }
     }
@@ -1752,7 +1748,7 @@ impl Program {
                     loc: kw.loc.clone(),
                     op_loc: Some(kw.loc),
                     op: Some(kw.value),
-                    message: ERR_UNSUPPORTED_TYPE_EXPR,
+                    message: "type literals must provide exactly one field block",
                 });
             }
         };
@@ -1762,7 +1758,7 @@ impl Program {
                 loc: kw.loc.clone(),
                 op_loc: Some(kw.loc),
                 op: Some(kw.value),
-                message: ERR_UNSUPPORTED_TYPE_EXPR,
+                message: "type literals cannot have extra items beyond the field block",
             });
         }
 
@@ -1773,7 +1769,7 @@ impl Program {
                         loc: gen_expr.loc,
                         op_loc: Some(kw.loc),
                         op: Some(kw.value),
-                        message: ERR_UNSUPPORTED_TYPE_EXPR,
+                        message: "generic parameters on type literals are not supported",
                     });
                 };
                 debug_assert!(open.value == "[");
@@ -1802,7 +1798,7 @@ impl Program {
                     loc: fields_expr.loc,
                     op_loc: Some(kw.loc),
                     op: Some(kw.value),
-                    message: ERR_UNSUPPORTED_TYPE_EXPR,
+                    message: "type literals currently require a `{}` block of fields",
                 });
             }
         };
@@ -1892,10 +1888,6 @@ mod var_scope_test {
 #[cfg(test)]
 mod lowering_tests {
     use super::*;
-    use crate::error_messages::{
-        ERR_ACCESS_EXPECTS_NAME, ERR_LABEL_ALREADY_DEFINED, ERR_LABEL_NAME_REQUIRED,
-        ERR_MEMBER_METHOD_NAME_COLLISION,
-    };
     use crate::parsing::Parser;
     use crate::program::{CompileError, Defined, Program};
 
@@ -1999,7 +1991,7 @@ mod lowering_tests {
         let err = program.gather_definition(expr).unwrap_err();
         match err {
             CompileError::SimpleError { s, .. } => {
-                assert_eq!(s, ERR_MEMBER_METHOD_NAME_COLLISION);
+                assert_eq!(s, MEMBER_METHOD_COLLISION_MSG);
             }
             other => panic!("expected simple error, got {other:?}"),
         }
@@ -2405,7 +2397,7 @@ mod lowering_tests {
         let err = program.lower_value(expr).unwrap_err();
         match err {
             CompileError::SimpleError { s, .. } => {
-                assert_eq!(s, ERR_ACCESS_EXPECTS_NAME);
+                assert_eq!(s, ACCESS_EXPECTS_NAME_MSG);
             }
             _ => panic!("expected simple error"),
         }
@@ -2677,7 +2669,7 @@ mod lowering_tests {
         let err = program.lower_all(&mut parser).unwrap_err();
 
         match err {
-            CompileError::SimpleError { s, .. } => assert_eq!(s, ERR_LABEL_NAME_REQUIRED),
+            CompileError::SimpleError { s, .. } => assert_eq!(s, LABEL_NAME_REQUIRED_MSG),
             other => panic!("expected label syntax error, got {other:?}"),
         }
     }
@@ -2690,7 +2682,7 @@ mod lowering_tests {
         let err = program.lower_all(&mut parser).unwrap_err();
 
         match err {
-            CompileError::SimpleError { s, .. } => assert_eq!(s, ERR_LABEL_ALREADY_DEFINED),
+            CompileError::SimpleError { s, .. } => assert_eq!(s, LABEL_ALREADY_DEFINED_MSG),
             other => panic!("expected duplicate label error, got {other:?}"),
         }
     }
