@@ -193,7 +193,7 @@ mod tests {
 
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
-        program.lower_all(&mut parser);
+        program.lower_all(&mut parser).unwrap();
 
         assert!(program.get_macro("m").is_some());
         assert!(program.get_macro("id").is_some());

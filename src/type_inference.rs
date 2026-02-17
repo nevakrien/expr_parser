@@ -171,6 +171,19 @@ pub enum TypeValue {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PointerStyle {
+    Raw,
+    Ref(RefStyle),
+}
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RefStyle {
+    Local(u32),
+    External(u32),
+    Static,
+    Raw,
+}
+
 impl Program {
     //TODO make it so we can store TypeId here directly
     //or perhaps move type expressions to use some sort of global type context

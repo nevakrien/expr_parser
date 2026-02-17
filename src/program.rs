@@ -187,10 +187,6 @@ impl Program {
         self.id_pattern(loc, Pattern::Poison)
     }
 
-    pub(crate) fn poison_type_expr(&mut self, loc: Loc) -> TExpId {
-        self.id_type_expr(loc, TypeExpr::Poison)
-    }
-
     pub fn id_value(&mut self, loc: Loc, value: Value) -> ValId {
         let id = ValId(self.values.len());
         self.values.push(value);
@@ -539,32 +535,6 @@ impl Program {
         }
 
         Ok(result)
-    }
-
-    pub(crate) fn with_function_labels_value<T>(&mut self, f: impl FnOnce(&mut Program) -> T) -> T {
-        self.function_labels.push(IdHashMap::default());
-        let result = f(self);
-        let labels = self
-            .function_labels
-            .pop()
-            .expect("function label scope missing");
-
-        for (name, state) in labels {
-            if state.defined_loc.is_some() {
-                continue;
-            }
-
-            let mut locs = state.pending_uses;
-            if locs.is_empty() {
-                continue;
-            }
-
-            let name = self.str_intern.resolve(name).to_string();
-            locs.shrink_to_fit();
-            self.push_lowering_error(CompileError::UnresolvedLabel { name, locs });
-        }
-
-        result
     }
 
     pub(crate) fn use_label_name_for_goto(

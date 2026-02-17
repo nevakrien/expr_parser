@@ -1,7 +1,6 @@
 use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::ir::NameId;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
-use expr_parser::program::CompileError;
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
 use expr_parser::type_inference::{SolvedTypes, TypeStore, run_typechecker};

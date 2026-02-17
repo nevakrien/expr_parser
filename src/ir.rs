@@ -1098,9 +1098,22 @@ impl Program {
 
         let _calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
 
-        self.with_function_labels_value(|this| {
-            this.lower_fn_expr_inner(loc, fn_kw, generics_expr, param_items, ret_expr, body_expr)
-        })
+        match self.with_function_labels(|this| {
+            Ok(this.lower_fn_expr_inner(
+                loc,
+                fn_kw,
+                generics_expr,
+                param_items,
+                ret_expr,
+                body_expr,
+            ))
+        }) {
+            Ok(value) => value,
+            Err(err) => {
+                self.push_lowering_error(err);
+                Value::Poison
+            }
+        }
     }
 
     fn lower_fn_expr_inner(
@@ -2417,7 +2430,7 @@ mod lowering_tests {
         let src = "f = fn[T](x:T){ let y:T = x; y }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser);
+        program.lower_all(&mut parser).unwrap();
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2441,7 +2454,7 @@ mod lowering_tests {
         let src = "f = cfn(x:int)->int;";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser);
+        program.lower_all(&mut parser).unwrap();
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2480,7 +2493,7 @@ mod lowering_tests {
         let src = "type S = cstruct { x:int };";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser);
+        program.lower_all(&mut parser).unwrap();
 
         let s_name = program.str_intern.intern("S");
         let s_id = *program
@@ -2510,7 +2523,7 @@ mod lowering_tests {
         let src = "f = fn(){ g() } g = fn(){ f() }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser);
+        program.lower_all(&mut parser).unwrap();
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2804,7 +2817,7 @@ mod lowering_tests {
         let src = "f = fn(){ goto `err; `err; }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser);
+        program.lower_all(&mut parser).unwrap();
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
