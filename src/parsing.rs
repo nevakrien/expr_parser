@@ -446,30 +446,60 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Fast path: ASCII whitespace. Slow path: Unicode whitespace (`char::is_whitespace()`).
+    #[inline]
+    fn skip_line_comment(&mut self) {
+        let bytes = self.src.as_bytes();
+        while let Some(&b) = bytes.get(self.pos) {
+            self.pos += 1;
+            //this may seem like it wont work for unicode
+            //its fine since \n cant be a byte in any unicode
+            //and because we require specifically newline for comment end
+            if b == b'\n' {
+                break;
+            }
+        }
+    }
+
+    /// Fast path: ASCII whitespace and `//` comments.
+    /// Slow path: Unicode whitespace (`char::is_whitespace()`).
     #[inline]
     fn skip_whitespace(&mut self) {
         let bytes = self.src.as_bytes();
 
-        // ---- fast ASCII whitespace loop ----
-        while let Some(&b) = bytes.get(self.pos) {
-            if b.is_ascii_whitespace() {
-                self.pos += 1;
-            } else {
-                break;
+        loop {
+            // ---- fast ASCII whitespace loop ----
+            while let Some(&b) = bytes.get(self.pos) {
+                if b.is_ascii_whitespace() {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+
+            if matches!(
+                (bytes.get(self.pos), bytes.get(self.pos + 1)),
+                (Some(b'/'), Some(b'/'))
+            ) {
+                self.pos += 2;
+                self.skip_line_comment();
+                continue;
+            }
+
+            // If EOF or next byte is ASCII, we're done.
+            let Some(&b0) = bytes.get(self.pos) else {
+                return;
+            };
+            if b0.is_ascii() {
+                return;
+            }
+
+            // Otherwise, only now pay for UTF-8 decoding.
+            let before = self.pos;
+            self.skip_unicode_whitespace_slow();
+            if self.pos == before {
+                return;
             }
         }
-
-        // If EOF or next byte is ASCII, we're done.
-        let Some(&b0) = bytes.get(self.pos) else {
-            return;
-        };
-        if b0.is_ascii() {
-            return;
-        }
-
-        // Otherwise, only now pay for UTF-8 decoding.
-        self.skip_unicode_whitespace_slow();
     }
 
     /* =============================
@@ -1560,6 +1590,32 @@ mod lex_tests {
         // "match" here should still be recognized as a keyword/operator
         let t5 = lex.next_token().unwrap().unwrap();
         assert_eq!(t5.value, Token::Operator("match"));
+
+        assert_eq!(lex.next_token().unwrap(), None);
+    }
+
+    #[test]
+    fn line_comments_are_skipped() {
+        let src = "// comment\nlet x = 1; // trailing\nx";
+        let mut lex = Parser::new(src, 0);
+
+        let t0 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t0.value, Token::Operator("let"));
+
+        let t1 = lex.next_token().unwrap().unwrap();
+        assert!(matches!(t1.value, Token::Ident(ref s) if s == "x"));
+
+        let t2 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t2.value, Token::Operator("="));
+
+        let t3 = lex.next_token().unwrap().unwrap();
+        assert!(matches!(t3.value, Token::NumLit(1)));
+
+        let t4 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t4.value, Token::Operator(";"));
+
+        let t5 = lex.next_token().unwrap().unwrap();
+        assert!(matches!(t5.value, Token::Ident(ref s) if s == "x"));
 
         assert_eq!(lex.next_token().unwrap(), None);
     }

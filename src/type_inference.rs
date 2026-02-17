@@ -29,7 +29,7 @@ use crate::ir::{
 use crate::parsing::Loc;
 use crate::string_intern::{
     ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR, DIV_STR,
-    EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
+    EQ_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
     POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SUB_STR, StrId,
 };
 use std::collections::HashMap;
@@ -5478,7 +5478,6 @@ fn is_unary_operator_overload_name(name: StrId) -> bool {
 fn is_known_special_member_method_name(name: StrId) -> bool {
     is_binary_operator_overload_name(name)
         || is_unary_operator_overload_name(name)
-        || name == FREE_STR
         || name == DEREF_STR
         || name == DEREF_MUT_STR
 }
@@ -5563,20 +5562,6 @@ fn is_self_like_member_input_type(store: &TypeStore, input: TypeId, struct_name:
             raw,
             mutable: _,
         } => !*raw && is_named_struct_type(store, *tgt, struct_name),
-        _ => false,
-    }
-}
-
-#[inline(always)]
-fn is_mut_ref_to_named_struct_input_type(
-    store: &TypeStore,
-    input: TypeId,
-    struct_name: NameId,
-) -> bool {
-    match store.type_value(input) {
-        TypeValue::Ptr { tgt, raw, mutable } => {
-            !*raw && *mutable && is_named_struct_type(store, *tgt, struct_name)
-        }
         _ => false,
     }
 }
@@ -5759,41 +5744,6 @@ fn check_special_member_method_signature(
         return;
     };
     let inputs = inputs.to_vec();
-
-    if method_name == FREE_STR {
-        let Some(first_input) = inputs.first().copied() else {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "special member methods must take `self` as the first parameter",
-            });
-            return;
-        };
-
-        if !is_mut_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__free` must take `&mut self` as the first parameter",
-            });
-            return;
-        }
-
-        let additional_args = inputs.len() - 1;
-        if additional_args != 0 {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__free` must not take parameters after `self`",
-            });
-            return;
-        }
-
-        if output != BuiltinType::Void.into() {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__free` must return `void`",
-            });
-        }
-        return;
-    }
 
     if method_name == DEREF_STR {
         let Some(first_input) = inputs.first().copied() else {
@@ -7917,10 +7867,40 @@ mod type_infer_tests {
         );
     }
 
+    const BOX_EXAMPLE:&str = r#"
+            //this is a system decleration to make destructors nice
+            __free = fn[T](p:&mut T)
+            //this impl is temporary later we actually make this a buildin
+            //specifically during link we look for undeclared/implmeneted __free
+            //if they exist instead of reporting link error compiler inserts them
+            __free = fn[T](p:&mut T){
+              __user_free(p);
+              //compiler may auto generate code here
+            }
+
+            __user_free = fn[T](p:&mut T)
+            __user_free = fn[T](p:&mut T){
+              //this the compiler doesnt touch
+            }
+
+            //user code
+            free = cfn(p:*void)
+            __free = fn[T](b:&mut Box[T]){
+            __free(&*b.ptr)
+            free(b->ptr as *void)
+            }
+
+            Box = struct[T]{ptr:*T}
+            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+            f=fn(b:Box[[int]])->int { let y:int = b[0]; y }
+            
+        "#;
     #[test]
     fn generic_box_array_index_chain_includes_box_step() {
-        let src = "free = cfn(p:*void); Box = struct[T]{ptr:*T}; Box.__free = fn[T](b:&mut Box[T]){free(b->ptr as *void)} Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr} Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr} f=fn(b:Box[[int]])->int { let y:int = b[0]; y };";
-        let program = gather_program(src);
+
+        let program = gather_program(BOX_EXAMPLE);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
@@ -7947,6 +7927,16 @@ mod type_infer_tests {
             ],
             "unexpected implicit deref chain for generic Box indexing"
         );
+    }
+
+    #[test]
+    fn readme_style_free_and_user_free_box_example_typechecks_exact_snippet() {
+
+
+        let program = gather_program(BOX_EXAMPLE);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
     }
 
     #[test]
@@ -9560,33 +9550,21 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn free_member_requires_mut_ref_self_and_void_output() {
-        let errs = infer_global_errs("S=struct{}; S.__free = fn(self:&S)->int { 1 }; f=fn(){};");
-        assert_eq!(errs.len(), 1);
-        assert!(errs.iter().any(|err| {
-            matches!(
-                err,
-                TypeError::Simple {
-                    message: "`__free` must take `&mut self` as the first parameter",
-                    ..
-                }
-            )
-        }));
+    fn free_member_name_is_reserved_and_rejected() {
+        let errs = infer_global_errs("S=struct{}; S.__free = fn(self:&mut S){}; f=fn(){};");
+        assert!(
+            errs.iter()
+                .any(|err| { matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }) })
+        );
     }
 
     #[test]
-    fn free_member_non_self_param_reports_single_error() {
-        let errs = infer_global_errs("S=struct{}; S.__free = fn(x:int){ }; f=fn(){};");
-        assert_eq!(errs.len(), 1);
-        assert!(errs.iter().any(|err| {
-            matches!(
-                err,
-                TypeError::Simple {
-                    message: "`__free` must take `&mut self` as the first parameter",
-                    ..
-                }
-            )
-        }));
+    fn user_free_member_name_is_reserved_and_rejected() {
+        let errs = infer_global_errs("S=struct{}; S.__user_free = fn(self:&mut S){}; f=fn(){};");
+        assert!(
+            errs.iter()
+                .any(|err| { matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }) })
+        );
     }
 
     #[test]
@@ -9689,7 +9667,6 @@ mod type_infer_tests {
     fn generic_struct_deref_methods_specialize_from_receiver_type() {
         let src = r#"
             Box = struct[T]{p:*T}
-            Box.__free = fn[T](b:&mut Box[T]){}
             Box.__deref = fn[T](b:&Box[T])->&T { &*(*b).p }
             Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*(*b).p }
             f = fn(b:Box[int])->int { *b }

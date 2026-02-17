@@ -22,6 +22,15 @@ Global signature compatibility rules:
 
 These same declaration/implementation compatibility rules also apply to struct member methods; lowering stores each `Struct.method` entry as a `FunctionSet` rather than a single value.
 
+Statement boundary note:
+
+- Top-level statements are expression statements with optional `;` parsing support.
+- In multiline source blobs, declaration-only forms like `name = fn(... )` should usually end with `;` to avoid being parsed as part of a following expression.
+
+Comments:
+
+- The lexer skips `//` line comments (from `//` to end-of-line) as trivia.
+
 Type-level representation:
 
 - Function types carry calling convention and generic arity in `TypeValue::Func { calling_convention, generics, ... }`.
@@ -118,7 +127,8 @@ Method access/currying:
 ## Special Member Methods (Quick Reference)
 
 - Reserved internal names begin with `__` (except names ending with `_` are not treated as reserved internals).
-- Implemented special signatures include operator overloads (`__add`, `__neg`, ...), `__free`, `__deref`, and `__deref_mut`.
+- Implemented special member signatures include operator overloads (`__add`, `__neg`, ...), `__deref`, and `__deref_mut`.
+- Destruction hooks (`__free`, `__user_free`) are global predeclared function families, not member methods.
 - Signature checks for these happen during global signature inference.
 
 ## Labels and `goto`

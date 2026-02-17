@@ -228,7 +228,7 @@ Main orchestration is two-phase:
    - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass, where each entry stores:
      - a `reference_type` (`TypeId`) for the function family,
      - `specializations: HashMap<TypeId, SolvedFunctionSpecialization>` with named fields (`implementation`, `first_decl`),
-   - validates special member method signatures (`__add`, unary overload names, `__free`) against each method set reference type,
+   - validates special member method signatures (`__add`, unary overload names, `__deref`, `__deref_mut`) against each method set reference type,
    - builds `TypeStore.struct_overloads` inline while walking member method sets (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.
 2. `infer_value_internals`
@@ -382,10 +382,10 @@ Then `finalize`:
 - Even though runtime/operator-call dispatch is still TODO, signature validation now enforces shape rules for special member names:
   - binary overload names (`__add`, `__sub`, etc.): `self`-like first parameter + exactly one extra parameter,
   - unary overload names (`__neg`, `__not`, `__bitnot`, `__pre_inc`, `__post_inc`, `__pre_dec`, `__post_dec`): `self`-like first parameter + no extra parameters,
-  - `__free`: first parameter must be `&mut self`, no extra parameters, return type `void`; checks short-circuit on the first failing `__free` requirement so one root error is emitted.
   - `__deref`: first parameter must be `&self`, no extra parameters, and return type must be a non-raw shared reference (`&T`).
   - `__deref_mut`: first parameter must be `&mut self`, no extra parameters, and return type must be a non-raw mutable reference (`&mut T`).
   - if both `__deref` and `__deref_mut` exist on the same struct, both must dereference to the same `T` target.
+  - `__free` and `__user_free` are now global predeclared/destructor hooks (not member methods). A member method named `__free`/`__user_free` is treated as an unknown reserved builtin member name and errors.
 - The validation is now based on solved global function type signatures (`TypeValue::Func`), not raw signature clusters.
 - Member method names that start with `__` and do not end with `_` are treated as reserved builtin names; unknown reserved names emit a dedicated type error.
 

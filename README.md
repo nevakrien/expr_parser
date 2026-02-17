@@ -140,8 +140,17 @@ this already lets us have a smart pointer with something like this
 ```
 //this is a system decleration to make destructors nice
 __free = fn[T](p:&mut T)
-__free = fn[T](p:&mut T){}
+__free = fn[T](p:&mut T){
+  __user_free(p);
+  //compiler may auto generate code here
+}
 
+__user_free = fn[T](p:&mut T)
+__user_free = fn[T](p:&mut T){
+  //this the compiler doesnt touch
+}
+
+//user code
 free = cfn(p:*void);
 __free = fn[T](b:&mut Box[T]){
 __free(&*b.ptr)
