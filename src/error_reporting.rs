@@ -116,19 +116,16 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report = Report::build(
-                    ReportKind::Error,
-                    primary.file,
-                    primary.range.start,
-                )
-                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
-                    format!("Unresolved name '{name}'")
-                } else {
-                    format!(
+                let mut report =
+                    Report::build(ReportKind::Error, primary.file, primary.range.start)
+                        .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                            format!("Unresolved name '{name}'")
+                        } else {
+                            format!(
                         "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
                         locs.len()
                     )
-                });
+                        });
 
                 for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
@@ -670,6 +667,62 @@ impl ErrorReporter {
                             .with_message(expected_msg)
                             .with_color(Color::Cyan),
                     );
+
+                self.print_report(report.finish())
+            }
+
+            TypeError::FunctionSpecializationRequiresPredeclaration {
+                specialization,
+                first_definition,
+            } => {
+                let specialization_loc = program.value_loc(*specialization);
+                let first_loc = program.value_loc(*first_definition);
+                let report = Report::build(
+                    ReportKind::Error,
+                    specialization_loc.file,
+                    specialization_loc.range.start,
+                )
+                .with_message(
+                    "function specialization requires a predeclaration with compatible generics",
+                )
+                .with_label(
+                    Label::new((specialization_loc.file, specialization_loc.range.clone()))
+                        .with_message("specialized implementation here")
+                        .with_color(Color::Red),
+                )
+                .with_label(
+                    Label::new((first_loc.file, first_loc.range.clone()))
+                        .with_message("first definition is here")
+                        .with_color(Color::Cyan),
+                );
+
+                self.print_report(report.finish())
+            }
+
+            TypeError::DuplicateFunctionImplementationSpecialization {
+                first_implementation,
+                duplicate_implementation,
+                specialization,
+            } => {
+                let duplicate_loc = program.value_loc(*duplicate_implementation);
+                let first_loc = program.value_loc(*first_implementation);
+                let specialization = store.get_type_string(program, *specialization);
+                let report = Report::build(
+                    ReportKind::Error,
+                    duplicate_loc.file,
+                    duplicate_loc.range.start,
+                )
+                .with_message("duplicate function implementation specialization is not allowed")
+                .with_label(
+                    Label::new((duplicate_loc.file, duplicate_loc.range.clone()))
+                        .with_message(format!("duplicate specialization `{specialization}`"))
+                        .with_color(Color::Red),
+                )
+                .with_label(
+                    Label::new((first_loc.file, first_loc.range.clone()))
+                        .with_message("first implementation with this specialization")
+                        .with_color(Color::Cyan),
+                );
 
                 self.print_report(report.finish())
             }

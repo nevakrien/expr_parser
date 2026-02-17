@@ -54,10 +54,40 @@ pub enum CompileError {
 }
 
 #[derive(Debug)]
+pub struct FunctionSet {
+    pub declarations: Vec<ValId>,
+    pub implementations: Vec<ValId>,
+}
+
+impl FunctionSet {
+    pub fn new() -> Self {
+        Self {
+            declarations: Vec::new(),
+            implementations: Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, value: ValId, has_body: bool) {
+        if has_body {
+            self.implementations.push(value);
+        } else {
+            self.declarations.push(value);
+        }
+    }
+
+    pub fn values(&self) -> impl Iterator<Item = ValId> + '_ {
+        self.declarations
+            .iter()
+            .copied()
+            .chain(self.implementations.iter().copied())
+    }
+}
+
+#[derive(Debug)]
 pub enum Defined {
     ToBeDefined,
     // Value(ValId),
-    Func(ValId),
+    Func(FunctionSet),
     Type(TExpId),
     BuildinType(TypeValue),
     Macro(Macro),
@@ -102,7 +132,7 @@ pub struct Program {
 
     pub scopes: Vec<(IdHashMap<StrId, NameId>, IdHashMap<StrId, LifeTimeId>)>,
     pub pending_names: IdHashMap<NameId, Vec<Loc>>,
-    pub member_methods: IdHashMap<NameId, IdHashMap<StrId, ValId>>,
+    pub member_methods: IdHashMap<NameId, IdHashMap<StrId, FunctionSet>>,
 
     label_names: Vec<StrId>,
     pub(crate) function_labels: Vec<IdHashMap<StrId, PendingLabel>>,
@@ -349,7 +379,12 @@ impl Program {
         }
 
         match self.definitions.get(&id) {
-            Some(Defined::Func(val)) => Some(self.value_loc(*val)),
+            Some(Defined::Func(funcs)) => funcs
+                .declarations
+                .first()
+                .copied()
+                .or_else(|| funcs.implementations.first().copied())
+                .map(|val| self.value_loc(val)),
             // Some(Defined::Raw(expr)) => Some(expr.loc.clone()),
             Some(Defined::Type(expr)) => Some(self.type_expr_loc(*expr)),
             // Macro(Macro),
@@ -449,7 +484,7 @@ impl Program {
                 let rhs = items.pop().unwrap();
                 let lhs = items.pop().unwrap();
 
-                if let Ok(name) = self.get_ident_for_global(lhs) {
+                if let Ok(name) = self.get_ident_for_global(lhs, false) {
                     let v = self.with_scope_value(|this| {
                         this.lower_type_expr(Located {
                             loc: rhs.loc,
@@ -639,7 +674,11 @@ impl Program {
         id
     }
 
-    fn get_ident_for_global(&mut self, lhs: LExpr) -> CResult<NameId> {
+    fn get_ident_for_global(
+        &mut self,
+        lhs: LExpr,
+        allow_existing_function: bool,
+    ) -> CResult<NameId> {
         let ans = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
@@ -650,6 +689,10 @@ impl Program {
                     .copied()
                 {
                     if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
+                        id
+                    } else if allow_existing_function
+                        && matches!(self.definitions.get(&id), Some(Defined::Func(_)))
+                    {
                         id
                     } else {
                         let existing_loc = self.definition_loc(id);
@@ -672,7 +715,9 @@ impl Program {
             }
         };
 
-        self.set_definition_loc(ans, lhs.loc);
+        if !self.definition_locs.contains_key(&ans) {
+            self.set_definition_loc(ans, lhs.loc);
+        }
         self.pending_names.remove(&ans);
         Ok(ans)
     }
@@ -706,43 +751,66 @@ impl Program {
                 })
             });
 
+            let Value::Func { body, .. } = self.value(def_value) else {
+                return;
+            };
+            let has_body = body.is_some();
+
             let methods = self.member_methods.entry(struct_name_id).or_default();
-            match methods.entry(method_name) {
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    self.push_lowering_error(CompileError::SimpleError {
-                        loc: rhs_loc,
-                        s: MEMBER_METHOD_COLLISION_MSG,
-                    });
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(def_value);
-                }
-            }
+            methods
+                .entry(method_name)
+                .or_insert_with(FunctionSet::new)
+                .push(def_value, has_body);
             return;
         }
 
-        let Ok(name_id) = self.get_ident_for_global(lhs) else {
-            return;
-        };
-
-        let def: Defined = match rhs_value {
+        match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
+                let Ok(name_id) = self.get_ident_for_global(lhs, false) else {
+                    return;
+                };
+
                 match Macro::new(args, rhs_loc) {
-                    Ok(macro_def) => Defined::Macro(macro_def),
+                    Ok(macro_def) => {
+                        self.definitions.insert(name_id, Defined::Macro(macro_def));
+                    }
                     Err(e) => {
                         self.push_lowering_error(e);
-                        return;
                     }
                 }
             }
             Expr::Prefix(ref fn_kw, _) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
+                let Ok(name_id) = self.get_ident_for_global(lhs, true) else {
+                    return;
+                };
+
                 let v = self.with_scope_value(|this| {
                     this.lower_value(Located {
                         loc: rhs_loc,
                         value: rhs_value,
                     })
                 });
-                Defined::Func(v)
+
+                let Value::Func { body, .. } = self.value(v) else {
+                    return;
+                };
+                let has_body = body.is_some();
+
+                match self.definitions.get_mut(&name_id) {
+                    Some(Defined::Func(functions)) => {
+                        functions.push(v, has_body);
+                    }
+                    Some(Defined::ToBeDefined) | None => {
+                        let mut functions = FunctionSet::new();
+                        functions.push(v, has_body);
+                        self.definitions.insert(name_id, Defined::Func(functions));
+                    }
+                    Some(_) => {
+                        unreachable!(
+                            "function reassignment should be gated by get_ident_for_global"
+                        )
+                    }
+                }
             }
 
             Expr::Prefix(ref kw, _)
@@ -751,24 +819,25 @@ impl Program {
                     || kw.value == "enum"
                     || kw.value == "union" =>
             {
+                let Ok(name_id) = self.get_ident_for_global(lhs, false) else {
+                    return;
+                };
+
                 let v = self.with_scope_value(|this| {
                     this.lower_type_expr(Located {
                         loc: rhs_loc,
                         value: rhs_value,
                     })
                 });
-                Defined::Type(v)
+                self.definitions.insert(name_id, Defined::Type(v));
             }
             _ => {
                 self.push_lowering_error(CompileError::SimpleError {
                     loc: rhs_loc,
                     s: "global definitions must assign a macro, function, or type literal",
                 });
-                return;
             }
         };
-
-        self.definitions.insert(name_id, def);
     }
 
     fn try_member_method_lhs(&mut self, lhs: &LExpr) -> Option<(NameId, StrId)> {

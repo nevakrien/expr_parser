@@ -35,7 +35,7 @@ use crate::string_intern::{
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
 
-use crate::program::{Defined, Program};
+use crate::program::{Defined, FunctionSet, Program};
 
 // use std::ffi::CStr;
 // unsafe extern "C" {
@@ -249,8 +249,10 @@ pub struct TypeStore {
 
 #[derive(Debug, Default, Clone)]
 pub struct StructOverloadInfo {
-    deref: Option<ValId>,
-    deref_mut: Option<ValId>,
+    deref: Option<TypeId>,
+    deref_site: Option<ValId>,
+    deref_mut: Option<TypeId>,
+    deref_mut_site: Option<ValId>,
     operators: IdHashMap<StrId, StructOperatorOverload>,
 }
 
@@ -563,8 +565,21 @@ pub struct SolvedTypes {
     pub val_types: Vec<TypeId>,
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: Vec<TypeId>,
+    pub function_types: IdHashMap<NameId, SolvedFunctionTypes>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SolvedFunctionTypes {
+    pub reference_type: TypeId,
+    pub specializations: HashMap<TypeId, SolvedFunctionSpecialization>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolvedFunctionSpecialization {
+    pub implementation: Option<ValId>,
+    pub first_decl: Option<ValId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -582,6 +597,7 @@ impl SolvedTypes {
             pat_types: vec![UNKNOWN_TYPE; program.patterns.len()],
             typedef_types,
             val_types: vec![UNKNOWN_TYPE; program.values.len()],
+            function_types: IdHashMap::default(),
             member_method_types: IdHashMap::default(),
             implicit_derefs: IdHashMap::default(),
         }
@@ -620,6 +636,11 @@ impl SolvedTypes {
     #[inline(always)]
     pub fn member_method_type(&self, id: ValId) -> Option<SolvedMemberMethodType> {
         self.member_method_types.get(&id).copied()
+    }
+
+    #[inline(always)]
+    pub fn function_types_by_name(&self, id: NameId) -> Option<&SolvedFunctionTypes> {
+        self.function_types.get(&id)
     }
 
     #[inline(always)]
@@ -803,6 +824,17 @@ pub enum TypeError {
         pattern: PatId,
         clash: TypeClash,
     },
+
+    FunctionSpecializationRequiresPredeclaration {
+        specialization: ValId,
+        first_definition: ValId,
+    },
+
+    DuplicateFunctionImplementationSpecialization {
+        first_implementation: ValId,
+        duplicate_implementation: ValId,
+        specialization: TypeId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -849,11 +881,31 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     }
 
     for (_n, methods) in program.member_methods.iter() {
-        for (_s, m) in methods.iter() {
+        for (_s, method_set) in methods.iter() {
+            for m in method_set.values() {
+                function_checked += 1;
+
+                let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, m)
+                else {
+                    continue;
+                };
+                err_count += errs.len();
+
+                for e in errs {
+                    reporter.report_type_error(program, &types, &e)?;
+                }
+            }
+        }
+    }
+
+    for (_n, def) in program.definitions.iter() {
+        let Defined::Func(funcs) = def else {
+            continue;
+        };
+        for v in funcs.values() {
             function_checked += 1;
 
-            let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *m)
-            else {
+            let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, v) else {
                 continue;
             };
             err_count += errs.len();
@@ -861,25 +913,6 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
             for e in errs {
                 reporter.report_type_error(program, &types, &e)?;
             }
-        }
-    }
-
-    for (_n, def) in program.definitions.iter() {
-        let Defined::Func(v) = def else {
-            continue;
-        };
-        function_checked += 1;
-
-        // println!("working on {}",program.name_string(*n));
-        // unsafe { std::arch::asm!("int3"); }
-
-        let Err(errs) = infer_value_internals(program, &mut types, &mut solved_types, *v) else {
-            continue;
-        };
-        err_count += errs.len();
-
-        for e in errs {
-            reporter.report_type_error(program, &types, &e)?;
         }
     }
 
@@ -927,8 +960,74 @@ pub fn infer_global_types<'a>(
         return Err(ctx.ex.errors);
     }
 
+    ctx.ex.store.struct_overloads.clear();
     for (struct_name, methods) in program.member_methods.iter() {
-        for (method_name, m) in methods.iter() {
+        for (_method_name, method_set) in methods.iter() {
+            for m in method_set.values() {
+                //each function must solve by itself.
+                //since there isnt a body its fine to solve in order
+                //note that namespace on generics gurntees this works for the most outer scope
+                if let Value::Func {
+                    calling_convention,
+                    generics,
+                    params,
+                    output_type,
+                    body: _,
+                } = ctx.ex.program.value(m)
+                {
+                    ctx.clear_local_state();
+                    type_check_func_signature(
+                        &mut ctx,
+                        m,
+                        calling_convention,
+                        generics,
+                        params,
+                        output_type,
+                    );
+                };
+            }
+        }
+
+        let mut overloads = StructOverloadInfo::default();
+        for (method_name, method_set) in methods.iter() {
+            let Some((reference_type, reference_site)) =
+                check_and_record_function_set_types(&mut ctx, None, method_set)
+            else {
+                continue;
+            };
+
+            check_special_member_method_signature(
+                &mut ctx,
+                reference_site,
+                reference_type,
+                *struct_name,
+                *method_name,
+            );
+            maybe_insert_member_overload(
+                ctx.ex.store,
+                &mut overloads,
+                *struct_name,
+                *method_name,
+                reference_site,
+                reference_type,
+            );
+        }
+
+        check_struct_deref_targets_compatible(&mut ctx, *struct_name, &overloads);
+        if overloads.has_any() {
+            ctx.ex
+                .store
+                .struct_overloads
+                .insert(*struct_name, overloads);
+        }
+    }
+
+    for (_n, def) in program.definitions.iter() {
+        let Defined::Func(funcs) = def else {
+            continue;
+        };
+
+        for v in funcs.values() {
             //each function must solve by itself.
             //since there isnt a body its fine to solve in order
             //note that namespace on generics gurntees this works for the most outer scope
@@ -938,58 +1037,318 @@ pub fn infer_global_types<'a>(
                 params,
                 output_type,
                 body: _,
-            } = ctx.ex.program.value(*m)
+            } = ctx.ex.program.value(v)
             {
                 ctx.clear_local_state();
                 type_check_func_signature(
                     &mut ctx,
-                    *m,
+                    v,
                     calling_convention,
                     generics,
                     params,
                     output_type,
                 );
-                check_special_member_method_signature(&mut ctx, *m, *struct_name, *method_name);
             };
         }
-        check_struct_deref_targets_compatible(&mut ctx, *struct_name);
     }
 
-    for (_n, def) in program.definitions.iter() {
-        let Defined::Func(v) = def else {
+    for (name, def) in ctx.ex.program.definitions.iter() {
+        let Defined::Func(functions) = def else {
             continue;
         };
-
-        //each function must solve by itself.
-        //since there isnt a body its fine to solve in order
-        //note that namespace on generics gurntees this works for the most outer scope
-        if let Value::Func {
-            calling_convention,
-            generics,
-            params,
-            output_type,
-            body: _,
-        } = ctx.ex.program.value(*v)
-        {
-            ctx.clear_local_state();
-            type_check_func_signature(
-                &mut ctx,
-                *v,
-                calling_convention,
-                generics,
-                params,
-                output_type,
-            );
-        };
+        let _ = check_and_record_function_set_types(&mut ctx, Some(*name), functions);
     }
-
-    build_struct_overload_cache(&mut ctx);
 
     if ctx.ex.errors.is_empty() {
         Ok(ctx.ex.ans)
     } else {
         Err(ctx.ex.errors)
     }
+}
+
+fn declaration_accepts_implementation(
+    store: &TypeStore,
+    declaration: TypeId,
+    implementation: TypeId,
+    generic_map: &mut IdHashMap<GenId, TypeId>,
+) -> bool {
+    let declared = store.type_value(declaration);
+
+    match declared {
+        TypeValue::Generic(gid) => {
+            if let Some(previous) = generic_map.get(gid) {
+                *previous == implementation
+            } else {
+                generic_map.insert(*gid, implementation);
+                true
+            }
+        }
+        TypeValue::Builtin(b) => {
+            let TypeValue::Builtin(found) = store.type_value(implementation) else {
+                return false;
+            };
+            *b == *found
+        }
+        TypeValue::Tuple(items) => {
+            let TypeValue::Tuple(found_items) = store.type_value(implementation) else {
+                return false;
+            };
+            if items.len() != found_items.len() {
+                return false;
+            }
+            items
+                .iter()
+                .zip(found_items.iter())
+                .all(|(declared, found)| {
+                    declaration_accepts_implementation(store, *declared, *found, generic_map)
+                })
+        }
+        TypeValue::Array(item, size) => {
+            let TypeValue::Array(found_item, found_size) = store.type_value(implementation) else {
+                return false;
+            };
+            size == found_size
+                && declaration_accepts_implementation(store, *item, *found_item, generic_map)
+        }
+        TypeValue::Ptr { tgt, raw, mutable } => {
+            let TypeValue::Ptr {
+                tgt: found_tgt,
+                raw: found_raw,
+                mutable: found_mutable,
+            } = store.type_value(implementation)
+            else {
+                return false;
+            };
+            raw == found_raw
+                && mutable == found_mutable
+                && declaration_accepts_implementation(store, *tgt, *found_tgt, generic_map)
+        }
+        TypeValue::Struct { id, generics } => {
+            let TypeValue::Struct {
+                id: found_id,
+                generics: found_generics,
+            } = store.type_value(implementation)
+            else {
+                return false;
+            };
+
+            if id != found_id || generics.len() != found_generics.len() {
+                return false;
+            }
+
+            generics
+                .iter()
+                .zip(found_generics.iter())
+                .all(|(declared, found)| {
+                    declaration_accepts_implementation(store, *declared, *found, generic_map)
+                })
+        }
+        TypeValue::Func {
+            calling_convention,
+            generics: _,
+            params,
+            ret,
+        } => {
+            let TypeValue::Func {
+                calling_convention: found_calling_convention,
+                generics: _,
+                params: found_params,
+                ret: found_ret,
+            } = store.type_value(implementation)
+            else {
+                return false;
+            };
+
+            if calling_convention != found_calling_convention || params.len() != found_params.len()
+            {
+                return false;
+            }
+
+            params
+                .iter()
+                .zip(found_params.iter())
+                .all(|(declared, found)| {
+                    declaration_accepts_implementation(store, *declared, *found, generic_map)
+                })
+                && declaration_accepts_implementation(store, *ret, *found_ret, generic_map)
+        }
+    }
+}
+
+fn check_and_record_function_set_types(
+    ctx: &mut InferState,
+    name: Option<NameId>,
+    functions: &FunctionSet,
+) -> Option<(TypeId, ValId)> {
+    let first_decl = functions.declarations.first().copied();
+    let first_impl = functions.implementations.first().copied();
+    let mut specializations: HashMap<TypeId, SolvedFunctionSpecialization> = HashMap::new();
+
+    for declaration in &functions.declarations {
+        let Some(ty) = ctx.ex.ans.type_of(*declaration) else {
+            continue;
+        };
+        let entry = specializations
+            .entry(ty)
+            .or_insert(SolvedFunctionSpecialization {
+                implementation: None,
+                first_decl: None,
+            });
+        if entry.first_decl.is_none() {
+            entry.first_decl = Some(*declaration);
+        }
+    }
+
+    if let Some(first_decl) = first_decl {
+        let Some(reference_type) = ctx.ex.ans.type_of(first_decl) else {
+            if let Some(name) = name {
+                ctx.ex.ans.function_types.insert(
+                    name,
+                    SolvedFunctionTypes {
+                        reference_type: UNKNOWN_TYPE,
+                        specializations,
+                    },
+                );
+            }
+            return None;
+        };
+
+        let mut seen_impl_types: HashMap<TypeId, ValId> = HashMap::new();
+        for implementation in &functions.implementations {
+            let Some(ty) = ctx.ex.ans.type_of(*implementation) else {
+                continue;
+            };
+
+            if let Some(previous_impl) = seen_impl_types.insert(ty, *implementation) {
+                ctx.push_error(TypeError::DuplicateFunctionImplementationSpecialization {
+                    first_implementation: previous_impl,
+                    duplicate_implementation: *implementation,
+                    specialization: ty,
+                });
+                continue;
+            }
+
+            let entry = specializations
+                .entry(ty)
+                .or_insert(SolvedFunctionSpecialization {
+                    implementation: None,
+                    first_decl: None,
+                });
+            if entry.implementation.is_none() {
+                entry.implementation = Some(*implementation);
+            }
+        }
+
+        for (specialized_ty, entry) in specializations.iter() {
+            if *specialized_ty == reference_type {
+                continue;
+            }
+
+            if let Some(declaration) = entry.first_decl {
+                let mut generic_map = IdHashMap::default();
+                if !declaration_accepts_implementation(
+                    ctx.ex.store,
+                    reference_type,
+                    *specialized_ty,
+                    &mut generic_map,
+                ) {
+                    ctx.push_error(TypeError::ValuesContradict {
+                        expectation_reason:
+                            "all declarations must be the same as or a specialization of the first declaration",
+                        site: declaration,
+                        found: declaration,
+                        expected_place: first_decl,
+                        clash: simple_type_clash(*specialized_ty, reference_type),
+                    });
+                }
+            }
+        }
+
+        for implementation in &functions.implementations {
+            let Some(found_ty) = ctx.ex.ans.type_of(*implementation) else {
+                continue;
+            };
+            let mut generic_map = IdHashMap::default();
+            if !declaration_accepts_implementation(
+                ctx.ex.store,
+                reference_type,
+                found_ty,
+                &mut generic_map,
+            ) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason:
+                        "function implementation must be a specialization of the declaration type",
+                    site: *implementation,
+                    found: *implementation,
+                    expected_place: first_decl,
+                    clash: simple_type_clash(found_ty, reference_type),
+                });
+            }
+        }
+
+        let reference = Some((reference_type, first_decl));
+        if let Some(name) = name {
+            ctx.ex.ans.function_types.insert(
+                name,
+                SolvedFunctionTypes {
+                    reference_type,
+                    specializations,
+                },
+            );
+        }
+        return reference;
+    } else if let Some(first_impl) = first_impl {
+        for implementation in functions.implementations.iter().copied().skip(1) {
+            ctx.push_error(TypeError::FunctionSpecializationRequiresPredeclaration {
+                specialization: implementation,
+                first_definition: first_impl,
+            });
+        }
+
+        if let Some(ty) = ctx.ex.ans.type_of(first_impl) {
+            specializations
+                .entry(ty)
+                .or_insert(SolvedFunctionSpecialization {
+                    implementation: Some(first_impl),
+                    first_decl: None,
+                });
+
+            let reference = Some((ty, first_impl));
+            if let Some(name) = name {
+                ctx.ex.ans.function_types.insert(
+                    name,
+                    SolvedFunctionTypes {
+                        reference_type: ty,
+                        specializations,
+                    },
+                );
+            }
+            return reference;
+        }
+
+        if let Some(name) = name {
+            ctx.ex.ans.function_types.insert(
+                name,
+                SolvedFunctionTypes {
+                    reference_type: UNKNOWN_TYPE,
+                    specializations,
+                },
+            );
+        }
+        return None;
+    }
+
+    if let Some(name) = name {
+        ctx.ex.ans.function_types.insert(
+            name,
+            SolvedFunctionTypes {
+                reference_type: UNKNOWN_TYPE,
+                specializations,
+            },
+        );
+    }
+
+    None
 }
 
 pub fn infer_value_internals<'a>(
@@ -2998,25 +3357,25 @@ fn global_to_specialized_local(
     ex: &mut ExternState,
     search: &mut SearchState,
     types: &mut TypeState,
-    def_val: &ValId,
+    reference_type: TypeId,
     v: ValId,
 ) -> CId {
-    let Some(t) = ex.ans.type_of(*def_val) else {
+    if reference_type == UNKNOWN_TYPE {
         let loc = ex.program.value_loc(v);
         let c = types.new_cluster();
         ex.push_error(TypeError::Simple {
             loc,
-            message: "global value has no inferred type",
+            message: "global function has no inferred signature",
         });
         search.bind_val(v, c);
         return c;
-    };
+    }
 
     //TODO this check is actually CURRENTLY non exustive
     //we wana make sure that we add a good way to run this
     //would be done as some normlization function somewhere
     //structs especially are weird with this
-    let ans = solved_type_to_specialized_local(ex, types, t, v);
+    let ans = solved_type_to_specialized_local(ex, types, reference_type, v);
     search.bind_val(v, ans);
     ans
 }
@@ -3032,12 +3391,11 @@ fn resolve_member_method_access(
     struct_name: NameId,
     member_name: StrId,
 ) -> CId {
-    let Some(method) = ex
+    let Some(method_set) = ex
         .program
         .member_methods
         .get(&struct_name)
         .and_then(|methods| methods.get(&member_name))
-        .copied()
     else {
         let unresolved = types.new_cluster();
         search.bind_val(access_site, unresolved);
@@ -3048,10 +3406,20 @@ fn resolve_member_method_access(
         return unresolved;
     };
 
-    let Some(method_ty) = ex.ans.type_of(method) else {
-        unreachable!(
-            "global member method signatures must be solved before body inference; missing type for member access"
-        );
+    let reference_site = if let Some(decl) = method_set.declarations.first().copied() {
+        Some(decl)
+    } else {
+        method_set.implementations.first().copied()
+    };
+    let Some(reference_site) = reference_site else {
+        let unresolved = types.new_cluster();
+        search.bind_val(access_site, unresolved);
+        return unresolved;
+    };
+    let Some(method_ty) = ex.ans.type_of(reference_site) else {
+        let unresolved = types.new_cluster();
+        search.bind_val(access_site, unresolved);
+        return unresolved;
     };
 
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, access_site);
@@ -3125,15 +3493,9 @@ fn try_resolve_struct_deref_method(
     site: ValId,
     base_value: ValId,
     base_cluster: CId,
-    method: ValId,
+    method_ty: TypeId,
     expected_self_mutable: bool,
 ) -> Option<ResolvedStructDerefTarget> {
-    let Some(method_ty) = ex.ans.type_of(method) else {
-        unreachable!(
-            "global member method signatures must be solved before body inference; missing type for deref"
-        );
-    };
-
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, site);
 
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
@@ -3581,13 +3943,25 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     ctx.bind_val(v, ans);
                     ans
                 }
-                Defined::Func(def_val) => global_to_specialized_local(
-                    &mut ctx.ex,
-                    &mut ctx.search,
-                    &mut ctx.types,
-                    def_val,
-                    v,
-                ),
+                Defined::Func(_funcs) => {
+                    let Some(reference_type) = ctx
+                        .ex
+                        .ans
+                        .function_types_by_name(n)
+                        .map(|f| f.reference_type)
+                    else {
+                        unreachable!(
+                            "global function set must contain at least one declaration or implementation"
+                        );
+                    };
+                    global_to_specialized_local(
+                        &mut ctx.ex,
+                        &mut ctx.search,
+                        &mut ctx.types,
+                        reference_type,
+                        v,
+                    )
+                }
                 _ => todo!("global name resolution / overload sets"),
             }
         }
@@ -5139,7 +5513,7 @@ enum MemberSelfStyle {
 
 #[derive(Debug, Clone, Copy)]
 struct StructOperatorOverload {
-    method: ValId,
+    method_type: TypeId,
     self_style: MemberSelfStyle,
 }
 
@@ -5257,137 +5631,103 @@ fn get_deref_method_target_type(
     get_ref_target_type_if_kind(store, output, output_mutable)
 }
 
-fn build_struct_overload_cache(ctx: &mut InferState) {
-    ctx.ex.store.struct_overloads.clear();
+fn maybe_insert_member_overload(
+    store: &TypeStore,
+    info: &mut StructOverloadInfo,
+    struct_name: NameId,
+    method_name: StrId,
+    method_site: ValId,
+    method_ty: TypeId,
+) {
+    let Some((inputs, output)) = method_signature_type_parts(store, method_ty) else {
+        return;
+    };
+    let Some(first_input) = inputs.first().copied() else {
+        return;
+    };
 
-    for (struct_name, methods) in ctx.ex.program.member_methods.iter() {
-        let mut info = StructOverloadInfo::default();
-
-        for (method_name, method_val) in methods.iter() {
-            let Some(method_ty) = ctx.ex.ans.type_of(*method_val) else {
-                continue;
-            };
-            let Some((inputs, output)) = method_signature_type_parts(ctx.ex.store, method_ty)
-            else {
-                continue;
-            };
-            let Some(first_input) = inputs.first().copied() else {
-                continue;
-            };
-
-            if *method_name == DEREF_STR {
-                if inputs.len() == 1
-                    && is_ref_to_named_struct_input_type(
-                        ctx.ex.store,
-                        first_input,
-                        *struct_name,
-                        false,
-                    )
-                    && get_ref_target_type_if_kind(ctx.ex.store, output, false).is_some()
-                {
-                    info.deref = Some(*method_val);
-                }
-                continue;
-            }
-
-            if *method_name == DEREF_MUT_STR {
-                if inputs.len() == 1
-                    && is_ref_to_named_struct_input_type(
-                        ctx.ex.store,
-                        first_input,
-                        *struct_name,
-                        true,
-                    )
-                    && get_ref_target_type_if_kind(ctx.ex.store, output, true).is_some()
-                {
-                    info.deref_mut = Some(*method_val);
-                }
-                continue;
-            }
-
-            let extra = inputs.len().saturating_sub(1);
-
-            if is_binary_operator_overload_name(*method_name)
-                && is_self_like_member_input_type(ctx.ex.store, first_input, *struct_name)
-                && extra == 1
-            {
-                let self_style = get_member_self_style(ctx.ex.store, method_ty, *struct_name)
-                    .expect(
-                        "validated binary operator overload must have self-like first parameter",
-                    );
-                info.operators.insert(
-                    *method_name,
-                    StructOperatorOverload {
-                        method: *method_val,
-                        self_style,
-                    },
-                );
-                continue;
-            }
-
-            if is_unary_operator_overload_name(*method_name)
-                && is_self_like_member_input_type(ctx.ex.store, first_input, *struct_name)
-                && extra == 0
-            {
-                let self_style = get_member_self_style(ctx.ex.store, method_ty, *struct_name)
-                    .expect(
-                        "validated unary operator overload must have self-like first parameter",
-                    );
-                info.operators.insert(
-                    *method_name,
-                    StructOperatorOverload {
-                        method: *method_val,
-                        self_style,
-                    },
-                );
-            }
+    if method_name == DEREF_STR {
+        if inputs.len() == 1
+            && is_ref_to_named_struct_input_type(store, first_input, struct_name, false)
+            && get_ref_target_type_if_kind(store, output, false).is_some()
+        {
+            info.deref = Some(method_ty);
+            info.deref_site = Some(method_site);
         }
+        return;
+    }
 
-        if info.has_any() {
-            ctx.ex.store.struct_overloads.insert(*struct_name, info);
+    if method_name == DEREF_MUT_STR {
+        if inputs.len() == 1
+            && is_ref_to_named_struct_input_type(store, first_input, struct_name, true)
+            && get_ref_target_type_if_kind(store, output, true).is_some()
+        {
+            info.deref_mut = Some(method_ty);
+            info.deref_mut_site = Some(method_site);
         }
+        return;
+    }
+
+    let extra = inputs.len().saturating_sub(1);
+    if is_binary_operator_overload_name(method_name)
+        && is_self_like_member_input_type(store, first_input, struct_name)
+        && extra == 1
+    {
+        let self_style = get_member_self_style(store, method_ty, struct_name)
+            .expect("validated binary operator overload must have self-like first parameter");
+        info.operators.insert(
+            method_name,
+            StructOperatorOverload {
+                method_type: method_ty,
+                self_style,
+            },
+        );
+        return;
+    }
+
+    if is_unary_operator_overload_name(method_name)
+        && is_self_like_member_input_type(store, first_input, struct_name)
+        && extra == 0
+    {
+        let self_style = get_member_self_style(store, method_ty, struct_name)
+            .expect("validated unary operator overload must have self-like first parameter");
+        info.operators.insert(
+            method_name,
+            StructOperatorOverload {
+                method_type: method_ty,
+                self_style,
+            },
+        );
     }
 }
 
-fn check_struct_deref_targets_compatible(ctx: &mut InferState, struct_name: NameId) {
-    let Some(methods) = ctx.ex.program.member_methods.get(&struct_name) else {
-        return;
-    };
-    let (Some(deref_method), Some(deref_mut_method)) =
-        (methods.get(&DEREF_STR), methods.get(&DEREF_MUT_STR))
-    else {
-        return;
-    };
-
-    let (Some(deref_ty), Some(deref_mut_ty)) = (
-        ctx.ex.ans.type_of(*deref_method),
-        ctx.ex.ans.type_of(*deref_mut_method),
+fn check_struct_deref_targets_compatible(
+    ctx: &mut InferState,
+    _struct_name: NameId,
+    overloads: &StructOverloadInfo,
+) {
+    let (Some(deref_ty), Some(deref_mut_ty), Some(deref_mut_site)) = (
+        overloads.deref,
+        overloads.deref_mut,
+        overloads.deref_mut_site,
     ) else {
-        // This runs after per-method signature solving in the global pass.
-        // If either type is still missing here, the signature is unresolved for
-        // this pass and should already have produced primary diagnostics.
-        // Skipping avoids layering secondary mismatch noise.
-        debug_assert!(
-            !ctx.ex.errors.is_empty(),
-            "missing deref method type without prior diagnostics"
-        );
         return;
     };
 
     let Some(deref_target) =
-        get_deref_method_target_type(ctx.ex.store, deref_ty, struct_name, false, false)
+        get_deref_method_target_type(ctx.ex.store, deref_ty, _struct_name, false, false)
     else {
         return;
     };
     let Some(deref_mut_target) =
-        get_deref_method_target_type(ctx.ex.store, deref_mut_ty, struct_name, true, true)
+        get_deref_method_target_type(ctx.ex.store, deref_mut_ty, _struct_name, true, true)
     else {
         return;
     };
 
     if deref_target != deref_mut_target {
         ctx.push_error(TypeError::Simple {
-            loc: ctx.ex.program.value_loc(*deref_mut_method),
+            loc: ctx.ex.program.value_loc(deref_mut_site),
             message: "`__deref` and `__deref_mut` must dereference to the same target type",
         });
     }
@@ -5395,17 +5735,18 @@ fn check_struct_deref_targets_compatible(ctx: &mut InferState, struct_name: Name
 
 fn check_special_member_method_signature(
     ctx: &mut InferState,
-    method_val: ValId,
+    method_site: ValId,
+    method_ty: TypeId,
     struct_name: NameId,
     method_name: StrId,
 ) {
-    let loc = ctx.ex.program.value_loc(method_val);
+    let loc = ctx.ex.program.value_loc(method_site);
 
     if is_reserved_builtin_member_name(ctx.ex.program, method_name)
         && !is_known_special_member_method_name(method_name)
     {
         ctx.push_error(TypeError::UnknownBuiltinMemberMethod {
-            site: method_val,
+            site: method_site,
             method: method_name,
         });
     }
@@ -5414,17 +5755,6 @@ fn check_special_member_method_signature(
         return;
     }
 
-    let Some(method_ty) = ctx.ex.ans.type_of(method_val) else {
-        // This check runs after `main_solver` for signature-only validation.
-        // If a special member method type is still missing now, we rely on the
-        // unresolved/signature diagnostics already produced by that solve pass.
-        // Emitting follow-up shape checks here would only add noisy cascades.
-        debug_assert!(
-            !ctx.ex.errors.is_empty(),
-            "missing special member method type without prior diagnostics"
-        );
-        return;
-    };
     let Some((inputs, output)) = method_signature_type_parts(ctx.ex.store, method_ty) else {
         return;
     };
@@ -5943,16 +6273,10 @@ fn un_op_overload_not_found_error(
 fn resolve_member_overload_signature(
     ex: &mut ExternState,
     types: &mut TypeState,
-    method: ValId,
+    method_ty: TypeId,
     self_style: MemberSelfStyle,
     loc: ValId,
 ) -> Option<ResolvedMemberOverload> {
-    let Some(method_ty) = ex.ans.type_of(method) else {
-        unreachable!(
-            "global member method signatures must be solved before body inference; missing type for operator overload"
-        );
-    };
-
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, loc);
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
         unreachable!("specialized operator overload method must resolve to a function shape");
@@ -6030,7 +6354,7 @@ fn resolve_operator_site(
             let Some(overload_sig) = resolve_member_overload_signature(
                 ex,
                 types,
-                method.method,
+                method.method_type,
                 method.self_style,
                 site.loc,
             ) else {
@@ -6317,7 +6641,7 @@ fn resolve_unary_operator_site(
             let Some(overload_sig) = resolve_member_overload_signature(
                 ex,
                 types,
-                method.method,
+                method.method_type,
                 method.self_style,
                 site.loc,
             ) else {
@@ -6482,7 +6806,7 @@ fn resolve_assign_pre_post_site(
             let Some(overload_sig) = resolve_member_overload_signature(
                 ex,
                 types,
-                method.method,
+                method.method_type,
                 method.self_style,
                 site.loc,
             ) else {
@@ -7190,27 +7514,42 @@ mod type_infer_tests {
         program
     }
 
-    /// Extract the body of the *single* function in the program.
+    /// Extract the implementation value of the *single* function in the program.
     fn extract_single_fn(program: &Program) -> ValId {
-        *program
+        program
             .definitions
             .iter()
             .find_map(|(_, def)| match def {
-                Defined::Func(v) => Some(v),
+                Defined::Func(funcs) => funcs.implementations.first().copied(),
                 _ => None,
             })
-            .expect("expected a function definition")
+            .expect("expected a function implementation")
     }
 
     fn find_value_by_name(program: &Program, name: &str) -> ValId {
-        *program
+        program
             .definitions
             .iter()
             .find_map(|(n, def)| match def {
-                Defined::Func(v) if program.name_string(*n) == name => Some(v),
+                Defined::Func(funcs) if program.name_string(*n) == name => {
+                    funcs.implementations.first().copied()
+                }
                 _ => None,
             })
-            .unwrap_or_else(|| panic!("value `{}` not found", name))
+            .unwrap_or_else(|| panic!("implementation `{}` not found", name))
+    }
+
+    fn find_declaration_by_name(program: &Program, name: &str) -> ValId {
+        program
+            .definitions
+            .iter()
+            .find_map(|(n, def)| match def {
+                Defined::Func(funcs) if program.name_string(*n) == name => {
+                    funcs.declarations.first().copied()
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("declaration `{}` not found", name))
     }
 
     fn extract_bind_name(program: &Program, pat: PatId) -> Option<NameId> {
@@ -7882,7 +8221,7 @@ mod type_infer_tests {
         let mut solved_types = SolvedTypes::new(&program);
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
 
-        let f = find_value_by_name(&program, "f");
+        let f = find_declaration_by_name(&program, "f");
         let f_ty = solved_types.type_of(f).expect("missing f type");
         let TypeValue::Func {
             calling_convention,
@@ -7904,6 +8243,87 @@ mod type_infer_tests {
             store.type_value(*ret),
             TypeValue::Builtin(BuiltinType::Int)
         ));
+    }
+
+    #[test]
+    fn repeated_function_declarations_must_be_subtypes_of_first() {
+        let errs = infer_global_errs("f = fn(x:int)->int; f = fn(x:int)->str;");
+        assert!(errs.iter().any(|e| {
+            matches!(
+                e,
+                TypeError::ValuesContradict {
+                    expectation_reason:
+                        "all declarations must be the same as or a specialization of the first declaration",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn repeated_function_declaration_specialization_is_allowed() {
+        let src = "f = fn[T](x:T)->T; f = fn(x:int)->int;";
+        let mut program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f name id");
+
+        let solved = solved_types
+            .function_types_by_name(f_id)
+            .expect("missing solved function types");
+        let reference = solved.reference_type;
+        assert_ne!(reference, UNKNOWN_TYPE);
+        let spec = solved
+            .specializations
+            .get(&reference)
+            .expect("missing reference specialization entry");
+        assert_eq!(spec.implementation, None);
+        assert!(spec.first_decl.is_some());
+    }
+
+    #[test]
+    fn specialized_implementations_without_declaration_are_rejected() {
+        let errs = infer_global_errs("f = fn[T](x:T)->T { x }; f = fn(x:int)->int { x };");
+        assert!(errs.iter().any(|e| {
+            matches!(
+                e,
+                TypeError::FunctionSpecializationRequiresPredeclaration { .. }
+            )
+        }));
+    }
+
+    #[test]
+    fn function_implementation_must_specialize_declaration() {
+        let errs = infer_global_errs("f = fn[T](x:T)->int; f = fn(x:int)->str { \"nope\" };");
+        assert!(errs.iter().any(|e| {
+            matches!(
+                e,
+                TypeError::ValuesContradict {
+                    expectation_reason: "function implementation must be a specialization of the declaration type",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn duplicate_function_implementation_specialization_errors() {
+        let errs = infer_global_errs(
+            "f = fn[T](x:T)->T; f = fn(x:int)->int { x }; f = fn(x:int)->int { x };",
+        );
+        assert!(errs.iter().any(|e| {
+            matches!(
+                e,
+                TypeError::DuplicateFunctionImplementationSpecialization { .. }
+            )
+        }));
     }
 
     #[test]

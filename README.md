@@ -138,8 +138,17 @@ this keeps the system simple enough with union-find rules. for example all casts
 
 this already lets us have a smart pointer with something like this 
 ```
+//this is a system decleration to make destructors nice
+__free = fn[T](p:&mut T)
+__free = fn[T](p:&mut T){}
+
+free = cfn(p:*void);
+__free = fn[T](b:&mut Box[T]){
+__free(&*b.ptr)
+free(b->ptr as *void)
+}
+
 Box = struct[T]{ptr:*T};
-Box.__free = fn[T](b:&mut Box[T]){free(b->ptr as *void)}
 Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
 Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
 ```

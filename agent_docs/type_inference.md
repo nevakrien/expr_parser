@@ -218,8 +218,18 @@ Main orchestration is two-phase:
 1. `infer_global_types`
    - resolves typedefs/structs,
    - resolves function signatures (without body internals),
-   - validates special member method signatures (`__add`, unary overload names, `__free`) during member-method signature gather,
-   - precomputes per-struct overload metadata into `TypeStore.struct_overloads` (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
+   - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
+      - when declarations exist, the first declaration is the only reference signature,
+      - if that first declaration is unsolved, compatibility checks for that set are skipped,
+      - later declarations (`body: None`) must be the same as or specialize the first declaration,
+      - implementations (`body: Some`) must specialize the first declaration type,
+      - duplicate implementation specializations are rejected with a dedicated duplicate-specialization error (carrying one specialization type plus both implementation sites),
+      - when no declaration exists, only the first implementation is treated as the reference and each later implementation emits `FunctionSpecializationRequiresPredeclaration`,
+   - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass, where each entry stores:
+     - a `reference_type` (`TypeId`) for the function family,
+     - `specializations: HashMap<TypeId, SolvedFunctionSpecialization>` with named fields (`implementation`, `first_decl`),
+   - validates special member method signatures (`__add`, unary overload names, `__free`) against each method set reference type,
+   - builds `TypeStore.struct_overloads` inline while walking member method sets (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.
 2. `infer_value_internals`
   - resolves function body internals or arbitrary value internals,

@@ -10,6 +10,17 @@ Use this as the first reference for syntax/meaning questions; use `agent_docs/ty
 - A missing body (`f = fn(...) -> T;` or `f = cfn(...) -> T;`) is a signature-only external declaration.
   - Lowering stores this as `Value::Func { body: None, ... }`.
   - Type inference checks only the signature and skips body constraints.
+- A global function name now tracks two groups:
+  - declarations (`body: None`), and
+  - implementations/specializations (`body: Some(...)`).
+
+Global signature compatibility rules:
+
+- all later declarations must be the same as or a specialization of the first declaration,
+- each implementation must be a specialization of the first declaration type,
+- duplicate implementation specializations (same concrete function type) are rejected.
+
+These same declaration/implementation compatibility rules also apply to struct member methods; lowering stores each `Struct.method` entry as a `FunctionSet` rather than a single value.
 
 Type-level representation:
 

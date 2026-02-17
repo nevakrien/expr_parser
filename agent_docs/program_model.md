@@ -21,7 +21,9 @@ Think of it as the compiler session state for one parsed input stream.
 
 `Defined` variants:
 
-- `Func(ValId)`
+- `Func(FunctionSet)`
+  - `declarations: Vec<ValId>` for `fn/cfn` without a body
+  - `implementations: Vec<ValId>` for `fn/cfn` with a body
 - `Type(TExpId)`
 - `BuildinType(TypeValue)`
 - `Macro(Macro)`
@@ -74,7 +76,9 @@ This allows forward global references and mutually-recursive top-level forms.
   - `struct` / `cstruct` / `enum` / `union`
 - Other RHS forms are rejected with `ERR_EXPECTED_DEFINITION_VALUE`.
 
-Repeated global assignment to an already-defined name is rejected (`RepeatedGlobalAssignment`).
+Repeated global assignment to an already-defined name is rejected (`RepeatedGlobalAssignment`) for non-function definitions.
+
+Function definitions are append-only: repeated `name = fn...` / `name = cfn...` entries are merged into the same `FunctionSet` instead of overwriting.
 
 ## Member Method Registration
 
@@ -85,9 +89,9 @@ Special LHS form: `StructName.method = fn(...) { ... }`
 - base is a globally defined struct type name
 - RHS is `fn` or `cfn`
 - method name does not collide with struct field names
-- method name is unique per struct in `member_methods`
+- repeated method definitions are merged into a `FunctionSet` (same split as globals: declarations vs implementations)
 
-Stored shape: `member_methods[struct_name_id][method_name] = function_val_id`.
+Stored shape: `member_methods[struct_name_id][method_name] = FunctionSet`.
 
 ## Label/Goto Patching Model
 

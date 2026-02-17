@@ -2285,7 +2285,7 @@ mod lowering_tests {
     }
 
     #[test]
-    fn member_method_duplicate_definition_errors_and_preserves_first() {
+    fn member_method_duplicate_definitions_form_a_function_set() {
         let src = "type S = struct { a: int }; S.foo = fn(x){ x }; S.foo = fn(x, y){ x };";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
@@ -2307,17 +2307,7 @@ mod lowering_tests {
             .expect("failed to parse second method")
             .expect("missing second method expr");
         program.gather_definition(expr);
-        let errors = std::mem::take(&mut program.lowering_errors);
-        let err = errors
-            .into_iter()
-            .find(|e| matches!(e, CompileError::SimpleError { .. }))
-            .unwrap();
-        match err {
-            CompileError::SimpleError { s, .. } => {
-                assert_eq!(s, MEMBER_METHOD_COLLISION_MSG);
-            }
-            other => panic!("expected simple error, got {other:?}"),
-        }
+        assert!(program.lowering_errors.is_empty());
 
         let struct_name = program.str_intern.intern("S");
         let struct_id = *program
@@ -2326,16 +2316,26 @@ mod lowering_tests {
             .and_then(|scope| scope.0.get(&struct_name))
             .expect("missing struct name");
         let method_name = program.str_intern.intern("foo");
-        let method_id = program
+        let methods = program
             .member_methods
             .get(&struct_id)
             .and_then(|methods| methods.get(&method_name))
-            .copied()
             .expect("missing foo method");
-        let Value::Func { params, .. } = program.value(method_id) else {
-            panic!("expected foo to be a function");
+        assert!(methods.declarations.is_empty());
+        assert_eq!(methods.implementations.len(), 2);
+
+        let first = methods.implementations[0];
+        let second = methods.implementations[1];
+
+        let Value::Func { params, .. } = program.value(first) else {
+            panic!("expected first foo declaration to be a function");
         };
         assert_eq!(params.len(), 1);
+
+        let Value::Func { params, .. } = program.value(second) else {
+            panic!("expected second foo declaration to be a function");
+        };
+        assert_eq!(params.len(), 2);
     }
 
     #[test]
@@ -2555,10 +2555,17 @@ mod lowering_tests {
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
-            Defined::Func(value) => match program.value(*value) {
-                Value::Func { generics, .. } => assert_eq!(generics.generics().len(), 1),
-                _ => panic!("expected function value"),
-            },
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { generics, .. } => assert_eq!(generics.generics().len(), 1),
+                    _ => panic!("expected function value"),
+                }
+            }
             _ => panic!("expected value definition"),
         }
     }
@@ -2577,7 +2584,7 @@ mod lowering_tests {
             .and_then(|scope| scope.0.get(&f_name))
             .expect("missing f binding");
 
-        let Defined::Func(value) = program
+        let Defined::Func(funcs) = program
             .definitions
             .get(&f_id)
             .expect("missing f definition")
@@ -2585,13 +2592,19 @@ mod lowering_tests {
             panic!("expected function definition")
         };
 
+        let value = funcs
+            .declarations
+            .first()
+            .copied()
+            .expect("expected function declaration");
+
         let Value::Func {
             calling_convention,
             params,
             output_type,
             body,
             ..
-        } = program.value(*value)
+        } = program.value(value)
         else {
             panic!("expected function value")
         };
@@ -2663,18 +2676,32 @@ mod lowering_tests {
             .expect("missing g definition");
 
         let f_body = match f_def {
-            Defined::Func(value) => match program.value(*value) {
-                Value::Func { body, .. } => body.expect("expected f to have a body"),
-                _ => panic!("expected f to be a function"),
-            },
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { body, .. } => body.expect("expected f to have a body"),
+                    _ => panic!("expected f to be a function"),
+                }
+            }
             _ => panic!("expected f to lower to a value"),
         };
 
         let g_body = match g_def {
-            Defined::Func(value) => match program.value(*value) {
-                Value::Func { body, .. } => body.expect("expected g to have a body"),
-                _ => panic!("expected g to be a function"),
-            },
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { body, .. } => body.expect("expected g to have a body"),
+                    _ => panic!("expected g to be a function"),
+                }
+            }
             _ => panic!("expected g to lower to a value"),
         };
 
@@ -2940,7 +2967,7 @@ mod lowering_tests {
             .and_then(|scope| scope.0.get(&f_name))
             .expect("missing f binding");
 
-        let Defined::Func(f_val) = program
+        let Defined::Func(funcs) = program
             .definitions
             .get(&f_id)
             .expect("missing f definition")
@@ -2948,7 +2975,13 @@ mod lowering_tests {
             panic!("expected function definition")
         };
 
-        let Value::Func { body, .. } = program.value(*f_val) else {
+        let f_val = funcs
+            .implementations
+            .first()
+            .copied()
+            .expect("expected function implementation");
+
+        let Value::Func { body, .. } = program.value(f_val) else {
             panic!("expected function value")
         };
         let body = body.expect("expected function body");
@@ -3137,13 +3170,20 @@ mod lowering_tests {
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
-            Defined::Func(value) => match program.value(*value) {
-                Value::Func { generics, .. } => {
-                    assert!(generics.lifetimes().is_empty());
-                    assert_eq!(generics.generics().len(), 1);
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { generics, .. } => {
+                        assert!(generics.lifetimes().is_empty());
+                        assert_eq!(generics.generics().len(), 1);
+                    }
+                    _ => panic!("expected function value"),
                 }
-                _ => panic!("expected function value"),
-            },
+            }
             _ => panic!("expected value definition"),
         }
     }
@@ -3164,13 +3204,20 @@ mod lowering_tests {
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
-            Defined::Func(value) => match program.value(*value) {
-                Value::Func { generics, .. } => {
-                    assert_eq!(generics.lifetimes().len(), 1);
-                    assert!(generics.generics().is_empty());
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { generics, .. } => {
+                        assert_eq!(generics.lifetimes().len(), 1);
+                        assert!(generics.generics().is_empty());
+                    }
+                    _ => panic!("expected function value"),
                 }
-                _ => panic!("expected function value"),
-            },
+            }
             _ => panic!("expected value definition"),
         }
     }
@@ -3191,13 +3238,20 @@ mod lowering_tests {
         let defined = program.definitions.get(&f_id).expect("missing definition");
 
         match defined {
-            Defined::Func(value) => match program.value(*value) {
-                Value::Func { generics, .. } => {
-                    assert_eq!(generics.lifetimes().len(), 1);
-                    assert_eq!(generics.generics().len(), 1);
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { generics, .. } => {
+                        assert_eq!(generics.lifetimes().len(), 1);
+                        assert_eq!(generics.generics().len(), 1);
+                    }
+                    _ => panic!("expected function value"),
                 }
-                _ => panic!("expected function value"),
-            },
+            }
             _ => panic!("expected value definition"),
         }
     }

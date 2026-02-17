@@ -123,8 +123,12 @@ fn def_type_string(
 ) -> Option<String> {
     let def = program.definitions.get(&id)?;
     match def {
-        Defined::Func(v) => solved
-            .type_of(*v)
+        Defined::Func(_funcs) => solved
+            .function_types_by_name(id)
+            .and_then(|f| {
+                (f.reference_type != expr_parser::type_inference::UNKNOWN_TYPE)
+                    .then_some(f.reference_type)
+            })
             .map(|ty| types.get_type_string(program, ty)),
         Defined::Type(texp) => solved
             .typedef_types
@@ -188,7 +192,12 @@ fn definition_loc_for_type_dump(
     id: NameId,
 ) -> Option<expr_parser::parsing::Loc> {
     match program.definitions.get(&id)? {
-        Defined::Func(v) => Some(program.value_loc(*v)),
+        Defined::Func(funcs) => funcs
+            .declarations
+            .first()
+            .copied()
+            .or_else(|| funcs.implementations.first().copied())
+            .map(|v| program.value_loc(v)),
         Defined::Type(t) => Some(program.type_expr_loc(*t)),
         _ => None,
     }
