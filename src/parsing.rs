@@ -96,7 +96,7 @@ pub const OPERATORS: &[&str] = &[
     "<<=", ">>=", // --- 2-char operators ---
     "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "|>", "==", "!=", "<=", ">=", "~=", "=>", "<<",
     ">>", "&&", "||", "++", "--", "->", "::", // --- 1-char operators ---
-    "&", "|", "^", "~", "`", "+", "-", "*", "/", "%", "=", "<", ">", "!", ".",
+    "&", "|", "^", "~", "`", "'", "+", "-", "*", "/", "%", "=", "<", ">", "!", ".",
     // --- delimiters ---
     "(", ")", "{", "}", "[", "]", ",", ";", ":",
 ];
@@ -149,6 +149,7 @@ const fn match_operator(input: &str) -> Option<&'static str> {
         (b'~', b'=', _) => Some("~="),
         (b'~', _, _) => Some("~"),
         (b'`', _, _) => Some("`"),
+        (b'\'', _, _) => Some("'"),
 
         // comparisons / assignment
         (b'=', b'=', _) => Some("=="),
@@ -292,7 +293,7 @@ const BP_LIFETIME: u32 = BP_PREFIX;
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
     Some(match op {
-        "`" => BP_LIFETIME,
+        "'" | "`" => BP_LIFETIME,
         "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
         _ => return None,
     })
@@ -1135,7 +1136,7 @@ impl<'a> Parser<'a> {
                 if let Some(bp) = prefix_bp(op, style) {
                     self.next_token()?.unwrap();
                     let mut ans = Vec::new();
-                    if op == "&" && self.peek_op()?.value == Some(Token::Operator("`")) {
+                    if op == "&" && self.peek_op()?.value == Some(Token::Operator("'")) {
                         ans.push(self.consume_expr_bp(BP_LIFETIME, NonTerm::NoConstruct)?);
                     }
                     ans.push(self.consume_expr_bp(bp, style)?);

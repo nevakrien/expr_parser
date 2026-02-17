@@ -395,28 +395,28 @@ This section records the intended implementation shape for adding lifetimes to t
 ### Core semantic constraints
 
 - No automatic user-level lifetime downcast: if code wants a shorter/derived borrow, it must express reborrow explicitly (`&*x` style).
-- `` `raw `` is a first-class and distinct lifetime state, not a fallback variant of regular lifetimes.
-- Inference must not coerce ``&`a T`` into ``&`raw T`` by unification side effects.
+- `'raw` is a first-class and distinct lifetime state, not a fallback variant of regular lifetimes.
+- Inference must not coerce `&'a T` into `&'raw T` by unification side effects.
 
 ### Smart-pointer and deref signatures
 
-- Safe deref remains tied: fn[`a](&`a self)->&`a out.
-- Raw receiver deref is allowed: fn[`a](&`raw self)->&`a out.
-- Raw address exposure is allowed: fn[`a](&`raw self)->&`raw out.
-- ``&mut `raw`` must remain distinct from normal noalias mutable borrows in later ownership/borrow phases.
+- Safe deref remains tied: fn['a](&'a self)->&'a out.
+- Raw receiver deref is allowed: fn['a](&'raw self)->&'a out.
+- Raw address exposure is allowed: fn['a](&'raw self)->&'raw out.
+- `&mut 'raw` must remain distinct from normal noalias mutable borrows in later ownership/borrow phases.
 
 ### Implicit cast recording requirements
 
 - Access/index/deref-chain logic synthesizes fresh references; these are implicit cast/reborrow sites.
 - Type inference should record each cast edge with enough metadata for borrow analysis to revisit legality.
-- Temporary policy: inferred implicit casts may target any lifetime (including `raw` or `static`).
+- Temporary policy: inferred implicit casts may target any lifetime (including 'raw or 'static).
 - Borrow analysis will become the enforcing stage that accepts/rejects these recorded casts.
 
 ### Immediate typecheck rejections vs deferred borrow checks
 
 - Hard reject in typecheck when there is direct lifetime contradiction with no reborrow relation.
-  - Canonical example: f(x:&`a t)->&`b t{x} should fail immediately.
-- Reborrow-driven relations (for example generated `b < a`) should be preserved as constraints and deferred to borrow checking.
+  - Canonical example: f(x:&'a t)->&'b t{x} should fail immediately.
+- Reborrow-driven relations (for example generated 'b < 'a) should be preserved as constraints and deferred to borrow checking.
 
 ### Unnamed lifetime policy
 

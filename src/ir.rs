@@ -360,7 +360,6 @@ impl GenIndex {
     }
 }
 
-
 /// Runtime IR values.
 ///
 /// This IR is *expression-oriented* but *effect-explicit*:
@@ -747,8 +746,6 @@ impl Program {
 
     #[inline(always)]
     fn lower_atom(&mut self, loc: &Loc, token: Token) -> Value {
-        
-
         match token {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
@@ -1164,7 +1161,7 @@ impl Program {
                 for (index, expr) in items.iter().enumerate() {
                     let is_lifetime = matches!(
                         &expr.value,
-                        Expr::Prefix(op, _) if op.value == "`"
+                        Expr::Prefix(op, _) if op.value == "'"
                     );
                     if is_lifetime {
                         if seen_generic {
@@ -1356,7 +1353,7 @@ impl Program {
                 Pattern::Tuple(span)
             }
 
-            Expr::Prefix(open, items) if open.value == "`" => {
+            Expr::Prefix(open, items) if open.value == "'" => {
                 let Some(Expr::Atom(Token::Ident(n))) = items.first().map(|x| &x.value) else {
                     self.push_lowering_error(CompileError::SimpleError {
                         loc: loc.clone(),
@@ -1371,8 +1368,8 @@ impl Program {
                     });
                     return Pattern::Poison;
                 }
-                if  matches!(n.as_str(),"_"|"static"|"raw") {
-                   self.push_lowering_error(CompileError::SimpleError {
+                if matches!(n.as_str(), "_" | "static" | "raw") {
+                    self.push_lowering_error(CompileError::SimpleError {
                         loc: loc.clone(),
                         s: "using a reserved name for a lifetime",
                     });
@@ -1794,14 +1791,13 @@ impl Program {
                     return TypeExpr::Poison;
                 }
 
-
-                let items_len = items.len()-1;
+                let items_len = items.len() - 1;
                 let mut lifetime_end = items_len;
                 let mut seen_generic = false;
                 for (index, expr) in items[1..].iter().enumerate() {
                     let is_lifetime = matches!(
                         &expr.value,
-                        Expr::Prefix(op, _) if op.value == "`"
+                        Expr::Prefix(op, _) if op.value == "'"
                     );
                     if is_lifetime {
                         if seen_generic {
@@ -1820,7 +1816,6 @@ impl Program {
 
                 let mut items = items.into_iter();
                 let base = self.lower_type_expr(items.next().unwrap());
-
 
                 let parts = self.reserve_type_expr_span(items_len);
                 for (index, arg) in items.enumerate() {
@@ -1853,7 +1848,7 @@ impl Program {
                             });
                             return TypeExpr::Poison;
                         };
-                        if op.value != "`" {
+                        if op.value != "'" {
                             self.push_lowering_error(CompileError::SimpleError {
                                 loc: loc.clone(),
                                 s: "invalid lifetime syntax",
@@ -1868,9 +1863,9 @@ impl Program {
                             });
                             return TypeExpr::Poison;
                         };
-                        if n=="_"{
+                        if n == "_" {
                             None
-                        }else{
+                        } else {
                             let s = self.str_intern.intern(&n);
                             let Some(life) = self.try_get_lifetime(s) else {
                                 self.push_lowering_error(CompileError::SimpleError {
@@ -2075,7 +2070,7 @@ impl Program {
                 for (index, expr) in items.iter().enumerate() {
                     let is_lifetime = matches!(
                         &expr.value,
-                        Expr::Prefix(op, _) if op.value == "`"
+                        Expr::Prefix(op, _) if op.value == "'"
                     );
                     if is_lifetime {
                         if seen_generic {
@@ -3155,7 +3150,7 @@ mod lowering_tests {
 
     #[test]
     fn fn_lifetimes_only() {
-        let src = "f = fn[`a](x: &`a int) -> &`a int { x }";
+        let src = "f = fn['a](x: &'a int) -> &'a int { x }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         program.lower_all(&mut parser).unwrap();
@@ -3182,7 +3177,7 @@ mod lowering_tests {
 
     #[test]
     fn fn_lifetimes_and_generics() {
-        let src = "f = fn[`a, T](x: &`a T) -> &`a T { x }";
+        let src = "f = fn['a, T](x: &'a T) -> &'a T { x }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         program.lower_all(&mut parser).unwrap();
@@ -3231,7 +3226,7 @@ mod lowering_tests {
 
     #[test]
     fn fn_mixed_lifetimes_generics_error() {
-        let src = "f = fn[T, `a](x: &`a T) -> T { x }";
+        let src = "f = fn[T, 'a](x: &'a T) -> T { x }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let errs = program.lower_all(&mut parser).unwrap_err();
@@ -3242,7 +3237,7 @@ mod lowering_tests {
 
     #[test]
     fn type_index_mixed_lifetimes_generics_error() {
-        let src = "{ let x: Box[int, `a] = Box.new(); }";
+        let src = "{ let x: Box[int, 'a] = Box.new(); }";
         let (program, _) = lower_block(src);
         assert!(!program.lowering_errors.is_empty());
         let err_msg = program.lowering_errors[0].to_string();

@@ -23,8 +23,8 @@ use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{
-    AssignOp, BinOp, Dir, GenDec, Literal, NameId, PatId, Pattern, PatternSpan,
-    TExpId, TypeExpr, UnOp, ValId, Value,
+    AssignOp, BinOp, Dir, GenDec, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr,
+    UnOp, ValId, Value,
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
@@ -1267,6 +1267,35 @@ impl<T> IndexMut<CId> for ClusterVec<T> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct LId(usize);
+
+struct LifeVec<T>(Vec<T>);
+impl<T> LifeVec<T> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    #[allow(dead_code)]
+    fn swap(&mut self, a: LId, b: LId) {
+        self.0.swap(a.0, b.0)
+    }
+}
+impl<T> Index<LId> for LifeVec<T> {
+    type Output = T;
+    fn index(&self, id: LId) -> &T {
+        &self.0[id.0]
+    }
+}
+
+impl<T> IndexMut<LId> for LifeVec<T> {
+    fn index_mut(&mut self, id: LId) -> &mut T {
+        &mut self.0[id.0]
+    }
+}
+
 #[derive(Debug)]
 struct Cluster {
     state: ResolveKind,
@@ -1280,6 +1309,18 @@ struct StructInferId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleInferId(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum PtrKind {
+    SolveRaw,
+    ///these do not contain locals yet
+    ///locals are made on uninfered later
+    SolvedRef(LifeTime),
+
+    SafeRef,
+    SomeRef,
+    Unknown,
+}
 
 #[derive(Debug, Clone, Copy)]
 enum ResolveKind {
@@ -3127,12 +3168,10 @@ fn try_resolve_struct_deref_method(
             tgt,
             raw: Some(false),
             ..
-        } => {
-            Some(ResolvedStructDerefTarget {
-                target: tgt,
-                deref_result_ptr: ret_root,
-            })
-        }
+        } => Some(ResolvedStructDerefTarget {
+            target: tgt,
+            deref_result_ptr: ret_root,
+        }),
 
         ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
             TypeValue::Ptr { tgt, raw, .. } if !*raw => Some(ResolvedStructDerefTarget {
@@ -3164,8 +3203,6 @@ fn resolve_struct_deref_target(
         .struct_overload_info(struct_name)
         .map(|info| (info.deref, info.deref_mut))
         .unwrap_or((None, None));
-
-    
 
     deref_mut
         .and_then(|method| {
@@ -4351,30 +4388,30 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             ctx.types.core.cluster[c].state = ResolveKind::Never;
             c
         }
-        Value::LogicOp { op:_, values } => {
+        Value::LogicOp { op: _, values } => {
             let out = ctx.new_solved(BuiltinType::Bool.into());
-            let a = gather_constraints(ctx,values.0,current_output);
-            if let Err(clash) = ctx.unify(a,out){
-                ctx.push_error(TypeError::ValuesContradict{
-                    site:v,
-                    expected_place:v,
-                    found:values.0,
-                    expectation_reason:"boolean logic can only be done on bools",
-                    clash
+            let a = gather_constraints(ctx, values.0, current_output);
+            if let Err(clash) = ctx.unify(a, out) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    site: v,
+                    expected_place: v,
+                    found: values.0,
+                    expectation_reason: "boolean logic can only be done on bools",
+                    clash,
                 })
-            } 
-            let b = gather_constraints(ctx,values.1,current_output);
-            if let Err(clash) = ctx.unify(b,out){
-                ctx.push_error(TypeError::ValuesContradict{
-                    site:v,
-                    expected_place:v,
-                    found:values.1,
-                    expectation_reason:"boolean logic can only be done on bools",
-                    clash
+            }
+            let b = gather_constraints(ctx, values.1, current_output);
+            if let Err(clash) = ctx.unify(b, out) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    site: v,
+                    expected_place: v,
+                    found: values.1,
+                    expectation_reason: "boolean logic can only be done on bools",
+                    clash,
                 })
             }
             out
-        },
+        }
 
         Value::Tuple(items) => {
             let item_clusters = items

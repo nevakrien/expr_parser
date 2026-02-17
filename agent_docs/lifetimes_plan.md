@@ -9,24 +9,24 @@ It complements:
 ## Target semantics (agreed)
 
 - No implicit user-facing lifetime downcast. Explicit reborrow syntax (`&*x`) is required.
-- `` `raw `` is a distinct lifetime state with non-null pointer semantics.
-- ``&`a T`` is never inferred as ``&`raw T``.
+- `'raw` is a distinct lifetime state with non-null pointer semantics.
+- `&'a T` is never inferred as `&'raw T`.
 - Smart-pointer APIs can choose between:
-  - tied safe deref: fn[`a](&`a self)->&`a out
-  - raw receiver deref: fn[`a](&`raw self)->&`a out
-  - raw address exposure: fn[`a](&`raw self)->&`raw out
-- ``&mut `raw`` is not treated as noalias.
+  - tied safe deref: fn['a](&'a self)->&'a out
+  - raw receiver deref: fn['a](&'raw self)->&'a out
+  - raw address exposure: fn['a](&'raw self)->&'raw out
+- `&mut 'raw` is not treated as noalias.
 
 ## Typecheck-stage behavior split
 
 Immediate in typecheck:
 
 - reject trivially contradictory lifetime equalities in one typing step.
-- example: f(x:&`a t)->&`b t { x } fails immediately when no reborrow relation can connect `a` to `b`.
+- example: f(x:&'a t)->&'b t { x } fails immediately when no reborrow relation can connect 'a to 'b.
 
 Deferred to borrow checker:
 
-- constraints introduced by explicit/implicit reborrows (for example `` `b < `a ``).
+- constraints introduced by explicit/implicit reborrows (for example `'b < 'a`).
 - legality of implicit cast edges introduced by desugaring.
 - raw-specific aliasing and escape checks.
 
