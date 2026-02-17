@@ -313,6 +313,55 @@ impl Call {
     }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct GenDec {
+    pub base: PatId,
+    pub parts: PatternSpan,
+    ///exclusive
+    pub lifetime_end: usize,
+}
+
+impl GenDec {
+    pub fn lifetimes(&self) -> PatternSpan {
+        PatternSpan {
+            _start: self.parts._start,
+            _count: self.lifetime_end,
+        }
+    }
+
+    pub fn generics(&self) -> PatternSpan {
+        PatternSpan {
+            _start: PatId(self.parts._start.0 + self.lifetime_end),
+            _count: self.parts._count - self.lifetime_end,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct GenIndex {
+    pub base: TExpId,
+    pub parts: TypeExprSpan,
+    ///exclusive
+    pub lifetime_end: usize,
+}
+
+impl GenIndex {
+    pub fn lifetimes(&self) -> TypeExprSpan {
+        TypeExprSpan {
+            _start: self.parts._start,
+            _count: self.lifetime_end,
+        }
+    }
+
+    pub fn generics(&self) -> TypeExprSpan {
+        TypeExprSpan {
+            _start: TExpId(self.parts._start.0 + self.lifetime_end),
+            _count: self.parts._count - self.lifetime_end,
+        }
+    }
+}
+
+
 /// Runtime IR values.
 ///
 /// This IR is *expression-oriented* but *effect-explicit*:
@@ -541,9 +590,6 @@ pub enum TypeExpr {
     Struct(StructLike),
     Union(StructLike),
 
-    LifeTime(LifeTimeId),
-    WildLifeTime,
-
     Poison,
 }
 
@@ -630,18 +676,6 @@ impl Program {
             Expr::Prefix(open, items) if open.value == "(" || open.value == "[" => {
                 self.lower_tuple_expr(expr.loc, items, open.value)
             }
-
-            // Expr::Prefix(open,mut items) if open.value=="`"=>{
-            //     let subexp = items.pop().unwrap();
-            //     let Expr::Atom(Token::Ident(n))  = subexp.value else {
-            //         todo!()
-            //     };
-            //     let s = self.str_intern.intern(&n);
-            //     let Some(life) = self.try_get_lifetime(s) else {
-            //         todo!("emit some error")
-            //     };
-            //     Ok(Value::LifeTime(life))
-            // }
 
             // call: <base>(args...)
             Expr::Postfix(open, items) if matches!(open.value, "(" | "[" | "{") => {
@@ -1302,6 +1336,13 @@ impl Program {
                     });
                     return Pattern::Poison;
                 }
+                if  matches!(n.as_str(),"_"|"static"|"raw") {
+                   self.push_lowering_error(CompileError::SimpleError {
+                        loc: loc.clone(),
+                        s: "using a reserved name for a lifetime",
+                    });
+                    return Pattern::Poison;
+                }
                 let s = self.str_intern.intern(n);
                 let life = self.insert_new_lifetiime(s);
                 Pattern::LifeTime(life)
@@ -1762,16 +1803,20 @@ impl Program {
                             });
                             return TypeExpr::Poison;
                         };
-                        let s = self.str_intern.intern(&n);
-                        let Some(life) = self.try_get_lifetime(s) else {
-                            self.push_lowering_error(CompileError::SimpleError {
-                                loc: loc.clone(),
-                                s: "unknown lifetime",
-                            });
-                            return TypeExpr::Poison;
-                        };
+                        if n=="_"{
+                            None
+                        }else{
+                            let s = self.str_intern.intern(&n);
+                            let Some(life) = self.try_get_lifetime(s) else {
+                                self.push_lowering_error(CompileError::SimpleError {
+                                    loc: loc.clone(),
+                                    s: "unknown lifetime",
+                                });
+                                return TypeExpr::Poison;
+                            };
 
-                        Some(life)
+                            Some(life)
+                        }
                     }
                 };
 
