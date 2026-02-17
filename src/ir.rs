@@ -541,6 +541,9 @@ pub enum TypeExpr {
     Struct(StructLike),
     Union(StructLike),
 
+    LifeTime(LifeTimeId),
+    WildLifeTime,
+
     Poison,
 }
 

@@ -171,18 +171,29 @@ pub enum TypeValue {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerStyle {
     Raw,
-    Ref(RefStyle),
+    Ref(LifeTime),
 }
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum RefStyle {
-    Local(u32),
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LifeTime {
+    //specifically infered internally.
+    Local(LifeId),
+    ///either from an argument or something we output
+    //these can only really be created by type-inference level propagation
+    //borrow checking itself looks at these as "longer than anything local okay sure"
     External(u32),
+    ///for now no real use but it is technically a distinct category
+    ///would probably add these for real once we actually have constants
     Static,
+    ///no lifetime just nonull and has syntax sugar
     Raw,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LifeId(pub u32);
 
 impl Program {
     //TODO make it so we can store TypeId here directly
@@ -4340,7 +4351,30 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             ctx.types.core.cluster[c].state = ResolveKind::Never;
             c
         }
-        Value::LogicOp { op: _, values: _ } => todo!(),
+        Value::LogicOp { op:_, values } => {
+            let out = ctx.new_solved(BuiltinType::Bool.into());
+            let a = gather_constraints(ctx,values.0,current_output);
+            if let Err(clash) = ctx.unify(a,out){
+                ctx.push_error(TypeError::ValuesContradict{
+                    site:v,
+                    expected_place:v,
+                    found:values.0,
+                    expectation_reason:"boolean logic can only be done on bools",
+                    clash
+                })
+            } 
+            let b = gather_constraints(ctx,values.1,current_output);
+            if let Err(clash) = ctx.unify(b,out){
+                ctx.push_error(TypeError::ValuesContradict{
+                    site:v,
+                    expected_place:v,
+                    found:values.1,
+                    expectation_reason:"boolean logic can only be done on bools",
+                    clash
+                })
+            }
+            out
+        },
 
         Value::Tuple(items) => {
             let item_clusters = items
