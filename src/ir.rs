@@ -315,7 +315,6 @@ impl Call {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct GenDec {
-    pub base: PatId,
     pub parts: PatternSpan,
     ///exclusive
     pub lifetime_end: usize,
@@ -486,7 +485,7 @@ pub enum Value {
     /// Function literal
     Func {
         calling_convention: CallingConvention,
-        generics: PatternSpan,
+        generics: GenDec,
         params: PatternSpan,
         output_type: Option<TExpId>,
         body: Option<ValId>,
@@ -568,7 +567,7 @@ pub enum TypeExpr {
     /// specialization
     Index {
         base: TExpId,
-        args: TypeExprSpan,
+        args: GenIndex,
     },
 
     Ptr {
@@ -604,7 +603,7 @@ pub struct MatchArm {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct StructLike {
     pub layout: StructLayoutSpec,
-    pub generics: PatternSpan,
+    pub generics: GenDec,
     pub fields: PatternSpan,
 }
 
@@ -1150,23 +1149,59 @@ impl Program {
         ret_expr: Option<LExpr>,
         body_expr: Option<LExpr>,
     ) -> Value {
-        self.with_scope_value(|this| {
-            let generics = match generics_expr {
-                Some(gen_expr) => {
-                    let Expr::Prefix(open, items) = gen_expr.value else {
-                        debug_assert!(false, "fn generics must use brackets");
-                        return Value::Poison;
-                    };
-                    debug_assert!(open.value == "[", "fn generics must use brackets");
+        let (lifetime_end, items_vec) = match generics_expr {
+            Some(gen_expr) => {
+                let Expr::Prefix(open, items) = gen_expr.value else {
+                    debug_assert!(false, "fn generics must use brackets");
+                    return Value::Poison;
+                };
+                debug_assert!(open.value == "[", "fn generics must use brackets");
 
-                    let ans = this.reserve_pattern_span(items.len());
+                let items_len = items.len();
+
+                let mut lifetime_end = items_len;
+                let mut seen_generic = false;
+                for (index, expr) in items.iter().enumerate() {
+                    let is_lifetime = matches!(
+                        &expr.value,
+                        Expr::Prefix(op, _) if op.value == "`"
+                    );
+                    if is_lifetime {
+                        if seen_generic {
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: expr.loc.clone(),
+                                s: "lifetimes must come before generic parameters",
+                            });
+                        }
+                    } else {
+                        seen_generic = true;
+                        if lifetime_end == items_len {
+                            lifetime_end = index;
+                        }
+                    }
+                }
+                (lifetime_end, Some(items))
+            }
+            None => (0, None),
+        };
+
+        self.with_scope_value(|this| {
+            let generics = match items_vec {
+                Some(items) => {
+                    let parts = this.reserve_pattern_span(items.len());
                     for (index, expr) in items.into_iter().enumerate() {
-                        let target = ans.at(index);
+                        let target = parts.at(index);
                         this.lower_pattern_into(target, expr, VarKind::Const);
                     }
-                    ans
+                    GenDec {
+                        parts,
+                        lifetime_end,
+                    }
                 }
-                None => this.reserve_pattern_span(0),
+                None => GenDec {
+                    parts: this.reserve_pattern_span(0),
+                    lifetime_end: 0,
+                },
             };
 
             let params_span = this.reserve_pattern_span(param_items.len());
@@ -1759,17 +1794,47 @@ impl Program {
                     return TypeExpr::Poison;
                 }
 
+
+                let items_len = items.len()-1;
+                let mut lifetime_end = items_len;
+                let mut seen_generic = false;
+                for (index, expr) in items[1..].iter().enumerate() {
+                    let is_lifetime = matches!(
+                        &expr.value,
+                        Expr::Prefix(op, _) if op.value == "`"
+                    );
+                    if is_lifetime {
+                        if seen_generic {
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: expr.loc.clone(),
+                                s: "lifetimes must come before generic parameters",
+                            });
+                        }
+                    } else {
+                        seen_generic = true;
+                        if lifetime_end == items_len {
+                            lifetime_end = index;
+                        }
+                    }
+                }
+
                 let mut items = items.into_iter();
                 let base = self.lower_type_expr(items.next().unwrap());
-                let args_span = self.reserve_type_expr_span(items.len());
+
+
+                let parts = self.reserve_type_expr_span(items_len);
                 for (index, arg) in items.enumerate() {
-                    let target = args_span.at(index);
+                    let target = parts.at(index);
                     self.lower_type_expr_into(target, arg);
                 }
 
                 TypeExpr::Index {
                     base,
-                    args: args_span,
+                    args: GenIndex {
+                        base: parts.start(),
+                        parts,
+                        lifetime_end,
+                    },
                 }
             }
 
@@ -2005,14 +2070,42 @@ impl Program {
                 };
                 debug_assert!(open.value == "[");
 
-                let span = self.reserve_pattern_span(items.len());
+                let mut lifetime_end = items.len();
+                let mut seen_generic = false;
+                for (index, expr) in items.iter().enumerate() {
+                    let is_lifetime = matches!(
+                        &expr.value,
+                        Expr::Prefix(op, _) if op.value == "`"
+                    );
+                    if is_lifetime {
+                        if seen_generic {
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: expr.loc.clone(),
+                                s: "lifetimes must come before generic parameters",
+                            });
+                        }
+                    } else {
+                        seen_generic = true;
+                        if lifetime_end == items.len() {
+                            lifetime_end = index;
+                        }
+                    }
+                }
+
+                let parts = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
-                    let target = span.at(index);
+                    let target = parts.at(index);
                     self.lower_pattern_into(target, item, VarKind::Const);
                 }
-                span
+                GenDec {
+                    parts,
+                    lifetime_end,
+                }
             }
-            None => self.reserve_pattern_span(0),
+            None => GenDec {
+                parts: self.reserve_pattern_span(0),
+                lifetime_end: 0,
+            },
         };
 
         let fields = match fields_expr.value {
@@ -2468,7 +2561,7 @@ mod lowering_tests {
 
         match defined {
             Defined::Func(value) => match program.value(*value) {
-                Value::Func { generics, .. } => assert_eq!(generics.len(), 1),
+                Value::Func { generics, .. } => assert_eq!(generics.generics().len(), 1),
                 _ => panic!("expected function value"),
             },
             _ => panic!("expected value definition"),
@@ -3031,5 +3124,128 @@ mod lowering_tests {
             },
             _ => panic!("expected let statement"),
         }
+    }
+
+    #[test]
+    fn fn_generics_only() {
+        let src = "f = fn[T](x: T) -> T { x }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f binding");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
+
+        match defined {
+            Defined::Func(value) => match program.value(*value) {
+                Value::Func { generics, .. } => {
+                    assert!(generics.lifetimes().is_empty());
+                    assert_eq!(generics.generics().len(), 1);
+                }
+                _ => panic!("expected function value"),
+            },
+            _ => panic!("expected value definition"),
+        }
+    }
+
+    #[test]
+    fn fn_lifetimes_only() {
+        let src = "f = fn[`a](x: &`a int) -> &`a int { x }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f binding");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
+
+        match defined {
+            Defined::Func(value) => match program.value(*value) {
+                Value::Func { generics, .. } => {
+                    assert_eq!(generics.lifetimes().len(), 1);
+                    assert!(generics.generics().is_empty());
+                }
+                _ => panic!("expected function value"),
+            },
+            _ => panic!("expected value definition"),
+        }
+    }
+
+    #[test]
+    fn fn_lifetimes_and_generics() {
+        let src = "f = fn[`a, T](x: &`a T) -> &`a T { x }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f binding");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
+
+        match defined {
+            Defined::Func(value) => match program.value(*value) {
+                Value::Func { generics, .. } => {
+                    assert_eq!(generics.lifetimes().len(), 1);
+                    assert_eq!(generics.generics().len(), 1);
+                }
+                _ => panic!("expected function value"),
+            },
+            _ => panic!("expected value definition"),
+        }
+    }
+
+    #[test]
+    fn type_index_generics_only() {
+        let src = "{ let x: Vec[int] = Vec.new(); }";
+        let (program, ir) = lower_block(src);
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        let let_stmt = statements[0];
+        let Value::Let { pat, .. } = program.value(let_stmt) else {
+            panic!("expected let");
+        };
+        let Pattern::TypeAnnotation { ty, .. } = program.pattern(pat) else {
+            panic!("expected type annotation");
+        };
+        let TypeExpr::Index { args, .. } = program.type_expr(ty) else {
+            panic!("expected index");
+        };
+        assert!(args.lifetimes().is_empty());
+        assert_eq!(args.generics().len(), 1);
+    }
+
+    #[test]
+    fn fn_mixed_lifetimes_generics_error() {
+        let src = "f = fn[T, `a](x: &`a T) -> T { x }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        let errs = program.lower_all(&mut parser).unwrap_err();
+
+        let err_msg = errs[0].to_string();
+        assert!(err_msg.contains("lifetimes must come before generic parameters"));
+    }
+
+    #[test]
+    fn type_index_mixed_lifetimes_generics_error() {
+        let src = "{ let x: Box[int, `a] = Box.new(); }";
+        let (program, _) = lower_block(src);
+        assert!(!program.lowering_errors.is_empty());
+        let err_msg = program.lowering_errors[0].to_string();
+        assert!(err_msg.contains("lifetimes must come before generic parameters"));
     }
 }

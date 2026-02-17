@@ -23,8 +23,8 @@ use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{
-    AssignOp, BinOp, Dir, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, UnOp,
-    ValId, Value,
+    AssignOp, BinOp, Dir, GenDec, Literal, NameId, PatId, Pattern, PatternSpan,
+    TExpId, TypeExpr, UnOp, ValId, Value,
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
@@ -4599,6 +4599,10 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
+    if !generics.lifetimes().is_empty() {
+        todo!("type checking structs with lifetime generics is not yet implemented");
+    }
+    let generics = generics.generics();
     // Reject struct definitions in local scope.
     // The type inference is monomorphic (rank-1, no higher-ranked types)
     // and performs type inference by unification, which fundamentally cannot
@@ -4777,6 +4781,10 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             ctx.new_array_instance(element, size)
         }
         TypeExpr::Index { base, args } => {
+            if !args.lifetimes().is_empty() {
+                todo!("type checking with lifetime generics in type index is not yet implemented");
+            }
+            let args = args.generics();
             let generics = args
                 .ids()
                 .map(|arg| compile_type_expr(ctx, arg))
@@ -4886,10 +4894,14 @@ fn type_check_func_signature(
     ctx: &mut InferState,
     v: ValId,
     calling_convention: CallingConvention,
-    generics: PatternSpan,
+    generics: GenDec,
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) {
+    if !generics.lifetimes().is_empty() {
+        todo!("type checking functions with lifetime generics is not yet implemented");
+    }
+    let generics = generics.generics();
     for (i, pat) in generics.ids().enumerate() {
         gather_generic_constraints(ctx, pat, GenId(i));
     }
@@ -4919,10 +4931,14 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     v: ValId,
     calling_convention: CallingConvention,
-    generics: PatternSpan,
+    generics: GenDec,
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
+    if !generics.lifetimes().is_empty() {
+        todo!("type checking functions with lifetime generics is not yet implemented");
+    }
+    let generics = generics.generics();
     // Reject generic functions in local scope.
     // The type inference is monomorphic (rank-1, no higher-ranked types)
     // and performs type inference by unification, which fundamentally cannot
@@ -4974,7 +4990,7 @@ fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     v: ValId,
     calling_convention: CallingConvention,
-    generics: PatternSpan,
+    generics: GenDec,
     params: PatternSpan,
     output_type: Option<TExpId>,
     body: Option<ValId>,
