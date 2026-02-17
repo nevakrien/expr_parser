@@ -711,7 +711,9 @@ impl Program {
 
     #[inline(always)]
     fn lower_atom(&mut self, loc: &Loc, token: Token) -> Value {
-        let value = match token {
+        
+
+        match token {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
             Token::StrLit(s) => Value::Literal(Literal::Str(self.str_intern.intern(&s))),
@@ -732,11 +734,9 @@ impl Program {
                     op: Some(op),
                     message: "operators cannot appear as standalone atoms; wrap them inside a full expression",
                 });
-                return Value::Poison;
+                Value::Poison
             }
-        };
-
-        value
+        }
     }
 
     #[inline(always)]
@@ -822,11 +822,7 @@ impl Program {
         let value = self.lower_value(value_expr);
         let pat = self.lower_pattern(pat_expr, m);
 
-        let else_part = if let Some(exp) = else_exp {
-            Some(self.with_scope_value(|p| p.lower_value(exp)))
-        } else {
-            None
-        };
+        let else_part = else_exp.map(|exp| self.with_scope_value(|p| p.lower_value(exp)));
 
         let _ = loc;
 
@@ -930,11 +926,7 @@ impl Program {
 
         let cond = self.lower_value(cond_expr);
         let then = self.with_scope_value(|p| p.lower_value(then_expr));
-        let els = if let Some(else_expr) = else_expr {
-            Some(self.with_scope_value(|p| p.lower_value(else_expr)))
-        } else {
-            None
-        };
+        let els = else_expr.map(|else_expr| self.with_scope_value(|p| p.lower_value(else_expr)));
         let _ = loc;
         Value::If { cond, then, els }
     }
@@ -1002,11 +994,7 @@ impl Program {
             return Value::Poison;
         }
 
-        let value = if let Some(value) = items.pop() {
-            Some(self.lower_value(value))
-        } else {
-            None
-        };
+        let value = items.pop().map(|value| self.lower_value(value));
         Value::Return(value)
     }
 
@@ -1150,16 +1138,9 @@ impl Program {
                 this.lower_pattern_into(target, param, VarKind::Const);
             }
 
-            let output_type = match ret_expr {
-                Some(e) => Some(this.lower_type_expr(e)),
-                None => None,
-            };
+            let output_type = ret_expr.map(|e| this.lower_type_expr(e));
 
-            let body = if let Some(body_expr) = body_expr {
-                Some(this.lower_value(body_expr))
-            } else {
-                None
-            };
+            let body = body_expr.map(|body_expr| this.lower_value(body_expr));
 
             let _ = loc;
             Value::Func {
@@ -1923,10 +1904,7 @@ impl Program {
             self.lower_type_expr_into(target, param);
         }
 
-        let output_type = match ret_expr {
-            Some(e) => Some(self.lower_type_expr(e)),
-            None => None,
-        };
+        let output_type = ret_expr.map(|e| self.lower_type_expr(e));
 
         TypeExpr::Func {
             calling_convention,

@@ -930,7 +930,7 @@ pub fn infer_global_types<'a>(
             } = ctx.ex.program.value(*m)
             {
                 ctx.clear_local_state();
-                let _ = type_check_func_signature(
+                type_check_func_signature(
                     &mut ctx,
                     *m,
                     calling_convention,
@@ -2783,7 +2783,7 @@ fn specialize_type(
     types: &mut TypeState,
     ty: TypeId,
     generics: &[CId],
-    loc: ValId,
+    _loc: ValId,
 ) -> CId {
     match ex.store.type_value(ty).clone() {
         TypeValue::Generic(id) => generics.get(id.0).copied().unwrap(),
@@ -2796,10 +2796,10 @@ fn specialize_type(
         } => {
             let inputs = params
                 .into_iter()
-                .map(|t| specialize_type(ex, types, t, generics, loc))
+                .map(|t| specialize_type(ex, types, t, generics, _loc))
                 .collect::<Vec<_>>();
 
-            let output = specialize_type(ex, types, ret, generics, loc);
+            let output = specialize_type(ex, types, ret, generics, _loc);
 
             // create FuncInfer
             let call_id = FuncInferId(types.extra.func_defs.len());
@@ -2833,7 +2833,7 @@ fn specialize_type(
 
             let resolved = parts
                 .into_iter()
-                .map(|t| specialize_type(ex, types, t, generics, loc))
+                .map(|t| specialize_type(ex, types, t, generics, _loc))
                 .collect::<Vec<_>>();
 
             let call_id = StructInferId(types.extra.struct_infers.len());
@@ -2851,7 +2851,7 @@ fn specialize_type(
         }
 
         TypeValue::Ptr { tgt, raw, mutable } => {
-            let target = specialize_type(ex, types, tgt, generics, loc);
+            let target = specialize_type(ex, types, tgt, generics, _loc);
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -2868,7 +2868,7 @@ fn specialize_type(
         TypeValue::Tuple(items) => {
             let items = items
                 .into_iter()
-                .map(|item| specialize_type(ex, types, item, generics, loc))
+                .map(|item| specialize_type(ex, types, item, generics, _loc))
                 .collect::<Vec<_>>();
 
             let tuple_id = TupleInferId(types.extra.tuple_infers.len());
@@ -2883,7 +2883,7 @@ fn specialize_type(
         }
 
         TypeValue::Array(inner, len) => {
-            let inner = specialize_type(ex, types, inner, generics, loc);
+            let inner = specialize_type(ex, types, inner, generics, _loc);
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -3112,7 +3112,11 @@ fn try_resolve_struct_deref_method(
 
     let ret_root = types.root(ret);
     match types.cluster_state(ret_root) {
-        ResolveKind::Ptr { tgt, raw, .. } if raw == Some(false) => {
+        ResolveKind::Ptr {
+            tgt,
+            raw: Some(false),
+            ..
+        } => {
             Some(ResolvedStructDerefTarget {
                 target: tgt,
                 deref_result_ptr: ret_root,
@@ -3150,7 +3154,9 @@ fn resolve_struct_deref_target(
         .map(|info| (info.deref, info.deref_mut))
         .unwrap_or((None, None));
 
-    let preferred = deref_mut
+    
+
+    deref_mut
         .and_then(|method| {
             try_resolve_struct_deref_method(ex, types, site, base_value, base_cluster, method, true)
         })
@@ -3166,9 +3172,7 @@ fn resolve_struct_deref_target(
                     false,
                 )
             })
-        });
-
-    preferred
+        })
 }
 
 fn push_cannot_deref_error(
