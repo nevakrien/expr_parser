@@ -38,6 +38,51 @@ Calling-convention unification behavior:
   - only `[T; N]` is accepted as a concrete type and maps to the existing sized `Array` type shape,
   - `[T]` currently reports a type error (`unsized array types are not supported yet`) and is reserved for future work.
 
+## Lifetimes and Reference Kinds (Planned Contract)
+
+This is the intended language contract for upcoming lifetime-aware typing and borrow checking.
+
+- Normal references are lifetime-checked borrows (``&`a T``, ``&mut `a T``).
+- `` `raw `` is a separate lifetime state representing non-null pointer-style access (``&`raw T``, ``&mut `raw T``).
+- ``&`a T`` and ``&`raw T`` are distinct; type inference must not silently upgrade/downgrade between them.
+
+Downcasting/reborrowing:
+
+- No implicit lifetime downcast for user-level references.
+- Users must spell reborrow/downcast explicitly (for example `&*var`).
+- Reborrow relationships are tracked as lifetime bounds (for example `` `b < `a ``) and validated later in borrow analysis.
+
+Smart-pointer method signatures:
+
+- Safe/tied deref shape: fn[`a](&`a self)->&`a out.
+- Raw receiver deref shape: fn[`a](&`raw self)->&`a out.
+  - This allows producing arbitrary output lifetimes from a raw receiver.
+- Address exposure shape: fn[`a](&`raw self)->&`raw out.
+  - This intentionally disables normal borrow guarantees along that path.
+
+Implicit references created by desugaring:
+
+- Member access, index access, and deref-chain resolution can synthesize fresh reference temporaries.
+- Those temporaries include implicit lifetime casts and must be recorded in solved metadata for later borrow-check pass consumption.
+- Temporary policy: these implicit casts may target any lifetime (for example: a -> `raw, a -> `static).
+- Future policy: borrow analysis will reject illegal casts and enforce the real lattice.
+
+Early vs deferred lifetime errors:
+
+- Immediate typecheck rejection is allowed when constraints are directly contradictory in one signature/body typing step.
+  - Example: f(x:&`a t)->&`b t{x} is immediately invalid if no reborrow relation justifies `b`.
+- Constraints introduced by explicit reborrows should remain recorded for borrow analysis (not necessarily rejected in the first typing phase).
+
+Unnamed lifetimes:
+
+- In global signatures:
+  - unnamed input-side lifetimes are treated as independent fresh lifetimes,
+  - unnamed output-side lifetimes are intended as joins over input lifetimes (for example: `a+`b+...).
+  - temporary implementation rule: if exactly one input lifetime exists, pick it; otherwise emit `not implemented yet`.
+- In bodies:
+  - every unresolved/unnamed lifetime site mints a fresh lifetime id,
+  - minted ids are tracked explicitly so later borrow analysis can index per-lifetime data in dense vectors.
+
 ## Member Access Semantics (`.`, `::`, `->`)
 
 Lowering maps syntax to `AccessKind`:

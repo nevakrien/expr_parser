@@ -36,6 +36,7 @@
 - `agent_docs/struct_layout.md`: layout computation model in `src/struct_layout.rs`, including recursion detection and generic specialization handling.
 - `agent_docs/string_intern_and_ids.md`: intern table internals and `IdHashMap`/`IdentityHasher` conventions for ID-keyed maps.
 - `agent_docs/low_ir_sketch.md`: current status and intent for the unfinished low-level IR sketch in `src/low_ir.rs`.
+- `agent_docs/lifetimes_plan.md`: planned lifetime semantics and staged implementation notes across type inference and borrow checking.
 
 ## Commands
 - `cargo run` runs the CLI/REPL, which can be used to inspect parsed AST shape and type inference behavior.

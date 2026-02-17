@@ -219,6 +219,7 @@ Main orchestration is two-phase:
    - resolves typedefs/structs,
    - resolves function signatures (without body internals),
    - validates special member method signatures (`__add`, unary overload names, `__free`) during member-method signature gather,
+   - precomputes per-struct overload metadata into `TypeStore.struct_overloads` (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.
 2. `infer_value_internals`
   - resolves function body internals or arbitrary value internals,
@@ -358,13 +359,14 @@ Then `finalize`:
 - Builtin binary pointer arithmetic now supports raw pointers only: `*T` / `*const T` can do `ptr + int`, `int + ptr`, and `ptr - int` (result keeps pointer type), plus `ptr - ptr` (both operands must be compatible raw pointers, result is `isize`).
 - Non-raw references (`&T`, `&mut T`) are intentionally rejected for builtin pointer arithmetic and still produce overload-not-found diagnostics.
 - User-struct operator overloads are now enforced through solved member-method signatures:
-  - Resolver looks up the method (`__add`, `__neg`, etc.) on the lhs struct type.
+  - Resolver looks up the method (`__add`, `__neg`, etc.) from `TypeStore.struct_overloads` (populated in global pass).
   - It reads the method type from `SolvedTypes`, and when the solved function type has non-zero `generics`, specializes it into fresh local clusters (`solved_type_to_specialized_local`) before unifying against the expected function shape for the operator site.
   - Receiver currying is centralized in `make_member_closure`: it unifies `self` (including `&self` / `&mut self` via explicit `ResolveKind::Ptr` clusters) and returns a closure-like function cluster with `self` removed from the parameter list.
   - Both binary and unary operator resolution now reuse this same closure helper, then unify that closure against an expected function shape for the operator site.
   - This means operator overload resolution now constrains lhs/rhs/output directly from method signatures (instead of only reporting overload presence).
   - On successful resolution, operator sites are also recorded in `SolvedTypes.member_method_types` so tooling can recover the selected member name and full (uncurried) method signature.
 - Deferred operator queues are now drained with `retain_mut`: resolved sites (including successful overload application and hard errors) are removed, while only truly pending/unknown sites are retained for future solver rounds.
+- Smart deref target resolution now prefers cached global overload metadata (`TypeStore.struct_overloads`) and no longer re-checks `__deref`/`__deref_mut` target compatibility per deref/member/index callsite; compatibility is validated once during global signature checks.
 - Deferred deref/member/index result unifications now use `actual_result -> constrained_output` ordering so clash payloads read naturally as `found <actual>, expected <constraint>`.
 - Operator overload resolution assumes global signatures are already solved before function-body inference (`infer_global_types` first); missing method type/function-shape in this stage is treated as an internal-invariant violation (`unreachable!`).
 - Even though runtime/operator-call dispatch is still TODO, signature validation now enforces shape rules for special member names:
@@ -385,6 +387,54 @@ Then `finalize`:
 - Medium-term intent: introduce a new IR tier dedicated to post-typecheck value semantics (ownership/borrows/destruction + explicit implicit-op insertion), so later backend/codegen phases do not rely on typechecker-only side channels.
 - Smart-pointer target: make a `Box`-style type a first-class validation case for deref/member flows; this mostly needs external-type integration and ABI/foreign-call tagging.
 - External/ABI syntax/semantics notes now live in `agent_docs/language_semantics.md`.
+
+## Lifetime Inference Plan (Design Notes)
+
+This section records the intended implementation shape for adding lifetimes to typing/inference before full borrow checking.
+
+### Core semantic constraints
+
+- No automatic user-level lifetime downcast: if code wants a shorter/derived borrow, it must express reborrow explicitly (`&*x` style).
+- `` `raw `` is a first-class and distinct lifetime state, not a fallback variant of regular lifetimes.
+- Inference must not coerce ``&`a T`` into ``&`raw T`` by unification side effects.
+
+### Smart-pointer and deref signatures
+
+- Safe deref remains tied: fn[`a](&`a self)->&`a out.
+- Raw receiver deref is allowed: fn[`a](&`raw self)->&`a out.
+- Raw address exposure is allowed: fn[`a](&`raw self)->&`raw out.
+- ``&mut `raw`` must remain distinct from normal noalias mutable borrows in later ownership/borrow phases.
+
+### Implicit cast recording requirements
+
+- Access/index/deref-chain logic synthesizes fresh references; these are implicit cast/reborrow sites.
+- Type inference should record each cast edge with enough metadata for borrow analysis to revisit legality.
+- Temporary policy: inferred implicit casts may target any lifetime (including `raw` or `static`).
+- Borrow analysis will become the enforcing stage that accepts/rejects these recorded casts.
+
+### Immediate typecheck rejections vs deferred borrow checks
+
+- Hard reject in typecheck when there is direct lifetime contradiction with no reborrow relation.
+  - Canonical example: f(x:&`a t)->&`b t{x} should fail immediately.
+- Reborrow-driven relations (for example generated `b < a`) should be preserved as constraints and deferred to borrow checking.
+
+### Unnamed lifetime policy
+
+- Global signatures:
+  - input-side unnamed lifetimes => fresh independent named/bound slots,
+  - output-side unnamed lifetime => intended join over input lifetimes.
+  - temporary implementation fallback: when exactly one input lifetime exists, use it; otherwise emit `not implemented yet`.
+- Function bodies:
+  - always mint fresh lifetime ids for unnamed/unconstrained lifetimes,
+  - store all minted ids so borrow checking can allocate dense per-lifetime vectors indexed by id.
+
+### Suggested implementation staging
+
+1. Extend type model with lifetime ids/variables and raw-vs-nonraw reference distinction preserved through unification.
+2. Teach gather layer to mint body lifetimes, instantiate signature lifetimes, and emit cast/reborrow metadata for implicit receiver/index/deref steps.
+3. Add immediate contradiction checks in local body typing for impossible returns/signature equalities (without waiting for borrow pass).
+4. Thread lifetime metadata into `SolvedTypes` (or adjacent solved artifact) so later borrow checker can consume a stable, fully-indexed graph.
+5. Implement borrow-analysis phase that validates cast edges, reborrow bounds, and raw-specific escape rules.
 
 ## Error and Test Philosophy
 

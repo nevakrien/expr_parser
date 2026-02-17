@@ -1,7 +1,7 @@
+use expr_parser::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
-use expr_parser::ErrorReporter;
 use std::time::Instant;
 
 const ITERATIONS: usize = 40000;

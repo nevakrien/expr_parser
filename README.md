@@ -92,6 +92,45 @@ Point() = fn()->Point {Point{0,0}}
 currently we have basic generics and automatic inference, and we would have some level of operator overloading.
 with everything being required to be monomorphic in the end so we can get C++/Rust level inlining everywhere.
 
+## Lifetimes (planned semantics)
+
+lifetimes are explicit type-level states on references. this project is adding lifetime-aware type inference first, then borrow-checking enforcement.
+
+- there is no automatic lifetime downcast/coercion for normal references.
+  - if user code wants a shorter/derived borrow, it must write an explicit reborrow like `&*var`.
+- there is a special lifetime named `` `raw ``.
+  - ``&`raw T`` means non-null pointer semantics with borrow-checking restrictions relaxed in later passes.
+  - ``&mut `raw T`` is not treated as noalias like normal `&mut`.
+- safe smart-pointer deref uses tied lifetime:
+  - fn[`a](&`a self)->&`a out
+- raw-pointer-like smart-pointer deref uses raw receiver:
+  - fn[`a](&`raw self)->&`a out
+  - this intentionally allows producing arbitrary output lifetimes from a raw handle.
+- address-exposing APIs can return raw references:
+  - fn[`a](&`raw self)->&`raw out
+  - using this is effectively an opt-out from regular borrow guarantees for that path.
+- ``&`a T`` and ``&`raw T`` are distinct states; inference must not silently convert normal borrows into raw borrows.
+
+in method/index/deref-chain flows, compiler-created intermediate references are considered fresh borrows. these introduce implicit lifetime casts that must be recorded for borrow analysis.
+
+- for now, implicit casts created by these desugarings may target any lifetime (for example: a -> `raw, a -> `static).
+- later borrow analysis will validate/reject illegal casts.
+
+some lifetime contradictions can be rejected immediately by type inference.
+
+- example: f(x:&`a t)->&`b t{x} is an immediate type error (`a` and `b` are required equal there).
+- in contrast, explicit reborrow paths may produce constraints like `` `b < `a ``; those are recorded and checked in borrow analysis.
+
+unnamed lifetime handling (planned):
+
+- in global signatures:
+  - unnamed input-side lifetimes are treated as distinct fresh binders.
+  - unnamed output-side lifetimes are intended to become joins of input lifetimes (for example: `a+`b+...).
+  - temporary implementation rule: if exactly one input lifetime exists, output defaults to that; otherwise emit a "not implemented yet" error.
+- in function bodies:
+  - each unresolved/unnamed lifetime use mints a fresh lifetime id.
+  - all minted ids are tracked so borrow-checking can use dense storage (for example `Vec` indexed by lifetime id).
+
 not all the features are implemented but we are slowly adding things to the language.
 
 we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being inferred.

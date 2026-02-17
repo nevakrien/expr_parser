@@ -541,10 +541,7 @@ impl Program {
         Ok(result)
     }
 
-    pub(crate) fn with_function_labels_value<T>(
-        &mut self,
-        f: impl FnOnce(&mut Program) -> T,
-    ) -> T {
+    pub(crate) fn with_function_labels_value<T>(&mut self, f: impl FnOnce(&mut Program) -> T) -> T {
         self.function_labels.push(IdHashMap::default());
         let result = f(self);
         let labels = self

@@ -220,6 +220,21 @@ pub struct TypeStore {
     pub(crate) intern: HashMap<TypeValue, TypeId>,
 
     pub(crate) structs: Vec<StructRep>,
+    pub(crate) struct_overloads: IdHashMap<NameId, StructOverloadInfo>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct StructOverloadInfo {
+    deref: Option<ValId>,
+    deref_mut: Option<ValId>,
+    operators: IdHashMap<StrId, StructOperatorOverload>,
+}
+
+impl StructOverloadInfo {
+    #[inline(always)]
+    fn has_any(&self) -> bool {
+        self.deref.is_some() || self.deref_mut.is_some() || !self.operators.is_empty()
+    }
 }
 
 ///todo add actual fields
@@ -265,6 +280,7 @@ impl TypeStore {
             intern: HashMap::new(),
 
             structs: Vec::new(),
+            struct_overloads: IdHashMap::default(),
         };
 
         for i in 0.. {
@@ -327,6 +343,11 @@ impl TypeStore {
     #[inline]
     pub fn set_struct_fields(&mut self, id: StructId, fields: Vec<(NameId, TypeId)>) {
         self.structs[id.0].fields = fields;
+    }
+
+    #[inline(always)]
+    pub fn struct_overload_info(&self, name: NameId) -> Option<&StructOverloadInfo> {
+        self.struct_overloads.get(&name)
     }
 
     #[inline]
@@ -937,6 +958,8 @@ pub fn infer_global_types<'a>(
             );
         };
     }
+
+    build_struct_overload_cache(&mut ctx);
 
     if ctx.ex.errors.is_empty() {
         Ok(ctx.ex.ans)
@@ -3037,18 +3060,9 @@ fn try_resolve_struct_deref_method(
     site: ValId,
     base_value: ValId,
     base_cluster: CId,
-    struct_name: NameId,
-    method_name: StrId,
+    method: ValId,
     expected_self_mutable: bool,
-    expected_output_mutable: bool,
 ) -> Option<ResolvedStructDerefTarget> {
-    let method = ex
-        .program
-        .member_methods
-        .get(&struct_name)
-        .and_then(|methods| methods.get(&method_name))
-        .copied()?;
-
     let Some(method_ty) = ex.ans.type_of(method) else {
         unreachable!(
             "global member method signatures must be solved before body inference; missing type for deref"
@@ -3062,9 +3076,7 @@ fn try_resolve_struct_deref_method(
     };
 
     let self_param = params.first().copied()?;
-    if params.len() != 1 {
-        return None;
-    }
+    debug_assert_eq!(params.len(), 1);
 
     let self_input = member_self_input_cluster(
         &mut types.core,
@@ -3087,9 +3099,7 @@ fn try_resolve_struct_deref_method(
 
     let ret_root = types.root(ret);
     match types.cluster_state(ret_root) {
-        ResolveKind::Ptr { tgt, raw, mutable }
-            if raw == Some(false) && mutable == Some(expected_output_mutable) =>
-        {
+        ResolveKind::Ptr { tgt, raw, .. } if raw == Some(false) => {
             Some(ResolvedStructDerefTarget {
                 target: tgt,
                 deref_result_ptr: ret_root,
@@ -3097,14 +3107,10 @@ fn try_resolve_struct_deref_method(
         }
 
         ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
-            TypeValue::Ptr { tgt, raw, mutable }
-                if !*raw && *mutable == expected_output_mutable =>
-            {
-                Some(ResolvedStructDerefTarget {
-                    target: types.new_solved(*tgt),
-                    deref_result_ptr: types.new_solved(ty),
-                })
-            }
+            TypeValue::Ptr { tgt, raw, .. } if !*raw => Some(ResolvedStructDerefTarget {
+                target: types.new_solved(*tgt),
+                deref_result_ptr: types.new_solved(ty),
+            }),
             _ => None,
         },
 
@@ -3125,47 +3131,31 @@ fn resolve_struct_deref_target(
     base_cluster: CId,
     struct_name: NameId,
 ) -> Option<ResolvedStructDerefTarget> {
-    let deref_target = try_resolve_struct_deref_method(
-        ex,
-        types,
-        site,
-        base_value,
-        base_cluster,
-        struct_name,
-        DEREF_STR,
-        false,
-        false,
-    );
-    let deref_mut_target = try_resolve_struct_deref_method(
-        ex,
-        types,
-        site,
-        base_value,
-        base_cluster,
-        struct_name,
-        DEREF_MUT_STR,
-        true,
-        true,
-    );
+    let (deref, deref_mut) = ex
+        .store
+        .struct_overload_info(struct_name)
+        .map(|info| (info.deref, info.deref_mut))
+        .unwrap_or((None, None));
 
-    match (deref_target, deref_mut_target) {
-        (None, None) => None,
-        (Some(target), None) | (None, Some(target)) => Some(target),
-        (Some(a), Some(b)) => {
-            if let Err(clash) = unify_if_distinct(ex, types, a.target, b.target) {
-                ex.push_error(TypeError::ValuesContradict {
-                    expectation_reason:
-                        "`__deref` and `__deref_mut` must produce the same dereference target type",
+    let preferred = deref_mut
+        .and_then(|method| {
+            try_resolve_struct_deref_method(ex, types, site, base_value, base_cluster, method, true)
+        })
+        .or_else(|| {
+            deref.and_then(|method| {
+                try_resolve_struct_deref_method(
+                    ex,
+                    types,
                     site,
-                    found: base_value,
-                    expected_place: site,
-                    clash,
-                });
-                return None;
-            }
-            Some(b)
-        }
-    }
+                    base_value,
+                    base_cluster,
+                    method,
+                    false,
+                )
+            })
+        });
+
+    preferred
 }
 
 fn push_cannot_deref_error(
@@ -5043,6 +5033,12 @@ enum MemberSelfStyle {
     Ref { mutable: bool },
 }
 
+#[derive(Debug, Clone, Copy)]
+struct StructOperatorOverload {
+    method: ValId,
+    self_style: MemberSelfStyle,
+}
+
 #[inline(always)]
 fn get_member_self_style(
     store: &TypeStore,
@@ -5155,6 +5151,98 @@ fn get_deref_method_target_type(
     }
 
     get_ref_target_type_if_kind(store, output, output_mutable)
+}
+
+fn build_struct_overload_cache(ctx: &mut InferState) {
+    ctx.ex.store.struct_overloads.clear();
+
+    for (struct_name, methods) in ctx.ex.program.member_methods.iter() {
+        let mut info = StructOverloadInfo::default();
+
+        for (method_name, method_val) in methods.iter() {
+            let Some(method_ty) = ctx.ex.ans.type_of(*method_val) else {
+                continue;
+            };
+            let Some((inputs, output)) = method_signature_type_parts(ctx.ex.store, method_ty)
+            else {
+                continue;
+            };
+            let Some(first_input) = inputs.first().copied() else {
+                continue;
+            };
+
+            if *method_name == DEREF_STR {
+                if inputs.len() == 1
+                    && is_ref_to_named_struct_input_type(
+                        ctx.ex.store,
+                        first_input,
+                        *struct_name,
+                        false,
+                    )
+                    && get_ref_target_type_if_kind(ctx.ex.store, output, false).is_some()
+                {
+                    info.deref = Some(*method_val);
+                }
+                continue;
+            }
+
+            if *method_name == DEREF_MUT_STR {
+                if inputs.len() == 1
+                    && is_ref_to_named_struct_input_type(
+                        ctx.ex.store,
+                        first_input,
+                        *struct_name,
+                        true,
+                    )
+                    && get_ref_target_type_if_kind(ctx.ex.store, output, true).is_some()
+                {
+                    info.deref_mut = Some(*method_val);
+                }
+                continue;
+            }
+
+            let extra = inputs.len().saturating_sub(1);
+
+            if is_binary_operator_overload_name(*method_name)
+                && is_self_like_member_input_type(ctx.ex.store, first_input, *struct_name)
+                && extra == 1
+            {
+                let self_style = get_member_self_style(ctx.ex.store, method_ty, *struct_name)
+                    .expect(
+                        "validated binary operator overload must have self-like first parameter",
+                    );
+                info.operators.insert(
+                    *method_name,
+                    StructOperatorOverload {
+                        method: *method_val,
+                        self_style,
+                    },
+                );
+                continue;
+            }
+
+            if is_unary_operator_overload_name(*method_name)
+                && is_self_like_member_input_type(ctx.ex.store, first_input, *struct_name)
+                && extra == 0
+            {
+                let self_style = get_member_self_style(ctx.ex.store, method_ty, *struct_name)
+                    .expect(
+                        "validated unary operator overload must have self-like first parameter",
+                    );
+                info.operators.insert(
+                    *method_name,
+                    StructOperatorOverload {
+                        method: *method_val,
+                        self_style,
+                    },
+                );
+            }
+        }
+
+        if info.has_any() {
+            ctx.ex.store.struct_overloads.insert(*struct_name, info);
+        }
+    }
 }
 
 fn check_struct_deref_targets_compatible(ctx: &mut InferState, struct_name: NameId) {
@@ -5752,7 +5840,7 @@ fn resolve_member_overload_signature(
     ex: &mut ExternState,
     types: &mut TypeState,
     method: ValId,
-    struct_name: NameId,
+    self_style: MemberSelfStyle,
     loc: ValId,
 ) -> Option<ResolvedMemberOverload> {
     let Some(method_ty) = ex.ans.type_of(method) else {
@@ -5761,7 +5849,6 @@ fn resolve_member_overload_signature(
         );
     };
 
-    let self_style = get_member_self_style(ex.store, method_ty, struct_name)?;
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, loc);
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
         unreachable!("specialized operator overload method must resolve to a function shape");
@@ -5828,17 +5915,21 @@ fn resolve_operator_site(
             );
         };
 
+        let method_name = bin_op_overload_name(op);
         let method = ex
-            .program
-            .member_methods
-            .get(&struct_name)
-            .and_then(|methods| methods.get(&bin_op_overload_name(op)))
+            .store
+            .struct_overload_info(struct_name)
+            .and_then(|info| info.operators.get(&method_name))
             .copied();
 
         if let Some(method) = method {
-            let Some(overload_sig) =
-                resolve_member_overload_signature(ex, types, method, struct_name, site.loc)
-            else {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                ex,
+                types,
+                method.method,
+                method.self_style,
+                site.loc,
+            ) else {
                 let err = bin_op_overload_not_found_error(ex, types, site, lhs, rhs);
                 ex.push_error(err);
                 return ResolveOutcome::drop(progress);
@@ -5851,7 +5942,6 @@ fn resolve_operator_site(
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
-                let method_name = bin_op_overload_name(op);
                 let full_method = overload_sig.full_method;
                 let method_closure = make_member_closure(ex, types, lhs, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
@@ -6113,16 +6203,20 @@ fn resolve_unary_operator_site(
             );
         };
 
+        let method_name = un_op_overload_name(op);
         let method = ex
-            .program
-            .member_methods
-            .get(&struct_name)
-            .and_then(|methods| methods.get(&un_op_overload_name(op)))
+            .store
+            .struct_overload_info(struct_name)
+            .and_then(|info| info.operators.get(&method_name))
             .copied();
         if let Some(method) = method {
-            let Some(overload_sig) =
-                resolve_member_overload_signature(ex, types, method, struct_name, site.loc)
-            else {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                ex,
+                types,
+                method.method,
+                method.self_style,
+                site.loc,
+            ) else {
                 let err = un_op_overload_not_found_error(ex, types, site, input);
                 ex.push_error(err);
                 return ResolveOutcome::drop(progress);
@@ -6135,7 +6229,6 @@ fn resolve_unary_operator_site(
             }
 
             let overload_mismatch: Result<(), TypeClash> = (|| {
-                let method_name = un_op_overload_name(op);
                 let full_method = overload_sig.full_method;
                 let method_closure = make_member_closure(ex, types, input, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
@@ -6276,16 +6369,19 @@ fn resolve_assign_pre_post_site(
 
         let method_name = assign_inc_dec_overload_name(site.flavor);
         let method = ex
-            .program
-            .member_methods
-            .get(&struct_name)
-            .and_then(|methods| methods.get(&method_name))
+            .store
+            .struct_overload_info(struct_name)
+            .and_then(|info| info.operators.get(&method_name))
             .copied();
 
         if let Some(method) = method {
-            let Some(overload_sig) =
-                resolve_member_overload_signature(ex, types, method, struct_name, site.loc)
-            else {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                ex,
+                types,
+                method.method,
+                method.self_style,
+                site.loc,
+            ) else {
                 return ResolveOutcome::drop(progress);
             };
 
