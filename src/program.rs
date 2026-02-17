@@ -9,6 +9,7 @@ use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
+use crate::string_intern::{RAW_STR, STATIC_STR};
 use crate::type_inference::TypeValue;
 use thiserror::Error;
 
@@ -63,11 +64,23 @@ pub enum Defined {
 }
 
 #[derive(Debug)]
-struct PendingLabel {
-    id: LabelId,
-    defined_loc: Option<Loc>,
-    pending_uses: Vec<Loc>,
-    pending_gotos: Vec<ValId>,
+pub(crate) struct PendingLabel {
+    pub id: LabelId,
+    pub defined_loc: Option<Loc>,
+    pub pending_uses: Vec<Loc>,
+    pub pending_gotos: Vec<ValId>,
+}
+
+pub const SPECIAL_LIFETIMES: &[StrId] = &[STATIC_STR, RAW_STR];
+impl LifeTimeId {
+    pub const STATIC: Self = Self(0);
+    pub const RAW: Self = Self(1);
+}
+
+fn insert_builtin_lifetimes(p: &mut Program) {
+    for s in SPECIAL_LIFETIMES {
+        p.insert_new_lifetiime(*s);
+    }
 }
 
 #[derive(Debug)]
@@ -92,7 +105,9 @@ pub struct Program {
     pub member_methods: IdHashMap<NameId, IdHashMap<StrId, ValId>>,
 
     label_names: Vec<StrId>,
-    function_labels: Vec<IdHashMap<StrId, PendingLabel>>,
+    pub(crate) function_labels: Vec<IdHashMap<StrId, PendingLabel>>,
+
+    pub lowering_errors: Vec<CompileError>,
 }
 
 impl Default for Program {
@@ -123,8 +138,10 @@ impl Program {
             member_methods: IdHashMap::default(),
             label_names: Vec::new(),
             function_labels: Vec::new(),
+            lowering_errors: Vec::new(),
         };
         program.insert_builtin_types();
+        insert_builtin_lifetimes(&mut program);
         program
     }
 
@@ -133,6 +150,45 @@ impl Program {
             range: 0..0,
             file: 0,
         }
+    }
+
+    pub fn push_lowering_error(&mut self, err: CompileError) {
+        self.lowering_errors.push(err);
+    }
+
+    pub fn lower_all(&mut self, parser: &mut Parser<'_>) -> Result<(), Vec<CompileError>> {
+        while !parser.is_empty() {
+            match parser.parse_with_macros(self) {
+                Ok(Some(expr)) => {
+                    self.gather_definition(expr);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    self.push_lowering_error(e);
+                }
+            }
+        }
+
+        self.check_pending_names();
+
+        let errors = std::mem::take(&mut self.lowering_errors);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    pub(crate) fn poison_value(&mut self, loc: Loc) -> ValId {
+        self.id_value(loc, Value::Poison)
+    }
+
+    pub(crate) fn poison_pattern(&mut self, loc: Loc) -> PatId {
+        self.id_pattern(loc, Pattern::Poison)
+    }
+
+    pub(crate) fn poison_type_expr(&mut self, loc: Loc) -> TExpId {
+        self.id_type_expr(loc, TypeExpr::Poison)
     }
 
     pub fn id_value(&mut self, loc: Loc, value: Value) -> ValId {
@@ -337,11 +393,11 @@ impl Program {
     //this takes a String because a name is mentioned once as String and gets resolved here
     //it actually has a much nicer cache behvior becaused the String usually gets freed and is giving something else room
     //instead of a &str which would bring cache line to some random parse data
-    pub(crate) fn resolve_name(&mut self, loc: &Loc, name: &str) -> CResult<NameId> {
+    pub(crate) fn resolve_name(&mut self, loc: &Loc, name: &str) -> NameId {
         let name = self.str_intern.intern(name);
         for value_scope in self.scopes.iter().skip(1).rev() {
             if let Some(id) = value_scope.0.get(&name) {
-                return Ok(*id);
+                return *id;
             }
         }
 
@@ -350,14 +406,14 @@ impl Program {
             if let Some(spot) = self.pending_names.get_mut(id) {
                 spot.push(loc.clone())
             }
-            return Ok(*id);
+            return *id;
         }
 
         //errors get reported later it can be there is just a late mention so we dont know yet
         let id = self.insert_value_in_global_scope(name);
         self.definitions.insert(id, Defined::ToBeDefined);
         self.pending_names.entry(id).or_default().push(loc.clone());
-        Ok(id)
+        id
     }
 
     #[inline]
@@ -368,7 +424,15 @@ impl Program {
         result
     }
 
-    pub fn gather_definition(&mut self, expr: LExpr) -> CResult<()> {
+    #[inline]
+    pub fn with_scope_value<T>(&mut self, f: impl FnOnce(&mut Program) -> T) -> T {
+        self.push_scope();
+        let result = f(self);
+        self.pop_scope();
+        result
+    }
+
+    pub fn gather_definition(&mut self, expr: LExpr) {
         let Located { loc, value } = expr;
         match value {
             Expr::Postfix(op, mut items) if op.value == ";" => {
@@ -376,13 +440,12 @@ impl Program {
             }
             Expr::Prefix(open, items) if open.value == "{" => {
                 for item in items {
-                    self.gather_definition(item)?;
+                    self.gather_definition(item);
                 }
-                Ok(())
             }
             Expr::Bin(eq, box_pair) if eq.value == "=" => {
                 let (lhs, rhs) = *box_pair;
-                self.handle_assignment(lhs, rhs)
+                self.handle_assignment(lhs, rhs);
             }
 
             Expr::Prefix(open, mut items) if open.value == "type" => {
@@ -390,42 +453,28 @@ impl Program {
                 let rhs = items.pop().unwrap();
                 let lhs = items.pop().unwrap();
 
-                let name = self.get_ident_for_global(lhs)?;
-                let def = self.with_scope(|prog| {
-                    let v = prog.lower_type_expr(Located {
-                        loc: rhs.loc,
-                        value: rhs.value,
-                    })?;
-                    Ok(Defined::Type(v))
-                })?;
-
-                self.definitions.insert(name, def);
-                Ok(())
+                if let Ok(name) = self.get_ident_for_global(lhs) {
+                    let v = self.with_scope_value(|this| {
+                        this.lower_type_expr(Located {
+                            loc: rhs.loc,
+                            value: rhs.value,
+                        })
+                    });
+                    self.definitions.insert(name, Defined::Type(v));
+                }
             }
             _ => {
-                self.lower_value(Located { loc, value })?;
-                Ok(())
+                self.lower_value(Located { loc, value });
             }
         }
     }
 
-    pub fn lower_all(&mut self, parser: &mut Parser<'_>) -> CResult<()> {
-        while !parser.is_empty() {
-            match parser.parse_with_macros(self)? {
-                //TODO when doing multi Error this ? should be an if let Err
-                //     we can put the result here to a multi error since gathering is independent
-                Some(expr) => self.gather_definition(expr)?,
-                None => break,
-            }
-        }
-
-        self.check_pending_names()
-    }
-
-    pub fn check_pending_names(&mut self) -> CResult<()> {
+    pub fn check_pending_names(&mut self) {
         if self.pending_names.is_empty() {
-            return Ok(());
+            return;
         }
+
+        let mut errors_to_push = Vec::new();
 
         for (id, locs_ref) in self.pending_names.iter_mut() {
             match self.definitions.entry(*id) {
@@ -433,22 +482,20 @@ impl Program {
                     if !matches!(o.get(), Defined::ToBeDefined) {
                         continue;
                     }
-
-                    // o.remove().0
-                    // o.get().clone() //needed for the repl
                 }
                 _ => continue,
             };
             let name = self.str_intern.resolve(self.names_strs[id.0]).to_string();
 
-            //take locs out so we dont double report them
             let mut locs = Vec::new();
             std::mem::swap(locs_ref, &mut locs);
 
-            //TODO return a multi error here when we add them
-            return Err(CompileError::UnresolvedNames { name, locs });
+            errors_to_push.push(CompileError::UnresolvedNames { name, locs });
         }
-        Ok(()) //should never get here
+
+        for err in errors_to_push {
+            self.push_lowering_error(err);
+        }
     }
 
     fn fresh_label_id(&mut self, name: StrId) -> LabelId {
@@ -494,29 +541,59 @@ impl Program {
         Ok(result)
     }
 
+    pub(crate) fn with_function_labels_value<T>(
+        &mut self,
+        f: impl FnOnce(&mut Program) -> T,
+    ) -> T {
+        self.function_labels.push(IdHashMap::default());
+        let result = f(self);
+        let labels = self
+            .function_labels
+            .pop()
+            .expect("function label scope missing");
+
+        for (name, state) in labels {
+            if state.defined_loc.is_some() {
+                continue;
+            }
+
+            let mut locs = state.pending_uses;
+            if locs.is_empty() {
+                continue;
+            }
+
+            let name = self.str_intern.resolve(name).to_string();
+            locs.shrink_to_fit();
+            self.push_lowering_error(CompileError::UnresolvedLabel { name, locs });
+        }
+
+        result
+    }
+
     pub(crate) fn use_label_name_for_goto(
         &mut self,
         goto_id: ValId,
         loc: &Loc,
         name: &str,
-    ) -> CResult<LabelId> {
+    ) -> LabelId {
         let name = self.str_intern.intern(name);
 
         {
             let Some(labels) = self.function_labels.last_mut() else {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: loc.clone(),
                     s: "goto statements must stay inside function bodies",
                 });
+                return LabelId::PENDING;
             };
 
             if let Some(state) = labels.get_mut(&name) {
                 if state.defined_loc.is_none() {
                     state.pending_uses.push(loc.clone());
                     state.pending_gotos.push(goto_id);
-                    return Ok(LabelId::PENDING);
+                    return LabelId::PENDING;
                 }
-                return Ok(state.id);
+                return state.id;
             }
         }
 
@@ -534,10 +611,10 @@ impl Program {
                 pending_gotos: vec![goto_id],
             },
         );
-        Ok(LabelId::PENDING)
+        LabelId::PENDING
     }
 
-    pub(crate) fn define_label_name(&mut self, loc: &Loc, name: &str) -> CResult<LabelId> {
+    pub(crate) fn define_label_name(&mut self, loc: &Loc, name: &str) -> LabelId {
         let name = self.str_intern.intern(name);
 
         let mut pending_gotos = Vec::new();
@@ -545,18 +622,20 @@ impl Program {
 
         {
             let Some(labels) = self.function_labels.last_mut() else {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: loc.clone(),
                     s: "labels must be declared inside function bodies",
                 });
+                return LabelId::PENDING;
             };
 
             if let Some(state) = labels.get_mut(&name) {
                 if state.defined_loc.is_some() {
-                    return Err(CompileError::SimpleError {
+                    self.push_lowering_error(CompileError::SimpleError {
                         loc: loc.clone(),
                         s: LABEL_ALREADY_DEFINED_MSG,
                     });
+                    return LabelId::PENDING;
                 }
                 state.defined_loc = Some(loc.clone());
                 state.pending_uses.clear();
@@ -590,7 +669,7 @@ impl Program {
             self.set_value(goto_id, goto_loc, Value::Goto(id));
         }
 
-        Ok(id)
+        id
     }
 
     fn get_ident_for_global(&mut self, lhs: LExpr) -> CResult<NameId> {
@@ -631,38 +710,39 @@ impl Program {
         Ok(ans)
     }
 
-    fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) -> CResult<()> {
+    fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) {
         let Located {
             loc: rhs_loc,
             value: rhs_value,
         } = rhs;
 
-        if let Some((struct_name_id, method_name)) = self.try_member_method_lhs(&lhs)? {
+        if let Some((struct_name_id, method_name)) = self.try_member_method_lhs(&lhs) {
             let Expr::Prefix(fn_kw, _) = &rhs_value else {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: rhs_loc,
                     s: "member methods must be defined with `fn` or `cfn` literals",
                 });
+                return;
             };
             if fn_kw.value != "fn" && fn_kw.value != "cfn" {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: rhs_loc,
                     s: "member methods must be defined with `fn` or `cfn` literals",
                 });
+                return;
             }
 
-            let def_value = self.with_scope(|prog| {
-                let v = prog.lower_value(Located {
+            let def_value = self.with_scope_value(|this| {
+                this.lower_value(Located {
                     loc: rhs_loc.clone(),
                     value: rhs_value,
-                })?;
-                Ok(v)
-            })?;
+                })
+            });
 
             let methods = self.member_methods.entry(struct_name_id).or_default();
             match methods.entry(method_name) {
                 std::collections::hash_map::Entry::Occupied(_) => {
-                    return Err(CompileError::SimpleError {
+                    self.push_lowering_error(CompileError::SimpleError {
                         loc: rhs_loc,
                         s: MEMBER_METHOD_COLLISION_MSG,
                     });
@@ -671,26 +751,32 @@ impl Program {
                     entry.insert(def_value);
                 }
             }
-            return Ok(());
+            return;
         }
 
-        let name_id = self.get_ident_for_global(lhs)?;
-
-        // println!("defining {}",self.str_intern.resolve(self.names_strs[name_id.0]));
+        let Ok(name_id) = self.get_ident_for_global(lhs) else {
+            return;
+        };
 
         let def: Defined = match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
-                let macro_def = Macro::new(args, rhs_loc)?;
-                Defined::Macro(macro_def)
+                match Macro::new(args, rhs_loc) {
+                    Ok(macro_def) => Defined::Macro(macro_def),
+                    Err(e) => {
+                        self.push_lowering_error(e);
+                        return;
+                    }
+                }
             }
-            Expr::Prefix(ref fn_kw, _) if fn_kw.value == "fn" || fn_kw.value == "cfn" => self
-                .with_scope(|prog| {
-                    let v = prog.lower_value(Located {
+            Expr::Prefix(ref fn_kw, _) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
+                let v = self.with_scope_value(|this| {
+                    this.lower_value(Located {
                         loc: rhs_loc,
                         value: rhs_value,
-                    })?;
-                    Ok(Defined::Func(v))
-                })?,
+                    })
+                });
+                Defined::Func(v)
+            }
 
             Expr::Prefix(ref kw, _)
                 if kw.value == "struct"
@@ -698,67 +784,71 @@ impl Program {
                     || kw.value == "enum"
                     || kw.value == "union" =>
             {
-                self.with_scope(|prog| {
-                    let v = prog.lower_type_expr(Located {
+                let v = self.with_scope_value(|this| {
+                    this.lower_type_expr(Located {
                         loc: rhs_loc,
                         value: rhs_value,
-                    })?;
-                    Ok(Defined::Type(v))
-                })?
+                    })
+                });
+                Defined::Type(v)
             }
             _ => {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: rhs_loc,
                     s: "global definitions must assign a macro, function, or type literal",
                 });
+                return;
             }
         };
 
         self.definitions.insert(name_id, def);
-
-        Ok(())
     }
 
-    fn try_member_method_lhs(&mut self, lhs: &LExpr) -> CResult<Option<(NameId, StrId)>> {
+    fn try_member_method_lhs(&mut self, lhs: &LExpr) -> Option<(NameId, StrId)> {
         let Expr::Bin(op, pair) = &lhs.value else {
-            return Ok(None);
+            return None;
         };
         if op.value != "." {
-            return Ok(None);
+            return None;
         }
 
         let (base, method) = pair.as_ref();
         let (Expr::Atom(Token::Ident(struct_name)), Expr::Atom(Token::Ident(method_name))) =
             (&base.value, &method.value)
         else {
-            return Ok(None);
+            return None;
         };
 
-        let struct_name_id = self
+        let Some(struct_name_id) = self
             .scopes
             .first()
             .and_then(|scope| scope.0.get(&self.str_intern.intern(struct_name)))
             .copied()
-            .ok_or_else(|| CompileError::SimpleError {
+        else {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc: base.loc.clone(),
                 s: "member methods must be attached to a struct type",
-            })?;
+            });
+            return None;
+        };
 
         let texp = match self.definitions.get(&struct_name_id) {
             Some(Defined::Type(texp)) => *texp,
             _ => {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: base.loc.clone(),
                     s: "member methods must be attached to a struct type",
                 });
+                return None;
             }
         };
 
         let TypeExpr::Struct(def) = self.type_expr(texp) else {
-            return Err(CompileError::SimpleError {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc: base.loc.clone(),
                 s: "member methods must be attached to a struct type",
             });
+            return None;
         };
 
         let method_name = self.str_intern.intern(method_name);
@@ -767,14 +857,15 @@ impl Program {
             if let Some(field_name) = self.field_name(field)
                 && field_name == method_name
             {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: method.loc.clone(),
                     s: MEMBER_METHOD_COLLISION_MSG,
                 });
+                return None;
             }
         }
 
-        Ok(Some((struct_name_id, method_name)))
+        Some((struct_name_id, method_name))
     }
 
     fn field_name(&self, pat: PatId) -> Option<StrId> {

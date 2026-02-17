@@ -1,7 +1,7 @@
-use expr_parser::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
+use expr_parser::ErrorReporter;
 use std::time::Instant;
 
 const ITERATIONS: usize = 40000;
@@ -21,13 +21,16 @@ fn main() {
     let start = Instant::now();
     let mut error_count = 0usize;
     let mut reporter = ErrorReporter::new();
+    reporter.add_source(0, SOURCE.to_string());
 
     for _ in 0..ITERATIONS {
         let mut program = Program::new();
         let mut parser = Parser::new(SOURCE, 0);
-        if let Err(e) = program.lower_all(&mut parser) {
-            error_count += 1;
-            let _ = reporter.report_compile_error(&e);
+        if let Err(errs) = program.lower_all(&mut parser) {
+            error_count += errs.len();
+            for err in errs {
+                let _ = reporter.report_compile_error(&err);
+            }
             continue;
         }
 

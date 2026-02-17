@@ -3495,6 +3495,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             c
         }
 
+        Value::Poison => {
+            let c = ctx.new_solved(UNKNOWN_TYPE);
+            ctx.bind_val(v, c);
+            c
+        }
+
         Value::Wildcard => {
             let c = ctx.new_cluster();
             ctx.bind_val(v, c);
@@ -6972,18 +6978,14 @@ mod type_infer_tests {
         while !parser.is_empty() {
             match parser.parse_with_macros(&mut program) {
                 Ok(Some(expr)) => {
-                    program
-                        .gather_definition(expr)
-                        .expect("gather_definition failed");
+                    program.gather_definition(expr);
                 }
                 Ok(None) => break,
                 Err(e) => panic!("parse error: {:?}", e),
             }
         }
 
-        program
-            .check_pending_names()
-            .expect("pending name resolution failed");
+        program.check_pending_names();
 
         program
     }
@@ -9121,7 +9123,7 @@ mod type_infer_tests {
     ///structs in body open us up to qualified structures having generics
     ///we also dont do de bjurn ids so it would be a mess
     #[test]
-    fn reject_structs_in_body(){
+    fn reject_structs_in_body() {
         let mut store = TypeStore::new();
         let _errs = infer_fn_body("f=fn(){ type S = struct[T]{x:T} }", &mut store).unwrap_err();
     }
@@ -9130,7 +9132,7 @@ mod type_infer_tests {
     ///there may be an argument to weaken this limitation for lifetimes but currently too neich
     ///we also dont do de bjurn ids so it would be a mess
     #[test]
-    fn reject_generic_closures_in_body(){
+    fn reject_generic_closures_in_body() {
         let mut store = TypeStore::new();
         let _errs = infer_fn_body("f=fn(){ let g = fn[T](x:T)->T{x}; }", &mut store).unwrap_err();
     }

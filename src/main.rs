@@ -286,19 +286,14 @@ fn read_repl_input() -> io::Result<ReplInput> {
     }
 }
 
-fn parse_source(
-    program: &mut Program,
-    input: &str,
-    file_id: usize,
-) -> Result<ParseBatch, CompileError> {
+fn parse_source(program: &mut Program, input: &str, file_id: usize) -> ParseBatch {
     let mut parser = Parser::new(input, file_id);
     let mut expr_count = 0;
     let mut infos = Vec::new();
 
     while !parser.is_empty() {
-        match parser.parse_with_macros(program)? {
-            None => break,
-            Some(expr) => {
+        match parser.parse_with_macros(program) {
+            Ok(Some(expr)) => {
                 let mut defined_names = Vec::new();
                 collect_defined_names(&expr, &mut defined_names);
                 let expr_loc = expr.loc.clone();
@@ -312,7 +307,7 @@ fn parse_source(
                 );
                 println!("{}", pretty_print_expr(&expr, 0));
                 expr_count += 1;
-                program.gather_definition(expr)?;
+                program.gather_definition(expr);
 
                 let value_end = program.values.len();
                 infos.push(ParsedExprInfo {
@@ -322,18 +317,32 @@ fn parse_source(
                     defined_names,
                 });
             }
+            Ok(None) => break,
+            Err(e) => {
+                program.push_lowering_error(e);
+            }
         }
     }
 
-    Ok(ParseBatch { expr_count, infos })
+    ParseBatch { expr_count, infos }
+}
+
+fn report_all_errors(reporter: &mut ErrorReporter, program: &mut Program) -> bool {
+    let errors = std::mem::take(&mut program.lowering_errors);
+    let mut has_errors = false;
+    for err in errors {
+        let _ = reporter.report_compile_error(&err);
+        has_errors = true;
+    }
+    has_errors
 }
 
 fn finalize_program(
     reporter: &mut ErrorReporter,
     program: &mut Program,
 ) -> Result<Option<(TypeStore, SolvedTypes)>, Box<dyn std::error::Error>> {
-    if let Err(err) = program.check_pending_names() {
-        reporter.report_compile_error(&err)?;
+    program.check_pending_names();
+    if report_all_errors(reporter, program) {
         return Ok(None);
     }
 
@@ -411,15 +420,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             next_file_id += 1;
                             reporter.add_source(file_id, contents.clone());
 
-                            match parse_source(&mut program, &contents, file_id) {
-                                Ok(batch) => batches.push(batch),
-                                Err(err) => {
-                                    reporter.report_compile_error(&err)?;
-                                    last_typecheck = None;
-                                    parse_failed = true;
-                                    break;
-                                }
-                            }
+                            let batch = parse_source(&mut program, &contents, file_id);
+                            batches.push(batch);
                         }
                         Err(err) => {
                             eprintln!("Error reading {path}: {err}");
@@ -447,22 +449,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let file_id = next_file_id;
                 next_file_id += 1;
                 reporter.add_source(file_id, input.clone());
-                match parse_source(&mut program, &input, file_id) {
-                    Ok(batch) => {
-                        if let Some((types, solved)) =
-                            finalize_program(&mut reporter, &mut program)?
-                        {
-                            print_expr_types(&program, &types, &solved, &batch);
-                            last_typecheck = Some((types, solved));
-                        } else {
-                            last_typecheck = None;
-                        }
-                    }
-                    Err(err) => {
-                        reporter.report_compile_error(&err)?;
-                        last_typecheck = None;
-                        continue;
-                    }
+                let batch = parse_source(&mut program, &input, file_id);
+                if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)? {
+                    print_expr_types(&program, &types, &solved, &batch);
+                    last_typecheck = Some((types, solved));
+                } else {
+                    last_typecheck = None;
                 }
             }
             Err(err) => {

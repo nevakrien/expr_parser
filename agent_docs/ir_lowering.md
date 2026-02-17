@@ -60,7 +60,7 @@ Rough dispatch order:
 
 ### Blocks
 
-- Lowered with `with_scope`.
+- Lowered with `with_scope_value` (same push/pop invariant as `with_scope`, but for infallible lowering paths that accumulate diagnostics instead of returning `Result`).
 - All but last item become `statements`.
 - Final item becomes `return_value` unless it is a standalone `;` atom.
 - Label declarations (`` `name ``) inside blocks become `Value::LabelDecl` and are only legal inside function bodies.
@@ -72,8 +72,8 @@ Rough dispatch order:
 - Signature may have output arrow: `(params) -> out`.
 - Body is optional (`body: None` for declaration-style forms).
 - Function lowering wraps work in:
-  - `with_function_labels` (label namespace and unresolved-label checks)
-  - `with_scope` (local bindings)
+  - `with_function_labels_value` (label namespace and unresolved-label checks that are appended to `Program::lowering_errors`)
+  - `with_scope_value` (local bindings)
 
 ### `goto` and labels
 

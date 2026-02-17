@@ -1,3 +1,4 @@
+use expr_parser::error_reporting::ErrorReporter;
 use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use std::time::Instant;
@@ -45,6 +46,8 @@ fn main() {
     let start = Instant::now();
     let mut parsed_count = 0usize;
     let mut error_count = 0usize;
+    let mut reporter = ErrorReporter::new();
+    reporter.add_source(0, SOURCE.to_string());
 
     for _ in 0..ITERATIONS {
         let mut program = Program::new();
@@ -52,7 +55,12 @@ fn main() {
 
         match program.lower_all(&mut parser) {
             Ok(()) => parsed_count += 1,
-            Err(_) => error_count += 1,
+            Err(errs) => {
+                error_count += errs.len();
+                for err in errs {
+                    let _ = reporter.report_compile_error(&err);
+                }
+            }
         }
     }
 

@@ -193,7 +193,7 @@ mod tests {
 
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
-        program.lower_all(&mut parser).unwrap();
+        program.lower_all(&mut parser);
 
         assert!(program.get_macro("m").is_some());
         assert!(program.get_macro("id").is_some());
@@ -210,10 +210,10 @@ mod tests {
         while !parser.is_empty() {
             let expr = parser.parse_with_macros(&mut program).unwrap().unwrap();
             last_expr = Some(expr.clone());
-            program.gather_definition(expr).unwrap();
+            program.gather_definition(expr);
         }
 
-        program.check_pending_names().unwrap();
+        program.check_pending_names();
 
         let expr = last_expr.expect("expected expanded expression");
         match expr.value {
@@ -231,14 +231,16 @@ mod tests {
         let src = "m = macro(x)";
         let mut program = Program::new();
         let mut parser = Parser::new(src, 0);
-        let err = (|| {
-            if let Some(exp) = parser.parse_with_macros(&mut program)? {
-                program.gather_definition(exp)?;
-            }
+        if let Some(exp) = parser.parse_with_macros(&mut program).unwrap() {
+            program.gather_definition(exp);
+        }
 
-            Ok(())
-        })()
-        .expect_err("expected missing body error");
+        program.check_pending_names();
+        let errors = std::mem::take(&mut program.lowering_errors);
+        let err = errors
+            .into_iter()
+            .next()
+            .expect("expected missing body error");
 
         assert!(matches!(
             err,

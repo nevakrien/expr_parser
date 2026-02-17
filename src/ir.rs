@@ -8,7 +8,7 @@
  * - Allow linear passes over IR
  */
 use crate::parsing::{Expr, LExpr, LFixed, Loc, Located, Token};
-use crate::program::{CResult, CompileError, Program};
+use crate::program::{CompileError, Program};
 use crate::string_intern::StrId;
 
 //this file needs to move Value and Pattern into a dense array
@@ -457,6 +457,8 @@ pub enum Value {
         arms: ValueSpan,
     },
     MatchArm(MatchArm),
+
+    Poison,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -489,6 +491,8 @@ pub enum Pattern {
     },
 
     LifeTime(LifeTimeId),
+
+    Poison,
     //==== TODOS: ========
 
     // /// Struct/enum destructoring pattern
@@ -536,6 +540,8 @@ pub enum TypeExpr {
     Enum(StructLike),
     Struct(StructLike),
     Union(StructLike),
+
+    Poison,
 }
 
 /// Single arm in a match expression
@@ -566,13 +572,13 @@ impl Program {
     //TODO:
     // 1. local macros are intetionaly not handeled and scoping on macros is broken on purpose to be like C
     // 2. some places parse a value where a value/pattern check needs to be done
-    pub fn lower_value(&mut self, expr: LExpr) -> CResult<ValId> {
+    pub fn lower_value(&mut self, expr: LExpr) -> ValId {
         let target = self.id_value(expr.loc.clone(), Value::Literal(Literal::Void));
         self.lower_value_into(target, expr)
     }
 
     #[inline]
-    fn lower_value_into(&mut self, target: ValId, mut expr: LExpr) -> CResult<ValId> {
+    fn lower_value_into(&mut self, target: ValId, mut expr: LExpr) -> ValId {
         let loc = expr.loc.clone();
 
         //gotos have to know the valid
@@ -582,34 +588,34 @@ impl Program {
             return self.lower_goto_into(target, loc, op.clone(), items);
         }
 
-        let value = self.lower_value_inner(expr)?;
+        let value = self.lower_value_inner(expr);
         self.set_value(target, loc, value);
-        Ok(target)
+        target
     }
 
     #[inline]
-    fn lower_value_into_labeled(&mut self, target: ValId, expr: LExpr) -> CResult<bool> {
+    fn lower_value_into_labeled(&mut self, target: ValId, expr: LExpr) -> bool {
         let loc = expr.loc.clone();
         match expr.value {
             Expr::Bin(op, pair) if op.value == "=" => {
                 if let Expr::Atom(Token::Ident(n)) = pair.0.value {
-                    let value = self.lower_value(pair.1)?;
+                    let value = self.lower_value(pair.1);
                     let name = self.str_intern.intern(&n);
                     self.set_value(target, loc, Value::Labeled { name, value });
-                    Ok(true)
+                    true
                 } else {
-                    self.lower_value_into(target, loc.with(Expr::Bin(op, pair)))?;
-                    Ok(false)
+                    self.lower_value_into(target, loc.with(Expr::Bin(op, pair)));
+                    false
                 }
             }
             _ => {
-                self.lower_value_into(target, expr)?;
-                Ok(false)
+                self.lower_value_into(target, expr);
+                false
             }
         }
     }
 
-    fn lower_value_inner(&mut self, expr: LExpr) -> CResult<Value> {
+    fn lower_value_inner(&mut self, expr: LExpr) -> Value {
         match expr.value {
             Expr::Atom(token) => self.lower_atom(&expr.loc, token),
 
@@ -636,13 +642,13 @@ impl Program {
 
             // call: <base>(args...)
             Expr::Postfix(open, items) if matches!(open.value, "(" | "[" | "{") => {
-                let call = self.lower_call_like_expr(expr.loc, items)?;
-                Ok(match open.value {
+                let call = self.lower_call_like_expr(expr.loc, items);
+                match open.value {
                     "(" => Value::Call(call),
                     "[" => Value::Index(call),
                     "{" => Value::Construct(call),
-                    _ => unreachable!(),
-                })
+                    _ => Value::Poison,
+                }
             }
 
             // assignment
@@ -704,7 +710,7 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_atom(&mut self, loc: &Loc, token: Token) -> CResult<Value> {
+    fn lower_atom(&mut self, loc: &Loc, token: Token) -> Value {
         let value = match token {
             Token::NumLit(n) => Value::Literal(Literal::Num(n)),
             Token::FloatLit(f) => Value::Literal(Literal::Float(f)),
@@ -715,61 +721,64 @@ impl Program {
 
             Token::Ident(name) if name == "_" => Value::Wildcard,
             Token::Ident(name) => {
-                let id = self.resolve_name(loc, &name)?;
+                let id = self.resolve_name(loc, &name);
                 Value::NameRef(id)
             }
 
             Token::Operator(op) => {
-                return Err(CompileError::UnsupportedForm {
+                self.push_lowering_error(CompileError::UnsupportedForm {
                     loc: loc.clone(),
                     op_loc: Some(loc.clone()),
                     op: Some(op),
                     message: "operators cannot appear as standalone atoms; wrap them inside a full expression",
                 });
+                return Value::Poison;
             }
         };
 
-        Ok(value)
+        value
     }
 
     #[inline(always)]
-    fn lower_block_expr(&mut self, _loc: Loc, mut items: Vec<LExpr>) -> CResult<Value> {
-        self.with_scope(|this| {
-            let (statements, return_value) = if let Some(last) = items.pop() {
-                let span = this.reserve_value_span(items.len());
-                for (index, item) in items.into_iter().enumerate() {
-                    let target = span.at(index);
-                    if let Some(name) = Self::extract_label_name(&item) {
-                        if !this.in_function_body() {
-                            return Err(CompileError::SimpleError {
-                                loc: item.loc,
-                                s: "labels can only be defined inside function bodies",
-                            });
-                        }
+    fn lower_block_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> Value {
+        self.with_scope_value(|this| this.lower_block_expr_inner(_loc, items))
+    }
 
-                        let id = this.define_label_name(&item.loc, name)?;
-                        this.set_value(target, item.loc, Value::LabelDecl(id));
+    fn lower_block_expr_inner(&mut self, _loc: Loc, mut items: Vec<LExpr>) -> Value {
+        let (statements, return_value) = if let Some(last) = items.pop() {
+            let span = self.reserve_value_span(items.len());
+            for (index, item) in items.into_iter().enumerate() {
+                let target = span.at(index);
+                if let Some(name) = Self::extract_label_name(&item) {
+                    if !self.in_function_body() {
+                        self.push_lowering_error(CompileError::SimpleError {
+                            loc: item.loc,
+                            s: "labels can only be defined inside function bodies",
+                        });
                     } else {
-                        this.lower_value_into(target, item)?;
+                        let id = self.define_label_name(&item.loc, name);
+                        self.set_value(target, item.loc, Value::LabelDecl(id));
                     }
-                }
-
-                let return_value = if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
-                    Some(this.lower_value(last)?)
                 } else {
-                    None
-                };
+                    self.lower_value_into(target, item);
+                }
+            }
 
-                (span, return_value)
+            let return_value = if !matches!(last.value, Expr::Atom(Token::Operator(";"))) {
+                Some(self.lower_value(last))
             } else {
-                (this.reserve_value_span(0), None)
+                None
             };
 
-            Ok(Value::Block {
-                statements,
-                return_value,
-            })
-        })
+            (span, return_value)
+        } else {
+            (self.reserve_value_span(0), None)
+        };
+
+        Value::Block {
+            statements,
+            return_value,
+        }
     }
 
     fn extract_label_name(expr: &LExpr) -> Option<&str> {
@@ -787,22 +796,22 @@ impl Program {
     }
 
     #[inline(always)]
-    fn lower_typedef_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_typedef_expr(&mut self, loc: Loc, mut items: Vec<LExpr>) -> Value {
         debug_assert!(2 == items.len());
 
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
 
-        let pat = self.lower_pattern(pat_expr, VarKind::Const)?;
-        let ty = self.lower_type_expr(value_expr)?;
+        let pat = self.lower_pattern(pat_expr, VarKind::Const);
+        let ty = self.lower_type_expr(value_expr);
 
         let _ = loc;
 
-        Ok(Value::TypeDef { pat, ty })
+        Value::TypeDef { pat, ty }
     }
 
     #[inline(always)]
-    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>, m: VarKind) -> CResult<Value> {
+    fn lower_let_expr(&mut self, loc: Loc, mut items: Vec<LExpr>, m: VarKind) -> Value {
         debug_assert!(2 <= items.len() && items.len() <= 3);
 
         let else_exp = if items.len() == 3 { items.pop() } else { None };
@@ -810,110 +819,104 @@ impl Program {
         let value_expr = items.pop().unwrap();
         let pat_expr = items.pop().unwrap();
 
-        let value = self.lower_value(value_expr)?;
-        let pat = self.lower_pattern(pat_expr, m)?;
+        let value = self.lower_value(value_expr);
+        let pat = self.lower_pattern(pat_expr, m);
 
         let else_part = if let Some(exp) = else_exp {
-            let v = self.with_scope(|prog| prog.lower_value(exp))?;
-            Some(v)
+            Some(self.with_scope_value(|p| p.lower_value(exp)))
         } else {
             None
         };
 
         let _ = loc;
 
-        Ok(Value::Let {
+        Value::Let {
             pat,
             value,
             else_part,
-        })
+        }
     }
 
     #[inline(always)]
-    fn lower_tuple_expr(
-        &mut self,
-        _loc: Loc,
-        items: Vec<LExpr>,
-        open: &'static str,
-    ) -> CResult<Value> {
+    fn lower_tuple_expr(&mut self, _loc: Loc, items: Vec<LExpr>, open: &'static str) -> Value {
         let parts = self.reserve_value_span(items.len());
 
         for (index, arg) in items.into_iter().enumerate() {
             let target = parts.at(index);
-            self.lower_value_into(target, arg)?;
+            self.lower_value_into(target, arg);
         }
 
-        Ok(match open {
+        match open {
             "(" => Value::Tuple(parts),
             "[" => Value::Array(parts),
-            _ => unreachable!(),
-        })
+            _ => Value::Poison,
+        }
     }
 
     #[inline(always)]
-    fn lower_call_like_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> CResult<Call> {
+    fn lower_call_like_expr(&mut self, _loc: Loc, items: Vec<LExpr>) -> Call {
         debug_assert!(!items.is_empty(), "call expression missing base");
 
         let mut items = items.into_iter();
-        let base = self.lower_value(items.next().unwrap())?;
+        let base = self.lower_value(items.next().unwrap());
 
         let args = self.reserve_value_span(items.len());
         let mut named_args_start = args.len();
         for (index, arg) in items.enumerate() {
             let target = args.at(index);
             let arg_loc = arg.loc.clone();
-            if self.lower_value_into_labeled(target, arg)? {
+            if self.lower_value_into_labeled(target, arg) {
                 if named_args_start == args.len() {
                     named_args_start = index;
                 }
             } else if named_args_start != args.len() {
-                // Positional arguments after named ones break the contiguous split.
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: arg_loc,
                     s: "positional arguments must come before named ones",
                 });
             }
         }
 
-        Ok(Call {
+        Call {
             base,
             args,
             named_args_start,
-        })
+        }
     }
 
     #[inline(always)]
-    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_match_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> Value {
         if items.len() < 2 {
-            return Err(CompileError::SimpleError {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc,
                 s: "match expressions require a value and at least one arm",
             });
+            return Value::Poison;
         }
 
         let mut items = items.into_iter();
-        let value = self.lower_value(items.next().unwrap())?;
+        let value = self.lower_value(items.next().unwrap());
 
         let arms = self.reserve_value_span(items.len());
         for (id, arm_expr) in arms.ids().zip(items) {
-            self.with_scope(|p| {
+            self.with_scope_value(|p| {
                 let loc = arm_expr.loc.clone();
-                let arm = p.lower_match_arm(arm_expr)?;
+                let arm = p.lower_match_arm(arm_expr);
                 p.set_value(id, loc, Value::MatchArm(arm));
-                Ok(())
-            })?;
+            });
         }
 
-        Ok(Value::Match { value, arms })
+        Value::Match { value, arms }
     }
 
     #[inline(always)]
-    fn lower_if_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_if_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> Value {
         if items.len() < 2 || items.len() > 3 {
-            return Err(CompileError::SimpleError {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc,
                 s: "if expression requires condition and then branch, optional else branch",
             });
+            return Value::Poison;
         }
 
         let mut items = items.into_iter();
@@ -925,81 +928,86 @@ impl Program {
             None
         };
 
-        let cond = self.lower_value(cond_expr)?;
-        let then = self.with_scope(|p| p.lower_value(then_expr))?;
+        let cond = self.lower_value(cond_expr);
+        let then = self.with_scope_value(|p| p.lower_value(then_expr));
         let els = if let Some(else_expr) = else_expr {
-            Some(self.with_scope(|p| p.lower_value(else_expr))?)
+            Some(self.with_scope_value(|p| p.lower_value(else_expr)))
         } else {
             None
         };
         let _ = loc;
-        Ok(Value::If { cond, then, els })
+        Value::If { cond, then, els }
     }
 
     #[inline(always)]
-    fn lower_while_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_while_expr(&mut self, loc: Loc, items: Vec<LExpr>) -> Value {
         if items.len() != 2 {
-            return Err(CompileError::SimpleError {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc,
                 s: "while expression requires condition",
             });
+            return Value::Poison;
         }
 
         let mut items = items.into_iter();
         let cond_expr = items.next().unwrap();
         let then_expr = items.next().unwrap();
 
-        self.with_scope(|p| {
-            let cond = p.lower_value(cond_expr)?;
-            let body = p.lower_value(then_expr)?;
-            let _ = loc;
-            Ok(Value::While { cond, body })
-        })
+        let (cond, body) = self.with_scope_value(|p| {
+            let cond = p.lower_value(cond_expr);
+            let body = p.lower_value(then_expr);
+            (cond, body)
+        });
+        let _ = loc;
+        Value::While { cond, body }
     }
 
     #[inline(always)]
-    fn lower_break_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_break_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> Value {
         if items.len() > 1 {
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
                 message: "break can only supply zero or one value",
             });
+            return Value::Poison;
         }
-        Ok(Value::Break)
+        Value::Break
     }
 
     #[inline(always)]
-    fn lower_continue_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_continue_expr(&mut self, loc: Loc, op: LFixed, items: Vec<LExpr>) -> Value {
         if !items.is_empty() {
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
                 message: "continue cannot take any values",
             });
+            return Value::Poison;
         }
-        Ok(Value::Continue)
+        Value::Continue
     }
 
     #[inline(always)]
-    fn lower_return_expr(&mut self, loc: Loc, op: LFixed, mut items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_return_expr(&mut self, loc: Loc, op: LFixed, mut items: Vec<LExpr>) -> Value {
         if items.len() > 1 {
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
                 message: "return accepts at most one value",
             });
+            return Value::Poison;
         }
 
         let value = if let Some(value) = items.pop() {
-            Some(self.lower_value(value)?)
+            Some(self.lower_value(value))
         } else {
             None
         };
-        Ok(Value::Return(value))
+        Value::Return(value)
     }
 
     #[inline(always)]
@@ -1009,52 +1017,54 @@ impl Program {
         loc: Loc,
         op: LFixed,
         items: &mut Vec<LExpr>,
-    ) -> CResult<ValId> {
+    ) -> ValId {
         if !self.in_function_body() {
-            return Err(CompileError::SimpleError {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc,
                 s: "goto statements must stay inside function bodies",
             });
+            return target;
         }
         if items.len() != 1 {
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(op.loc),
                 op: Some(op.value),
                 message: "goto requires a single label argument",
             });
+            return target;
         }
 
         let label_expr = items.pop().unwrap();
         let Some(label_name) = Self::extract_label_name(&label_expr) else {
-            return Err(CompileError::SimpleError {
+            self.push_lowering_error(CompileError::SimpleError {
                 loc: label_expr.loc,
                 s: LABEL_NAME_REQUIRED_MSG,
             });
+            return target;
         };
 
-        let label = self.use_label_name_for_goto(target, &label_expr.loc, label_name)?;
+        let label = self.use_label_name_for_goto(target, &label_expr.loc, label_name);
         self.set_value(target, loc, Value::Goto(label));
-        Ok(target)
+        target
     }
 
     #[inline(always)]
-    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> CResult<Value> {
+    fn lower_assign_expr(&mut self, loc: Loc, pair: (LExpr, LExpr)) -> Value {
         let (lhs, rhs) = pair;
 
-        //TODO: target might be a pattern in rare cases? not sure
-        let target = self.lower_value(lhs)?;
-        let value = self.lower_value(rhs)?;
+        let target = self.lower_value(lhs);
+        let value = self.lower_value(rhs);
 
         let _ = loc;
-        Ok(Value::Assign {
+        Value::Assign {
             op: AssignOp::Nothing(value),
             target,
-        })
+        }
     }
 
     #[inline(always)]
-    fn lower_fn_expr(&mut self, loc: Loc, fn_kw: LFixed, items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_fn_expr(&mut self, loc: Loc, fn_kw: LFixed, items: Vec<LExpr>) -> Value {
         debug_assert!(
             (1..=3).contains(&items.len()),
             "fn expects optional generics, signature, and optional body"
@@ -1082,59 +1092,70 @@ impl Program {
 
         let Expr::Prefix(p_open, param_items) = params_expr.value else {
             debug_assert!(false, "fn signature does not start with parameter list");
-            unreachable!();
+            return Value::Poison;
         };
         debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
-        let calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
+        let _calling_convention = CallingConvention::from_fn_keyword(fn_kw.value).unwrap();
 
-        self.with_function_labels(|this| {
-            this.with_scope(|p| {
-                let generics = match generics_expr {
-                    Some(gen_expr) => {
-                        let Expr::Prefix(open, items) = gen_expr.value else {
-                            debug_assert!(false, "fn generics must use brackets");
-                            unreachable!();
-                        };
-                        debug_assert!(open.value == "[", "fn generics must use brackets");
+        self.with_function_labels_value(|this| {
+            this.lower_fn_expr_inner(loc, fn_kw, generics_expr, param_items, ret_expr, body_expr)
+        })
+    }
 
-                        let ans = p.reserve_pattern_span(items.len());
-                        for (index, expr) in items.into_iter().enumerate() {
-                            let target = ans.at(index);
-                            p.lower_pattern_into(target, expr, VarKind::Const)?;
-                        }
-                        ans
+    fn lower_fn_expr_inner(
+        &mut self,
+        loc: Loc,
+        fn_kw: LFixed,
+        generics_expr: Option<LExpr>,
+        param_items: Vec<LExpr>,
+        ret_expr: Option<LExpr>,
+        body_expr: Option<LExpr>,
+    ) -> Value {
+        self.with_scope_value(|this| {
+            let generics = match generics_expr {
+                Some(gen_expr) => {
+                    let Expr::Prefix(open, items) = gen_expr.value else {
+                        debug_assert!(false, "fn generics must use brackets");
+                        return Value::Poison;
+                    };
+                    debug_assert!(open.value == "[", "fn generics must use brackets");
+
+                    let ans = this.reserve_pattern_span(items.len());
+                    for (index, expr) in items.into_iter().enumerate() {
+                        let target = ans.at(index);
+                        this.lower_pattern_into(target, expr, VarKind::Const);
                     }
-                    None => p.reserve_pattern_span(0),
-                };
-
-                let params_span = p.reserve_pattern_span(param_items.len());
-                for (index, param) in param_items.into_iter().enumerate() {
-                    //TODO support type anotation
-                    let target = params_span.at(index);
-                    p.lower_pattern_into(target, param, VarKind::Const)?;
+                    ans
                 }
+                None => this.reserve_pattern_span(0),
+            };
 
-                let output_type = match ret_expr {
-                    Some(e) => Some(p.lower_type_expr(e)?),
-                    None => None,
-                };
+            let params_span = this.reserve_pattern_span(param_items.len());
+            for (index, param) in param_items.into_iter().enumerate() {
+                let target = params_span.at(index);
+                this.lower_pattern_into(target, param, VarKind::Const);
+            }
 
-                let body = if let Some(body_expr) = body_expr {
-                    Some(p.lower_value(body_expr)?)
-                } else {
-                    None
-                };
+            let output_type = match ret_expr {
+                Some(e) => Some(this.lower_type_expr(e)),
+                None => None,
+            };
 
-                let _ = loc;
-                Ok(Value::Func {
-                    calling_convention,
-                    generics,
-                    params: params_span,
-                    output_type,
-                    body,
-                })
-            })
+            let body = if let Some(body_expr) = body_expr {
+                Some(this.lower_value(body_expr))
+            } else {
+                None
+            };
+
+            let _ = loc;
+            Value::Func {
+                calling_convention: CallingConvention::from_fn_keyword(fn_kw.value).unwrap(),
+                generics,
+                params: params_span,
+                output_type,
+                body,
+            }
         })
     }
 
@@ -1144,17 +1165,23 @@ impl Program {
         loc: Loc,
         op: Located<&'static str>,
         pair: (LExpr, LExpr),
-    ) -> CResult<Value> {
+    ) -> Value {
         let (value_expr, ty_expr) = pair;
-        let value = self.lower_value(value_expr)?;
-        let ty = self.lower_type_expr(ty_expr)?;
+        let value = self.lower_value(value_expr);
+        let ty = self.lower_type_expr(ty_expr);
         let v = match op.value {
             "as" => Value::Cast { value, ty },
             ":" => Value::TypeAnnotation { value, ty },
-            _ => panic!("unsupported cast operator `{}`", op.value),
+            _ => {
+                self.push_lowering_error(CompileError::SimpleError {
+                    loc: loc.clone(),
+                    s: "unsupported cast operator",
+                });
+                Value::Poison
+            }
         };
         let _ = loc;
-        Ok(v)
+        v
     }
 
     #[inline(always)]
@@ -1164,15 +1191,16 @@ impl Program {
         op: Located<&'static str>,
         lhs: LExpr,
         rhs: LExpr,
-    ) -> CResult<Value> {
-        let base = self.lower_value(lhs)?;
+    ) -> Value {
+        let base = self.lower_value(lhs);
         let name = match rhs.value {
             Expr::Atom(Token::Ident(name)) => self.str_intern.intern(&name),
             _ => {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: rhs.loc,
                     s: ACCESS_EXPECTS_NAME_MSG,
                 });
+                return Value::Poison;
             }
         };
 
@@ -1180,61 +1208,71 @@ impl Program {
             "." => AccessKind::Dot,
             "::" => AccessKind::Static,
             "->" => AccessKind::Ptr,
-            _ => panic!("unsupported access operator `{}`", op.value),
+            _ => {
+                self.push_lowering_error(CompileError::SimpleError {
+                    loc: loc.clone(),
+                    s: "unsupported access operator",
+                });
+                return Value::Poison;
+            }
         };
 
         let _ = loc;
-        Ok(Value::Access { base, name, kind })
+        Value::Access { base, name, kind }
     }
 
-    pub fn lower_pattern(&mut self, expr: LExpr, m: VarKind) -> CResult<PatId> {
+    pub fn lower_pattern(&mut self, expr: LExpr, m: VarKind) -> PatId {
         let loc = expr.loc.clone();
-        let pattern = self.lower_pattern_inner(expr, m)?;
-        Ok(self.id_pattern(loc, pattern))
+        let pattern = self.lower_pattern_inner(expr, m);
+        self.id_pattern(loc, pattern)
     }
 
-    fn lower_pattern_into(&mut self, target: PatId, expr: LExpr, m: VarKind) -> CResult<PatId> {
+    fn lower_pattern_into(&mut self, target: PatId, expr: LExpr, m: VarKind) -> PatId {
         let loc = expr.loc.clone();
-        let pattern = self.lower_pattern_inner(expr, m)?;
+        let pattern = self.lower_pattern_inner(expr, m);
         self.set_pattern(target, loc, pattern);
-        Ok(target)
+        target
     }
 
-    fn lower_pattern_inner(&mut self, expr: LExpr, m: VarKind) -> CResult<Pattern> {
+    fn lower_pattern_inner(&mut self, expr: LExpr, m: VarKind) -> Pattern {
         let loc = expr.loc.clone();
         match expr.value {
-            Expr::Atom(Token::Ident(name)) if name == "_" => Ok(Pattern::Wildcard(m)),
+            Expr::Atom(Token::Ident(name)) if name == "_" => Pattern::Wildcard(m),
 
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
                 let id = self.insert_value_in_current_scope(name);
-                Ok(Pattern::Bind(id, m))
+                Pattern::Bind(id, m)
             }
 
-            Expr::Atom(_) => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: None,
-                op: None,
-                message: "got a literal that isnt a name in a pattern",
-            }),
+            Expr::Atom(_) => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: None,
+                    op: None,
+                    message: "got a literal that isnt a name in a pattern",
+                });
+                Pattern::Poison
+            }
 
             // Pattern with type annotation: x:T
             Expr::Bin(op, pair) if op.value == ":" => {
                 let (pat_expr, ty_expr) = *pair;
-                let pat = self.lower_pattern(pat_expr, m)?;
-                let ty = self.lower_type_expr(ty_expr)?;
+                let pat = self.lower_pattern(pat_expr, m);
+                let ty = self.lower_type_expr(ty_expr);
 
-                // Create a type annotation pattern
-                let _ = loc;
-                Ok(Pattern::TypeAnnotation { pat, ty })
+                Pattern::TypeAnnotation { pat, ty }
             }
 
-            Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "this pattern expression is not supported",
-            }),
+            Expr::Bin(op, _) => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "this pattern expression is not supported",
+                });
+                Pattern::Poison
+            }
 
             Expr::Prefix(open, mut items) if open.value == "mut" => {
                 self.lower_pattern_inner(items.pop().unwrap(), VarKind::Mut)
@@ -1247,71 +1285,106 @@ impl Program {
                 let span = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_pattern_into(target, item, m)?;
+                    self.lower_pattern_into(target, item, m);
                 }
-                Ok(Pattern::Tuple(span))
+                Pattern::Tuple(span)
             }
 
             Expr::Prefix(open, items) if open.value == "`" => {
                 let Some(Expr::Atom(Token::Ident(n))) = items.first().map(|x| &x.value) else {
-                    todo!("error");
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc: loc.clone(),
+                        s: "invalid lifetime syntax",
+                    });
+                    return Pattern::Poison;
                 };
                 if items.len() > 1 {
-                    todo!()
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc: loc.clone(),
+                        s: "invalid lifetime syntax",
+                    });
+                    return Pattern::Poison;
                 }
                 let s = self.str_intern.intern(n);
                 let life = self.insert_new_lifetiime(s);
-                Ok(Pattern::LifeTime(life))
+                Pattern::LifeTime(life)
             }
 
-            Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "this pattern expression is not supported",
-            }),
+            Expr::Prefix(op, _) | Expr::Postfix(op, _) => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "this pattern expression is not supported",
+                });
+                Pattern::Poison
+            }
         }
     }
 
     #[inline(always)]
-    fn lower_match_arm(&mut self, expr: LExpr) -> CResult<MatchArm> {
+    fn lower_match_arm(&mut self, expr: LExpr) -> MatchArm {
         match expr.value {
             Expr::Bin(op, pair) if op.value == "=>" => {
                 let (pat_expr, body_expr) = *pair;
-                let pat = self.lower_pattern(pat_expr, VarKind::Const)?;
-                let body = self.lower_value(body_expr)?;
-                Ok(MatchArm { pat, body })
+                let pat = self.lower_pattern(pat_expr, VarKind::Const);
+                let body = self.lower_value(body_expr);
+                MatchArm { pat, body }
             }
 
-            Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
-                loc: expr.loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "match arms must be written as `<pattern> => <expr>`",
-            }),
+            Expr::Bin(op, _) => {
+                let loc = expr.loc.clone();
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc: loc.clone(),
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "match arms must be written as `<pattern> => <expr>`",
+                });
+                MatchArm {
+                    pat: self.poison_pattern(loc.clone()),
+                    body: self.poison_value(loc),
+                }
+            }
 
-            Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
-                loc: expr.loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "match arms must be written as `<pattern> => <expr>`",
-            }),
+            Expr::Prefix(op, _) | Expr::Postfix(op, _) => {
+                let loc = expr.loc.clone();
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc: loc.clone(),
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "match arms must be written as `<pattern> => <expr>`",
+                });
+                MatchArm {
+                    pat: self.poison_pattern(loc.clone()),
+                    body: self.poison_value(loc),
+                }
+            }
 
-            _ => Err(CompileError::UnsupportedForm {
-                loc: expr.loc,
-                op_loc: None,
-                op: None,
-                message: "match arms must be written as `<pattern> => <expr>`",
-            }),
+            _ => {
+                let loc = expr.loc.clone();
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc: loc.clone(),
+                    op_loc: None,
+                    op: None,
+                    message: "match arms must be written as `<pattern> => <expr>`",
+                });
+                MatchArm {
+                    pat: self.poison_pattern(loc.clone()),
+                    body: self.poison_value(loc),
+                }
+            }
         }
     }
 
     #[inline(always)]
-    fn lower_addr_of(&mut self, mut items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_addr_of(&mut self, mut items: Vec<LExpr>) -> Value {
         let mut rhs_expr = items.pop().unwrap();
         if let Some(_lifetime_expr) = items.pop() {
-            // println!("found lifetime {_lifetime_expr:?}");
-            todo!("we are not specifying lifetimes here")
+            self.push_lowering_error(CompileError::SimpleError {
+                loc: rhs_expr.loc.clone(),
+                s: "lifetime specification not yet supported",
+            });
+            return Value::Poison;
         }
 
         let mut kind = None;
@@ -1329,8 +1402,8 @@ impl Program {
             std::mem::swap(&mut rhs_expr, &mut inner);
         }
 
-        let rhs = self.lower_value(rhs_expr)?;
-        Ok(Value::AddrOf(rhs, kind))
+        let rhs = self.lower_value(rhs_expr);
+        Value::AddrOf(rhs, kind)
     }
 
     // ===============================
@@ -1338,14 +1411,13 @@ impl Program {
     // ===============================
 
     #[inline(always)]
-    fn lower_prefix_op(
-        &mut self,
-        loc: Loc,
-        op: Located<&'static str>,
-        items: Vec<LExpr>,
-    ) -> CResult<Value> {
+    fn lower_prefix_op(&mut self, loc: Loc, op: Located<&'static str>, items: Vec<LExpr>) -> Value {
         if items.len() != 1 {
-            todo!("this should not be a hard error")
+            self.push_lowering_error(CompileError::SimpleError {
+                loc: loc.clone(),
+                s: "prefix operator requires exactly one operand",
+            });
+            return Value::Poison;
         }
 
         let rhs_expr = items.into_iter().next().unwrap();
@@ -1354,8 +1426,8 @@ impl Program {
             "!" => UnOp::Not,
             "~" => UnOp::BitNot,
             "*" => {
-                let rhs = self.lower_value(rhs_expr)?;
-                return Ok(Value::Deref(rhs));
+                let rhs = self.lower_value(rhs_expr);
+                return Value::Deref(rhs);
             }
             "&" => {
                 unreachable!()
@@ -1365,22 +1437,23 @@ impl Program {
             "--" => return self.lower_inc_dec_prefix(op.map(|_| Dir::Dec), vec![rhs_expr]),
 
             _ => {
-                return Err(CompileError::UnsupportedForm {
+                self.push_lowering_error(CompileError::UnsupportedForm {
                     loc,
                     op_loc: Some(op.loc),
                     op: Some(op.value),
                     message: "this prefix operator is not supported as a value",
                 });
+                return Value::Poison;
             }
         };
 
-        let rhs = self.lower_value(rhs_expr)?;
+        let rhs = self.lower_value(rhs_expr);
 
         let _ = loc;
-        Ok(Value::UnOp {
+        Value::UnOp {
             op: unop,
             value: rhs,
-        })
+        }
     }
 
     #[inline(always)]
@@ -1389,7 +1462,7 @@ impl Program {
         _loc: Loc,
         op: Located<&'static str>,
         items: Vec<LExpr>,
-    ) -> CResult<Value> {
+    ) -> Value {
         match op.value {
             // these are handled earlier and must never reach here
             "(" | "[" => unreachable!("call/index should be handled before postfix ops"),
@@ -1397,39 +1470,42 @@ impl Program {
             "++" => self.lower_inc_dec_postfix(op.map(|_| Dir::Inc), items),
             "--" => self.lower_inc_dec_postfix(op.map(|_| Dir::Dec), items),
 
-            _ => Err(CompileError::UnsupportedForm {
-                loc: _loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "this postfix operator is not supported by the IR lowering",
-            }),
+            _ => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc: _loc,
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "this postfix operator is not supported by the IR lowering",
+                });
+                Value::Poison
+            }
         }
     }
 
     #[inline(always)]
-    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_inc_dec_prefix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> Value {
         debug_assert_eq!(items.len(), 1);
 
-        let target = self.lower_value(items.pop().unwrap())?;
+        let target = self.lower_value(items.pop().unwrap());
 
         let _ = op.loc;
-        Ok(Value::Assign {
+        Value::Assign {
             op: AssignOp::Pre(op.value),
             target,
-        })
+        }
     }
 
     #[inline(always)]
-    fn lower_inc_dec_postfix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> CResult<Value> {
+    fn lower_inc_dec_postfix(&mut self, op: Located<Dir>, mut items: Vec<LExpr>) -> Value {
         debug_assert_eq!(items.len(), 1);
 
-        let target = self.lower_value(items.pop().unwrap())?;
+        let target = self.lower_value(items.pop().unwrap());
 
         let _ = op.loc.clone();
-        Ok(Value::Assign {
+        Value::Assign {
             op: AssignOp::Post(op.value),
             target,
-        })
+        }
     }
 
     #[inline(always)]
@@ -1439,7 +1515,7 @@ impl Program {
         op: Located<&'static str>,
         lhs: LExpr,
         rhs: LExpr,
-    ) -> CResult<Value> {
+    ) -> Value {
         if let Some(assign_op) = match op.value {
             "=" => Some(None),
             "+=" => Some(Some(BinOp::Add)),
@@ -1454,18 +1530,18 @@ impl Program {
             ">>=" => Some(Some(BinOp::Shr)),
             _ => None,
         } {
-            let target = self.lower_value(lhs)?;
-            let value = self.lower_value(rhs)?;
+            let target = self.lower_value(lhs);
+            let value = self.lower_value(rhs);
 
             let _ = loc;
-            return Ok(Value::Assign {
+            return Value::Assign {
                 target,
                 op: if let Some(o) = assign_op {
                     AssignOp::Bin(o, value)
                 } else {
                     AssignOp::Nothing(value)
                 },
-            });
+            };
         }
 
         if let Some(logic_op) = match op.value {
@@ -1473,13 +1549,13 @@ impl Program {
             "||" => Some(LogicOp::Or),
             _ => None,
         } {
-            let left = self.lower_value(lhs)?;
-            let right = self.lower_value(rhs)?;
+            let left = self.lower_value(lhs);
+            let right = self.lower_value(rhs);
             let _ = loc;
-            return Ok(Value::LogicOp {
+            return Value::LogicOp {
                 op: logic_op,
                 values: (left, right),
-            });
+            };
         }
 
         let binop = match op.value {
@@ -1507,152 +1583,159 @@ impl Program {
             }
 
             _ => {
-                return Err(CompileError::UnsupportedForm {
+                self.push_lowering_error(CompileError::UnsupportedForm {
                     loc,
                     op_loc: Some(op.loc),
                     op: Some(op.value),
                     message: "this binary operator is not supported as a value",
                 });
+                return Value::Poison;
             }
         };
 
-        let left = self.lower_value(lhs)?;
-        let right = self.lower_value(rhs)?;
+        let left = self.lower_value(lhs);
+        let right = self.lower_value(rhs);
 
         let _ = loc;
-        Ok(Value::BinOp {
+        Value::BinOp {
             op: binop,
             values: (left, right),
-        })
+        }
     }
 
     #[inline(always)]
-    fn lower_pipe_expr(&mut self, _loc: Loc, lhs: LExpr, rhs: LExpr) -> CResult<Value> {
+    fn lower_pipe_expr(&mut self, _loc: Loc, lhs: LExpr, rhs: LExpr) -> Value {
         let Located { loc, value } = rhs;
         match value {
             Expr::Postfix(open, mut items) if open.value == "(" => {
                 if items.is_empty() {
-                    return Err(CompileError::SimpleError {
+                    self.push_lowering_error(CompileError::SimpleError {
                         loc,
                         s: "pipe (`|>`) requires a call expression on the right-hand side",
                     });
+                    return Value::Poison;
                 }
 
                 items.insert(1, lhs);
-                let call = self.lower_call_like_expr(loc.clone(), items)?;
-                Ok(Value::Call(call))
+                let call = self.lower_call_like_expr(loc.clone(), items);
+                Value::Call(call)
             }
-            _ => Err(CompileError::SimpleError {
-                loc,
-                s: "pipe (`|>`) requires a call expression on the right-hand side",
-            }),
+            _ => {
+                self.push_lowering_error(CompileError::SimpleError {
+                    loc,
+                    s: "pipe (`|>`) requires a call expression on the right-hand side",
+                });
+                Value::Poison
+            }
         }
     }
 
-    pub fn lower_type_expr(&mut self, expr: LExpr) -> CResult<TExpId> {
+    pub fn lower_type_expr(&mut self, expr: LExpr) -> TExpId {
         let loc = expr.loc.clone();
-        let exp = self.lower_type_expr_inner(expr)?;
-        Ok(self.id_type_expr(loc, exp))
+        let exp = self.lower_type_expr_inner(expr);
+        self.id_type_expr(loc, exp)
     }
 
-    fn lower_type_expr_into(&mut self, target: TExpId, expr: LExpr) -> CResult<TExpId> {
+    fn lower_type_expr_into(&mut self, target: TExpId, expr: LExpr) -> TExpId {
         let loc = expr.loc.clone();
-        let exp = self.lower_type_expr_inner(expr)?;
+        let exp = self.lower_type_expr_inner(expr);
         self.set_type_expr(target, loc, exp);
-        Ok(target)
+        target
     }
 
-    fn lower_type_expr_inner(&mut self, expr: LExpr) -> CResult<TypeExpr> {
+    fn lower_type_expr_inner(&mut self, expr: LExpr) -> TypeExpr {
         let loc = expr.loc.clone();
         match expr.value {
-            Expr::Atom(Token::Ident(name)) if name == "_" => Ok(TypeExpr::Wildcard),
+            Expr::Atom(Token::Ident(name)) if name == "_" => TypeExpr::Wildcard,
 
             Expr::Atom(Token::Ident(name)) => {
-                let id = self.resolve_name(&loc, &name)?;
-                Ok(TypeExpr::NameRef(id))
+                let id = self.resolve_name(&loc, &name);
+                TypeExpr::NameRef(id)
             }
 
             Expr::Atom(Token::Operator("(")) => {
                 let span = self.reserve_type_expr_span(0);
-                Ok(TypeExpr::Tuple(span))
+                TypeExpr::Tuple(span)
             }
 
             Expr::Prefix(open, items) if open.value == "(" => {
                 let span = self.reserve_type_expr_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_type_expr_into(target, item)?;
+                    self.lower_type_expr_into(target, item);
                 }
-                Ok(TypeExpr::Tuple(span))
+                TypeExpr::Tuple(span)
             }
 
             Expr::Prefix(open, mut items) if open.value == "[" => {
                 if items.is_empty() || items.len() > 2 {
-                    return Err(CompileError::UnsupportedForm {
+                    self.push_lowering_error(CompileError::UnsupportedForm {
                         loc,
                         op_loc: Some(open.loc),
                         op: Some(open.value),
                         message: "array type expressions must specify an element type and optional literal length",
                     });
+                    return TypeExpr::Poison;
                 }
 
-                let element = self.lower_type_expr(items.remove(0))?;
+                let element = self.lower_type_expr(items.remove(0));
                 let len = if let Some(len_expr) = items.pop() {
                     match len_expr.value {
                         Expr::Atom(Token::NumLit(n)) => {
                             let Ok(n) = usize::try_from(n) else {
-                                return Err(CompileError::UnsupportedForm {
+                                self.push_lowering_error(CompileError::UnsupportedForm {
                                     loc,
                                     op_loc: Some(open.loc),
                                     op: Some(open.value),
                                     message: "array length must be a non-negative integer literal",
                                 });
+                                return TypeExpr::Poison;
                             };
                             Some(n)
                         }
                         _ => {
-                            return Err(CompileError::UnsupportedForm {
+                            self.push_lowering_error(CompileError::UnsupportedForm {
                                 loc,
                                 op_loc: Some(open.loc),
                                 op: Some(open.value),
                                 message: "array types with non-literal lengths are not supported",
                             });
+                            return TypeExpr::Poison;
                         }
                     }
                 } else {
                     None
                 };
 
-                Ok(TypeExpr::Array(element, len))
+                TypeExpr::Array(element, len)
             }
 
             Expr::Postfix(open, items) if open.value == "[" => {
                 if items.is_empty() {
-                    return Err(CompileError::UnsupportedForm {
+                    self.push_lowering_error(CompileError::UnsupportedForm {
                         loc,
                         op_loc: Some(open.loc),
                         op: Some(open.value),
                         message: "type indexing with brackets is not supported yet",
                     });
+                    return TypeExpr::Poison;
                 }
 
                 let mut items = items.into_iter();
-                let base = self.lower_type_expr(items.next().unwrap())?;
+                let base = self.lower_type_expr(items.next().unwrap());
                 let args_span = self.reserve_type_expr_span(items.len());
                 for (index, arg) in items.enumerate() {
                     let target = args_span.at(index);
-                    self.lower_type_expr_into(target, arg)?;
+                    self.lower_type_expr_into(target, arg);
                 }
 
-                Ok(TypeExpr::Index {
+                TypeExpr::Index {
                     base,
                     args: args_span,
-                })
+                }
             }
 
             Expr::Prefix(op, mut items) if matches!(op.value, "*" | "&") => {
-                // if items.len() != 1 {
-
                 let raw = op.value == "*";
                 let mut mutable = raw;
                 let mut inner = items.pop().unwrap();
@@ -1661,18 +1744,34 @@ impl Program {
                     None => None,
                     Some(lexp) => {
                         let Expr::Prefix(op, mut items2) = lexp.value else {
-                            unreachable!()
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: loc.clone(),
+                                s: "invalid lifetime syntax",
+                            });
+                            return TypeExpr::Poison;
                         };
                         if op.value != "`" {
-                            unreachable!()
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: loc.clone(),
+                                s: "invalid lifetime syntax",
+                            });
+                            return TypeExpr::Poison;
                         }
                         let subexp = items2.pop().unwrap();
                         let Expr::Atom(Token::Ident(n)) = subexp.value else {
-                            todo!()
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: loc.clone(),
+                                s: "invalid lifetime syntax",
+                            });
+                            return TypeExpr::Poison;
                         };
                         let s = self.str_intern.intern(&n);
                         let Some(life) = self.try_get_lifetime(s) else {
-                            todo!("emit some error")
+                            self.push_lowering_error(CompileError::SimpleError {
+                                loc: loc.clone(),
+                                s: "unknown lifetime",
+                            });
+                            return TypeExpr::Poison;
                         };
 
                         Some(life)
@@ -1683,24 +1782,25 @@ impl Program {
                     && matches!(inner_op.value, "mut" | "const")
                 {
                     if inner_items.len() != 1 {
-                        return Err(CompileError::UnsupportedForm {
+                        self.push_lowering_error(CompileError::UnsupportedForm {
                             loc,
                             op_loc: Some(inner_op.loc.clone()),
                             op: Some(inner_op.value),
                             message: "pointer qualifiers must wrap exactly one inner type",
                         });
+                        return TypeExpr::Poison;
                     }
                     mutable = inner_op.value == "mut";
                     inner = inner_items.pop().unwrap();
                 }
 
-                let base = self.lower_type_expr(inner)?;
-                Ok(TypeExpr::Ptr {
+                let base = self.lower_type_expr(inner);
+                TypeExpr::Ptr {
                     base,
                     raw,
                     mutable,
                     lifetime,
-                })
+                }
             }
 
             Expr::Prefix(open, items)
@@ -1713,43 +1813,50 @@ impl Program {
                 self.lower_fn_type_expr(expr.loc, open, items)
             }
 
-            Expr::Atom(Token::Operator(op)) => Err(CompileError::UnsupportedForm {
-                loc: loc.clone(),
-                op_loc: Some(loc),
-                op: Some(op),
-                message: "operators cannot be used as standalone type expressions",
-            }),
+            Expr::Atom(Token::Operator(op)) => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc: loc.clone(),
+                    op_loc: Some(loc),
+                    op: Some(op),
+                    message: "operators cannot be used as standalone type expressions",
+                });
+                TypeExpr::Poison
+            }
 
-            Expr::Bin(op, _) => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "operators cannot be used as standalone type expressions",
-            }),
+            Expr::Bin(op, _) => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "operators cannot be used as standalone type expressions",
+                });
+                TypeExpr::Poison
+            }
 
-            Expr::Prefix(op, _) | Expr::Postfix(op, _) => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: Some(op.loc),
-                op: Some(op.value),
-                message: "operators cannot be used as standalone type expressions",
-            }),
+            Expr::Prefix(op, _) | Expr::Postfix(op, _) => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: Some(op.loc),
+                    op: Some(op.value),
+                    message: "operators cannot be used as standalone type expressions",
+                });
+                TypeExpr::Poison
+            }
 
-            _ => Err(CompileError::UnsupportedForm {
-                loc,
-                op_loc: None,
-                op: None,
-                message: "this type expression form is not supported yet",
-            }),
+            _ => {
+                self.push_lowering_error(CompileError::UnsupportedForm {
+                    loc,
+                    op_loc: None,
+                    op: None,
+                    message: "this type expression form is not supported yet",
+                });
+                TypeExpr::Poison
+            }
         }
     }
 
     #[inline(always)]
-    fn lower_fn_type_expr(
-        &mut self,
-        loc: Loc,
-        fn_kw: LFixed,
-        items: Vec<LExpr>,
-    ) -> CResult<TypeExpr> {
+    fn lower_fn_type_expr(&mut self, loc: Loc, fn_kw: LFixed, items: Vec<LExpr>) -> TypeExpr {
         debug_assert!(
             (1..=3).contains(&items.len()),
             "fn expects optional generics, signature, and optional body"
@@ -1761,22 +1868,24 @@ impl Program {
             && matches!(&peek.value, Expr::Prefix(open, _) if open.value == "[")
         {
             let generics_expr = items.next().unwrap();
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(generics_expr.loc),
                 op: Some("["),
                 message: "functions type expressions may not contain generics (may be added later for some subset)",
             });
+            return TypeExpr::Poison;
         }
 
         let sig_expr = items.next().expect("fn missing signature");
         if let Some(body_expr) = items.next() {
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc,
                 op_loc: Some(body_expr.loc),
                 op: None,
                 message: "functions type expressions dont have a body",
             });
+            return TypeExpr::Poison;
         }
 
         let (params_expr, ret_expr) = match sig_expr.value {
@@ -1789,7 +1898,7 @@ impl Program {
 
         let Expr::Prefix(p_open, param_items) = params_expr.value else {
             debug_assert!(false, "fn signature does not start with parameter list");
-            unreachable!();
+            return TypeExpr::Poison;
         };
         debug_assert!(p_open.value == "(", "fn parameter list must start with '('");
 
@@ -1797,24 +1906,23 @@ impl Program {
 
         let params_span = self.reserve_type_expr_span(param_items.len());
         for (index, param) in param_items.into_iter().enumerate() {
-            //TODO support type anotation
             let target = params_span.at(index);
-            self.lower_type_expr_into(target, param)?;
+            self.lower_type_expr_into(target, param);
         }
 
         let output_type = match ret_expr {
-            Some(e) => Some(self.lower_type_expr(e)?),
+            Some(e) => Some(self.lower_type_expr(e)),
             None => None,
         };
 
-        Ok(TypeExpr::Func {
+        TypeExpr::Func {
             calling_convention,
             params: params_span,
             output_type,
-        })
+        }
     }
 
-    fn lower_struct_like_type_expr(&mut self, kw: LFixed, items: Vec<LExpr>) -> CResult<TypeExpr> {
+    fn lower_struct_like_type_expr(&mut self, kw: LFixed, items: Vec<LExpr>) -> TypeExpr {
         let mut items = items.into_iter().peekable();
 
         let mut generics_expr = None;
@@ -1825,40 +1933,43 @@ impl Program {
         let fields_expr = match items.next() {
             Some(expr) => expr,
             None => {
-                return Err(CompileError::UnsupportedForm {
+                self.push_lowering_error(CompileError::UnsupportedForm {
                     loc: kw.loc.clone(),
                     op_loc: Some(kw.loc),
                     op: Some(kw.value),
                     message: "type literals must provide exactly one field block",
                 });
+                return TypeExpr::Poison;
             }
         };
 
         if items.next().is_some() {
-            return Err(CompileError::UnsupportedForm {
+            self.push_lowering_error(CompileError::UnsupportedForm {
                 loc: kw.loc.clone(),
                 op_loc: Some(kw.loc),
                 op: Some(kw.value),
                 message: "type literals cannot have extra items beyond the field block",
             });
+            return TypeExpr::Poison;
         }
 
         let generics = match generics_expr {
             Some(gen_expr) => {
                 let Expr::Prefix(open, items) = gen_expr.value else {
-                    return Err(CompileError::UnsupportedForm {
+                    self.push_lowering_error(CompileError::UnsupportedForm {
                         loc: gen_expr.loc,
                         op_loc: Some(kw.loc),
                         op: Some(kw.value),
                         message: "generic parameters on type literals are not supported",
                     });
+                    return TypeExpr::Poison;
                 };
                 debug_assert!(open.value == "[");
 
                 let span = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_pattern_into(target, item, VarKind::Const)?;
+                    self.lower_pattern_into(target, item, VarKind::Const);
                 }
                 span
             }
@@ -1870,17 +1981,18 @@ impl Program {
                 let span = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = span.at(index);
-                    self.lower_pattern_into(target, item, VarKind::Mut)?;
+                    self.lower_pattern_into(target, item, VarKind::Mut);
                 }
                 span
             }
             _ => {
-                return Err(CompileError::UnsupportedForm {
+                self.push_lowering_error(CompileError::UnsupportedForm {
                     loc: fields_expr.loc,
                     op_loc: Some(kw.loc),
                     op: Some(kw.value),
                     message: "type literals currently require a `{}` block of fields",
                 });
+                return TypeExpr::Poison;
             }
         };
 
@@ -1892,13 +2004,13 @@ impl Program {
             generics,
             fields,
         };
-        Ok(match kw.value {
+        match kw.value {
             "cstruct" => TypeExpr::Struct(def),
             "struct" => TypeExpr::Struct(def),
             "enum" => TypeExpr::Enum(def),
             "union" => TypeExpr::Union(def),
-            _ => unreachable!(),
-        })
+            _ => TypeExpr::Poison,
+        }
     }
 }
 
@@ -1916,7 +2028,7 @@ mod var_scope_test {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().expect("failed to parse expr");
-        let ir = program.lower_value(expr).expect("lowering failed");
+        let ir = program.lower_value(expr);
         // top-level should be a block
         let top_block = match program.value(ir) {
             Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
@@ -1976,7 +2088,7 @@ mod lowering_tests {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().expect("failed to parse expr");
-        let ir = program.lower_value(expr).expect("lowering failed");
+        let ir = program.lower_value(expr);
         (program, ir)
     }
 
@@ -2055,21 +2167,24 @@ mod lowering_tests {
             .parse_with_macros(&mut program)
             .expect("failed to parse type")
             .expect("missing type expr");
-        program.gather_definition(expr).expect("type def failed");
+        program.gather_definition(expr);
 
         let expr = parser
             .parse_with_macros(&mut program)
             .expect("failed to parse first method")
             .expect("missing first method expr");
-        program
-            .gather_definition(expr)
-            .expect("first method should lower");
+        program.gather_definition(expr);
 
         let expr = parser
             .parse_with_macros(&mut program)
             .expect("failed to parse second method")
             .expect("missing second method expr");
-        let err = program.gather_definition(expr).unwrap_err();
+        program.gather_definition(expr);
+        let errors = std::mem::take(&mut program.lowering_errors);
+        let err = errors
+            .into_iter()
+            .find(|e| matches!(e, CompileError::SimpleError { .. }))
+            .unwrap();
         match err {
             CompileError::SimpleError { s, .. } => {
                 assert_eq!(s, MEMBER_METHOD_COLLISION_MSG);
@@ -2302,7 +2417,7 @@ mod lowering_tests {
         let src = "f = fn[T](x:T){ let y:T = x; y }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser).unwrap();
+        program.lower_all(&mut parser);
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2326,7 +2441,7 @@ mod lowering_tests {
         let src = "f = cfn(x:int)->int;";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser).unwrap();
+        program.lower_all(&mut parser);
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2365,7 +2480,7 @@ mod lowering_tests {
         let src = "type S = cstruct { x:int };";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser).unwrap();
+        program.lower_all(&mut parser);
 
         let s_name = program.str_intern.intern("S");
         let s_id = *program
@@ -2395,7 +2510,7 @@ mod lowering_tests {
         let src = "f = fn(){ g() } g = fn(){ f() }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser).unwrap();
+        program.lower_all(&mut parser);
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2475,7 +2590,10 @@ mod lowering_tests {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
-        let err = program.lower_value(expr).unwrap_err();
+        program.lower_value(expr);
+        let mut errors = std::mem::take(&mut program.lowering_errors);
+        assert_eq!(errors.len(), 1);
+        let err = errors.pop().unwrap();
         match err {
             CompileError::SimpleError { s, .. } => {
                 assert_eq!(s, ACCESS_EXPECTS_NAME_MSG);
@@ -2590,7 +2708,7 @@ mod lowering_tests {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
-        let ir = program.lower_value(expr).unwrap();
+        let ir = program.lower_value(expr);
 
         match program.value(ir) {
             Value::If { cond, then, els } => {
@@ -2624,7 +2742,7 @@ mod lowering_tests {
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
         let expr = parser.consume_expr().unwrap();
-        let ir = program.lower_value(expr).unwrap();
+        let ir = program.lower_value(expr);
 
         match program.value(ir) {
             Value::If { cond, then, els } => {
@@ -2686,7 +2804,7 @@ mod lowering_tests {
         let src = "f = fn(){ goto `err; `err; }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        program.lower_all(&mut parser).unwrap();
+        program.lower_all(&mut parser);
 
         let f_name = program.str_intern.intern("f");
         let f_id = *program
@@ -2732,8 +2850,12 @@ mod lowering_tests {
         let src = "f = fn(){ goto `missing; }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        let err = program.lower_all(&mut parser).unwrap_err();
+        let errors = program.lower_all(&mut parser).unwrap_err();
 
+        let err = errors
+            .into_iter()
+            .find(|e| matches!(e, CompileError::UnresolvedLabel { .. }))
+            .unwrap();
         match err {
             CompileError::UnresolvedLabel { name, .. } => {
                 assert_eq!(name, "missing");
@@ -2747,8 +2869,12 @@ mod lowering_tests {
         let src = "f = fn(){ goto x; `x; }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        let err = program.lower_all(&mut parser).unwrap_err();
+        let errors = program.lower_all(&mut parser).unwrap_err();
 
+        let err = errors
+            .into_iter()
+            .find(|e| matches!(e, CompileError::SimpleError { .. }))
+            .unwrap();
         match err {
             CompileError::SimpleError { s, .. } => assert_eq!(s, LABEL_NAME_REQUIRED_MSG),
             other => panic!("expected label syntax error, got {other:?}"),
@@ -2760,8 +2886,12 @@ mod lowering_tests {
         let src = "f = fn(){ `x; `x; }";
         let mut parser = Parser::new(src, 0);
         let mut program = Program::new();
-        let err = program.lower_all(&mut parser).unwrap_err();
+        let errors = program.lower_all(&mut parser).unwrap_err();
 
+        let err = errors
+            .into_iter()
+            .find(|e| matches!(e, CompileError::SimpleError { .. }))
+            .unwrap();
         match err {
             CompileError::SimpleError { s, .. } => assert_eq!(s, LABEL_ALREADY_DEFINED_MSG),
             other => panic!("expected duplicate label error, got {other:?}"),

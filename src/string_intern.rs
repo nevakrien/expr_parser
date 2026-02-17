@@ -19,6 +19,7 @@ struct Entry {
 
 pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
     "static",
+    "raw",
     "__free",
     "__deref",
     "__deref_mut",
@@ -99,6 +100,7 @@ fn known_stuff_works() {
 }
 
 pub const STATIC_STR: StrId = get_known_strid("static");
+pub const RAW_STR: StrId = get_known_strid("raw");
 pub const ADD_STR: StrId = get_known_strid("__add");
 pub const SUB_STR: StrId = get_known_strid("__sub");
 pub const MUL_STR: StrId = get_known_strid("__mul");

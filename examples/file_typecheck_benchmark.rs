@@ -39,9 +39,11 @@ fn main() {
     reporter.add_source(0, file_content.to_string());
 
     let mut compile_error_count = 0usize;
-    if let Err(err) = program.lower_all(&mut parser) {
-        compile_error_count = 1;
-        let _ = reporter.report_compile_error(&err);
+    if let Err(errs) = program.lower_all(&mut parser) {
+        compile_error_count = errs.len();
+        for err in errs {
+            let _ = reporter.report_compile_error(&err);
+        }
     }
 
     let mut type_error_count = 0usize;

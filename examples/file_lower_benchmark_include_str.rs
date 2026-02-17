@@ -20,9 +20,11 @@ fn main() {
 
     let mut compiled_count = 0;
     let mut error_count = 0;
-    if let Err(err) = program.lower_all(&mut parser) {
-        error_count = 1;
-        let _ = reporter.report_compile_error(&err);
+    if let Err(errs) = program.lower_all(&mut parser) {
+        error_count = errs.len();
+        for err in errs {
+            let _ = reporter.report_compile_error(&err);
+        }
     } else {
         compiled_count = statement_count;
     }

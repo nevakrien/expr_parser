@@ -15,9 +15,11 @@ fn run_once(file_content: &str, reporter: &mut ErrorReporter) -> (Duration, usiz
     let mut parser = Parser::new(file_content, 0);
 
     let mut compile_errors = 0usize;
-    if let Err(err) = program.lower_all(&mut parser) {
-        compile_errors = 1;
-        let _ = reporter.report_compile_error(&err);
+    if let Err(errs) = program.lower_all(&mut parser) {
+        compile_errors = errs.len();
+        for err in errs {
+            let _ = reporter.report_compile_error(&err);
+        }
     }
 
     let mut type_errors = 0usize;
