@@ -78,6 +78,8 @@ This allows forward global references and mutually-recursive top-level forms.
 
 Repeated global assignment to an already-defined name is rejected (`RepeatedGlobalAssignment`) for non-function definitions.
 
+Global-name validation failures (non-identifier LHS, invalid reassignments) are emitted immediately during `get_ident_for_global` and are not silently dropped by callers.
+
 Function definitions are append-only: repeated `name = fn...` / `name = cfn...` entries are merged into the same `FunctionSet` instead of overwriting.
 
 ## Member Method Registration

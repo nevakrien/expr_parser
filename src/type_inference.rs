@@ -37,12 +37,12 @@ use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, FunctionSet, Program};
 
-// use std::ffi::CStr;
-// unsafe extern "C" {
-//     fn perf_init();
-//     fn perf_begin();
-//     fn perf_done(name: *const std::os::raw::c_char);
-// }
+use std::ffi::CStr;
+unsafe extern "C" {
+    fn perf_init();
+    fn perf_begin();
+    fn perf_done(name: *const std::os::raw::c_char);
+}
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -3933,6 +3933,17 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 return c;
             }
 
+            if let Some(f) = ctx.ex.ans.function_types_by_name(n) {
+                let t = f.reference_type;
+                return global_to_specialized_local(
+                    &mut ctx.ex,
+                    &mut ctx.search,
+                    &mut ctx.types,
+                    t,
+                    v,
+                );
+            }
+
             let Some(def) = ctx.ex.program.definitions.get(&n) else {
                 unreachable!("name used before binding");
             };
@@ -3944,23 +3955,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     ans
                 }
                 Defined::Func(_funcs) => {
-                    let Some(reference_type) = ctx
-                        .ex
-                        .ans
-                        .function_types_by_name(n)
-                        .map(|f| f.reference_type)
-                    else {
-                        unreachable!(
-                            "global function set must contain at least one declaration or implementation"
-                        );
-                    };
-                    global_to_specialized_local(
-                        &mut ctx.ex,
-                        &mut ctx.search,
-                        &mut ctx.types,
-                        reference_type,
-                        v,
-                    )
+                    unreachable!("we checked for it earlier")
                 }
                 _ => todo!("global name resolution / overload sets"),
             }
@@ -5730,6 +5725,7 @@ fn check_special_member_method_signature(
     if is_reserved_builtin_member_name(ctx.ex.program, method_name)
         && !is_known_special_member_method_name(method_name)
     {
+        //this is technically a bug the site is the name itself but eh
         ctx.push_error(TypeError::UnknownBuiltinMemberMethod {
             site: method_site,
             method: method_name,
@@ -7867,7 +7863,7 @@ mod type_infer_tests {
         );
     }
 
-    const BOX_EXAMPLE:&str = r#"
+    const BOX_EXAMPLE: &str = r#"
             //this is a system decleration to make destructors nice
             __free = fn[T](p:&mut T)
             //this impl is temporary later we actually make this a buildin
@@ -7899,7 +7895,6 @@ mod type_infer_tests {
         "#;
     #[test]
     fn generic_box_array_index_chain_includes_box_step() {
-
         let program = gather_program(BOX_EXAMPLE);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -7931,8 +7926,6 @@ mod type_infer_tests {
 
     #[test]
     fn readme_style_free_and_user_free_box_example_typechecks_exact_snippet() {
-
-
         let program = gather_program(BOX_EXAMPLE);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);

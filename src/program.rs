@@ -410,6 +410,54 @@ impl Program {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{CompileError, Program};
+    use crate::parsing::Parser;
+
+    #[test]
+    fn cfn_declaration_resolves_name_for_later_use() {
+        let src = "free = cfn(p:*void); f = fn(p:*void) { free(p) };";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+
+        let result = program.lower_all(&mut parser);
+        assert!(
+            result.is_ok(),
+            "expected no lowering errors, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn repeated_global_assignment_errors_are_not_silenced() {
+        let src = "S = struct { x:int }; S = struct { y:int };";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+
+        let errs = program
+            .lower_all(&mut parser)
+            .expect_err("expected repeated assignment error");
+        assert!(
+            errs.into_iter()
+                .any(|err| matches!(err, CompileError::RepeatedGlobalAssignment { .. })),
+            "expected repeated global assignment diagnostic"
+        );
+    }
+
+    #[test]
+    fn forward_call_to_external_cfn_resolves_after_late_declaration() {
+        let src = "__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) }; Box = struct[T] { ptr:*T }; free = cfn(p:*void);";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+
+        let result = program.lower_all(&mut parser);
+        assert!(
+            result.is_ok(),
+            "expected late external cfn declaration to resolve, got {result:?}"
+        );
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn parse_with_macros(&mut self, program: &mut Program) -> CResult<Option<LExpr>> {
         let Some(mut expr) = self.parse_stmt()? else {
@@ -484,7 +532,7 @@ impl Program {
                 let rhs = items.pop().unwrap();
                 let lhs = items.pop().unwrap();
 
-                if let Ok(name) = self.get_ident_for_global(lhs, false) {
+                if let Some(name) = self.get_ident_for_global(lhs, false) {
                     let v = self.with_scope_value(|this| {
                         this.lower_type_expr(Located {
                             loc: rhs.loc,
@@ -678,7 +726,7 @@ impl Program {
         &mut self,
         lhs: LExpr,
         allow_existing_function: bool,
-    ) -> CResult<NameId> {
+    ) -> Option<NameId> {
         let ans = match lhs.value {
             Expr::Atom(Token::Ident(name)) => {
                 let name = self.str_intern.intern(&name);
@@ -697,21 +745,23 @@ impl Program {
                     } else {
                         let existing_loc = self.definition_loc(id);
                         let name_string = self.str_intern.resolve(name).to_string();
-                        return Err(CompileError::RepeatedGlobalAssignment {
+                        self.push_lowering_error(CompileError::RepeatedGlobalAssignment {
                             name: name_string,
                             existing: existing_loc,
                             new: lhs.loc,
                         });
+                        return None;
                     }
                 } else {
                     self.insert_value_in_current_scope(name)
                 }
             }
             _ => {
-                return Err(CompileError::SimpleError {
+                self.push_lowering_error(CompileError::SimpleError {
                     loc: lhs.loc,
                     s: "the left-hand side of a global assignment must be a bare identifier",
                 });
+                return None;
             }
         };
 
@@ -719,7 +769,7 @@ impl Program {
             self.set_definition_loc(ans, lhs.loc);
         }
         self.pending_names.remove(&ans);
-        Ok(ans)
+        Some(ans)
     }
 
     fn handle_assignment(&mut self, lhs: LExpr, rhs: LExpr) {
@@ -766,7 +816,7 @@ impl Program {
 
         match rhs_value {
             Expr::Prefix(macro_kw, args) if macro_kw.value == "macro" => {
-                let Ok(name_id) = self.get_ident_for_global(lhs, false) else {
+                let Some(name_id) = self.get_ident_for_global(lhs, true) else {
                     return;
                 };
 
@@ -780,7 +830,7 @@ impl Program {
                 }
             }
             Expr::Prefix(ref fn_kw, _) if fn_kw.value == "fn" || fn_kw.value == "cfn" => {
-                let Ok(name_id) = self.get_ident_for_global(lhs, true) else {
+                let Some(name_id) = self.get_ident_for_global(lhs, true) else {
                     return;
                 };
 
@@ -819,7 +869,7 @@ impl Program {
                     || kw.value == "enum"
                     || kw.value == "union" =>
             {
-                let Ok(name_id) = self.get_ident_for_global(lhs, false) else {
+                let Some(name_id) = self.get_ident_for_global(lhs, false) else {
                     return;
                 };
 

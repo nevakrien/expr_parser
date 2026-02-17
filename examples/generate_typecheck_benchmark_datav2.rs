@@ -90,12 +90,6 @@ fn write_noise_block(writer: &mut BufWriter<File>, line_count: &mut usize, rng: 
 
 fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
     let lines = [
-        //for now we need to put the prelude explictly
-        "__free=fn[T](p:&mut T);",
-        "__free=fn[T](p:&mut T){__user_free(p);}",
-        "__user_free=fn[T](p:&mut T);",
-        "__user_free=fn[T](p:&mut T){}",
-        "",
         "free = cfn(p:*void);",
         "opaque_alloc = cfn(n:usize)->*void;",
         "id = fn[T](x:T)->T { x };",
@@ -117,7 +111,7 @@ fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
         "Vec2.norm1 = fn(v:Vec2)->int { v.x + v.y };",
         "Point.sum = fn(p:Point)->int { p.x + p.y };",
         "Point.shift = fn(p:Point, dx:int, dy:int)->Point { Point{ x = p.x + dx, y = p.y + dy } };",
-        "__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };",
+        "Box.__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };",
         "Box.__deref = fn[T](b:&const Box[T])->&T { &*b.ptr };",
         "Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*b.ptr };",
         "Box.get = fn[T](b:Box[T])->T { *b };",
