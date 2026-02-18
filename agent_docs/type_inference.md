@@ -306,6 +306,7 @@ Other notable implemented branches:
 - `Value::TypeDef` ensures pattern has type `Type` and registers local typedef clusters.
 - `Value::Func` uses signature gather + body gather and unifies body with output cluster.
   - when `fn` has an explicit output type (`-> T`) and body/result clashes with it, inference reports a dedicated annotation-style error (`FunctionOutputAnnotationMismatch`) instead of a generic `ValuesContradict`.
+  - closure literals in local/body expression position are intentionally rejected with `sorry we dont support closures`; only top-level function definitions/declarations are supported.
 - `Value::Goto`, `Value::Break`, `Value::Continue`, `Value::LabelDecl`:
   - all produce `ResolveKind::Never` clusters,
   - `Never` absorbs into any other type during unification, allowing inference to continue past control flow.

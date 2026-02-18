@@ -42,6 +42,12 @@ Calling-convention unification behavior:
 - `Unknown` can merge with either `Hot` or `C`.
 - `Hot` and `C` do not unify and surface as a regular type mismatch with both function signatures in clash payloads.
 
+Closure support:
+
+- Function literals used as local expression values (closures) are currently not supported.
+- Type inference emits a direct error: `sorry we dont support closures`.
+- Top-level `name = fn(...) { ... }` / `name = cfn(...) { ... }` definitions remain supported.
+
 ## Struct Syntax and Layout Marker
 
 - `struct { ... }` uses language-native layout marker (`Hot`).

@@ -854,6 +854,8 @@ pub struct TypeClash {
     pub wanted: Option<BadTypeId>,
 }
 
+const CLOSURES_UNSUPPORTED_MSG: &str = "sorry we dont support closures";
+
 impl TypeClash {
     pub fn swap(self) -> Self {
         Self {
@@ -879,9 +881,11 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     let mut err_count = 0;
     let mut function_checked = 0;
 
-    unsafe{perf_init();}
+    unsafe {
+        perf_init();
+    }
 
-    unsafe{perf_begin()}
+    unsafe { perf_begin() }
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
@@ -893,10 +897,9 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         return Ok((Err(err_count), function_checked));
     }
     let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
-    unsafe { perf_done(name.as_ptr())}; 
+    unsafe { perf_done(name.as_ptr()) };
 
-    unsafe{perf_begin()}
-
+    unsafe { perf_begin() }
 
     for (_n, methods) in program.member_methods.iter() {
         for (_s, method_set) in methods.iter() {
@@ -935,7 +938,7 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     }
 
     let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
-    unsafe { perf_done(name.as_ptr())}; 
+    unsafe { perf_done(name.as_ptr()) };
 
     if err_count > 0 {
         return Ok((Err(err_count), function_checked));
@@ -1698,18 +1701,18 @@ enum PtrKind {
 }
 
 impl PtrKind {
-    fn is_ref(&self)->Option<bool>{
+    fn is_ref(&self) -> Option<bool> {
         match self {
-            PtrKind::Unknown=>None,
-            PtrKind::SolvedRaw=>Some(false),
-            _=>Some(true)
+            PtrKind::Unknown => None,
+            PtrKind::SolvedRaw => Some(false),
+            _ => Some(true),
         }
     }
-    fn is_safe_ref(&self)->Option<bool>{
+    fn is_safe_ref(&self) -> Option<bool> {
         match self {
-            PtrKind::Unknown|PtrKind::SomeRef=>None,
-            PtrKind::SolvedRaw|PtrKind::SolvedRef(LifeTime::Raw)=>Some(false),
-            _=>Some(true)
+            PtrKind::Unknown | PtrKind::SomeRef => None,
+            PtrKind::SolvedRaw | PtrKind::SolvedRef(LifeTime::Raw) => Some(false),
+            _ => Some(true),
         }
     }
 }
@@ -4407,15 +4410,21 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             params,
             output_type,
             body,
-        } => gather_func_constraints::<false>(
-            ctx,
-            v,
-            calling_convention,
-            generics,
-            params,
-            output_type,
-            body,
-        ),
+        } => {
+            ctx.push_error(TypeError::Simple {
+                loc: ctx.ex.program.value_loc(v),
+                message: CLOSURES_UNSUPPORTED_MSG,
+            });
+            gather_func_constraints::<false>(
+                ctx,
+                v,
+                calling_convention,
+                generics,
+                params,
+                output_type,
+                body,
+            )
+        }
         Value::Call(call) => {
             if call.named_args().is_empty() {
                 //we can try derive the type of base directly
@@ -7723,6 +7732,25 @@ mod type_infer_tests {
         }
     }
 
+    fn assert_has_simple_error(errs: &[TypeError], message: &'static str) {
+        assert!(
+            errs.iter().any(|err| matches!(
+                err,
+                TypeError::Simple {
+                    message: found_message,
+                    ..
+                } if *found_message == message
+            )),
+            "expected simple error `{message}`, got {errs:?}"
+        );
+    }
+
+    fn assert_fn_body_simple_error(src: &str, message: &'static str) {
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(src, &mut store).unwrap_err();
+        assert_has_simple_error(&errs, message);
+    }
+
     macro_rules! assert_fn_type {
         ($src:expr, $builtin:expr) => {{
             let mut store = TypeStore::new();
@@ -8127,20 +8155,6 @@ mod type_infer_tests {
     fn explicit_return_statement_typechecks() {
         let mut store = TypeStore::new();
         let ty = infer_fn("f = fn()->int { return 1; 2 }", &mut store).unwrap();
-        match store.type_value(ty) {
-            TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
-            other => panic!("expected builtin type, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn closure_returns_typecheck() {
-        let mut store = TypeStore::new();
-        let ty = infer_fn(
-            "f = fn()->int { let d :float = (fn()->_{if true return 1.0; 2.0})(); 2 }",
-            &mut store,
-        )
-        .unwrap();
         match store.type_value(ty) {
             TypeValue::Builtin(b) => assert_eq!(*b, BuiltinType::Int),
             other => panic!("expected builtin type, got {:?}", other),
@@ -8632,12 +8646,6 @@ mod type_infer_tests {
             &mut store,
         )
         .unwrap();
-    }
-
-    #[test]
-    fn calling_a_closure() {
-        let mut store = TypeStore::new();
-        infer_fn("f=fn()->int{(fn(x)->_{x})(2)}", &mut store).unwrap();
     }
 
     #[test]
@@ -9751,13 +9759,16 @@ mod type_infer_tests {
         let _errs = infer_fn_body("f=fn(){ type S = struct[T]{x:T} }", &mut store).unwrap_err();
     }
 
-    ///nested generics mean rank-n types, these arent necirally monomorphic at runtime
-    ///there may be an argument to weaken this limitation for lifetimes but currently too neich
-    ///we also dont do de bjurn ids so it would be a mess
     #[test]
-    fn reject_generic_closures_in_body() {
-        let mut store = TypeStore::new();
-        let _errs = infer_fn_body("f=fn(){ let g = fn[T](x:T)->T{x}; }", &mut store).unwrap_err();
+    fn closures_in_body_are_rejected() {
+        assert_fn_body_simple_error(
+            "f=fn(){ let g = fn(x:int)->int{x}; }",
+            CLOSURES_UNSUPPORTED_MSG,
+        );
+        assert_fn_body_simple_error(
+            "f=fn(){ let g = fn[T](x:T)->T{x}; }",
+            CLOSURES_UNSUPPORTED_MSG,
+        );
     }
 
     //  #[test]

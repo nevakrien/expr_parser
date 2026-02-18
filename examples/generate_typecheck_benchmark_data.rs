@@ -33,28 +33,28 @@ fn write_noise_block(writer: &mut BufWriter<File>, line_count: &mut usize, rng: 
             write_line(
                 writer,
                 line_count,
-                "    { let cl = fn(x:int)->int { x + 1:int }; cl(3:int); id(seed); };",
+                "    { let v = inc(3:int); id(v); id(seed); };",
             );
         }
         1 => {
             write_line(
                 writer,
                 line_count,
-                "    { let pick = fn(a:int, b:int)->int { a + b }; pick(2:int, 5:int); id(extra); };",
+                "    { let v = add_int(2:int, 5:int); id(v); id(extra); };",
             );
         }
         2 => {
             write_line(
                 writer,
                 line_count,
-                "    { let local = fn(x:int)->int { x - 1:int }; local(9:int); let keep = pick_left(seed, seed); id(keep); };",
+                "    { let v = dec(9:int); let keep = pick_left(seed, seed); id(v); id(keep); };",
             );
         }
         3 => {
             write_line(
                 writer,
                 line_count,
-                "    { let call = fn(x:int)->int { x }; call(0:int); let v = id(extra); id(v); };",
+                "    { let v = id_int(0:int); let keep = id(extra); id(v); id(keep); };",
             );
         }
         4 => {
@@ -99,6 +99,10 @@ fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
         "free = cfn(p:*void);",
         "opaque_alloc = cfn(n:usize)->*void;",
         "id = fn[T](x:T)->T { x };",
+        "inc = fn(x:int)->int { x + 1:int };",
+        "dec = fn(x:int)->int { x - 1:int };",
+        "add_int = fn(a:int, b:int)->int { a + b };",
+        "id_int = fn(x:int)->int { x };",
         "pick_left = fn[A, B](a:A, _b:B)->A { a };",
         "cast_void = fn[T](p:*T)->*void { p as *void };",
         "late_score = fn(l:Late)->int { l.value + 1:int };",
@@ -144,7 +148,7 @@ fn write_dynamic_struct(writer: &mut BufWriter<File>, line_count: &mut usize, id
         writer,
         line_count,
         &format!(
-            "S{idx}.score = fn[T, U](s:S{idx}, seed:T, extra:U)->int {{ {{ let c = fn(x:int)->int {{ x + 1:int }}; c(s.value); id(seed); id(extra); }}; s.value + s.delta }};"
+            "S{idx}.score = fn[T, U](s:S{idx}, seed:T, extra:U)->int {{ {{ let v = inc(s.value); id(v); id(seed); id(extra); }}; s.value + s.delta }};"
         ),
     );
 }

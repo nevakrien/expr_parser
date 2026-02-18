@@ -1,0 +1,203 @@
+__free=fn[T](p:&mut T);
+__free=fn[T](p:&mut T){__user_free(p);}
+__user_free=fn[T](p:&mut T);
+__user_free=fn[T](p:&mut T){}
+
+free = cfn(p:*void);
+opaque_alloc = cfn(n:usize)->*void;
+id = fn[T](x:T)->T { x };
+inc = fn(x:int)->int { x + 1:int };
+dec = fn(x:int)->int { x - 1:int };
+add_int = fn(a:int, b:int)->int { a + b };
+id_int = fn(x:int)->int { x };
+pick_left = fn[A, B](a:A, _b:B)->A { a };
+cast_void = fn[T](p:*T)->*void { p as *void };
+late_score = fn(l:Late)->int { l.value + 1:int };
+Pair = struct[A, B] { left:A, right:B };
+Vec2 = struct { x:int, y:int };
+Node = struct { value:int };
+Point = struct { x:int, y:int };
+Box = struct[T] { ptr:*T };
+Wrap = struct[T] { boxed:Box[T] };
+Deep = struct[T] { inner:Wrap[T] };
+ArrBox = struct { arr:[int;4] };
+Late = struct { value:int };
+Pair.swap = fn[A, B](p:Pair[A, B])->Pair[B, A] { Pair{ left = p.right, right = p.left } };
+Vec2.__add = fn(a:Vec2, b:Vec2)->Vec2 { Vec2{ x = a.x + b.x, y = a.y + b.y } };
+Vec2.__sub = fn(a:Vec2, b:Vec2)->Vec2 { Vec2{ x = a.x - b.x, y = a.y - b.y } };
+Vec2.norm1 = fn(v:Vec2)->int { v.x + v.y };
+Point.sum = fn(p:Point)->int { p.x + p.y };
+Point.shift = fn(p:Point, dx:int, dy:int)->Point { Point{ x = p.x + dx, y = p.y + dy } };
+__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };
+Box.__deref = fn[T](b:&const Box[T])->&T { &*b.ptr };
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*b.ptr };
+Box.get = fn[T](b:Box[T])->T { *b };
+Wrap.__deref = fn[T](w:&const Wrap[T])->&Box[T] { &w.boxed };
+Wrap.__deref_mut = fn[T](w:&mut Wrap[T])->&mut Box[T] { &mut w.boxed };
+Deep.__deref = fn[T](d:&const Deep[T])->&Wrap[T] { &d.inner };
+Deep.__deref_mut = fn[T](d:&mut Deep[T])->&mut Wrap[T] { &mut d.inner };
+ArrBox.__deref = fn(a:&const ArrBox)->&[int;4] { &a.arr };
+ArrBox.__deref_mut = fn(a:&mut ArrBox)->&mut [int;4] { &mut a.arr };
+S0 = struct { value:int, delta:int };
+S0.score = fn[T, U](s:S0, seed:T, extra:U)->int { { let v = inc(s.value); id(v); id(seed); id(extra); }; s.value + s.delta };
+f_0 = fn[T, U](seed:T, extra:U, v:int)->int {
+    let l = Late{ value = v };
+    { let cond = (1:int + 2:int) == 3:int; if cond { id(seed); } else { id(seed); }; id(extra); };
+    late_score(l)
+};
+f_1 = fn[T, U](seed:T, extra:U, v:int)->int {
+    let l = Late{ value = v };
+    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };
+    late_score(l)
+};
+f_2 = fn[T, U](seed:T, extra:U, a:Vec2, b:Vec2)->int {
+    let c = a + b;
+    { let v = add_int(2:int, 5:int); id(v); id(extra); };
+    let d = c - a;
+    d.norm1()
+};
+f_3 = fn[T, U](seed:T, extra:U, b:Box[Box[Node]])->int {
+    let out = b->value;
+    { let v = id_int(0:int); let keep = id(extra); id(v); id(keep); };
+    out
+};
+S1 = struct { value:int, delta:int };
+S1.score = fn[T, U](s:S1, seed:T, extra:U)->int { { let v = inc(s.value); id(v); id(seed); id(extra); }; s.value + s.delta };
+f_4 = fn[T, U](seed:T, extra:U, b:Box[T], fallback:T)->T {
+    let x = b.get();
+    { let v = inc(3:int); id(v); id(seed); };
+    let _ = id(extra);
+    pick_left(x, fallback)
+};
+f_5 = fn[T, U](seed:T, extra:U, d:Deep[Node])->int {
+    let out = d->value;
+    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };
+    out
+};
+f_6 = fn[T, U](seed:T, extra:U, b:Box[Pair[int, bool]])->int {
+    let p = b->swap();
+    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };
+    if p.left { p.right } else { 0:int }
+};
+S2 = struct { value:int, delta:int };
+S2.score = fn[T, U](s:S2, seed:T, extra:U)->int { { let v = inc(s.value); id(v); id(seed); id(extra); }; s.value + s.delta };
+f_7 = fn[T, U](seed:T, extra:U, d:Deep[Node])->int {
+    let out = d->value;
+    { let v = add_int(2:int, 5:int); id(v); id(extra); };
+    out
+};
+f_8 = fn[T, U](seed:T, extra:U, s:S0)->int {
+    let base = s.score(seed, extra);
+    { let v = Vec2{ x = 3:int, y = 4:int }; let w = Vec2{ x = 1:int, y = 2:int }; let z = v + w; z.norm1(); id(extra); };
+    base
+};
+f_9 = fn[T, U](seed:T, extra:U, d:Deep[Node])->int {
+    let out = d->value;
+    { let v = Vec2{ x = 3:int, y = 4:int }; let w = Vec2{ x = 1:int, y = 2:int }; let z = v + w; z.norm1(); id(extra); };
+    out
+};
+S3 = struct { value:int, delta:int };
+S3.score = fn[T, U](s:S3, seed:T, extra:U)->int { { let v = inc(s.value); id(v); id(seed); id(extra); }; s.value + s.delta };
+f_10 = fn[T, U](seed:T, extra:U, a:Vec2, b:Vec2)->int {
+    let c = a + b;
+    { let v = dec(9:int); let keep = pick_left(seed, seed); id(v); id(keep); };
+    let d = c - a;
+    d.norm1()
+};
+f_11 = fn[T, U](seed:T, extra:U)->*Node {
+    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };
+    opaque_alloc(8:usize) as *Node
+};
+f_12 = fn[T, U](seed:T, extra:U, w:Wrap[Point])->int {
+    let q = w->shift(1:int, 2:int);
+    { let v = inc(3:int); id(v); id(seed); };
+    q.sum()
+};
+f_13 = fn[T, U](seed:T, extra:U, b:Box[Box[Node]])->int {
+    let out = b->value;
+    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };
+    out
+};
+f_14 = fn[T, U](seed:T, extra:U, v:int)->int {
+    let l = Late{ value = v };
+    { let v = Vec2{ x = 3:int, y = 4:int }; let w = Vec2{ x = 1:int, y = 2:int }; let z = v + w; z.norm1(); id(extra); };
+    late_score(l)
+};
+S4 = struct { value:int, delta:int };
+S4.score = fn[T, U](s:S4, seed:T, extra:U)->int { { let v = inc(s.value); id(v); id(seed); id(extra); }; s.value + s.delta };
+f_15 = fn[T, U](seed:T, extra:U, b:Box[T], fallback:T)->T {
+    let x = b.get();
+    { let v = dec(9:int); let keep = pick_left(seed, seed); id(v); id(keep); };
+    let _ = id(extra);
+    pick_left(x, fallback)
+};
+f_16 = fn[T, U](seed:T, extra:U, v:int)->int {
+    let l = Late{ value = v };
+    { let v = inc(3:int); id(v); id(seed); };
+    late_score(l)
+};
+f_17 = fn[T, U](seed:T, extra:U, a:Vec2, b:Vec2)->int {
+    let c = a + b;
+    { let v = inc(3:int); id(v); id(seed); };
+    let d = c - a;
+    d.norm1()
+};
+f_18 = fn[T, U](seed:T, extra:U, p:*Point)->*void {
+    { let cond = (1:int + 2:int) == 3:int; if cond { id(seed); } else { id(seed); }; id(extra); };
+    cast_void(p)
+};
+f_19 = fn[T, U](seed:T, extra:U)->*Node {
+    { let v = dec(9:int); let keep = pick_left(seed, seed); id(v); id(keep); };
+    opaque_alloc(8:usize) as *Node
+};
+f_20 = fn[T, U](seed:T, extra:U, b:Box[Pair[int, bool]])->int {
+    let p = b->swap();
+    { let v = id_int(0:int); let keep = id(extra); id(v); id(keep); };
+    if p.left { p.right } else { 0:int }
+};
+f_21 = fn[T, U](seed:T, extra:U)->*Node {
+    { let raw = opaque_alloc(8:usize); let p = raw as *Node; cast_void(p); let l = Late{ value = 2:int }; late_score(l); };
+    opaque_alloc(8:usize) as *Node
+};
+f_22 = fn[T, U](seed:T, extra:U, v:int)->int {
+    let l = Late{ value = v };
+    { let v = add_int(2:int, 5:int); id(v); id(extra); };
+    late_score(l)
+};
+f_23 = fn[T, U](seed:T, extra:U, a:Vec2, b:Vec2)->int {
+    let c = a + b;
+    { let cond = (1:int + 2:int) == 3:int; if cond { id(seed); } else { id(seed); }; id(extra); };
+    let d = c - a;
+    d.norm1()
+};
+f_24 = fn[T, U](seed:T, extra:U, a:ArrBox)->int {
+    let x = a[1:usize];
+    { let v = Vec2{ x = 3:int, y = 4:int }; let w = Vec2{ x = 1:int, y = 2:int }; let z = v + w; z.norm1(); id(extra); };
+    x + a[2:usize]
+};
+f_25 = fn[T, U](seed:T, extra:U, p:*Point)->*void {
+    { let v = id_int(0:int); let keep = id(extra); id(v); id(keep); };
+    cast_void(p)
+};
+f_26 = fn[T, U](seed:T, extra:U, w:Wrap[Point])->int {
+    let q = w->shift(1:int, 2:int);
+    { let p = Pair{ left = 1:int, right = 2:int }; p.left + p.right; let keep = id(seed); id(keep); };
+    q.sum()
+};
+f_27 = fn[T, U](seed:T, extra:U, b:Box[Pair[int, bool]])->int {
+    let p = b->swap();
+    { let v = id_int(0:int); let keep = id(extra); id(v); id(keep); };
+    if p.left { p.right } else { 0:int }
+};
+S5 = struct { value:int, delta:int };
+S5.score = fn[T, U](s:S5, seed:T, extra:U)->int { { let v = inc(s.value); id(v); id(seed); id(extra); }; s.value + s.delta };
+f_28 = fn[T, U](seed:T, extra:U, b:Box[Pair[int, bool]])->int {
+    let p = b->swap();
+    { let v = Vec2{ x = 3:int, y = 4:int }; let w = Vec2{ x = 1:int, y = 2:int }; let z = v + w; z.norm1(); id(extra); };
+    if p.left { p.right } else { 0:int }
+};
+f_29 = fn[T, U](seed:T, extra:U, b:Box[Box[Node]])->int {
+    let out = b->value;
+    { let v = dec(9:int); let keep = pick_left(seed, seed); id(v); id(keep); };
+    out
+};
