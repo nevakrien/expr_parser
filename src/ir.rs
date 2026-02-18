@@ -538,7 +538,7 @@ pub enum Pattern {
     },
 
     LifeTime(LifeTimeId),
-
+    AddrOf(PatId,VarKind),
     Poison,
     //==== TODOS: ========
 
@@ -1342,6 +1342,35 @@ impl Program {
             }
             Expr::Prefix(open, mut items) if open.value == "const" => {
                 self.lower_pattern_inner(items.pop().unwrap(), VarKind::Const)
+            }
+
+            Expr::Prefix(open, mut items) if open.value == "&" => {
+                let mut rhs_expr = items.pop().unwrap();
+                if let Some(_lifetime_expr) = items.pop() {
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc: rhs_expr.loc.clone(),
+                        s: "lifetime specification not yet supported",
+                    });
+                    return Pattern::Poison;
+                }
+
+                let mut kind = VarKind::Const;
+                if let Expr::Prefix(ref inner_op, ref mut inner_items) = rhs_expr.value
+                    && matches!(inner_op.value, "mut" | "const")
+                {
+                    debug_assert_eq!(inner_items.len(), 1);
+                    kind = if inner_op.value == "mut" {
+                        VarKind::Mut
+                    } else {
+                        VarKind::Const
+                    };
+
+                    let mut inner = inner_items.pop().unwrap();
+                    std::mem::swap(&mut rhs_expr, &mut inner);
+                }
+
+                let rhs = self.lower_pattern(rhs_expr,kind);
+                Pattern::AddrOf(rhs, kind)
             }
 
             Expr::Prefix(open, items) if open.value == "(" => {

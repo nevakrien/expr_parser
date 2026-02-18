@@ -5041,6 +5041,19 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             (c, Some(n))
         }
 
+        Pattern::AddrOf(base,kind) => {
+            let (tgt,n) = gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, base);
+            let mutable = matches!(kind,VarKind::Mut);
+            let c = ctx.new_cluster();
+            ctx.types.core.cluster[c].state = ResolveKind::Ptr{
+                mutable: Some(mutable),
+                raw:Some(false),
+                tgt
+            };
+            ctx.bind_pat(p, c);
+            (c, n)
+        }
+
         Pattern::TypeAnnotation { pat, ty } => {
             let (c, n) =
                 gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, pat);
