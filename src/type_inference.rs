@@ -1881,15 +1881,27 @@ impl TypeState {
     }
 
     fn clear_local_state(&mut self) {
+        let TypeCore {
+            parent,
+            cluster,
+        } = &mut self.core;
+
+        let TypeExtra {
+            func_defs,
+            struct_defs,
+            struct_infers,
+            tuple_infers,
+        } = &mut self.extra;
+
         // ---- union find ----
-        self.core.parent.0.clear();
-        self.core.cluster.0.clear();
+        parent.0.clear();
+        cluster.0.clear();
 
         // ---- type database ----
-        self.extra.func_defs.clear();
-        self.extra.struct_defs.clear();
-        self.extra.struct_infers.clear();
-        self.extra.tuple_infers.clear();
+        func_defs.clear();
+        struct_defs.clear();
+        struct_infers.clear();
+        tuple_infers.clear();
     }
 
     // =========================================================
