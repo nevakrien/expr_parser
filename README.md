@@ -1,5 +1,5 @@
 # expr_parser
-this languge is kinda of ridiclous its essentially a C like grammar that treats everything as an expression.
+this languge is kinda of ridiclous its essentially a mix of Rust and C++ with a C like grammar that treats everything as an expression.
 so this
 ```
 x = while t v; 
@@ -84,54 +84,13 @@ Point.dist = fn(self,other:Point)->float {
 	let dy = self.y-other.y
 	sqrt(dx*dx+dy*dy)
 }
-drop(Point) = fn(self) {}
-Point() = fn()->Point {Point{0,0}}
+__user_free = fn(self:Point) {}
+Point.new = fn()->Point {Point{0,0}}
 ```
 
 # Type System
 currently we have basic generics and automatic inference, and we would have some level of operator overloading.
 with everything being required to be monomorphic in the end so we can get C++/Rust level inlining everywhere.
-
-## Lifetimes (planned semantics)
-
-lifetimes are explicit type-level states on references. this project is adding lifetime-aware type inference first, then borrow-checking enforcement.
-
-- there is no automatic lifetime downcast/coercion for normal references.
-  - if user code wants a shorter/derived borrow, it must write an explicit reborrow like `&*var`.
-- there is a special lifetime named `` `raw ``.
-  - ``&`raw T`` means non-null pointer semantics with borrow-checking restrictions relaxed in later passes.
-  - ``&mut `raw T`` is not treated as noalias like normal `&mut`.
-- safe smart-pointer deref uses tied lifetime:
-  - fn[`a](&`a self)->&`a out
-- raw-pointer-like smart-pointer deref uses raw receiver:
-  - fn[`a](&`raw self)->&`a out
-  - this intentionally allows producing arbitrary output lifetimes from a raw handle.
-- address-exposing APIs can return raw references:
-  - fn[`a](&`raw self)->&`raw out
-  - using this is effectively an opt-out from regular borrow guarantees for that path.
-- ``&`a T`` and ``&`raw T`` are distinct states; inference must not silently convert normal borrows into raw borrows.
-
-in method/index/deref-chain flows, compiler-created intermediate references are considered fresh borrows. these introduce implicit lifetime casts that must be recorded for borrow analysis.
-
-- for now, implicit casts created by these desugarings may target any lifetime (for example: a -> `raw, a -> `static).
-- later borrow analysis will validate/reject illegal casts.
-
-some lifetime contradictions can be rejected immediately by type inference.
-
-- example: f(x:&`a t)->&`b t{x} is an immediate type error (`a` and `b` are required equal there).
-- in contrast, explicit reborrow paths may produce constraints like `` `b < `a ``; those are recorded and checked in borrow analysis.
-
-unnamed lifetime handling (planned):
-
-- in global signatures:
-  - unnamed input-side lifetimes are treated as distinct fresh binders.
-  - unnamed output-side lifetimes are intended to become joins of input lifetimes (for example: `a+`b+...).
-  - temporary implementation rule: if exactly one input lifetime exists, output defaults to that; otherwise emit a "not implemented yet" error.
-- in function bodies:
-  - each unresolved/unnamed lifetime use mints a fresh lifetime id.
-  - all minted ids are tracked so borrow-checking can use dense storage (for example `Vec` indexed by lifetime id).
-
-not all the features are implemented but we are slowly adding things to the language.
 
 we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being inferred.
 this keeps the system simple enough with union-find rules. for example all casts are assumed to always be legal for unioning purposes, and they are later verified to be what we think it should be.
@@ -139,13 +98,13 @@ this keeps the system simple enough with union-find rules. for example all casts
 this already lets us have a smart pointer with something like this 
 ```
 //this is a system decleration to make destructors nice
-__free = fn[T](p:&mut T)
+__free = fn[T](p:&mut T);
 __free = fn[T](p:&mut T){
   __user_free(p);
   //compiler may auto generate code here
 }
 
-__user_free = fn[T](p:&mut T)
+__user_free = fn[T](p:&mut T);
 __user_free = fn[T](p:&mut T){
   //this the compiler doesnt touch
 }
@@ -153,7 +112,7 @@ __user_free = fn[T](p:&mut T){
 //user code
 free = cfn(p:*void);
 __free = fn[T](b:&mut Box[T]){
-__free(&*b.ptr)
+__free(b.ptr)
 free(b->ptr as *void)
 }
 
@@ -162,18 +121,69 @@ Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
 Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
 ```
 and we can do borrow checking on this and lower to something with destructive moves.
+notice that the example is overloading the free method. 
+free is defined as a generic method but it can be specilized later becayse we predclared it.
 
-we can even add proper full overloading to this using the ideas from https://dl.acm.org/doi/10.1145/3763168 
-which would boil down to making an empty type to throw at hindly miller. and then verifiying the overloads it could be later.
 
-also note that traits like things can potentially be implemented like C++ templates so for example.
+for traits/templates we simply need to relax the requirment that free has a defualt implementation.
+then we can add something like this:
 ```
 clone=fn[T:_](x:&T)->T;
-clone=fn[int](x:&int)->int *x
-Vec.clone = fn[T:clone,Vec[T]](v:&Vec[T])->Vec[T]{...}
+clone=fn(x:&int)->int *x
+clone = fn[T:clone,Vec[T]](v:&Vec[T])->Vec[T]{...}
 ```
-which because they all share the same generic signature. we can solve clone as if it works for all T.
-then later verify that clone indeed exists for the type we are cloning. and if it is not we emit a type error.
+T:\_ means that clone is allowed to not be implemented for all T.
+this naturally allows for faily powerful overloading which gets type checked like regular generics.
+
+we can even add proper full overloading to this using the ideas from https://dl.acm.org/doi/10.1145/3763168 
+but this has been avoided as it leads to confusing type checks we might allow overloading on arity alone.
+this is because such overloads are trivial to resolve and when combined with generic methods they give the full range of functions.
+the only real problem is that the type checker would be unable to infer a few things if everything is generic.
+
+## Lifetimes (planned semantics)
+lifetime rules of safe refrences (& and &mut) follow the same underlying semantics of Rust.
+ie 1 and only 1 holder of &mut. this is because operations like vector resize or free take in a &mut.
+so for them to be safe it has to be unique. this also lets us put noalias on things.
+
+but we still want to support C++ like code that doesnt fit neatly into the lifetime model.
+which is why we take kind of a middele road aproch.
+
+member methods can either use lifetimes or use raw pointers.
+its on users to mark unsafe methods with unsafe_... or not we dont mind.
+if code does not use any raw pointers it is gurnteed to safe (and if there is UB thats a compiler bug).
+the main way this works is we have a special lifetime &'raw which is essentially a non null pointer.
+raw can be used in .methods to make raw pointer like behivior
+```
+Pointer.__deref_mut = fn['a](self:&'raw self)->&'a mut int {...}
+```
+
+or if we dont want to mess around the aliasing rules its possible to stay entirly within &'raw.
+raw is never going to be infered by the compiler unless explictly stated in a method signature.
+so it is not going to creep up on safe code.
+
+if u do want no-alias then u have to take in a &mut and this is because no alias is just such a trap inherently.
+u can get around this by immidiatly casting the &mut into a &raw in the functions body.
+and by doing the explicit cast &* on the call site.
+but chances are this is just a footgun around UB. no-alias is incredibly strict,
+
+lifetimes are also more explicit from what they are in Rust and the system is just less powerfull 
+rust has closures that are generic over lifetime and this actually allows a lot of powerful patterns like taging.
+
+we also dont automatically coehrce lifetimes, instead an explicit reborrow is needed.
+this is partly a limitation because coersion is hard but its also a philosphy of less implicit behivior.
+we very delibratly keep . to a single implicit deref. for the rust style "deref until u find something"
+users are expcted to use -> which is an explicit way to show more than 1 derfrence
+
+## Safety and Panics
+we dont have exceptions at all... this is a delibrate decision as they cause a lot of weird edge cases for usnafe code.
+panic would simply be a trap instruction. and some code would also print the reason for panics in debug mode.
+
+array indexing for example is bounds check with a trap and also automatically derfrences.
+if users want a less implicit operation calling get() or direct pointer arithmetic is the way to go.
+
+
+we will hopefully ship a sanitizer runtime that comes with the languge and checks that user code does actually fufil the requirments.
+
 
 # Performance
 this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.

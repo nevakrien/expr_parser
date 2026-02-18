@@ -1,4 +1,11 @@
-//! Type inference sketch
+//!
+// ================================================================
+// SCOPE (Closures and Rank)
+// ================================================================
+// for now we are trying to get a warking thing so we are not gona do proper closures
+// closures are very hard to later compile AND they force rank-n types if we want lifetimes to work right
+// so its actually too much of a hassle
+//
 //
 // ================================================================
 // CONTRACT
@@ -14,7 +21,6 @@
 // most constrains place some sort of pending task.
 // and then later when enough type info is present we can apply unification.
 // ================================================================
-
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -69,6 +75,11 @@ pub struct GenId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub usize);
+
+///this is rank1 for now and so cant work for closures
+///when we add them got to add rank and a normelization step and its a whole thing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LifeVar(pub usize);
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1678,14 +1689,29 @@ struct TupleInferId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PtrKind {
-    SolveRaw,
-    ///these do not contain locals yet
-    ///locals are made on uninfered later
+    SolvedRaw,
     SolvedRef(LifeTime),
 
     SafeRef,
     SomeRef,
     Unknown,
+}
+
+impl PtrKind {
+    fn is_ref(&self)->Option<bool>{
+        match self {
+            PtrKind::Unknown=>None,
+            PtrKind::SolvedRaw=>Some(false),
+            _=>Some(true)
+        }
+    }
+    fn is_safe_ref(&self)->Option<bool>{
+        match self {
+            PtrKind::Unknown|PtrKind::SomeRef=>None,
+            PtrKind::SolvedRaw|PtrKind::SolvedRef(LifeTime::Raw)=>Some(false),
+            _=>Some(true)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
