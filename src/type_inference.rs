@@ -902,6 +902,11 @@ pub enum TypeError {
         access_site: ValId,
     },
 
+    IlegalToImplMethod {
+        method_name: StrId,
+        method_site: ValId,
+    },
+
     ConstructorBaseNotGlobal {
         site: ValId,
     },
@@ -3404,24 +3409,16 @@ fn resolve_any_type_builtin_member_access(
             self_param,
             types.new_solved(BuiltinType::Void.into()),
         )
-    } else if member_name == SIZE_OF_STR {
-        let generic_self = types.new_cluster();
+    } else if matches!(member_name, SIZE_OF_STR | ALIGN_OF_STR) {
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
-            tgt: generic_self,
+            tgt: base_cluster,
             raw: Some(false),
             mutable: Some(false),
         };
         (
             MemberSelfStyle::Ref { mutable: false },
             self_param,
-            types.new_solved(BuiltinType::Usize.into()),
-        )
-    } else if member_name == ALIGN_OF_STR {
-        let generic_self = types.new_cluster();
-        (
-            MemberSelfStyle::Value,
-            generic_self,
             types.new_solved(BuiltinType::Usize.into()),
         )
     } else {
@@ -5607,7 +5604,7 @@ fn is_known_special_member_method_name(name: StrId) -> bool {
 
 #[inline(always)]
 fn is_any_type_builtin_member_name(name: StrId) -> bool {
-    matches!(name, FREE_STR | SIZE_OF_STR | ALIGN_OF_STR)
+    matches!(name, FREE_STR | USER_FREE_STR | SIZE_OF_STR | ALIGN_OF_STR)
 }
 
 #[inline(always)]
@@ -5622,6 +5619,26 @@ fn is_named_struct_type(store: &TypeStore, ty: TypeId, struct_name: NameId) -> b
         TypeValue::Struct { id, .. } => store.struct_value(*id).name == Some(struct_name),
         _ => false,
     }
+}
+
+#[inline(always)]
+fn is_named_struct_type_with_all_generics_free(
+    store: &TypeStore,
+    ty: TypeId,
+    struct_name: NameId,
+) -> bool {
+    let TypeValue::Struct { id, generics } = store.type_value(ty) else {
+        return false;
+    };
+
+    let rep = store.struct_value(*id);
+    if rep.name != Some(struct_name) || generics.len() != rep.gen_count {
+        return false;
+    }
+
+    generics.iter().enumerate().all(|(i, generic_ty)| {
+        matches!(store.type_value(*generic_ty), TypeValue::Generic(gid) if *gid == GenId(i))
+    })
 }
 
 #[inline(always)]
@@ -5719,7 +5736,9 @@ fn is_mut_ref_to_named_struct_input_type(
 ) -> bool {
     match store.type_value(input) {
         TypeValue::Ptr { tgt, raw, mutable } => {
-            !*raw && *mutable && is_named_struct_type(store, *tgt, struct_name)
+            !*raw
+                && *mutable
+                && is_named_struct_type_with_all_generics_free(store, *tgt, struct_name)
         }
         _ => false,
     }
@@ -5920,70 +5939,7 @@ fn check_special_member_method_signature(
         return;
     }
 
-    if method_name == SIZE_OF_STR {
-        let Some(first_input) = inputs.first().copied() else {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "special member methods must take `self` as the first parameter",
-            });
-            return;
-        };
-
-        if !is_any_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__size_of` must take `&self` (or `&'raw self`) as the first parameter",
-            });
-        }
-
-        if inputs.len() != 1 {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__size_of` must not take parameters after `self`",
-            });
-        }
-
-        if output != BuiltinType::Usize.into() {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__size_of` must return `usize`",
-            });
-        }
-        return;
-    }
-
-    if method_name == ALIGN_OF_STR {
-        let Some(first_input) = inputs.first().copied() else {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "special member methods must take `self` as the first parameter",
-            });
-            return;
-        };
-
-        if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__align_of` must take `self` as the first parameter type",
-            });
-        }
-
-        if inputs.len() != 1 {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__align_of` must not take parameters after `self`",
-            });
-        }
-
-        if output != BuiltinType::Usize.into() {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__align_of` must return `usize`",
-            });
-        }
-        return;
-    }
-
+    
     if method_name == DEREF_STR {
         let Some(first_input) = inputs.first().copied() else {
             ctx.push_error(TypeError::Simple {
@@ -6072,7 +6028,11 @@ fn check_special_member_method_signature(
                 message: "binary operator overloads must take exactly one parameter after `self`",
             });
         }
-    } else if is_unary_operator_overload_name(method_name) {
+
+        return;
+    } 
+
+    if is_unary_operator_overload_name(method_name) {
         if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
             ctx.push_error(TypeError::Simple {
                 loc: loc.clone(),
@@ -6086,7 +6046,13 @@ fn check_special_member_method_signature(
                 message: "unary operator overloads must not take parameters after `self`",
             });
         }
+
+        return;
     }
+
+     ctx.push_error(TypeError::IlegalToImplMethod{
+        method_site,method_name
+     });
 }
 
 // ===================================
@@ -9750,6 +9716,30 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn free_member_on_generic_struct_requires_all_generics_free_in_order() {
+        let errs =
+            infer_global_errs("S=struct[T,U]{}; S.__free = fn[T,U](self:&mut S[U,T]){}; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__free` must take `&mut self` as the first parameter",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn free_member_on_generic_struct_accepts_all_generics_free_in_order() {
+        let src = "S=struct[T,U]{}; S.__free = fn[T,U](self:&mut S[T,U]){}; f=fn(){};";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+    }
+
+    #[test]
     fn any_type_builtin_member_methods_are_available_on_primitives_refs_and_generic_t() {
         let src = r#"
             g = fn[T](x:T)->usize { x.__size_of() + x.__align_of() }
@@ -9758,7 +9748,7 @@ mod type_infer_tests {
                 let p:&int = &y;
                 let a:usize = x.__size_of();
                 let b:usize = p.__align_of();
-                a + b + g(x)
+                a + b + g(x) + (1:int).__size_of()
             }
         "#;
         let program = gather_program(src);
@@ -9789,23 +9779,12 @@ mod type_infer_tests {
         assert!(errs.iter().any(|err| {
             matches!(
                 err,
-                TypeError::Simple {
-                    message: "`__size_of` must take `&self` (or `&'raw self`) as the first parameter",
+                TypeError::IlegalToImplMethod {
+                    method_name:SIZE_OF_STR,
                     ..
                 }
             )
         }));
-    }
-
-    #[test]
-    fn size_of_member_with_ref_self_and_usize_output_is_allowed() {
-        let src = "S=struct{}; S.__size_of = fn(self:&S)->usize { 1:usize }; f=fn(x:S)->usize{ x.__size_of() };";
-        let program = gather_program(src);
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
-        let f = find_value_by_name(&program, "f");
-        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
     }
 
     #[test]

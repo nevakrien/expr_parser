@@ -385,7 +385,7 @@ Then `finalize`:
   - `__deref`: first parameter must be `&self`, no extra parameters, and return type must be a non-raw shared reference (`&T`).
   - `__deref_mut`: first parameter must be `&mut self`, no extra parameters, and return type must be a non-raw mutable reference (`&mut T`).
   - if both `__deref` and `__deref_mut` exist on the same struct, both must dereference to the same `T` target.
-  - `__free`: first parameter must be `&mut self`, no extra parameters, and return type must be `void`.
+  - `__free` / `__user_free`: first parameter must be exactly `&mut Struct[T0, T1, ...]` (all struct generics free and in declaration order), no extra parameters, and return type must be `void`.
   - `__size_of`: first parameter must be a reference receiver (`&self`, with future `&'raw self` intent), no extra parameters, and return type must be `usize`.
   - `__align_of`: first parameter must be `self`-like, no extra parameters, and return type must be `usize`.
   - builtin fallback methods now exist for **any receiver type** (including unresolved/generic/builtin/reference forms):

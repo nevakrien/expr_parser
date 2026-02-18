@@ -276,6 +276,24 @@ impl ErrorReporter {
 
                 self.print_report(report.finish())
             }
+            TypeError::IlegalToImplMethod {
+                method_name,
+                method_site,
+            } => {
+                let loc = program.value_loc(*method_site);
+                let method_name = program.str_intern.resolve(*method_name);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!(
+                        "{} is buildin and not allowed to be overwriten",
+                        method_name
+                    ))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(report.finish())
+            }
             TypeError::Unresolved { value } => {
                 let loc = program.value_loc(*value);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
