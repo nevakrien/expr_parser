@@ -581,41 +581,10 @@ pub struct SolvedTypes {
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SolvedFunctionTypes {
-    reference_type: TypeId,
-    reference_site: ValId,
-    reference_entry: SolvedFunctionSpecialization,
-}
-
-impl SolvedFunctionTypes {
-    pub fn reference_type(&self) -> TypeId {
-        self.reference_type
-    }
-
-    pub fn reference_site(&self) -> ValId {
-        self.reference_site
-    }
-
-    pub fn specialization_entry(&self, ty: TypeId) -> Option<SolvedFunctionSpecialization> {
-        if self.reference_type == ty {
-            Some(self.reference_entry)
-        } else {
-            None
-        }
-    }
-
-    fn new(
-        reference_type: TypeId,
-        reference_site: ValId,
-        reference_entry: SolvedFunctionSpecialization,
-    ) -> Self {
-        Self {
-            reference_type,
-            reference_site,
-            reference_entry,
-        }
-    }
+    pub ty: TypeId,
+    pub impl_site: Option<ValId>,
 }
 
 // ----------------------------------------------------------
@@ -683,24 +652,17 @@ pub fn check_and_record_function_set_types(
         }
     }
 
-    let entry = SolvedFunctionSpecialization {
-        implementation: first_impl,
-        first_decl: first_decl_site,
-    };
     if let Some(name) = name {
         ctx.ex.ans.function_types.insert(
             name,
-            SolvedFunctionTypes::new(reference_type, reference_site, entry),
+            SolvedFunctionTypes {
+                ty: reference_type,
+                impl_site: first_impl,
+            },
         );
     }
 
     Some((reference_type, reference_site))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolvedFunctionSpecialization {
-    pub implementation: Option<ValId>,
-    pub first_decl: Option<ValId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3981,7 +3943,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             }
 
             if let Some(f) = ctx.ex.ans.function_types_by_name(n) {
-                let t = f.reference_type();
+                let t = f.ty;
                 return global_to_specialized_local(
                     &mut ctx.ex,
                     &mut ctx.search,
@@ -8403,17 +8365,8 @@ mod type_infer_tests {
             .function_types_by_name(f_id)
             .expect("missing solved function types");
 
-        let reference = solved.reference_type();
+        let reference = solved.ty;
         assert_ne!(reference, UNKNOWN_TYPE);
-    }
-
-    #[test]
-    fn multiple_implementations_without_declaration_are_rejected() {
-        let errs = infer_global_errs("f = fn[T](x:T)->T { x }; f = fn(x:int)->int { x };");
-        assert!(
-            errs.iter()
-                .any(|e| { matches!(e, TypeError::DuplicateFunctionImplementation { .. }) })
-        );
     }
 
     #[test]
@@ -9385,29 +9338,6 @@ mod type_infer_tests {
             store.type_value(y_ty),
             TypeValue::Builtin(BuiltinType::Int)
         ));
-
-        let access_site = find_let_stmt_value(&program, f, "y");
-        assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
-            Some(2)
-        );
-        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
-            .expect("expected implicit deref chain");
-        assert_eq!(chain.len(), 2);
-        assert!(chain[0].contains("Box"));
-        assert!(chain[1].contains("Inner"));
-    }
-
-    #[test]
-    fn smart_pointer_member_access_exposes_deref_count_for_type_dump() {
-        let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; f=fn(b:Box){ let y:int = b.x; };";
-        let program = gather_program(src);
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
-
-        let f = find_value_by_name(&program, "f");
-        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(

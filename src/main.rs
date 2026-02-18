@@ -3,7 +3,7 @@ use expr_parser::ir::NameId;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_inference::{SolvedTypes, TypeStore, run_typechecker};
+use expr_parser::type_inference::{run_typechecker, SolvedTypes, TypeStore};
 use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;
@@ -125,10 +125,7 @@ fn def_type_string(
     match def {
         Defined::Func(_funcs) => solved
             .function_types_by_name(id)
-            .and_then(|f| {
-                (f.reference_type() != expr_parser::type_inference::UNKNOWN_TYPE)
-                    .then_some(f.reference_type())
-            })
+            .and_then(|f| (f.ty != expr_parser::type_inference::UNKNOWN_TYPE).then_some(f.ty))
             .map(|ty| types.get_type_string(program, ty)),
         Defined::Type(texp) => solved
             .typedef_types
