@@ -573,7 +573,7 @@ pub struct SolvedTypes {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolvedFunctionTypes {
     pub reference_type: TypeId,
-    pub specializations: HashMap<TypeId, SolvedFunctionSpecialization>,
+    pub specializations: IdHashMap<TypeId, SolvedFunctionSpecialization>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -868,7 +868,9 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     let mut err_count = 0;
     let mut function_checked = 0;
 
-    // unsafe{perf_init();}
+    unsafe{perf_init();}
+
+    unsafe{perf_begin()}
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
@@ -879,6 +881,11 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
 
         return Ok((Err(err_count), function_checked));
     }
+    let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
+    unsafe { perf_done(name.as_ptr())}; 
+
+    unsafe{perf_begin()}
+
 
     for (_n, methods) in program.member_methods.iter() {
         for (_s, method_set) in methods.iter() {
@@ -915,6 +922,9 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
             }
         }
     }
+
+    let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
+    unsafe { perf_done(name.as_ptr())}; 
 
     if err_count > 0 {
         return Ok((Err(err_count), function_checked));
@@ -960,7 +970,6 @@ pub fn infer_global_types<'a>(
         return Err(ctx.ex.errors);
     }
 
-    ctx.ex.store.struct_overloads.clear();
     for (struct_name, methods) in program.member_methods.iter() {
         for (_method_name, method_set) in methods.iter() {
             for m in method_set.values() {
@@ -1022,7 +1031,7 @@ pub fn infer_global_types<'a>(
         }
     }
 
-    for (_n, def) in program.definitions.iter() {
+    for (name, def) in program.definitions.iter() {
         let Defined::Func(funcs) = def else {
             continue;
         };
@@ -1050,13 +1059,8 @@ pub fn infer_global_types<'a>(
                 );
             };
         }
-    }
 
-    for (name, def) in ctx.ex.program.definitions.iter() {
-        let Defined::Func(functions) = def else {
-            continue;
-        };
-        let _ = check_and_record_function_set_types(&mut ctx, Some(*name), functions);
+        check_and_record_function_set_types(&mut ctx, Some(*name), funcs);
     }
 
     if ctx.ex.errors.is_empty() {
@@ -1182,7 +1186,8 @@ fn check_and_record_function_set_types(
 ) -> Option<(TypeId, ValId)> {
     let first_decl = functions.declarations.first().copied();
     let first_impl = functions.implementations.first().copied();
-    let mut specializations: HashMap<TypeId, SolvedFunctionSpecialization> = HashMap::new();
+    let mut specializations: IdHashMap<TypeId, SolvedFunctionSpecialization> = IdHashMap::default();
+    specializations.reserve(functions.declarations.len());
 
     for declaration in &functions.declarations {
         let Some(ty) = ctx.ex.ans.type_of(*declaration) else {
@@ -1213,7 +1218,9 @@ fn check_and_record_function_set_types(
             return None;
         };
 
-        let mut seen_impl_types: HashMap<TypeId, ValId> = HashMap::new();
+        let mut seen_impl_types: IdHashMap<TypeId, ValId> = IdHashMap::default();
+        seen_impl_types.reserve(functions.implementations.len());
+
         for implementation in &functions.implementations {
             let Some(ty) = ctx.ex.ans.type_of(*implementation) else {
                 continue;
