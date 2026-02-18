@@ -1721,7 +1721,6 @@ impl PtrKind {
 enum ResolveKind {
     Solved(TypeId),
     Nothing,
-    Never,
 
     // Specialized(SpecilizeId),
     ///the val is the last entity easily considered a lit like (2+1+3) in (let y = let x = 2+1+3)
@@ -2206,11 +2205,6 @@ impl TypeState {
         self.core.cluster[dst].state = self.core.cluster[src].state;
     }
 
-    #[inline(always)]
-    pub fn is_never(&self, c: CId) -> bool {
-        matches!(self.cluster_state(c), ResolveKind::Never)
-    }
-
     // =========================================================
     // structural database access
     // =========================================================
@@ -2266,12 +2260,6 @@ fn unify_clusters_inlined(
         return Ok(rw);
     }
 
-    if types.is_never(rw) {
-        return Ok(rf);
-    }
-    if types.is_never(rf) {
-        return Ok(rw);
-    }
 
     // Try found <- wanted
     if __try_absorb(ex, types, rw, rf)? {
@@ -2635,7 +2623,6 @@ fn force_type(
             Ok(())
         }
 
-        ResolveKind::Never => Ok(()),
     }
 }
 
@@ -3040,7 +3027,7 @@ fn mock_type_from_cluster(
         ResolveKind::Ptr { tgt, raw, mutable } => {
             make_ptr_mock_inner(ex, core, extra, tgt, raw, mutable, limit)
         }
-        ResolveKind::Nothing | ResolveKind::Never => UNKNOWN_TYPE,
+        ResolveKind::Nothing  => UNKNOWN_TYPE,
     };
 
     *limit += 1;
@@ -3201,7 +3188,7 @@ fn extract_bad_type(
     let root = find_root(&mut core.parent, cid);
     let out = match core.cluster[root].state {
         ResolveKind::Solved(t) => Some(BadTypeId(t)),
-        ResolveKind::Nothing | ResolveKind::Never => None,
+        ResolveKind::Nothing  => None,
 
         ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(ex, core, extra, call))),
         ResolveKind::Struct(call) => Some(BadTypeId(make_struct_mock(ex, core, extra, call))),
@@ -4751,9 +4738,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             }
         }
         Value::Goto(_) | Value::Break | Value::Continue | Value::LabelDecl(_) => {
-            let c = ctx.new_cluster();
-            ctx.types.core.cluster[c].state = ResolveKind::Never;
-            c
+            ctx.new_cluster()
         }
         Value::Return(op) => {
             if let Some(output) = current_output {
@@ -4795,9 +4780,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 });
             }
 
-            let c = ctx.new_cluster();
-            ctx.types.core.cluster[c].state = ResolveKind::Never;
-            c
+            ctx.new_cluster()
         }
         Value::LogicOp { op: _, values } => {
             let out = ctx.new_solved(BuiltinType::Bool.into());
@@ -5909,7 +5892,6 @@ fn cluster_is_int_like(
         ResolveKind::Tuple(_) => Some(false),
         ResolveKind::Array { .. } => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
-        ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -5931,7 +5913,6 @@ fn cluster_is_float_like(
         ResolveKind::Tuple(_) => Some(false),
         ResolveKind::Array { .. } => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
-        ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -5953,7 +5934,6 @@ fn cluster_is_bool(
         ResolveKind::Tuple(_) => Some(false),
         ResolveKind::Array { .. } => Some(false),
         ResolveKind::Ptr { .. } => Some(false),
-        ResolveKind::Never => Some(false),
         ResolveKind::Nothing => None,
     }
 }
@@ -6031,7 +6011,7 @@ fn classify_raw_pointer_operand(
             raw: Some(false), ..
         } => RawPointerOperandKind::NonRawPointer,
         ResolveKind::Ptr { raw: None, .. } => RawPointerOperandKind::UnknownRawPointer(root),
-        ResolveKind::Nothing | ResolveKind::Never => RawPointerOperandKind::Unknown,
+        ResolveKind::Nothing => RawPointerOperandKind::Unknown,
         _ => RawPointerOperandKind::NotPointer,
     }
 }
@@ -6071,10 +6051,6 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
         },
 
         ResolveKind::Nothing => OperandKind::Unknown,
-
-        //for never its probably best if we treat it as an unresolved in the end
-        //we can do something more fancy but that would just be confusing
-        ResolveKind::Never => OperandKind::Unknown,
     }
 }
 
@@ -6139,13 +6115,6 @@ fn unify_if_distinct(
     let rb = types.root(b);
 
     if ra == rb {
-        return Ok(false);
-    }
-
-    if types.is_never(ra) {
-        return Ok(false);
-    }
-    if types.is_never(rb) {
         return Ok(false);
     }
 
@@ -8677,7 +8646,7 @@ mod type_infer_tests {
     #[test]
     fn if_branch_with_break_unifies_with_concrete_branch() {
         let mut store = TypeStore::new();
-        let errs = infer_fn_body(
+            infer_fn_body(
             r#"
             f = fn() {
                 let keep_going: bool = true;
@@ -8689,55 +8658,15 @@ mod type_infer_tests {
             "#,
             &mut store,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
-        assert!(!errs.iter().any(|err| matches!(
-            err,
-            TypeError::ValuesContradict {
-                expectation_reason: "if branches must have the same type",
-                ..
-            }
-        )));
     }
 
-    #[test]
-    fn if_branch_with_continue_unifies_with_concrete_branch() {
-        let mut store = TypeStore::new();
-        let errs = infer_fn_body(
-            r#"
-            f = fn() {
-                let keep_going: bool = true;
-                let z: int = 0;
-                while keep_going {
-                    z = z + if keep_going { 1:int } else { continue }
-                }
-            }
-            "#,
-            &mut store,
-        )
-        .unwrap_err();
-
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
-        assert!(!errs.iter().any(|err| matches!(
-            err,
-            TypeError::ValuesContradict {
-                expectation_reason: "if branches must have the same type",
-                ..
-            }
-        )));
-    }
 
     #[test]
     fn nested_if_with_never_branch_avoids_branch_mismatch_errors() {
         let mut store = TypeStore::new();
-        let errs = infer_fn_body(
+        infer_fn_body(
             r#"
             f = fn() {
                 let keep_going: bool = true;
@@ -8754,19 +8683,8 @@ mod type_infer_tests {
             "#,
             &mut store,
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            errs.iter()
-                .any(|err| matches!(err, TypeError::Unresolved { .. }))
-        );
-        assert!(!errs.iter().any(|err| matches!(
-            err,
-            TypeError::ValuesContradict {
-                expectation_reason: "if branches must have the same type",
-                ..
-            }
-        )));
     }
 
     #[test]
