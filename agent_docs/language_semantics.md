@@ -116,12 +116,15 @@ Lowering maps syntax to `AccessKind`:
 - `a.b` -> `AccessKind::Dot`
 - `A::b` -> `AccessKind::Static`
 - `p->b` -> `AccessKind::Ptr`
+- `t.0` / `p->0` lower as integer member access (`Value::IntAccess`) with the same `AccessKind` rules.
 
 Type-inference behavior:
 
 - `.` allows at most one implicit deref step.
 - `->` can chain implicit pointer-like deref steps (with a bounded search) until member lookup resolves.
 - For smart-pointer-like structs, lookup prefers direct members first; only then falls back to `__deref`/`__deref_mut` targets.
+- Integer member access is reserved for tuples: the index is resolved against tuple arity after implicit deref.
+- `::` is not valid for tuple integer member access (`tuple element access does not support \`::\``).
 - Implicit deref hops are recorded in `SolvedTypes.member_access_implicit_derefs` for later lowering/rewrite stages.
 
 Method access/currying:

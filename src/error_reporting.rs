@@ -287,10 +287,7 @@ impl ErrorReporter {
                         "{} is buildin and not allowed to be overwriten",
                         method_name
                     ))
-                    .with_label(
-                        Label::new((loc.file, loc.range.clone()))
-                            .with_color(Color::Red),
-                    );
+                    .with_label(Label::new((loc.file, loc.range.clone())).with_color(Color::Red));
 
                 self.print_report(report.finish())
             }

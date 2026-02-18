@@ -1399,6 +1399,7 @@ fn main_solver(ctx: &mut InferState) {
         progress |= resolve_pointer_likes(ctx);
         progress |= resolve_pending_indexes(ctx);
         progress |= resolve_pending_member_accesses(ctx);
+        progress |= resolve_pending_int_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
         if !progress {
             break;
@@ -1744,6 +1745,15 @@ struct PendingMemberAccess {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct PendingIntAccess {
+    site: ValId,
+    source: CId,
+    output: CId,
+    id: usize,
+    kind: AccessKind,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct PendingPointerLike {
     site: ValId,
     source: CId,
@@ -1972,6 +1982,7 @@ struct ReqState {
     member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
     index_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
     pending_member_accesses: Vec<PendingMemberAccess>,
+    pending_int_accesses: Vec<PendingIntAccess>,
     pending_indexes: Vec<PendingIndex>,
     pointer_likes: Vec<PendingPointerLike>,
 }
@@ -1988,6 +1999,7 @@ impl ReqState {
             member_access_implicit_deref_sites: Vec::new(),
             index_implicit_deref_sites: Vec::new(),
             pending_member_accesses: Vec::new(),
+            pending_int_accesses: Vec::new(),
             pending_indexes: Vec::new(),
             pointer_likes: Vec::new(),
         }
@@ -2003,6 +2015,7 @@ impl ReqState {
             member_access_implicit_deref_sites,
             index_implicit_deref_sites,
             pending_member_accesses,
+            pending_int_accesses,
             pending_indexes,
             pointer_likes,
         } = self;
@@ -2016,6 +2029,7 @@ impl ReqState {
         member_access_implicit_deref_sites.clear();
         index_implicit_deref_sites.clear();
         pending_member_accesses.clear();
+        pending_int_accesses.clear();
         pending_indexes.clear();
         pointer_likes.clear();
     }
@@ -3621,6 +3635,18 @@ enum MemberAccessResolve {
     Error(TypeError),
 }
 
+#[derive(Debug)]
+enum IntAccessResolve {
+    Resolved {
+        result: CId,
+        implicit_receivers: Vec<CId>,
+    },
+    Pending {
+        source: CId,
+    },
+    Error(TypeError),
+}
+
 #[inline(always)]
 fn finalize_member_access_implicit_chain(
     mut chain: Vec<CId>,
@@ -3979,6 +4005,124 @@ fn try_resolve_member_access(
                 return MemberAccessResolve::Error(TypeError::Simple {
                     loc: ex.program.value_loc(site),
                     message: "member access requires a struct or pointer-like base",
+                });
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn try_resolve_tuple_int_access(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    site: ValId,
+    source: CId,
+    id: usize,
+    kind: AccessKind,
+) -> IntAccessResolve {
+    let mut current = types.root(source);
+    let mut implicit_receivers = Vec::new();
+    let max_implicit_deref_steps = match kind {
+        AccessKind::Dot => 1usize,
+        AccessKind::Ptr => 64usize,
+        AccessKind::Static => 0usize,
+    };
+    let implicit_deref_limit_message = match kind {
+        AccessKind::Dot => "`.` tuple access performs at most one implicit dereference",
+        AccessKind::Ptr => "tuple access autoderef recursion exceeded safety limit",
+        AccessKind::Static => "static tuple access does not support implicit dereference",
+    };
+    let mut used_implicit_deref_steps = 0usize;
+
+    loop {
+        match types.core.cluster[current].state {
+            ResolveKind::Nothing => return IntAccessResolve::Pending { source: current },
+            ResolveKind::Ptr { tgt, .. } => {
+                if used_implicit_deref_steps >= max_implicit_deref_steps {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+                let next = types.root(tgt);
+                implicit_receivers.push(current);
+                used_implicit_deref_steps += 1;
+                current = next;
+            }
+            ResolveKind::Solved(t) => {
+                let solved = ex.store.type_value(t).clone();
+                match solved {
+                    TypeValue::Ptr { tgt, .. } => {
+                        if used_implicit_deref_steps >= max_implicit_deref_steps {
+                            return IntAccessResolve::Error(TypeError::Simple {
+                                loc: ex.program.value_loc(site),
+                                message: implicit_deref_limit_message,
+                            });
+                        }
+                        let next = types.new_solved(tgt);
+                        let next = types.root(next);
+                        implicit_receivers.push(current);
+                        used_implicit_deref_steps += 1;
+                        current = next;
+                    }
+                    TypeValue::Tuple(items) => {
+                        if kind == AccessKind::Static {
+                            return IntAccessResolve::Error(TypeError::Simple {
+                                loc: ex.program.value_loc(site),
+                                message: "tuple element access does not support `::`",
+                            });
+                        }
+                        let Some(item) = items.get(id).copied() else {
+                            return IntAccessResolve::Error(TypeError::Simple {
+                                loc: ex.program.value_loc(site),
+                                message: "tuple element index is out of bounds for this tuple",
+                            });
+                        };
+                        let result = types.new_solved(item);
+                        return IntAccessResolve::Resolved {
+                            result,
+                            implicit_receivers: finalize_member_access_implicit_chain(
+                                implicit_receivers,
+                                used_implicit_deref_steps,
+                                current,
+                            ),
+                        };
+                    }
+                    _ => {
+                        return IntAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(site),
+                            message: "tuple element access requires a tuple or pointer-like base",
+                        });
+                    }
+                }
+            }
+            ResolveKind::Tuple(tuple_id) => {
+                if kind == AccessKind::Static {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: "tuple element access does not support `::`",
+                    });
+                }
+                let Some(result) = types.extra.tuple_infers[tuple_id.0].items.get(id).copied()
+                else {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: "tuple element index is out of bounds for this tuple",
+                    });
+                };
+                return IntAccessResolve::Resolved {
+                    result,
+                    implicit_receivers: finalize_member_access_implicit_chain(
+                        implicit_receivers,
+                        used_implicit_deref_steps,
+                        current,
+                    ),
+                };
+            }
+            _ => {
+                return IntAccessResolve::Error(TypeError::Simple {
+                    loc: ex.program.value_loc(site),
+                    message: "tuple element access requires a tuple or pointer-like base",
                 });
             }
         }
@@ -4821,6 +4965,44 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 }
             }
         }
+        Value::IntAccess { base, id, kind } => {
+            let source = gather_constraints(ctx, base, current_output);
+            match try_resolve_tuple_int_access(&mut ctx.ex, &mut ctx.types, v, source, id, kind) {
+                IntAccessResolve::Resolved {
+                    result,
+                    implicit_receivers,
+                } => {
+                    ctx.bind_val(v, result);
+                    if !implicit_receivers.is_empty() {
+                        ctx.req.member_access_implicit_deref_sites.push(
+                            PendingMemberAccessImplicitDeref {
+                                site: v,
+                                receivers: implicit_receivers,
+                            },
+                        );
+                    }
+                    result
+                }
+                IntAccessResolve::Pending { source } => {
+                    let result = ctx.new_cluster();
+                    ctx.bind_val(v, result);
+                    ctx.req.pending_int_accesses.push(PendingIntAccess {
+                        site: v,
+                        source,
+                        output: result,
+                        id,
+                        kind,
+                    });
+                    result
+                }
+                IntAccessResolve::Error(err) => {
+                    ctx.push_error(err);
+                    let result = ctx.new_cluster();
+                    ctx.bind_val(v, result);
+                    result
+                }
+            }
+        }
         Value::Goto(_) | Value::Break | Value::Continue | Value::LabelDecl(_) => ctx.new_cluster(),
         Value::Return(op) => {
             if let Some(output) = current_output {
@@ -5041,14 +5223,15 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             (c, Some(n))
         }
 
-        Pattern::AddrOf(base,kind) => {
-            let (tgt,n) = gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, base);
-            let mutable = matches!(kind,VarKind::Mut);
+        Pattern::AddrOf(base, kind) => {
+            let (tgt, n) =
+                gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, base);
+            let mutable = matches!(kind, VarKind::Mut);
             let c = ctx.new_cluster();
-            ctx.types.core.cluster[c].state = ResolveKind::Ptr{
+            ctx.types.core.cluster[c].state = ResolveKind::Ptr {
                 mutable: Some(mutable),
-                raw:Some(false),
-                tgt
+                raw: Some(false),
+                tgt,
             };
             ctx.bind_pat(p, c);
             (c, n)
@@ -5952,7 +6135,6 @@ fn check_special_member_method_signature(
         return;
     }
 
-    
     if method_name == DEREF_STR {
         let Some(first_input) = inputs.first().copied() else {
             ctx.push_error(TypeError::Simple {
@@ -6043,7 +6225,7 @@ fn check_special_member_method_signature(
         }
 
         return;
-    } 
+    }
 
     if is_unary_operator_overload_name(method_name) {
         if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
@@ -6063,9 +6245,10 @@ fn check_special_member_method_signature(
         return;
     }
 
-     ctx.push_error(TypeError::IlegalToImplMethod{
-        method_site,method_name
-     });
+    ctx.push_error(TypeError::IlegalToImplMethod {
+        method_site,
+        method_name,
+    });
 }
 
 // ===================================
@@ -7406,6 +7589,67 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
                 false
             }
             MemberAccessResolve::Error(err) => {
+                ex.push_error(err);
+                progress = true;
+                false
+            }
+        }
+    });
+
+    progress
+}
+
+#[inline(always)]
+fn resolve_pending_int_accesses(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    let ex = &mut ctx.ex;
+    let types = &mut ctx.types;
+    let member_access_implicit_deref_sites = &mut ctx.req.member_access_implicit_deref_sites;
+
+    ctx.req.pending_int_accesses.retain_mut(|pending| {
+        let source = types.root(pending.source);
+        pending.source = source;
+
+        match try_resolve_tuple_int_access(
+            ex,
+            types,
+            pending.site,
+            source,
+            pending.id,
+            pending.kind,
+        ) {
+            IntAccessResolve::Pending { source } => {
+                pending.source = source;
+                true
+            }
+            IntAccessResolve::Resolved {
+                result,
+                implicit_receivers,
+            } => {
+                match unify_if_distinct(ex, types, result, pending.output) {
+                    Ok(changed) => progress |= changed,
+                    Err(clash) => {
+                        ex.push_error(TypeError::ValuesContradict {
+                            expectation_reason:
+                                "tuple element access result must match its inferred use constraints",
+                            site: pending.site,
+                            found: pending.site,
+                            expected_place: pending.site,
+                            clash,
+                        });
+                        progress = true;
+                    }
+                }
+                if !implicit_receivers.is_empty() {
+                    member_access_implicit_deref_sites.push(PendingMemberAccessImplicitDeref {
+                        site: pending.site,
+                        receivers: implicit_receivers,
+                    });
+                }
+                false
+            }
+            IntAccessResolve::Error(err) => {
                 ex.push_error(err);
                 progress = true;
                 false
@@ -9552,6 +9796,82 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn tuple_int_access_resolves_tuple_element_types() {
+        let src = "f=fn(t:(int,bool)){ let a:int = t.0; let b:bool = t.1; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let a_ty = find_let_stmt_type(&program, &solved_types, f, "a");
+        assert!(matches!(
+            store.type_value(a_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+        let b_ty = find_let_stmt_type(&program, &solved_types, f, "b");
+        assert!(matches!(
+            store.type_value(b_ty),
+            TypeValue::Builtin(BuiltinType::Bool)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "a");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            None
+        );
+    }
+
+    #[test]
+    fn ptr_tuple_int_access_can_chain_derefs() {
+        let src = "f=fn(pp:& &(int,bool)){ let a:int = pp->0; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let a_ty = find_let_stmt_type(&program, &solved_types, f, "a");
+        assert!(matches!(
+            store.type_value(a_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "a");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count(access_site),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn dot_tuple_int_access_does_not_chain_multiple_derefs() {
+        let src = "f=fn(pp:& &(int,bool)){ let a:int = pp.0; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected tuple dot access to fail on multi-hop autoderef"),
+            Err(errs) => errs,
+        };
+
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple { message, .. }
+                if *message == "`.` tuple access performs at most one implicit dereference"
+            )
+        }));
+    }
+
+    #[test]
     fn pending_member_access_resolves_after_source_type_becomes_known() {
         let src = "Inner=struct{x:int}; Box=struct{inner:Inner}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; f=fn(b:Box)->void{ let v = b as _; let y:int = v.x; v:Box; };";
         let program = gather_program(src);
@@ -9793,7 +10113,7 @@ mod type_infer_tests {
             matches!(
                 err,
                 TypeError::IlegalToImplMethod {
-                    method_name:SIZE_OF_STR,
+                    method_name: SIZE_OF_STR,
                     ..
                 }
             )

@@ -447,6 +447,12 @@ pub enum Value {
         kind: AccessKind,
     },
 
+    IntAccess {
+        base: ValId,
+        id: usize,
+        kind: AccessKind,
+    },
+
     // ===== SCOPE =====
     /// Immutable binding
     Let {
@@ -538,7 +544,7 @@ pub enum Pattern {
     },
 
     LifeTime(LifeTimeId),
-    AddrOf(PatId,VarKind),
+    AddrOf(PatId, VarKind),
     Poison,
     //==== TODOS: ========
 
@@ -608,7 +614,7 @@ pub struct StructLike {
 
 //these we look for in tests so...
 pub(crate) const ACCESS_EXPECTS_NAME_MSG: &str =
-    "access expressions require a simple identifier after the operator";
+    "access expressions require a simple identifier or integer literal after the operator";
 pub(crate) const MEMBER_METHOD_COLLISION_MSG: &str =
     "member method name collides with an existing field or method";
 pub(crate) const LABEL_NAME_REQUIRED_MSG: &str = "goto requires a direct label literal like `name`";
@@ -1256,32 +1262,37 @@ impl Program {
         rhs: LExpr,
     ) -> Value {
         let base = self.lower_value(lhs);
-        let name = match rhs.value {
-            Expr::Atom(Token::Ident(name)) => self.str_intern.intern(&name),
-            _ => {
-                self.push_lowering_error(CompileError::SimpleError {
-                    loc: rhs.loc,
-                    s: ACCESS_EXPECTS_NAME_MSG,
-                });
-                return Value::Poison;
-            }
-        };
-
         let kind = match op.value {
             "." => AccessKind::Dot,
             "::" => AccessKind::Static,
             "->" => AccessKind::Ptr,
             _ => {
                 self.push_lowering_error(CompileError::SimpleError {
-                    loc: loc.clone(),
+                    loc,
                     s: "unsupported access operator",
                 });
                 return Value::Poison;
             }
         };
 
-        let _ = loc;
-        Value::Access { base, name, kind }
+        match rhs.value {
+            Expr::Atom(Token::Ident(name)) => {
+                let name = self.str_intern.intern(&name);
+                Value::Access { base, name, kind }
+            }
+            Expr::Atom(Token::NumLit(id)) => Value::IntAccess {
+                base,
+                id: id as usize,
+                kind,
+            },
+            _ => {
+                self.push_lowering_error(CompileError::SimpleError {
+                    loc: rhs.loc,
+                    s: ACCESS_EXPECTS_NAME_MSG,
+                });
+                Value::Poison
+            }
+        }
     }
 
     pub fn lower_pattern(&mut self, expr: LExpr, m: VarKind) -> PatId {
@@ -1369,7 +1380,7 @@ impl Program {
                     std::mem::swap(&mut rhs_expr, &mut inner);
                 }
 
-                let rhs = self.lower_pattern(rhs_expr,kind);
+                let rhs = self.lower_pattern(rhs_expr, kind);
                 Pattern::AddrOf(rhs, kind)
             }
 
@@ -2565,6 +2576,44 @@ mod lowering_tests {
                 assert_eq!(program.str_intern.resolve(name), "c");
             }
             _ => panic!("expected type access"),
+        }
+    }
+
+    #[test]
+    fn lowers_int_access_for_dot_and_ptr() {
+        let src = "{ let t = (1, 2); t.0; t->1; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 3);
+
+        let t_id = bound_id(&program, statements[0]);
+
+        match program.value(statements[1]) {
+            Value::IntAccess { base, id, kind } => {
+                assert_eq!(kind, AccessKind::Dot);
+                match program.value(base) {
+                    Value::NameRef(id) => assert_eq!(id, t_id),
+                    _ => panic!("expected dot base name"),
+                }
+                assert_eq!(id, 0);
+            }
+            _ => panic!("expected dot int access"),
+        }
+
+        match program.value(statements[2]) {
+            Value::IntAccess { base, id, kind } => {
+                assert_eq!(kind, AccessKind::Ptr);
+                match program.value(base) {
+                    Value::NameRef(id) => assert_eq!(id, t_id),
+                    _ => panic!("expected ptr base name"),
+                }
+                assert_eq!(id, 1);
+            }
+            _ => panic!("expected ptr int access"),
         }
     }
 

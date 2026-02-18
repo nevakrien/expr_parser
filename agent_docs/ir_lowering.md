@@ -110,6 +110,9 @@ Unsupported forms route through `ERR_UNSUPPORTED_TYPE_EXPR`.
 - Assignment operators (`=`, `+=`, ...) lower to `Value::Assign` with `AssignOp` flavor.
 - Logical ops (`&&`, `||`) lower to `Value::LogicOp` (kept separate from pure binops).
 - Pipe (`|>`) rewrites to call form by inserting lhs as first argument after callee.
+- Member-access operators (`.`, `::`, `->`) lower to:
+  - `Value::Access` when RHS is an identifier,
+  - `Value::IntAccess` when RHS is an integer literal (tuple-style access such as `x.0` / `x->0`).
 
 ## Known Fragile/Incomplete Areas
 
