@@ -111,7 +111,7 @@ __user_free = fn[T](p:&mut T){
 
 //user code
 free = cfn(p:*void);
-__free = fn[T](b:&mut Box[T]){
+Box.__free = fn[T](b:&mut Box[T]){
 __free(&*b.ptr)
 free(b->ptr as *void)
 }
@@ -121,12 +121,10 @@ Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
 Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
 ```
 and we can do borrow checking on this and lower to something with destructive moves.
-notice that the example is overloading the free method. 
-free is defined as a generic method but it can be specilized later becayse we predclared it.
+notice that the example overrides `__free` as a member method on `Box[T]`.
 
 
-for traits/templates we simply need to relax the requirment that free has a defualt implementation.
-then we can add something like this:
+for traits/templates we can have something like
 ```
 clone=fn[T:_](x:&T)->T;
 clone=fn(x:&int)->int *x

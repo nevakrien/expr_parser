@@ -674,79 +674,26 @@ impl ErrorReporter {
                 self.print_report(report.finish())
             }
 
-            TypeError::FunctionSpecializationRequiresPredeclaration {
-                specialization,
-                first_definition,
-            } => {
-                let specialization_loc = program.value_loc(*specialization);
-                let first_loc = program.value_loc(*first_definition);
-                let report = Report::build(
-                    ReportKind::Error,
-                    specialization_loc.file,
-                    specialization_loc.range.start,
-                )
-                .with_message(
-                    "function specialization requires a predeclaration with compatible generics",
-                )
-                .with_label(
-                    Label::new((specialization_loc.file, specialization_loc.range.clone()))
-                        .with_message("specialized implementation here")
-                        .with_color(Color::Red),
-                )
-                .with_label(
-                    Label::new((first_loc.file, first_loc.range.clone()))
-                        .with_message("first definition is here")
-                        .with_color(Color::Cyan),
-                );
-
-                self.print_report(report.finish())
-            }
-
-            TypeError::AmbiguousFunctionSpecialization {
-                first_specialization,
-                second_specialization,
-            } => {
-                let first_loc = program.value_loc(*first_specialization);
-                let second_loc = program.value_loc(*second_specialization);
-                let report =
-                    Report::build(ReportKind::Error, second_loc.file, second_loc.range.start)
-                        .with_message("ambiguous function specializations")
-                        .with_label(
-                            Label::new((first_loc.file, first_loc.range.clone()))
-                                .with_message("first overlapping specialization")
-                                .with_color(Color::Cyan),
-                        )
-                        .with_label(
-                            Label::new((second_loc.file, second_loc.range.clone()))
-                                .with_message("second overlapping specialization")
-                                .with_color(Color::Red),
-                        );
-
-                self.print_report(report.finish())
-            }
-
-            TypeError::DuplicateFunctionImplementationSpecialization {
+            TypeError::DuplicateFunctionImplementation {
                 first_implementation,
                 duplicate_implementation,
-                specialization,
             } => {
                 let duplicate_loc = program.value_loc(*duplicate_implementation);
                 let first_loc = program.value_loc(*first_implementation);
-                let specialization = store.get_type_string(program, *specialization);
                 let report = Report::build(
                     ReportKind::Error,
                     duplicate_loc.file,
                     duplicate_loc.range.start,
                 )
-                .with_message("duplicate function implementation specialization is not allowed")
+                .with_message("multiple function implementations are not allowed")
                 .with_label(
                     Label::new((duplicate_loc.file, duplicate_loc.range.clone()))
-                        .with_message(format!("duplicate specialization `{specialization}`"))
+                        .with_message("duplicate implementation")
                         .with_color(Color::Red),
                 )
                 .with_label(
                     Label::new((first_loc.file, first_loc.range.clone()))
-                        .with_message("first implementation with this specialization")
+                        .with_message("first implementation")
                         .with_color(Color::Cyan),
                 );
 

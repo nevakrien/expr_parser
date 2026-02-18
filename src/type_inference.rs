@@ -34,9 +34,10 @@ use crate::ir::{
 };
 use crate::parsing::Loc;
 use crate::string_intern::{
-    ADD_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR, DIV_STR,
-    EQ_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
-    POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SUB_STR, StrId,
+    ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
+    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
+    NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR,
+    SUB_STR, StrId,
 };
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -580,590 +581,41 @@ pub struct SolvedTypes {
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
-// ==========================================================
-//  Coherent Specialization Graph
-// ==========================================================
-
-// ------------------------------
-// Overlap (unification) check
-// ------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum OverlapSide {
-    Left,
-    Right,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct OverlapTerm {
-    side: OverlapSide,
-    ty: TypeId,
-}
-
-impl OverlapTerm {
-    fn left(ty: TypeId) -> Self {
-        Self {
-            side: OverlapSide::Left,
-            ty,
-        }
-    }
-    fn right(ty: TypeId) -> Self {
-        Self {
-            side: OverlapSide::Right,
-            ty,
-        }
-    }
-}
-
-fn overlap_type_value(
-    store: &TypeStore,
-    left: TypeId,
-    right: TypeId,
-    left_map: &mut IdHashMap<GenId, OverlapTerm>,
-    right_map: &mut IdHashMap<GenId, OverlapTerm>,
-) -> bool {
-    overlap_terms(
-        store,
-        OverlapTerm::left(left),
-        OverlapTerm::right(right),
-        left_map,
-        right_map,
-    )
-}
-
-fn normalize_overlap_term(
-    store: &TypeStore,
-    mut term: OverlapTerm,
-    left_map: &mut IdHashMap<GenId, OverlapTerm>,
-    right_map: &mut IdHashMap<GenId, OverlapTerm>,
-) -> OverlapTerm {
-    loop {
-        match (term.side, store.type_value(term.ty)) {
-            (OverlapSide::Left, TypeValue::Generic(gid)) => {
-                let Some(next) = left_map.get(gid).copied() else {
-                    return term;
-                };
-                term = next;
-            }
-            (OverlapSide::Right, TypeValue::Generic(gid)) => {
-                let Some(next) = right_map.get(gid).copied() else {
-                    return term;
-                };
-                term = next;
-            }
-            _ => return term,
-        }
-    }
-}
-
-fn overlap_terms(
-    store: &TypeStore,
-    left_term: OverlapTerm,
-    right_term: OverlapTerm,
-    left_map: &mut IdHashMap<GenId, OverlapTerm>,
-    right_map: &mut IdHashMap<GenId, OverlapTerm>,
-) -> bool {
-    let left_term = normalize_overlap_term(store, left_term, left_map, right_map);
-    let right_term = normalize_overlap_term(store, right_term, left_map, right_map);
-
-    if left_term == right_term {
-        return true;
-    }
-
-    // Assign left generic
-    if let (OverlapSide::Left, TypeValue::Generic(gid)) =
-        (left_term.side, store.type_value(left_term.ty))
-    {
-        left_map.insert(*gid, right_term);
-        return true;
-    }
-
-    // Assign right generic
-    if let (OverlapSide::Right, TypeValue::Generic(gid)) =
-        (right_term.side, store.type_value(right_term.ty))
-    {
-        right_map.insert(*gid, left_term);
-        return true;
-    }
-
-    match (
-        store.type_value(left_term.ty),
-        store.type_value(right_term.ty),
-    ) {
-        (TypeValue::Builtin(a), TypeValue::Builtin(b)) => a == b,
-
-        (TypeValue::Tuple(a_items), TypeValue::Tuple(b_items)) => {
-            a_items.len() == b_items.len()
-                && a_items.iter().zip(b_items.iter()).all(|(a, b)| {
-                    overlap_terms(
-                        store,
-                        OverlapTerm::left(*a),
-                        OverlapTerm::right(*b),
-                        left_map,
-                        right_map,
-                    )
-                })
-        }
-
-        (TypeValue::Array(a_item, a_size), TypeValue::Array(b_item, b_size)) => {
-            a_size == b_size
-                && overlap_terms(
-                    store,
-                    OverlapTerm::left(*a_item),
-                    OverlapTerm::right(*b_item),
-                    left_map,
-                    right_map,
-                )
-        }
-
-        (
-            TypeValue::Ptr {
-                tgt: a_tgt,
-                raw: a_raw,
-                mutable: a_mut,
-                ..
-            },
-            TypeValue::Ptr {
-                tgt: b_tgt,
-                raw: b_raw,
-                mutable: b_mut,
-                ..
-            },
-        ) => {
-            a_raw == b_raw
-                && a_mut == b_mut
-                && overlap_terms(
-                    store,
-                    OverlapTerm::left(*a_tgt),
-                    OverlapTerm::right(*b_tgt),
-                    left_map,
-                    right_map,
-                )
-        }
-
-        (
-            TypeValue::Struct {
-                id: a_id,
-                generics: a_gens,
-                ..
-            },
-            TypeValue::Struct {
-                id: b_id,
-                generics: b_gens,
-                ..
-            },
-        ) => {
-            a_id == b_id
-                && a_gens.len() == b_gens.len()
-                && a_gens.iter().zip(b_gens.iter()).all(|(a, b)| {
-                    overlap_terms(
-                        store,
-                        OverlapTerm::left(*a),
-                        OverlapTerm::right(*b),
-                        left_map,
-                        right_map,
-                    )
-                })
-        }
-
-        (
-            TypeValue::Func {
-                calling_convention: a_cc,
-                params: a_params,
-                ret: a_ret,
-                ..
-            },
-            TypeValue::Func {
-                calling_convention: b_cc,
-                params: b_params,
-                ret: b_ret,
-                ..
-            },
-        ) => {
-            a_cc == b_cc
-                && a_params.len() == b_params.len()
-                && a_params.iter().zip(b_params.iter()).all(|(a, b)| {
-                    overlap_terms(
-                        store,
-                        OverlapTerm::left(*a),
-                        OverlapTerm::right(*b),
-                        left_map,
-                        right_map,
-                    )
-                })
-                && overlap_terms(
-                    store,
-                    OverlapTerm::left(*a_ret),
-                    OverlapTerm::right(*b_ret),
-                    left_map,
-                    right_map,
-                )
-        }
-
-        _ => false,
-    }
-}
-
-fn types_can_overlap(store: &TypeStore, left: TypeId, right: TypeId) -> bool {
-    let mut left_map: IdHashMap<GenId, OverlapTerm> = IdHashMap::default();
-    let mut right_map: IdHashMap<GenId, OverlapTerm> = IdHashMap::default();
-    overlap_type_value(store, left, right, &mut left_map, &mut right_map)
-}
-
-// ----------------------------------------------------------
-// Specificity ordering
-// ----------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpecializationOrder {
-    MoreSpecific,
-    LessSpecific,
-    Equal,
-    Incomparable,
-}
-
-fn compare_specialization_specificity(
-    store: &TypeStore,
-    left: TypeId,
-    right: TypeId,
-) -> SpecializationOrder {
-    let left_accepts_right = type_accepts(store, left, right);
-    let right_accepts_left = type_accepts(store, right, left);
-
-    match (left_accepts_right, right_accepts_left) {
-        (true, true) => SpecializationOrder::Equal,
-        (true, false) => SpecializationOrder::LessSpecific,
-        (false, true) => SpecializationOrder::MoreSpecific,
-        (false, false) => SpecializationOrder::Incomparable,
-    }
-}
-
-// ----------------------------------------------------------
-// DAG Construction + Coherence Validation
-// ----------------------------------------------------------
-// Assumptions / invariants this code relies on (per your pipeline):
-// - `reference_type` is already typed (debug_assert).
-// - every specialization in `entries` is already known to be accepted by `reference_type`
-//   (you validated this earlier in `check_and_record_function_set_types`).
-// - ambiguity policy here matches your *old tests*: if two incomparable specializations
-//   can overlap => error. (No "meet exists" exemption.)
-//   If you later want the "meet specialization resolves overlap" rule, you need a DAG
-//   (multi-parent) not a tree, and you must update tests accordingly.
-
-type SpecId = u32;
-
 #[derive(Debug, Clone)]
-pub struct SpecNode {
-    ty: TypeId,
-    site: Option<ValId>,   // best site to blame for ambiguity (decl or impl)
-    children: Vec<SpecId>, // specialization children (more specific)
-}
-
-#[derive(Debug, Clone)]
-pub enum SolvedFunctionTypes {
-    // common trivial case
-    Simple {
-        reference_type: TypeId,
-        reference_site: ValId,
-        reference_entry: SolvedFunctionSpecialization,
-    },
-
-    // specialization tree case
-    Complex {
-        reference_type: TypeId,
-        reference_site: ValId,
-
-        // stable per-type info (needed later)
-        per_type: IdHashMap<TypeId, SolvedFunctionSpecialization>,
-
-        // specialization tree rooted at reference_id (guaranteed to exist)
-        nodes: Vec<SpecNode>,
-        reference_id: SpecId,
-    },
+pub struct SolvedFunctionTypes {
+    reference_type: TypeId,
+    reference_site: ValId,
+    reference_entry: SolvedFunctionSpecialization,
 }
 
 impl SolvedFunctionTypes {
     pub fn reference_type(&self) -> TypeId {
-        match self {
-            SolvedFunctionTypes::Simple { reference_type, .. } => *reference_type,
-            SolvedFunctionTypes::Complex { reference_type, .. } => *reference_type,
-        }
+        self.reference_type
     }
 
-    /// Optional helper if you ever need it in tests.
+    pub fn reference_site(&self) -> ValId {
+        self.reference_site
+    }
+
     pub fn specialization_entry(&self, ty: TypeId) -> Option<SolvedFunctionSpecialization> {
-        match self {
-            SolvedFunctionTypes::Simple {
-                reference_type,
-                reference_entry,
-                ..
-            } => {
-                if *reference_type == ty {
-                    Some(*reference_entry)
-                } else {
-                    None
-                }
-            }
-            SolvedFunctionTypes::Complex { per_type, .. } => per_type.get(&ty).copied(),
+        if self.reference_type == ty {
+            Some(self.reference_entry)
+        } else {
+            None
         }
     }
 
-    /// Find best specialization for a *concrete* function-call type (must be a Func type).
-    /// No caching; caller can memoize if desired.
-    pub fn best_specialization_for_concrete(
-        &self,
-        store: &TypeStore,
-        concrete: TypeId,
-    ) -> Option<TypeId> {
-        match self {
-            SolvedFunctionTypes::Simple { reference_type, .. } => {
-                if type_accepts(store, *reference_type, concrete) {
-                    Some(*reference_type)
-                } else {
-                    None
-                }
-            }
-            SolvedFunctionTypes::Complex {
-                reference_type,
-                nodes,
-                reference_id,
-                ..
-            } => {
-                // root must match or nothing matches
-                if !type_accepts(store, *reference_type, concrete) {
-                    return None;
-                }
-
-                let mut cur = *reference_id;
-
-                loop {
-                    let mut next = None;
-
-                    for &child in &nodes[cur as usize].children {
-                        let child_ty = nodes[child as usize].ty;
-
-                        if type_accepts(store, child_ty, concrete) {
-                            next = Some(child);
-                            break;
-                        }
-                    }
-
-                    match next {
-                        Some(n) => cur = n,
-                        None => break,
-                    }
-                }
-
-                Some(nodes[cur as usize].ty)
-            }
-        }
-    }
-
-    fn new_complex(
-        ctx: &mut InferState,
+    fn new(
         reference_type: TypeId,
         reference_site: ValId,
-        per_type: IdHashMap<TypeId, SolvedFunctionSpecialization>,
-        entries: Vec<(TypeId, Option<ValId>)>,
+        reference_entry: SolvedFunctionSpecialization,
     ) -> Self {
-        debug_assert!(reference_type != UNKNOWN_TYPE);
-
-        // ---------------------------------------------
-        // build nodes
-        // ---------------------------------------------
-        let mut nodes: Vec<SpecNode> = entries
-            .into_iter()
-            .map(|(ty, site)| SpecNode {
-                ty,
-                site,
-                children: Vec::new(),
-            })
-            .collect();
-
-        // reference must exist
-        let reference_id: SpecId = nodes
-            .iter()
-            .position(|n| n.ty == reference_type)
-            .expect("reference node must exist") as SpecId;
-
-        let n = nodes.len();
-
-        // --------------------------------------------------
-        // incremental DAG construction
-        // --------------------------------------------------
-        for new_id in 0..n as SpecId {
-            if new_id == reference_id {
-                continue;
-            }
-
-            let new_ty = nodes[new_id as usize].ty;
-
-            let mut parents: Vec<SpecId> = Vec::new();
-            let mut children: Vec<SpecId> = Vec::new();
-
-            // --------------------------------------
-            // classify relation vs all existing nodes
-            // --------------------------------------
-            for other_id in 0..n as SpecId {
-                if other_id == new_id {
-                    continue;
-                }
-
-                let other_ty = nodes[other_id as usize].ty;
-
-                let a = type_accepts(ctx.ex.store, other_ty, new_ty);
-                let b = type_accepts(ctx.ex.store, new_ty, other_ty);
-
-                match (a, b) {
-                    // other is more general -> parent candidate
-                    (true, false) => parents.push(other_id),
-
-                    // other is more specific -> child candidate
-                    (false, true) => children.push(other_id),
-
-                    // incomparable
-                    (false, false) => {
-                        // coherence rule: overlapping incomparable specializations illegal
-                        if types_can_overlap(ctx.ex.store, new_ty, other_ty) {
-                            let l = nodes[new_id as usize]
-                                .site
-                                .or(nodes[other_id as usize].site);
-                            let r = nodes[other_id as usize]
-                                .site
-                                .or(nodes[new_id as usize].site);
-
-                            if let (Some(l), Some(r)) = (l, r) {
-                                ctx.push_error(TypeError::AmbiguousFunctionSpecialization {
-                                    first_specialization: l,
-                                    second_specialization: r,
-                                });
-                            }
-                        }
-                    }
-
-                    // equal — ignore
-                    (true, true) => {}
-                }
-            }
-
-            // --------------------------------------
-            // keep only *immediate* parents
-            // (transitive reduction during insertion)
-            // --------------------------------------
-            let mut i = 0;
-            while i < parents.len() {
-                let p = parents[i];
-
-                let mut remove_p = false;
-
-                for j in 0..parents.len() {
-                    if i == j {
-                        continue;
-                    }
-
-                    let q = parents[j];
-
-                    // p > q  AND  q > new
-                    // => p is not an immediate parent
-                    if type_accepts(ctx.ex.store, nodes[p as usize].ty, nodes[q as usize].ty)
-                        && !type_accepts(ctx.ex.store, nodes[q as usize].ty, nodes[p as usize].ty)
-                    {
-                        remove_p = true;
-                        break;
-                    }
-                }
-
-                if remove_p {
-                    parents.swap_remove(i);
-                } else {
-                    i += 1;
-                }
-            }
-
-            // --------------------------------------
-            // attach to parents
-            // --------------------------------------
-            for p in parents.iter().copied() {
-                nodes[p as usize].children.push(new_id);
-            }
-
-            // --------------------------------------
-            // reparent children under new node
-            // --------------------------------------
-            for c in children.iter().copied() {
-                // remove c from all parents we attached to
-                for p in parents.iter().copied() {
-                    let parent_children = &mut nodes[p as usize].children;
-                    if let Some(pos) = parent_children.iter().position(|&x| x == c) {
-                        parent_children.swap_remove(pos);
-                    }
-                }
-
-                // attach under new node
-                nodes[new_id as usize].children.push(c);
-            }
-        }
-
-        SolvedFunctionTypes::Complex {
+        Self {
             reference_type,
             reference_site,
-            per_type,
-            nodes,
-            reference_id,
+            reference_entry,
         }
     }
-
-    fn new_simple(
-        reference_type: TypeId,
-        reference_site: ValId,
-        entry: SolvedFunctionSpecialization,
-    ) -> Self {
-        SolvedFunctionTypes::Simple {
-            reference_type,
-            reference_site,
-            reference_entry: entry,
-        }
-    }
-}
-
-// Heuristic: smaller score = more general, inserted earlier
-fn specificity_score(store: &TypeStore, ty: TypeId) -> u32 {
-    fn rec(store: &TypeStore, ty: TypeId, acc: &mut u32) {
-        match store.type_value(ty) {
-            TypeValue::Generic(_) => {}
-            TypeValue::Builtin(_) => *acc += 1,
-            TypeValue::Ptr { tgt, .. } => {
-                *acc += 2;
-                rec(store, *tgt, acc);
-            }
-            TypeValue::Tuple(items) => {
-                *acc += 2 + items.len() as u32;
-                for &t in items {
-                    rec(store, t, acc);
-                }
-            }
-            TypeValue::Array(item, _) => {
-                *acc += 2;
-                rec(store, *item, acc);
-            }
-            TypeValue::Struct { generics, .. } => {
-                *acc += 3;
-                for &g in generics {
-                    rec(store, g, acc);
-                }
-            }
-            TypeValue::Func { params, ret, .. } => {
-                *acc += 5 + params.len() as u32;
-                for &p in params {
-                    rec(store, p, acc);
-                }
-                rec(store, *ret, acc);
-            }
-        }
-    }
-    let mut s = 0;
-    rec(store, ty, &mut s);
-    s
 }
 
 // ----------------------------------------------------------
@@ -1177,178 +629,72 @@ pub fn check_and_record_function_set_types(
     let first_decl = functions.declarations.first().copied();
     let first_impl = functions.implementations.first().copied();
 
-    // ------------------------------------------------------------
-    // 1) No declarations => MUST be exactly one implementation
-    // ------------------------------------------------------------
-    if first_decl.is_none() {
-        let Some(first_impl) = first_impl else {
-            // nothing to record
-            return None;
+    let (reference_site, reference_type, first_decl_site) = if let Some(decl) = first_decl {
+        let Some(reference_type) = ctx.ex.ans.type_of(decl) else {
+            return Some((UNKNOWN_TYPE, decl));
         };
-
-        // extra impls require predeclaration
-        for extra_impl in functions.implementations.iter().copied().skip(1) {
-            ctx.push_error(TypeError::FunctionSpecializationRequiresPredeclaration {
-                specialization: extra_impl,
-                first_definition: first_impl,
-            });
-        }
-
-        let Some(reference_type) = ctx.ex.ans.type_of(first_impl) else {
-            // unsolved: bail (your rule)
-            return Some((UNKNOWN_TYPE, first_impl));
+        (decl, reference_type, Some(decl))
+    } else if let Some(imp) = first_impl {
+        let Some(reference_type) = ctx.ex.ans.type_of(imp) else {
+            return Some((UNKNOWN_TYPE, imp));
         };
-
-        let entry = SolvedFunctionSpecialization {
-            implementation: Some(first_impl),
-            first_decl: None,
-        };
-
-        let solved = SolvedFunctionTypes::new_simple(reference_type, first_impl, entry);
-        if let Some(name) = name {
-            ctx.ex.ans.function_types.insert(name, solved);
-        }
-        return Some((reference_type, first_impl));
-    }
-
-    // ------------------------------------------------------------
-    // 2) Has declarations => first declaration defines reference type
-    // ------------------------------------------------------------
-    let first_decl = first_decl.unwrap();
-    let Some(reference_type) = ctx.ex.ans.type_of(first_decl) else {
-        return Some((UNKNOWN_TYPE, first_decl));
+        (imp, reference_type, None)
+    } else {
+        return None;
     };
 
-    // Single-pass collection:
-    // - per_type: (decl_site, impl_site)
-    // - duplicate impl specialization detection
-    let mut per_type: IdHashMap<TypeId, SolvedFunctionSpecialization> = IdHashMap::default();
-    per_type.reserve(functions.declarations.len() + functions.implementations.len());
-
-    let mut seen_impl_types: IdHashMap<TypeId, ValId> = IdHashMap::default();
-    seen_impl_types.reserve(functions.implementations.len());
-
-    // ---- declarations pass (typed invariant holds) ----
     for &decl in &functions.declarations {
         let Some(ty) = ctx.ex.ans.type_of(decl) else {
-            return Some((UNKNOWN_TYPE, first_decl));
+            return Some((UNKNOWN_TYPE, reference_site));
         };
-        let ent = per_type.entry(ty).or_insert(SolvedFunctionSpecialization {
-            implementation: None,
-            first_decl: None,
-        });
-        if ent.first_decl.is_none() {
-            ent.first_decl = Some(decl);
+        if ty != reference_type {
+            ctx.push_error(TypeError::ValuesContradict {
+                expectation_reason:
+                    "all declarations must exactly match the first declaration signature",
+                site: decl,
+                found: decl,
+                expected_place: reference_site,
+                clash: simple_type_clash(ty, reference_type),
+            });
         }
     }
 
-    // ---- implementations pass ----
-    for &imp in &functions.implementations {
-        let Some(ty) = ctx.ex.ans.type_of(imp) else {
-            // your rule: if unsolved implementation, stop early (keeps error behavior deterministic)
-            return Some((UNKNOWN_TYPE, first_decl));
+    if let Some(first_impl) = first_impl {
+        for extra_impl in functions.implementations.iter().copied().skip(1) {
+            ctx.push_error(TypeError::DuplicateFunctionImplementation {
+                first_implementation: first_impl,
+                duplicate_implementation: extra_impl,
+            });
+        }
+
+        let Some(impl_type) = ctx.ex.ans.type_of(first_impl) else {
+            return Some((UNKNOWN_TYPE, reference_site));
         };
-
-        if let Some(prev) = seen_impl_types.insert(ty, imp) {
-            ctx.push_error(TypeError::DuplicateFunctionImplementationSpecialization {
-                first_implementation: prev,
-                duplicate_implementation: imp,
-                specialization: ty,
+        if impl_type != reference_type {
+            let expected_place = first_decl_site.unwrap_or(reference_site);
+            ctx.push_error(TypeError::ValuesContradict {
+                expectation_reason:
+                    "function implementation must exactly match the declared signature",
+                site: first_impl,
+                found: first_impl,
+                expected_place,
+                clash: simple_type_clash(impl_type, reference_type),
             });
-            continue;
-        }
-
-        let ent = per_type.entry(ty).or_insert(SolvedFunctionSpecialization {
-            implementation: None,
-            first_decl: None,
-        });
-        if ent.implementation.is_none() {
-            ent.implementation = Some(imp);
         }
     }
 
-    // ---- validations (done over per_type once) ----
-    // 1) all decl specializations must be accepted by reference
-    // 2) all impl specializations must be accepted by reference
-    for (&ty, ent) in per_type.iter() {
-        if ty == reference_type {
-            continue;
-        }
-
-        // decl must be same-or-specialization of reference
-        if let Some(decl_site) = ent.first_decl {
-            let mut generic_map = IdHashMap::default();
-            if !declaration_accepts_implementation(
-                ctx.ex.store,
-                reference_type,
-                ty,
-                &mut generic_map,
-            ) {
-                ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason:
-                        "all declarations must be the same as or a specialization of the first declaration",
-                    site: decl_site,
-                    found: decl_site,
-                    expected_place: first_decl,
-                    clash: simple_type_clash(ty, reference_type),
-                });
-            }
-        }
-
-        // impl must be specialization of reference
-        if let Some(imp_site) = ent.implementation {
-            let mut generic_map = IdHashMap::default();
-            if !declaration_accepts_implementation(
-                ctx.ex.store,
-                reference_type,
-                ty,
-                &mut generic_map,
-            ) {
-                ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason:
-                        "function implementation must be a specialization of the declaration type",
-                    site: imp_site,
-                    found: imp_site,
-                    expected_place: first_decl,
-                    clash: simple_type_clash(ty, reference_type),
-                });
-            }
-        }
-    }
-
-    // If only one specialization total, store Simple (fast path)
-    if per_type.len() == 1 {
-        let entry = *per_type
-            .get(&reference_type)
-            .unwrap_or(&SolvedFunctionSpecialization {
-                implementation: None,
-                first_decl: Some(first_decl),
-            });
-        let solved = SolvedFunctionTypes::new_simple(reference_type, first_decl, entry);
-        if let Some(name) = name {
-            ctx.ex.ans.function_types.insert(name, solved);
-        }
-        return Some((reference_type, first_decl));
-    }
-
-    // Build entries for tree: one node per TypeId (site is decl-or-impl)
-    let mut entries: Vec<(TypeId, Option<ValId>)> = Vec::with_capacity(per_type.len());
-    for (&ty, ent) in per_type.iter() {
-        entries.push((ty, specialization_site(*ent)));
-    }
-
-    let solved =
-        SolvedFunctionTypes::new_complex(ctx, reference_type, first_decl, per_type, entries);
-
+    let entry = SolvedFunctionSpecialization {
+        implementation: first_impl,
+        first_decl: first_decl_site,
+    };
     if let Some(name) = name {
-        ctx.ex.ans.function_types.insert(name, solved);
+        ctx.ex.ans.function_types.insert(
+            name,
+            SolvedFunctionTypes::new(reference_type, reference_site, entry),
+        );
     }
 
-    Some((reference_type, first_decl))
-}
-
-fn specialization_site(entry: SolvedFunctionSpecialization) -> Option<ValId> {
-    entry.first_decl.or(entry.implementation)
+    Some((reference_type, reference_site))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1600,20 +946,9 @@ pub enum TypeError {
         clash: TypeClash,
     },
 
-    FunctionSpecializationRequiresPredeclaration {
-        specialization: ValId,
-        first_definition: ValId,
-    },
-
-    AmbiguousFunctionSpecialization {
-        first_specialization: ValId,
-        second_specialization: ValId,
-    },
-
-    DuplicateFunctionImplementationSpecialization {
+    DuplicateFunctionImplementation {
         first_implementation: ValId,
         duplicate_implementation: ValId,
-        specialization: TypeId,
     },
 }
 
@@ -1851,120 +1186,6 @@ pub fn infer_global_types<'a>(
     } else {
         Err(ctx.ex.errors)
     }
-}
-
-fn declaration_accepts_implementation(
-    store: &TypeStore,
-    declaration: TypeId,
-    implementation: TypeId,
-    generic_map: &mut IdHashMap<GenId, TypeId>,
-) -> bool {
-    let declared = store.type_value(declaration);
-
-    match declared {
-        TypeValue::Generic(gid) => {
-            if let Some(previous) = generic_map.get(gid) {
-                *previous == implementation
-            } else {
-                generic_map.insert(*gid, implementation);
-                true
-            }
-        }
-        TypeValue::Builtin(b) => {
-            let TypeValue::Builtin(found) = store.type_value(implementation) else {
-                return false;
-            };
-            *b == *found
-        }
-        TypeValue::Tuple(items) => {
-            let TypeValue::Tuple(found_items) = store.type_value(implementation) else {
-                return false;
-            };
-            if items.len() != found_items.len() {
-                return false;
-            }
-            items
-                .iter()
-                .zip(found_items.iter())
-                .all(|(declared, found)| {
-                    declaration_accepts_implementation(store, *declared, *found, generic_map)
-                })
-        }
-        TypeValue::Array(item, size) => {
-            let TypeValue::Array(found_item, found_size) = store.type_value(implementation) else {
-                return false;
-            };
-            size == found_size
-                && declaration_accepts_implementation(store, *item, *found_item, generic_map)
-        }
-        TypeValue::Ptr { tgt, raw, mutable } => {
-            let TypeValue::Ptr {
-                tgt: found_tgt,
-                raw: found_raw,
-                mutable: found_mutable,
-            } = store.type_value(implementation)
-            else {
-                return false;
-            };
-            raw == found_raw
-                && mutable == found_mutable
-                && declaration_accepts_implementation(store, *tgt, *found_tgt, generic_map)
-        }
-        TypeValue::Struct { id, generics } => {
-            let TypeValue::Struct {
-                id: found_id,
-                generics: found_generics,
-            } = store.type_value(implementation)
-            else {
-                return false;
-            };
-
-            if id != found_id || generics.len() != found_generics.len() {
-                return false;
-            }
-
-            generics
-                .iter()
-                .zip(found_generics.iter())
-                .all(|(declared, found)| {
-                    declaration_accepts_implementation(store, *declared, *found, generic_map)
-                })
-        }
-        TypeValue::Func {
-            calling_convention,
-            generics: _,
-            params,
-            ret,
-        } => {
-            let TypeValue::Func {
-                calling_convention: found_calling_convention,
-                generics: _,
-                params: found_params,
-                ret: found_ret,
-            } = store.type_value(implementation)
-            else {
-                return false;
-            };
-
-            if calling_convention != found_calling_convention || params.len() != found_params.len()
-            {
-                return false;
-            }
-
-            params
-                .iter()
-                .zip(found_params.iter())
-                .all(|(declared, found)| {
-                    declaration_accepts_implementation(store, *declared, *found, generic_map)
-                })
-                && declaration_accepts_implementation(store, *ret, *found_ret, generic_map)
-        }
-    }
-}
-
-fn type_accepts(store: &TypeStore, declaration: TypeId, implementation: TypeId) -> bool {
-    let mut generic_map = IdHashMap::default();
-    declaration_accepts_implementation(store, declaration, implementation, &mut generic_map)
 }
 
 pub fn infer_value_internals<'a>(
@@ -4103,6 +3324,110 @@ fn resolve_member_method_access(
     }
 }
 
+fn resolve_any_type_builtin_member_access(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    search: &mut SearchState,
+    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    access_site: ValId,
+    base_value: ValId,
+    base_cluster: CId,
+    member_name: StrId,
+) -> CId {
+    let (self_style, self_param, output) = if member_name == FREE_STR {
+        let generic_self = types.new_cluster();
+        let self_param = types.new_cluster();
+        types.core.cluster[self_param].state = ResolveKind::Ptr {
+            tgt: generic_self,
+            raw: Some(false),
+            mutable: Some(true),
+        };
+        (
+            MemberSelfStyle::Ref { mutable: true },
+            self_param,
+            types.new_solved(BuiltinType::Void.into()),
+        )
+    } else if member_name == SIZE_OF_STR {
+        let generic_self = types.new_cluster();
+        let self_param = types.new_cluster();
+        types.core.cluster[self_param].state = ResolveKind::Ptr {
+            tgt: generic_self,
+            raw: Some(false),
+            mutable: Some(false),
+        };
+        (
+            MemberSelfStyle::Ref { mutable: false },
+            self_param,
+            types.new_solved(BuiltinType::Usize.into()),
+        )
+    } else {
+        let generic_self = types.new_cluster();
+        (
+            MemberSelfStyle::Value,
+            generic_self,
+            types.new_solved(BuiltinType::Usize.into()),
+        )
+    };
+
+    let full_method = types.new_func(FuncInfer {
+        calling_convention: CallingConvention::Unknown,
+        generics: 0,
+        inputs: vec![self_param],
+        output,
+    });
+    let overload = ResolvedMemberOverload {
+        params: vec![self_param],
+        ret: output,
+        self_style,
+        full_method,
+    };
+
+    match make_member_closure(ex, types, base_cluster, overload, access_site) {
+        Ok(curried) => {
+            member_method_type_sites.push(PendingMemberMethodType {
+                site: access_site,
+                member: member_name,
+                full_method,
+                receiver: base_cluster,
+                receiver_value: base_value,
+            });
+            search.bind_val(access_site, curried);
+            curried
+        }
+        Err(clash) => {
+            let unresolved = types.new_cluster();
+            member_method_type_sites.push(PendingMemberMethodType {
+                site: access_site,
+                member: member_name,
+                full_method,
+                receiver: base_cluster,
+                receiver_value: base_value,
+            });
+            search.bind_val(access_site, unresolved);
+            ex.push_error(TypeError::ValuesContradict {
+                expectation_reason: "member method receiver must match method self parameter",
+                site: access_site,
+                found: base_value,
+                expected_place: access_site,
+                clash,
+            });
+            unresolved
+        }
+    }
+}
+
+#[inline(always)]
+fn is_any_ref_to_named_struct_input_type(
+    store: &TypeStore,
+    input: TypeId,
+    struct_name: NameId,
+) -> bool {
+    match store.type_value(input) {
+        TypeValue::Ptr { tgt, .. } => is_named_struct_type(store, *tgt, struct_name),
+        _ => false,
+    }
+}
+
 fn try_resolve_struct_deref_method(
     ex: &mut ExternState,
     types: &mut TypeState,
@@ -4276,7 +3601,29 @@ fn try_resolve_member_access(
 
     loop {
         match types.core.cluster[current].state {
-            ResolveKind::Nothing => return MemberAccessResolve::Pending { source: current },
+            ResolveKind::Nothing => {
+                if kind != AccessKind::Static && is_any_type_builtin_member_name(member_name) {
+                    let result = resolve_any_type_builtin_member_access(
+                        ex,
+                        types,
+                        search,
+                        member_method_type_sites,
+                        site,
+                        base_value,
+                        current,
+                        member_name,
+                    );
+                    return MemberAccessResolve::Resolved {
+                        result,
+                        implicit_receivers: finalize_member_access_implicit_chain(
+                            implicit_receivers,
+                            used_implicit_deref_steps,
+                            current,
+                        ),
+                    };
+                }
+                return MemberAccessResolve::Pending { source: current };
+            }
             ResolveKind::Ptr { tgt, .. } => {
                 if used_implicit_deref_steps >= max_implicit_deref_steps {
                     return MemberAccessResolve::Error(TypeError::Simple {
@@ -4367,6 +3714,27 @@ fn try_resolve_member_access(
                                 };
                             }
 
+                            if is_any_type_builtin_member_name(member_name) {
+                                let result = resolve_any_type_builtin_member_access(
+                                    ex,
+                                    types,
+                                    search,
+                                    member_method_type_sites,
+                                    site,
+                                    base_value,
+                                    current,
+                                    member_name,
+                                );
+                                return MemberAccessResolve::Resolved {
+                                    result,
+                                    implicit_receivers: finalize_member_access_implicit_chain(
+                                        implicit_receivers,
+                                        used_implicit_deref_steps,
+                                        current,
+                                    ),
+                                };
+                            }
+
                             if used_implicit_deref_steps < max_implicit_deref_steps
                                 && let Some(target) = resolve_struct_deref_target(
                                     ex,
@@ -4391,6 +3759,28 @@ fn try_resolve_member_access(
                         });
                     }
                     _ => {
+                        if kind != AccessKind::Static
+                            && is_any_type_builtin_member_name(member_name)
+                        {
+                            let result = resolve_any_type_builtin_member_access(
+                                ex,
+                                types,
+                                search,
+                                member_method_type_sites,
+                                site,
+                                base_value,
+                                current,
+                                member_name,
+                            );
+                            return MemberAccessResolve::Resolved {
+                                result,
+                                implicit_receivers: finalize_member_access_implicit_chain(
+                                    implicit_receivers,
+                                    used_implicit_deref_steps,
+                                    current,
+                                ),
+                            };
+                        }
                         return MemberAccessResolve::Error(TypeError::Simple {
                             loc: ex.program.value_loc(site),
                             message: "member access requires a struct or pointer-like base",
@@ -4461,6 +3851,27 @@ fn try_resolve_member_access(
                         };
                     }
 
+                    if is_any_type_builtin_member_name(member_name) {
+                        let result = resolve_any_type_builtin_member_access(
+                            ex,
+                            types,
+                            search,
+                            member_method_type_sites,
+                            site,
+                            base_value,
+                            current,
+                            member_name,
+                        );
+                        return MemberAccessResolve::Resolved {
+                            result,
+                            implicit_receivers: finalize_member_access_implicit_chain(
+                                implicit_receivers,
+                                used_implicit_deref_steps,
+                                current,
+                            ),
+                        };
+                    }
+
                     if used_implicit_deref_steps < max_implicit_deref_steps
                         && let Some(target) = resolve_struct_deref_target(
                             ex,
@@ -4485,6 +3896,26 @@ fn try_resolve_member_access(
                 });
             }
             _ => {
+                if kind != AccessKind::Static && is_any_type_builtin_member_name(member_name) {
+                    let result = resolve_any_type_builtin_member_access(
+                        ex,
+                        types,
+                        search,
+                        member_method_type_sites,
+                        site,
+                        base_value,
+                        current,
+                        member_name,
+                    );
+                    return MemberAccessResolve::Resolved {
+                        result,
+                        implicit_receivers: finalize_member_access_implicit_chain(
+                            implicit_receivers,
+                            used_implicit_deref_steps,
+                            current,
+                        ),
+                    };
+                }
                 return MemberAccessResolve::Error(TypeError::Simple {
                     loc: ex.program.value_loc(site),
                     message: "member access requires a struct or pointer-like base",
@@ -6089,8 +5520,16 @@ fn is_unary_operator_overload_name(name: StrId) -> bool {
 fn is_known_special_member_method_name(name: StrId) -> bool {
     is_binary_operator_overload_name(name)
         || is_unary_operator_overload_name(name)
+        || name == FREE_STR
+        || name == SIZE_OF_STR
+        || name == ALIGN_OF_STR
         || name == DEREF_STR
         || name == DEREF_MUT_STR
+}
+
+#[inline(always)]
+fn is_any_type_builtin_member_name(name: StrId) -> bool {
+    matches!(name, FREE_STR | SIZE_OF_STR | ALIGN_OF_STR)
 }
 
 #[inline(always)]
@@ -6190,6 +5629,20 @@ fn is_ref_to_named_struct_input_type(
             raw,
             mutable: is_mut,
         } => !*raw && *is_mut == mutable && is_named_struct_type(store, *tgt, struct_name),
+        _ => false,
+    }
+}
+
+#[inline(always)]
+fn is_mut_ref_to_named_struct_input_type(
+    store: &TypeStore,
+    input: TypeId,
+    struct_name: NameId,
+) -> bool {
+    match store.type_value(input) {
+        TypeValue::Ptr { tgt, raw, mutable } => {
+            !*raw && *mutable && is_named_struct_type(store, *tgt, struct_name)
+        }
         _ => false,
     }
 }
@@ -6356,6 +5809,102 @@ fn check_special_member_method_signature(
         return;
     };
     let inputs = inputs.to_vec();
+
+    if method_name == FREE_STR {
+        let Some(first_input) = inputs.first().copied() else {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "special member methods must take `self` as the first parameter",
+            });
+            return;
+        };
+
+        if !is_mut_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__free` must take `&mut self` as the first parameter",
+            });
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__free` must not take parameters after `self`",
+            });
+        }
+
+        if output != BuiltinType::Void.into() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__free` must return `void`",
+            });
+        }
+        return;
+    }
+
+    if method_name == SIZE_OF_STR {
+        let Some(first_input) = inputs.first().copied() else {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "special member methods must take `self` as the first parameter",
+            });
+            return;
+        };
+
+        if !is_any_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__size_of` must take `&self` (or `&'raw self`) as the first parameter",
+            });
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__size_of` must not take parameters after `self`",
+            });
+        }
+
+        if output != BuiltinType::Usize.into() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__size_of` must return `usize`",
+            });
+        }
+        return;
+    }
+
+    if method_name == ALIGN_OF_STR {
+        let Some(first_input) = inputs.first().copied() else {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "special member methods must take `self` as the first parameter",
+            });
+            return;
+        };
+
+        if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__align_of` must take `self` as the first parameter type",
+            });
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__align_of` must not take parameters after `self`",
+            });
+        }
+
+        if output != BuiltinType::Usize.into() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__align_of` must return `usize`",
+            });
+        }
+        return;
+    }
 
     if method_name == DEREF_STR {
         let Some(first_input) = inputs.first().copied() else {
@@ -8836,14 +8385,14 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn repeated_function_declarations_must_be_subtypes_of_first() {
+    fn repeated_function_declarations_must_exactly_match_first() {
         let errs = infer_global_errs("f = fn(x:int)->int; f = fn(x:int)->str;");
         assert!(errs.iter().any(|e| {
             matches!(
                 e,
                 TypeError::ValuesContradict {
                     expectation_reason:
-                        "all declarations must be the same as or a specialization of the first declaration",
+                        "all declarations must exactly match the first declaration signature",
                     ..
                 }
             )
@@ -8851,8 +8400,8 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn repeated_function_declaration_specialization_is_allowed() {
-        let src = "f = fn[T](x:T)->T; f = fn(x:int)->int;";
+    fn repeated_function_declaration_exact_match_is_allowed() {
+        let src = "f = fn[T](x:T)->T; f = fn[T](x:T)->T;";
         let mut program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -8869,76 +8418,27 @@ mod type_infer_tests {
             .function_types_by_name(f_id)
             .expect("missing solved function types");
 
-        // reference (generic) type must exist
         let reference = solved.reference_type();
         assert_ne!(reference, UNKNOWN_TYPE);
-
-        // --------------------------------------
-        // Check resolution for concrete `int`
-        // --------------------------------------
-
-        let int_ty = BuiltinType::Int.into();
-        let int_func = store.intern(TypeValue::Func {
-            calling_convention: CallingConvention::Hot,
-            generics: 0,
-            params: vec![int_ty],
-            ret: int_ty,
-        });
-
-        let chosen = solved
-            .best_specialization_for_concrete(&store, { int_func })
-            .expect("resolution failed for int");
-
-        // must NOT resolve to the generic
-        assert_ne!(
-            chosen, reference,
-            "int call incorrectly resolved to generic specialization"
-        );
-
-        // --------------------------------------
-        // Check resolution for unknown generic
-        // --------------------------------------
-
-        // create a fresh type variable / generic
-        let generic_ty = store.intern(TypeValue::Generic(GenId(0)));
-
-        let generic_func = store.intern(TypeValue::Func {
-            calling_convention: CallingConvention::Hot,
-            generics: 0,
-            params: vec![generic_ty],
-            ret: generic_ty,
-        });
-
-        let chosen_generic = solved
-            .best_specialization_for_concrete(&store, generic_func)
-            .expect("resolution failed for generic");
-
-        // generic call MUST choose the reference declaration
-        assert_eq!(
-            chosen_generic, reference,
-            "generic call did not resolve to the generic declaration"
-        );
     }
 
     #[test]
-    fn specialized_implementations_without_declaration_are_rejected() {
+    fn multiple_implementations_without_declaration_are_rejected() {
         let errs = infer_global_errs("f = fn[T](x:T)->T { x }; f = fn(x:int)->int { x };");
-        assert!(errs.iter().any(|e| {
-            matches!(
-                e,
-                TypeError::FunctionSpecializationRequiresPredeclaration { .. }
-            )
-        }));
+        assert!(
+            errs.iter()
+                .any(|e| { matches!(e, TypeError::DuplicateFunctionImplementation { .. }) })
+        );
     }
 
     #[test]
-    fn function_implementation_must_specialize_declaration() {
+    fn function_implementation_must_exactly_match_declaration() {
         let errs = infer_global_errs("f = fn[T](x:T)->int; f = fn(x:int)->str { \"nope\" };");
         assert!(errs.iter().any(|e| {
             matches!(
                 e,
                 TypeError::ValuesContradict {
-                    expectation_reason: "function implementation must be a specialization of the declaration type",
+                    expectation_reason: "function implementation must exactly match the declared signature",
                     ..
                 }
             )
@@ -8946,109 +8446,14 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn duplicate_function_implementation_specialization_errors() {
+    fn duplicate_function_implementation_errors() {
         let errs = infer_global_errs(
             "f = fn[T](x:T)->T; f = fn(x:int)->int { x }; f = fn(x:int)->int { x };",
         );
-        assert!(errs.iter().any(|e| {
-            matches!(
-                e,
-                TypeError::DuplicateFunctionImplementationSpecialization { .. }
-            )
-        }));
-    }
-
-    #[test]
-    fn ambiguous_function_specializations_are_reported() {
-        let errs = infer_global_errs(
-            "f = fn[T, U](x:T, y:U)->int; f = fn[T](x:T, y:int)->int; f = fn[U](x:bool, y:U)->int;",
-        );
         assert!(
             errs.iter()
-                .any(|e| { matches!(e, TypeError::AmbiguousFunctionSpecialization { .. }) })
+                .any(|e| { matches!(e, TypeError::DuplicateFunctionImplementation { .. }) })
         );
-    }
-
-    #[test]
-    fn best_specialization_prefers_deeper_structured_arguments() {
-        let src = r#"
-            Box = struct[T]{ value:T }
-            f = fn[T](x:T)->int;
-            f = fn[T](x:Box[T])->int;
-            f = fn[T](x:Box[Box[T]])->int;
-        "#;
-
-        let mut program = gather_program(src);
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
-
-        let f_name = program.str_intern.intern("f");
-        let f_id = *program
-            .scopes
-            .first()
-            .and_then(|scope| scope.0.get(&f_name))
-            .expect("missing f name id");
-        let solved = solved_types
-            .function_types_by_name(f_id)
-            .expect("missing solved function types");
-
-        let box_template = find_typedef_type_by_name(&program, &solved_types, "Box");
-        let (box_id, box_generics_len) = match store.type_value(box_template) {
-            TypeValue::Struct { id, generics } => (*id, generics.len()),
-            _ => panic!("Box must be a struct type"),
-        };
-        assert_eq!(box_generics_len, 1);
-
-        let int_ty: TypeId = BuiltinType::Int.into();
-        let box_int = store.intern(TypeValue::Struct {
-            id: box_id,
-            generics: vec![int_ty],
-        });
-        let box_box_int = store.intern(TypeValue::Struct {
-            id: box_id,
-            generics: vec![box_int],
-        });
-        let concrete = store.intern(TypeValue::Func {
-            calling_convention: CallingConvention::Hot,
-            generics: 0,
-            params: vec![box_box_int],
-            ret: int_ty,
-        });
-        let best = solved
-            .best_specialization_for_concrete(&store, concrete)
-            .expect("expected at least one matching specialization");
-
-        let TypeValue::Func { params, ret, .. } = store.type_value(best) else {
-            panic!("best specialization must be a function")
-        };
-        assert!(matches!(
-            store.type_value(*ret),
-            TypeValue::Builtin(BuiltinType::Int)
-        ));
-        assert_eq!(params.len(), 1);
-        let TypeValue::Struct {
-            id: outer_id,
-            generics: outer_generics,
-        } = store.type_value(params[0])
-        else {
-            panic!("parameter must be Box[Box[T]]")
-        };
-        assert_eq!(*outer_id, box_id);
-        assert_eq!(outer_generics.len(), 1);
-        let TypeValue::Struct {
-            id: inner_id,
-            generics: inner_generics,
-        } = store.type_value(outer_generics[0])
-        else {
-            panic!("parameter must be Box[Box[T]]")
-        };
-        assert_eq!(*inner_id, box_id);
-        assert_eq!(inner_generics.len(), 1);
-        assert!(matches!(
-            store.type_value(inner_generics[0]),
-            TypeValue::Generic(_)
-        ));
     }
 
     #[test]
@@ -10167,25 +9572,23 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn diamond_specialization_is_ambiguous() {
+    fn declaration_specialization_is_rejected_under_unique_signature_rule() {
         let src = r#"
-            f = fn[T,U](x:T, y:U);
-            f = fn[T,U](x:T, y:U){};
-            f = fn(x:int, y:T);
-            f = fn(x:T, y:int);
-
-            main = fn(){
-                f(1,1)
-            };
+            f = fn[T](x:T)->T;
+            f = fn(x:int)->int;
         "#;
 
-        let program = gather_program(src);
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-
-        let result = infer_global_types(&program, &mut store, &mut solved_types);
-
-        assert!(result.is_err(), "diamond specialization must be ambiguous");
+        let errs = infer_global_errs(src);
+        assert!(errs.iter().any(|e| {
+            matches!(
+                e,
+                TypeError::ValuesContradict {
+                    expectation_reason:
+                        "all declarations must exactly match the first declaration signature",
+                    ..
+                }
+            )
+        }));
     }
 
     #[test]
@@ -10247,12 +9650,37 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn free_member_name_is_reserved_and_rejected() {
-        let errs = infer_global_errs("S=struct{}; S.__free = fn(self:&mut S){}; f=fn(){};");
-        assert!(
-            errs.iter()
-                .any(|err| { matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }) })
-        );
+    fn free_member_signature_is_checked() {
+        let errs = infer_global_errs("S=struct{}; S.__free = fn(self:&S)->int { 1 }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__free` must take `&mut self` as the first parameter",
+                    ..
+                }
+            )
+        }));
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__free` must return `void`",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn free_member_with_mut_ref_self_and_void_output_is_allowed() {
+        let src = "S=struct{}; S.__free = fn(self:&mut S){}; f=fn(x:S){ x.__free(); };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
     }
 
     #[test]
@@ -10262,6 +9690,97 @@ mod type_infer_tests {
             errs.iter()
                 .any(|err| { matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }) })
         );
+    }
+
+    #[test]
+    fn any_type_builtin_member_methods_are_available_on_primitives_refs_and_generic_t() {
+        let src = r#"
+            g = fn[T](x:T)->usize { x.__size_of() + x.__align_of() }
+            f = fn(x:int)->usize {
+                let y:int = 1;
+                let p:&int = &y;
+                let a:usize = x.__size_of();
+                let b:usize = p.__align_of();
+                a + b + g(x)
+            }
+        "#;
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let Value::Func { body, .. } = program.value(f) else {
+            panic!("expected function value")
+        };
+        let body = body.expect("expected function body");
+        let ty = solved_types
+            .type_of(body)
+            .expect("missing inferred body type");
+        assert!(matches!(
+            store.type_value(ty),
+            TypeValue::Builtin(BuiltinType::Usize)
+        ));
+    }
+
+    #[test]
+    fn size_of_member_signature_requires_reference_self() {
+        let errs =
+            infer_global_errs("S=struct{}; S.__size_of = fn(self:S)->usize { 1:usize }; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "`__size_of` must take `&self` (or `&'raw self`) as the first parameter",
+                    ..
+                }
+            )
+        }));
+    }
+
+    #[test]
+    fn size_of_member_with_ref_self_and_usize_output_is_allowed() {
+        let src = "S=struct{}; S.__size_of = fn(self:&S)->usize { 1:usize }; f=fn(x:S)->usize{ x.__size_of() };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn any_type_builtin_free_is_available_on_generic_t_and_literals() {
+        let src = r#"
+            g = fn[T](x:T){ x.__free(); }
+            f = fn(){
+                let x:int = 1;
+                x.__free();
+                (2:int).__free();
+                g(x);
+            }
+        "#;
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let Value::Func { body, .. } = program.value(f) else {
+            panic!("expected function value")
+        };
+        let body = body.expect("expected function body");
+        let ty = solved_types
+            .type_of(body)
+            .expect("missing inferred body type");
+        assert!(matches!(
+            store.type_value(ty),
+            TypeValue::Builtin(BuiltinType::Void)
+        ));
     }
 
     #[test]

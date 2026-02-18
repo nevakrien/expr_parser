@@ -12,13 +12,13 @@ Use this as the first reference for syntax/meaning questions; use `agent_docs/ty
   - Type inference checks only the signature and skips body constraints.
 - A global function name now tracks two groups:
   - declarations (`body: None`), and
-  - implementations/specializations (`body: Some(...)`).
+  - implementations (`body: Some(...)`).
 
 Global signature compatibility rules:
 
-- all later declarations must be the same as or a specialization of the first declaration,
-- each implementation must be a specialization of the first declaration type,
-- duplicate implementation specializations (same concrete function type) are rejected.
+- all later declarations must exactly match the first declaration signature,
+- at most one implementation is allowed,
+- if an implementation exists, its signature must exactly match the declared/reference signature.
 
 These same declaration/implementation compatibility rules also apply to struct member methods; lowering stores each `Struct.method` entry as a `FunctionSet` rather than a single value.
 
@@ -133,8 +133,11 @@ Method access/currying:
 ## Special Member Methods (Quick Reference)
 
 - Reserved internal names begin with `__` (except names ending with `_` are not treated as reserved internals).
-- Implemented special member signatures include operator overloads (`__add`, `__neg`, ...), `__deref`, and `__deref_mut`.
-- Destruction hooks (`__free`, `__user_free`) are global predeclared function families, not member methods.
+- Implemented special member signatures include operator overloads (`__add`, `__neg`, ...), `__deref`, `__deref_mut`, and `__free`.
+- `__size_of` and `__align_of` are builtin member methods available on any type and return `usize`.
+- `__size_of` is modeled as a reference receiver (`&self`, with future intent to also allow `&'raw self` explicitly) so unsized values can report runtime size from metadata.
+- `__free` is also available as a builtin member method on any type (`&mut self -> void`), while user structs may additionally define a checked `Struct.__free` member override.
+- `__user_free` is still reserved and not a recognized special member method.
 - Signature checks for these happen during global signature inference.
 
 ## Labels and `goto`

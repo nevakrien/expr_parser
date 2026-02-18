@@ -21,6 +21,8 @@ pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
     "static",
     "raw",
     "__free",
+    "__size_of",
+    "__align_of",
     "__user_free",
     "__deref",
     "__deref_mut",
@@ -126,6 +128,8 @@ pub const POST_INC_STR: StrId = get_known_strid("__post_inc");
 pub const PRE_DEC_STR: StrId = get_known_strid("__pre_dec");
 pub const POST_DEC_STR: StrId = get_known_strid("__post_dec");
 pub const FREE_STR: StrId = get_known_strid("__free");
+pub const SIZE_OF_STR: StrId = get_known_strid("__size_of");
+pub const ALIGN_OF_STR: StrId = get_known_strid("__align_of");
 pub const USER_FREE_STR: StrId = get_known_strid("__user_free");
 pub const DEREF_STR: StrId = get_known_strid("__deref");
 pub const DEREF_MUT_STR: StrId = get_known_strid("__deref_mut");

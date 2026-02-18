@@ -117,7 +117,7 @@ fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
         "Vec2.norm1 = fn(v:Vec2)->int { v.x + v.y };",
         "Point.sum = fn(p:Point)->int { p.x + p.y };",
         "Point.shift = fn(p:Point, dx:int, dy:int)->Point { Point{ x = p.x + dx, y = p.y + dy } };",
-        "__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };",
+        "Box.__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };",
         "Box.__deref = fn[T](b:&const Box[T])->&T { &*b.ptr };",
         "Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*b.ptr };",
         "Box.get = fn[T](b:Box[T])->T { *b };",

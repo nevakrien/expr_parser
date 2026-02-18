@@ -221,20 +221,10 @@ Main orchestration is two-phase:
     - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
       - when declarations exist, the first declaration is the only reference signature,
       - if that first declaration is unsolved, compatibility checks for that set are skipped,
-      - later declarations (`body: None`) must be the same as or specialize the first declaration,
-      - implementations (`body: Some`) must specialize the first declaration type,
-      - specialization families are now validated for potential ambiguity before body inference:
-        - if two specialization signatures can overlap for some concrete call shape and neither is strictly more specific than the other, inference emits `AmbiguousFunctionSpecialization`,
-        - this is conservative by design: users must rewrite specialization declarations so each concrete call has a single dominating match,
-      - duplicate implementation specializations are rejected with a dedicated duplicate-specialization error (carrying one specialization type plus both implementation sites),
-      - when no declaration exists, only the first implementation is treated as the reference and each later implementation emits `FunctionSpecializationRequiresPredeclaration`,
-    - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass, where each entry stores:
-      - a `reference_type` (`TypeId`) for the function family,
-      - `specializations: HashMap<TypeId, SolvedFunctionSpecialization>` with named fields (`implementation`, `first_decl`),
-      - helper dispatch API on `SolvedFunctionTypes`:
-        - `best_specialization_for_concrete(&TypeStore, concrete: TypeId)` does a single-pass choice among matching specializations,
-        - it prefers candidates that are strictly more specific via `compare_specialization_specificity`, while ambiguity is treated as a separate pre-validation concern,
-        - specialization sets now carry a first-argument index (`generic-first bucket + per-head buckets such as struct id / builtin / ptr-shape`) to avoid scanning all specializations on each dispatch lookup,
+      - later declarations (`body: None`) must exactly match the first declaration,
+      - at most one implementation (`body: Some`) is allowed,
+      - if an implementation exists, it must exactly match the reference signature,
+    - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass as a single reference entry (`reference_type` + first decl/impl sites),
    - validates special member method signatures (`__add`, unary overload names, `__deref`, `__deref_mut`) against each method set reference type,
    - builds `TypeStore.struct_overloads` inline while walking member method sets (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.
@@ -393,7 +383,15 @@ Then `finalize`:
   - `__deref`: first parameter must be `&self`, no extra parameters, and return type must be a non-raw shared reference (`&T`).
   - `__deref_mut`: first parameter must be `&mut self`, no extra parameters, and return type must be a non-raw mutable reference (`&mut T`).
   - if both `__deref` and `__deref_mut` exist on the same struct, both must dereference to the same `T` target.
-  - `__free` and `__user_free` are now global predeclared/destructor hooks (not member methods). A member method named `__free`/`__user_free` is treated as an unknown reserved builtin member name and errors.
+  - `__free`: first parameter must be `&mut self`, no extra parameters, and return type must be `void`.
+  - `__size_of`: first parameter must be a reference receiver (`&self`, with future `&'raw self` intent), no extra parameters, and return type must be `usize`.
+  - `__align_of`: first parameter must be `self`-like, no extra parameters, and return type must be `usize`.
+  - builtin fallback methods now exist for **any receiver type** (including unresolved/generic/builtin/reference forms):
+    - `x.__free()` is available with fallback shape `fn[T](&mut T)->void`,
+    - `x.__size_of()` is available with fallback shape `fn[T](&T)->usize`,
+    - `x.__align_of()` is available with fallback shape `fn[T](T)->usize`,
+    - struct-defined member methods still win when present for that struct+name.
+  - `__user_free` is still reserved and treated as an unknown builtin member name when used as a member method.
 - The validation is now based on solved global function type signatures (`TypeValue::Func`), not raw signature clusters.
 - Member method names that start with `__` and do not end with `_` are treated as reserved builtin names; unknown reserved names emit a dedicated type error.
 
