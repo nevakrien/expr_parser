@@ -218,16 +218,22 @@ Main orchestration is two-phase:
 1. `infer_global_types`
    - resolves typedefs/structs,
    - resolves function signatures (without body internals),
-   - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
+    - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
       - when declarations exist, the first declaration is the only reference signature,
       - if that first declaration is unsolved, compatibility checks for that set are skipped,
       - later declarations (`body: None`) must be the same as or specialize the first declaration,
       - implementations (`body: Some`) must specialize the first declaration type,
+      - specialization families are now validated for potential ambiguity before body inference:
+        - if two specialization signatures can overlap for some concrete call shape and neither is strictly more specific than the other, inference emits `AmbiguousFunctionSpecialization`,
+        - this is conservative by design: users must rewrite specialization declarations so each concrete call has a single dominating match,
       - duplicate implementation specializations are rejected with a dedicated duplicate-specialization error (carrying one specialization type plus both implementation sites),
       - when no declaration exists, only the first implementation is treated as the reference and each later implementation emits `FunctionSpecializationRequiresPredeclaration`,
-   - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass, where each entry stores:
-     - a `reference_type` (`TypeId`) for the function family,
-     - `specializations: HashMap<TypeId, SolvedFunctionSpecialization>` with named fields (`implementation`, `first_decl`),
+    - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass, where each entry stores:
+      - a `reference_type` (`TypeId`) for the function family,
+      - `specializations: HashMap<TypeId, SolvedFunctionSpecialization>` with named fields (`implementation`, `first_decl`),
+      - helper dispatch API on `SolvedFunctionTypes`:
+        - `best_specialization_for_concrete(&TypeStore, concrete: TypeId)` does a single-pass choice among matching specializations,
+        - it prefers candidates that are strictly more specific via `compare_specialization_specificity`, while ambiguity is treated as a separate pre-validation concern,
    - validates special member method signatures (`__add`, unary overload names, `__deref`, `__deref_mut`) against each method set reference type,
    - builds `TypeStore.struct_overloads` inline while walking member method sets (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.

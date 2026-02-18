@@ -702,6 +702,29 @@ impl ErrorReporter {
                 self.print_report(report.finish())
             }
 
+            TypeError::AmbiguousFunctionSpecialization {
+                first_specialization,
+                second_specialization,
+            } => {
+                let first_loc = program.value_loc(*first_specialization);
+                let second_loc = program.value_loc(*second_specialization);
+                let report =
+                    Report::build(ReportKind::Error, second_loc.file, second_loc.range.start)
+                        .with_message("ambiguous function specializations")
+                        .with_label(
+                            Label::new((first_loc.file, first_loc.range.clone()))
+                                .with_message("first overlapping specialization")
+                                .with_color(Color::Cyan),
+                        )
+                        .with_label(
+                            Label::new((second_loc.file, second_loc.range.clone()))
+                                .with_message("second overlapping specialization")
+                                .with_color(Color::Red),
+                        );
+
+                self.print_report(report.finish())
+            }
+
             TypeError::DuplicateFunctionImplementationSpecialization {
                 first_implementation,
                 duplicate_implementation,

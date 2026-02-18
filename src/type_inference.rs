@@ -587,6 +587,35 @@ pub struct SolvedFunctionTypes {
     pub specializations: IdHashMap<TypeId, SolvedFunctionSpecialization>,
 }
 
+impl SolvedFunctionTypes {
+    pub fn best_specialization_for_concrete(
+        &self,
+        store: &TypeStore,
+        concrete: TypeId,
+    ) -> Option<TypeId> {
+        let mut chosen = None;
+
+        for candidate in self.specializations.keys().copied() {
+            if !type_accepts(store, candidate, concrete) {
+                continue;
+            }
+
+            match chosen {
+                None => chosen = Some(candidate),
+                Some(current) => {
+                    if compare_specialization_specificity(store, candidate, current)
+                        == SpecializationOrder::MoreSpecific
+                    {
+                        chosen = Some(candidate);
+                    }
+                }
+            }
+        }
+
+        chosen
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SolvedFunctionSpecialization {
     pub implementation: Option<ValId>,
@@ -839,6 +868,11 @@ pub enum TypeError {
     FunctionSpecializationRequiresPredeclaration {
         specialization: ValId,
         first_definition: ValId,
+    },
+
+    AmbiguousFunctionSpecialization {
+        first_specialization: ValId,
+        second_specialization: ValId,
     },
 
     DuplicateFunctionImplementationSpecialization {
@@ -1193,6 +1227,290 @@ fn declaration_accepts_implementation(
     }
 }
 
+fn type_accepts(store: &TypeStore, declaration: TypeId, implementation: TypeId) -> bool {
+    let mut generic_map = IdHashMap::default();
+    declaration_accepts_implementation(store, declaration, implementation, &mut generic_map)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpecializationOrder {
+    MoreSpecific,
+    LessSpecific,
+    Equal,
+    Incomparable,
+}
+
+fn compare_specialization_specificity(
+    store: &TypeStore,
+    left: TypeId,
+    right: TypeId,
+) -> SpecializationOrder {
+    let left_accepts_right = type_accepts(store, left, right);
+    let right_accepts_left = type_accepts(store, right, left);
+    match (left_accepts_right, right_accepts_left) {
+        (true, true) => SpecializationOrder::Equal,
+        (true, false) => SpecializationOrder::LessSpecific,
+        (false, true) => SpecializationOrder::MoreSpecific,
+        (false, false) => SpecializationOrder::Incomparable,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum OverlapSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct OverlapTerm {
+    side: OverlapSide,
+    ty: TypeId,
+}
+
+impl OverlapTerm {
+    fn left(ty: TypeId) -> Self {
+        Self {
+            side: OverlapSide::Left,
+            ty,
+        }
+    }
+
+    fn right(ty: TypeId) -> Self {
+        Self {
+            side: OverlapSide::Right,
+            ty,
+        }
+    }
+}
+
+fn overlap_type_value(
+    store: &TypeStore,
+    left: TypeId,
+    right: TypeId,
+    left_map: &mut IdHashMap<GenId, OverlapTerm>,
+    right_map: &mut IdHashMap<GenId, OverlapTerm>,
+) -> bool {
+    overlap_terms(
+        store,
+        OverlapTerm::left(left),
+        OverlapTerm::right(right),
+        left_map,
+        right_map,
+    )
+}
+
+fn normalize_overlap_term(
+    store: &TypeStore,
+    mut term: OverlapTerm,
+    left_map: &mut IdHashMap<GenId, OverlapTerm>,
+    right_map: &mut IdHashMap<GenId, OverlapTerm>,
+) -> OverlapTerm {
+    loop {
+        match (term.side, store.type_value(term.ty)) {
+            (OverlapSide::Left, TypeValue::Generic(gid)) => {
+                let Some(next) = left_map.get(gid).copied() else {
+                    return term;
+                };
+                term = next;
+            }
+            (OverlapSide::Right, TypeValue::Generic(gid)) => {
+                let Some(next) = right_map.get(gid).copied() else {
+                    return term;
+                };
+                term = next;
+            }
+            _ => return term,
+        }
+    }
+}
+
+fn overlap_terms(
+    store: &TypeStore,
+    left_term: OverlapTerm,
+    right_term: OverlapTerm,
+    left_map: &mut IdHashMap<GenId, OverlapTerm>,
+    right_map: &mut IdHashMap<GenId, OverlapTerm>,
+) -> bool {
+    let left_term = normalize_overlap_term(store, left_term, left_map, right_map);
+    let right_term = normalize_overlap_term(store, right_term, left_map, right_map);
+
+    if left_term == right_term {
+        return true;
+    }
+
+    if let (OverlapSide::Left, TypeValue::Generic(gid)) =
+        (left_term.side, store.type_value(left_term.ty))
+    {
+        left_map.insert(*gid, right_term);
+        return true;
+    }
+
+    if let (OverlapSide::Right, TypeValue::Generic(gid)) =
+        (right_term.side, store.type_value(right_term.ty))
+    {
+        right_map.insert(*gid, left_term);
+        return true;
+    }
+
+    match (
+        store.type_value(left_term.ty),
+        store.type_value(right_term.ty),
+    ) {
+        (TypeValue::Builtin(a), TypeValue::Builtin(b)) => a == b,
+        (TypeValue::Tuple(a_items), TypeValue::Tuple(b_items)) => {
+            a_items.len() == b_items.len()
+                && a_items.iter().zip(b_items.iter()).all(|(a, b)| {
+                    overlap_terms(
+                        store,
+                        OverlapTerm::left(*a),
+                        OverlapTerm::right(*b),
+                        left_map,
+                        right_map,
+                    )
+                })
+        }
+        (TypeValue::Array(a_item, a_size), TypeValue::Array(b_item, b_size)) => {
+            a_size == b_size
+                && overlap_terms(
+                    store,
+                    OverlapTerm::left(*a_item),
+                    OverlapTerm::right(*b_item),
+                    left_map,
+                    right_map,
+                )
+        }
+        (
+            TypeValue::Ptr {
+                tgt: a_tgt,
+                raw: a_raw,
+                mutable: a_mutable,
+            },
+            TypeValue::Ptr {
+                tgt: b_tgt,
+                raw: b_raw,
+                mutable: b_mutable,
+            },
+        ) => {
+            a_raw == b_raw
+                && a_mutable == b_mutable
+                && overlap_terms(
+                    store,
+                    OverlapTerm::left(*a_tgt),
+                    OverlapTerm::right(*b_tgt),
+                    left_map,
+                    right_map,
+                )
+        }
+        (
+            TypeValue::Struct {
+                id: a_id,
+                generics: a_generics,
+            },
+            TypeValue::Struct {
+                id: b_id,
+                generics: b_generics,
+            },
+        ) => {
+            a_id == b_id
+                && a_generics.len() == b_generics.len()
+                && a_generics.iter().zip(b_generics.iter()).all(|(a, b)| {
+                    overlap_terms(
+                        store,
+                        OverlapTerm::left(*a),
+                        OverlapTerm::right(*b),
+                        left_map,
+                        right_map,
+                    )
+                })
+        }
+        (
+            TypeValue::Func {
+                calling_convention: a_cc,
+                params: a_params,
+                ret: a_ret,
+                ..
+            },
+            TypeValue::Func {
+                calling_convention: b_cc,
+                params: b_params,
+                ret: b_ret,
+                ..
+            },
+        ) => {
+            a_cc == b_cc
+                && a_params.len() == b_params.len()
+                && a_params.iter().zip(b_params.iter()).all(|(a, b)| {
+                    overlap_terms(
+                        store,
+                        OverlapTerm::left(*a),
+                        OverlapTerm::right(*b),
+                        left_map,
+                        right_map,
+                    )
+                })
+                && overlap_terms(
+                    store,
+                    OverlapTerm::left(*a_ret),
+                    OverlapTerm::right(*b_ret),
+                    left_map,
+                    right_map,
+                )
+        }
+        _ => false,
+    }
+}
+
+fn types_can_overlap(store: &TypeStore, left: TypeId, right: TypeId) -> bool {
+    let mut left_map = IdHashMap::default();
+    let mut right_map = IdHashMap::default();
+    overlap_type_value(store, left, right, &mut left_map, &mut right_map)
+}
+
+fn specialization_site(entry: SolvedFunctionSpecialization) -> Option<ValId> {
+    entry.first_decl.or(entry.implementation)
+}
+
+fn validate_specialization_ambiguity(
+    ctx: &mut InferState,
+    specializations: &IdHashMap<TypeId, SolvedFunctionSpecialization>,
+) {
+    let all_types: Vec<TypeId> = specializations.keys().copied().collect();
+
+    for (i, left_ty) in all_types.iter().copied().enumerate() {
+        for right_ty in all_types.iter().copied().skip(i + 1) {
+            if compare_specialization_specificity(ctx.ex.store, left_ty, right_ty)
+                != SpecializationOrder::Incomparable
+            {
+                continue;
+            }
+
+            if !types_can_overlap(ctx.ex.store, left_ty, right_ty) {
+                continue;
+            }
+
+            let Some(left_site) = specializations
+                .get(&left_ty)
+                .copied()
+                .and_then(specialization_site)
+            else {
+                continue;
+            };
+            let Some(right_site) = specializations
+                .get(&right_ty)
+                .copied()
+                .and_then(specialization_site)
+            else {
+                continue;
+            };
+
+            ctx.push_error(TypeError::AmbiguousFunctionSpecialization {
+                first_specialization: left_site,
+                second_specialization: right_site,
+            });
+        }
+    }
+}
+
 fn check_and_record_function_set_types(
     ctx: &mut InferState,
     name: Option<NameId>,
@@ -1306,6 +1624,8 @@ fn check_and_record_function_set_types(
                 });
             }
         }
+
+        validate_specialization_ambiguity(ctx, &specializations);
 
         let reference = Some((reference_type, first_decl));
         if let Some(name) = name {
@@ -2260,7 +2580,6 @@ fn unify_clusters_inlined(
         return Ok(rw);
     }
 
-
     // Try found <- wanted
     if __try_absorb(ex, types, rw, rf)? {
         types.link(rf, rw);
@@ -2622,7 +2941,6 @@ fn force_type(
             types.set_cluster_state(root, ResolveKind::Solved(ty));
             Ok(())
         }
-
     }
 }
 
@@ -3027,7 +3345,7 @@ fn mock_type_from_cluster(
         ResolveKind::Ptr { tgt, raw, mutable } => {
             make_ptr_mock_inner(ex, core, extra, tgt, raw, mutable, limit)
         }
-        ResolveKind::Nothing  => UNKNOWN_TYPE,
+        ResolveKind::Nothing => UNKNOWN_TYPE,
     };
 
     *limit += 1;
@@ -3188,7 +3506,7 @@ fn extract_bad_type(
     let root = find_root(&mut core.parent, cid);
     let out = match core.cluster[root].state {
         ResolveKind::Solved(t) => Some(BadTypeId(t)),
-        ResolveKind::Nothing  => None,
+        ResolveKind::Nothing => None,
 
         ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(ex, core, extra, call))),
         ResolveKind::Struct(call) => Some(BadTypeId(make_struct_mock(ex, core, extra, call))),
@@ -4737,9 +5055,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 }
             }
         }
-        Value::Goto(_) | Value::Break | Value::Continue | Value::LabelDecl(_) => {
-            ctx.new_cluster()
-        }
+        Value::Goto(_) | Value::Break | Value::Continue | Value::LabelDecl(_) => ctx.new_cluster(),
         Value::Return(op) => {
             if let Some(output) = current_output {
                 match op {
@@ -8326,6 +8642,99 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn ambiguous_function_specializations_are_reported() {
+        let errs = infer_global_errs(
+            "f = fn[T, U](x:T, y:U)->int; f = fn[T](x:T, y:int)->int; f = fn[U](x:bool, y:U)->int;",
+        );
+        assert!(
+            errs.iter()
+                .any(|e| { matches!(e, TypeError::AmbiguousFunctionSpecialization { .. }) })
+        );
+    }
+
+    #[test]
+    fn best_specialization_prefers_deeper_structured_arguments() {
+        let src = r#"
+            Box = struct[T]{ value:T }
+            f = fn[T](x:T)->int;
+            f = fn[T](x:Box[T])->int;
+            f = fn[T](x:Box[Box[T]])->int;
+        "#;
+
+        let mut program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f name id");
+        let solved = solved_types
+            .function_types_by_name(f_id)
+            .expect("missing solved function types");
+
+        let box_template = find_typedef_type_by_name(&program, &solved_types, "Box");
+        let (box_id, box_generics_len) = match store.type_value(box_template) {
+            TypeValue::Struct { id, generics } => (*id, generics.len()),
+            _ => panic!("Box must be a struct type"),
+        };
+        assert_eq!(box_generics_len, 1);
+
+        let int_ty: TypeId = BuiltinType::Int.into();
+        let box_int = store.intern(TypeValue::Struct {
+            id: box_id,
+            generics: vec![int_ty],
+        });
+        let box_box_int = store.intern(TypeValue::Struct {
+            id: box_id,
+            generics: vec![box_int],
+        });
+        let concrete = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: 0,
+            params: vec![box_box_int],
+            ret: int_ty,
+        });
+        let best = solved
+            .best_specialization_for_concrete(&store, concrete)
+            .expect("expected at least one matching specialization");
+
+        let TypeValue::Func { params, ret, .. } = store.type_value(best) else {
+            panic!("best specialization must be a function")
+        };
+        assert!(matches!(
+            store.type_value(*ret),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+        assert_eq!(params.len(), 1);
+        let TypeValue::Struct {
+            id: outer_id,
+            generics: outer_generics,
+        } = store.type_value(params[0])
+        else {
+            panic!("parameter must be Box[Box[T]]")
+        };
+        assert_eq!(*outer_id, box_id);
+        assert_eq!(outer_generics.len(), 1);
+        let TypeValue::Struct {
+            id: inner_id,
+            generics: inner_generics,
+        } = store.type_value(outer_generics[0])
+        else {
+            panic!("parameter must be Box[Box[T]]")
+        };
+        assert_eq!(*inner_id, box_id);
+        assert_eq!(inner_generics.len(), 1);
+        assert!(matches!(
+            store.type_value(inner_generics[0]),
+            TypeValue::Generic(_)
+        ));
+    }
+
+    #[test]
     fn calling_convention_mismatch_is_a_type_error() {
         let src = r#"
             a = fn(x:int)->int { x }
@@ -8646,7 +9055,7 @@ mod type_infer_tests {
     #[test]
     fn if_branch_with_break_unifies_with_concrete_branch() {
         let mut store = TypeStore::new();
-            infer_fn_body(
+        infer_fn_body(
             r#"
             f = fn() {
                 let keep_going: bool = true;
@@ -8659,9 +9068,7 @@ mod type_infer_tests {
             &mut store,
         )
         .unwrap();
-
     }
-
 
     #[test]
     fn nested_if_with_never_branch_avoids_branch_mismatch_errors() {
@@ -8684,7 +9091,6 @@ mod type_infer_tests {
             &mut store,
         )
         .unwrap();
-
     }
 
     #[test]
