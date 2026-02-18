@@ -16,11 +16,7 @@ impl Rng {
     }
 
     fn range(&mut self, max: u32) -> u32 {
-        if max == 0 {
-            0
-        } else {
-            self.next_u32() % max
-        }
+        if max == 0 { 0 } else { self.next_u32() % max }
     }
 }
 

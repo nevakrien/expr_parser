@@ -257,6 +257,25 @@ impl ErrorReporter {
 
                 self.print_report(report.finish())
             }
+            TypeError::IlegalMethod {
+                member_name,
+                access_site,
+            } => {
+                let loc = program.value_loc(*access_site);
+                let method_name = program.str_intern.resolve(*member_name);
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(format!(
+                        "{} is not allowed to be called in user code",
+                        method_name
+                    ))
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("bad call here")
+                            .with_color(Color::Red),
+                    );
+
+                self.print_report(report.finish())
+            }
             TypeError::Unresolved { value } => {
                 let loc = program.value_loc(*value);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
@@ -696,6 +715,41 @@ impl ErrorReporter {
                         .with_message("first implementation")
                         .with_color(Color::Cyan),
                 );
+
+                self.print_report(report.finish())
+            }
+
+            TypeError::UnusedFunctionGeneric {
+                function,
+                generic_index,
+            } => {
+                let function_loc = program.value_loc(*function);
+                let generic_loc = match program.value(*function) {
+                    crate::ir::Value::Func { generics, .. } => generics
+                        .generics()
+                        .ids()
+                        .nth(*generic_index)
+                        .map(|pat| program.pattern_loc(pat))
+                        .unwrap_or(function_loc.clone()),
+                    _ => function_loc.clone(),
+                };
+
+                let report =
+                    Report::build(ReportKind::Error, generic_loc.file, generic_loc.range.start)
+                        .with_message(format!(
+                            "unused generic parameter T{} in function signature",
+                            generic_index
+                        ))
+                        .with_label(
+                            Label::new((generic_loc.file, generic_loc.range.clone()))
+                                .with_message("generic parameter declared here")
+                                .with_color(Color::Red),
+                        )
+                        .with_label(
+                            Label::new((function_loc.file, function_loc.range.clone()))
+                                .with_message("function signature does not use this generic")
+                                .with_color(Color::Cyan),
+                        );
 
                 self.print_report(report.finish())
             }

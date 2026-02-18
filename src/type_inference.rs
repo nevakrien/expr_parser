@@ -37,7 +37,7 @@ use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
     DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
     NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR,
-    SUB_STR, StrId,
+    SUB_STR, StrId, USER_FREE_STR,
 };
 use std::collections::HashMap;
 use std::ops::{Index, IndexMut};
@@ -254,6 +254,7 @@ impl Program {
 pub struct TypeStore {
     pub(crate) values: Vec<TypeValue>,
     pub(crate) intern: HashMap<TypeValue, TypeId>,
+    pub(crate) unused_function_generics: HashMap<TypeId, Vec<usize>>,
 
     pub(crate) structs: Vec<StructRep>,
     pub(crate) struct_overloads: IdHashMap<NameId, StructOverloadInfo>,
@@ -316,6 +317,7 @@ impl TypeStore {
         let mut ans = Self {
             values: Vec::new(),
             intern: HashMap::new(),
+            unused_function_generics: HashMap::new(),
 
             structs: Vec::new(),
             struct_overloads: IdHashMap::default(),
@@ -340,10 +342,91 @@ impl TypeStore {
         if let Some(&id) = self.intern.get(&ty) {
             return id;
         }
+
+        let unused_generics = match &ty {
+            TypeValue::Func {
+                generics,
+                params,
+                ret,
+                ..
+            } if *generics != 0 => {
+                let unused = self.compute_unused_function_generic_indexes(params, *ret, *generics);
+                (!unused.is_empty()).then_some(unused)
+            }
+            _ => None,
+        };
+
         let id = TypeId(self.values.len());
         self.values.push(ty.clone());
         self.intern.insert(ty, id);
+        if let Some(unused_generics) = unused_generics {
+            self.unused_function_generics.insert(id, unused_generics);
+        }
         id
+    }
+
+    #[inline(always)]
+    pub fn unused_function_generic_indexes(&self, ty: TypeId) -> &[usize] {
+        self.unused_function_generics
+            .get(&ty)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn compute_unused_function_generic_indexes(
+        &self,
+        params: &[TypeId],
+        ret: TypeId,
+        generic_count: usize,
+    ) -> Vec<usize> {
+        let mut used = vec![false; generic_count];
+        for &param in params {
+            self.mark_used_function_generic_indexes(param, generic_count, &mut used);
+        }
+        self.mark_used_function_generic_indexes(ret, generic_count, &mut used);
+
+        used.into_iter()
+            .enumerate()
+            .filter_map(|(i, is_used)| (!is_used).then_some(i))
+            .collect()
+    }
+
+    fn mark_used_function_generic_indexes(
+        &self,
+        ty: TypeId,
+        generic_count: usize,
+        used: &mut [bool],
+    ) {
+        match self.type_value(ty) {
+            TypeValue::Builtin(_) => {}
+            TypeValue::Generic(gid) => {
+                if gid.0 < generic_count {
+                    used[gid.0] = true;
+                }
+            }
+            TypeValue::Tuple(items) => {
+                for &item in items {
+                    self.mark_used_function_generic_indexes(item, generic_count, used);
+                }
+            }
+            TypeValue::Array(inner, _) => {
+                self.mark_used_function_generic_indexes(*inner, generic_count, used);
+            }
+            TypeValue::Func { params, ret, .. } => {
+                for &param in params {
+                    self.mark_used_function_generic_indexes(param, generic_count, used);
+                }
+                self.mark_used_function_generic_indexes(*ret, generic_count, used);
+            }
+            TypeValue::Ptr { tgt, .. } => {
+                self.mark_used_function_generic_indexes(*tgt, generic_count, used);
+            }
+            TypeValue::Struct { generics, .. } => {
+                for &generic in generics {
+                    self.mark_used_function_generic_indexes(generic, generic_count, used);
+                }
+            }
+        }
     }
 
     #[inline]
@@ -814,6 +897,11 @@ pub enum TypeError {
         clash: TypeClash,
     },
 
+    IlegalMethod {
+        member_name: StrId,
+        access_site: ValId,
+    },
+
     ConstructorBaseNotGlobal {
         site: ValId,
     },
@@ -911,6 +999,11 @@ pub enum TypeError {
     DuplicateFunctionImplementation {
         first_implementation: ValId,
         duplicate_implementation: ValId,
+    },
+
+    UnusedFunctionGeneric {
+        function: ValId,
+        generic_index: usize,
     },
 }
 
@@ -1073,6 +1166,7 @@ pub fn infer_global_types<'a>(
                         params,
                         output_type,
                     );
+                    check_unused_function_signature_generics(&mut ctx, m);
                 };
             }
         }
@@ -1137,6 +1231,7 @@ pub fn infer_global_types<'a>(
                     params,
                     output_type,
                 );
+                check_unused_function_signature_generics(&mut ctx, v);
             };
         }
 
@@ -3322,13 +3417,19 @@ fn resolve_any_type_builtin_member_access(
             self_param,
             types.new_solved(BuiltinType::Usize.into()),
         )
-    } else {
+    } else if member_name == ALIGN_OF_STR {
         let generic_self = types.new_cluster();
         (
             MemberSelfStyle::Value,
             generic_self,
             types.new_solved(BuiltinType::Usize.into()),
         )
+    } else {
+        ex.push_error(TypeError::IlegalMethod {
+            member_name,
+            access_site,
+        });
+        return types.new_cluster();
     };
 
     let full_method = types.new_func(FuncInfer {
@@ -5342,6 +5443,20 @@ fn type_check_func_signature(
     main_solver(ctx);
 }
 
+fn check_unused_function_signature_generics(ctx: &mut InferState, function: ValId) {
+    let Some(ty) = ctx.ex.ans.type_of(function) else {
+        return;
+    };
+
+    let unused_indexes = ctx.ex.store.unused_function_generic_indexes(ty).to_vec();
+    for generic_index in unused_indexes {
+        ctx.push_error(TypeError::UnusedFunctionGeneric {
+            function,
+            generic_index,
+        });
+    }
+}
+
 fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     v: ValId,
@@ -5483,6 +5598,7 @@ fn is_known_special_member_method_name(name: StrId) -> bool {
     is_binary_operator_overload_name(name)
         || is_unary_operator_overload_name(name)
         || name == FREE_STR
+        || name == USER_FREE_STR
         || name == SIZE_OF_STR
         || name == ALIGN_OF_STR
         || name == DEREF_STR
@@ -5772,7 +5888,7 @@ fn check_special_member_method_signature(
     };
     let inputs = inputs.to_vec();
 
-    if method_name == FREE_STR {
+    if matches!(method_name, FREE_STR | USER_FREE_STR) {
         let Some(first_input) = inputs.first().copied() else {
             ctx.push_error(TypeError::Simple {
                 loc,
@@ -8512,6 +8628,32 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn generic_function_reports_unused_generic_indexes() {
+        let errs = infer_global_errs("f = fn[T, U](x:T)->T { x }");
+        assert!(errs.iter().any(|err| matches!(
+            err,
+            TypeError::UnusedFunctionGeneric {
+                generic_index: 1,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn generic_function_reports_each_unused_generic_once() {
+        let errs = infer_global_errs("f = fn[T, U, V](x:U)->U { x }");
+        let mut unused = errs
+            .iter()
+            .filter_map(|err| match err {
+                TypeError::UnusedFunctionGeneric { generic_index, .. } => Some(*generic_index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        unused.sort_unstable();
+        assert_eq!(unused, vec![0, 2]);
+    }
+
+    #[test]
     fn generic_function_specializes_on_use() {
         let src = r#"
             f = fn[T](x:T)->T { x }
@@ -8939,7 +9081,7 @@ mod type_infer_tests {
 
     #[test]
     fn generic_deref_return_mismatch_uses_correct_generic_slot() {
-        let src = "Box = struct[T]{ptr:*T}; Box.__deref = fn[T](b:&Box[T])->&T{&*b.ptr}; f = fn[T0,T1,T2](b:Box[Box[T2]])->T1 { *b };";
+        let src = "Box = struct[T]{ptr:*T}; Box.__deref = fn[T](b:&Box[T])->&T{&*b.ptr}; f = fn[T1,T2](b:Box[Box[T2]])->T1 { *b };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -8970,21 +9112,21 @@ mod type_infer_tests {
         let found_s = store.get_bad_type_string(&program, found);
         let wanted_s = store.get_bad_type_string(&program, wanted);
 
-        let (ret_side, box_side) = if found_s == "T1" {
+        let (ret_side, box_side) = if found_s == "T0" {
             (found_s, wanted_s)
-        } else if wanted_s == "T1" {
+        } else if wanted_s == "T0" {
             (wanted_s, found_s)
         } else {
-            panic!("expected one side to be T1, got found={found_s}, wanted={wanted_s}");
+            panic!("expected one side to be T0, got found={found_s}, wanted={wanted_s}");
         };
 
-        assert_eq!(ret_side, "T1");
+        assert_eq!(ret_side, "T0");
         assert!(
-            box_side.contains("Box") && box_side.contains("T2"),
-            "expected box side to mention Box[T2], got {box_side}"
+            box_side.contains("Box") && box_side.contains("T1"),
+            "expected box side to mention Box[T1], got {box_side}"
         );
         assert!(
-            !box_side.contains("T0") && !box_side.contains("T1"),
+            !box_side.contains("T0"),
             "box side should not use wrong generic slot, got {box_side}"
         );
     }
@@ -9599,12 +9741,12 @@ mod type_infer_tests {
     }
 
     #[test]
-    fn user_free_member_name_is_reserved_and_rejected() {
-        let errs = infer_global_errs("S=struct{}; S.__user_free = fn(self:&mut S){}; f=fn(){};");
-        assert!(
-            errs.iter()
-                .any(|err| { matches!(err, TypeError::UnknownBuiltinMemberMethod { .. }) })
-        );
+    fn user_free_member_name_is_allowed_to_implement() {
+        let src = "S=struct{}; S.__user_free = fn(self:&mut S){}; f=fn(){};";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
     }
 
     #[test]

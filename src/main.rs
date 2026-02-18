@@ -3,7 +3,7 @@ use expr_parser::ir::NameId;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_inference::{run_typechecker, SolvedTypes, TypeStore};
+use expr_parser::type_inference::{SolvedTypes, TypeStore, run_typechecker};
 use std::fs;
 use std::io::{self, Write};
 use std::ops::Range;

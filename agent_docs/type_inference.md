@@ -181,6 +181,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 - `TypeStore`: interned type arena + struct table.
   - builtins are interned first,
   - structural equality is intern identity,
+  - caches per-function unused generic parameter indexes keyed by function `TypeId`,
   - helper predicates for int/float classes and pretty-printing.
 
 ### Struct representation
@@ -218,7 +219,8 @@ Main orchestration is two-phase:
 1. `infer_global_types`
    - resolves typedefs/structs,
    - resolves function signatures (without body internals),
-    - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
+   - reports unused function generic slots from solved signature types (for example `fn[T, U](x:T)->T` reports `U`),
+     - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
       - when declarations exist, the first declaration is the only reference signature,
       - if that first declaration is unsolved, compatibility checks for that set are skipped,
       - later declarations (`body: None`) must exactly match the first declaration,
