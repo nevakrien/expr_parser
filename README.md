@@ -112,7 +112,7 @@ __user_free = fn[T](p:&mut T){
 //user code
 free = cfn(p:*void);
 __free = fn[T](b:&mut Box[T]){
-__free(b.ptr)
+__free(&*b.ptr)
 free(b->ptr as *void)
 }
 

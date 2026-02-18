@@ -580,40 +580,775 @@ pub struct SolvedTypes {
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
+// ==========================================================
+//  Coherent Specialization Graph
+// ==========================================================
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SolvedFunctionTypes {
-    pub reference_type: TypeId,
-    pub specializations: IdHashMap<TypeId, SolvedFunctionSpecialization>,
+// ------------------------------
+// Overlap (unification) check
+// ------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum OverlapSide {
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct OverlapTerm {
+    side: OverlapSide,
+    ty: TypeId,
+}
+
+impl OverlapTerm {
+    fn left(ty: TypeId) -> Self {
+        Self {
+            side: OverlapSide::Left,
+            ty,
+        }
+    }
+    fn right(ty: TypeId) -> Self {
+        Self {
+            side: OverlapSide::Right,
+            ty,
+        }
+    }
+}
+
+fn overlap_type_value(
+    store: &TypeStore,
+    left: TypeId,
+    right: TypeId,
+    left_map: &mut IdHashMap<GenId, OverlapTerm>,
+    right_map: &mut IdHashMap<GenId, OverlapTerm>,
+) -> bool {
+    overlap_terms(
+        store,
+        OverlapTerm::left(left),
+        OverlapTerm::right(right),
+        left_map,
+        right_map,
+    )
+}
+
+fn normalize_overlap_term(
+    store: &TypeStore,
+    mut term: OverlapTerm,
+    left_map: &mut IdHashMap<GenId, OverlapTerm>,
+    right_map: &mut IdHashMap<GenId, OverlapTerm>,
+) -> OverlapTerm {
+    loop {
+        match (term.side, store.type_value(term.ty)) {
+            (OverlapSide::Left, TypeValue::Generic(gid)) => {
+                let Some(next) = left_map.get(gid).copied() else {
+                    return term;
+                };
+                term = next;
+            }
+            (OverlapSide::Right, TypeValue::Generic(gid)) => {
+                let Some(next) = right_map.get(gid).copied() else {
+                    return term;
+                };
+                term = next;
+            }
+            _ => return term,
+        }
+    }
+}
+
+fn overlap_terms(
+    store: &TypeStore,
+    left_term: OverlapTerm,
+    right_term: OverlapTerm,
+    left_map: &mut IdHashMap<GenId, OverlapTerm>,
+    right_map: &mut IdHashMap<GenId, OverlapTerm>,
+) -> bool {
+    let left_term = normalize_overlap_term(store, left_term, left_map, right_map);
+    let right_term = normalize_overlap_term(store, right_term, left_map, right_map);
+
+    if left_term == right_term {
+        return true;
+    }
+
+    // Assign left generic
+    if let (OverlapSide::Left, TypeValue::Generic(gid)) =
+        (left_term.side, store.type_value(left_term.ty))
+    {
+        left_map.insert(*gid, right_term);
+        return true;
+    }
+
+    // Assign right generic
+    if let (OverlapSide::Right, TypeValue::Generic(gid)) =
+        (right_term.side, store.type_value(right_term.ty))
+    {
+        right_map.insert(*gid, left_term);
+        return true;
+    }
+
+    match (
+        store.type_value(left_term.ty),
+        store.type_value(right_term.ty),
+    ) {
+        (TypeValue::Builtin(a), TypeValue::Builtin(b)) => a == b,
+
+        (TypeValue::Tuple(a_items), TypeValue::Tuple(b_items)) => {
+            a_items.len() == b_items.len()
+                && a_items.iter().zip(b_items.iter()).all(|(a, b)| {
+                    overlap_terms(
+                        store,
+                        OverlapTerm::left(*a),
+                        OverlapTerm::right(*b),
+                        left_map,
+                        right_map,
+                    )
+                })
+        }
+
+        (TypeValue::Array(a_item, a_size), TypeValue::Array(b_item, b_size)) => {
+            a_size == b_size
+                && overlap_terms(
+                    store,
+                    OverlapTerm::left(*a_item),
+                    OverlapTerm::right(*b_item),
+                    left_map,
+                    right_map,
+                )
+        }
+
+        (
+            TypeValue::Ptr {
+                tgt: a_tgt,
+                raw: a_raw,
+                mutable: a_mut,
+                ..
+            },
+            TypeValue::Ptr {
+                tgt: b_tgt,
+                raw: b_raw,
+                mutable: b_mut,
+                ..
+            },
+        ) => {
+            a_raw == b_raw
+                && a_mut == b_mut
+                && overlap_terms(
+                    store,
+                    OverlapTerm::left(*a_tgt),
+                    OverlapTerm::right(*b_tgt),
+                    left_map,
+                    right_map,
+                )
+        }
+
+        (
+            TypeValue::Struct {
+                id: a_id,
+                generics: a_gens,
+                ..
+            },
+            TypeValue::Struct {
+                id: b_id,
+                generics: b_gens,
+                ..
+            },
+        ) => {
+            a_id == b_id
+                && a_gens.len() == b_gens.len()
+                && a_gens.iter().zip(b_gens.iter()).all(|(a, b)| {
+                    overlap_terms(
+                        store,
+                        OverlapTerm::left(*a),
+                        OverlapTerm::right(*b),
+                        left_map,
+                        right_map,
+                    )
+                })
+        }
+
+        (
+            TypeValue::Func {
+                calling_convention: a_cc,
+                params: a_params,
+                ret: a_ret,
+                ..
+            },
+            TypeValue::Func {
+                calling_convention: b_cc,
+                params: b_params,
+                ret: b_ret,
+                ..
+            },
+        ) => {
+            a_cc == b_cc
+                && a_params.len() == b_params.len()
+                && a_params.iter().zip(b_params.iter()).all(|(a, b)| {
+                    overlap_terms(
+                        store,
+                        OverlapTerm::left(*a),
+                        OverlapTerm::right(*b),
+                        left_map,
+                        right_map,
+                    )
+                })
+                && overlap_terms(
+                    store,
+                    OverlapTerm::left(*a_ret),
+                    OverlapTerm::right(*b_ret),
+                    left_map,
+                    right_map,
+                )
+        }
+
+        _ => false,
+    }
+}
+
+fn types_can_overlap(store: &TypeStore, left: TypeId, right: TypeId) -> bool {
+    let mut left_map: IdHashMap<GenId, OverlapTerm> = IdHashMap::default();
+    let mut right_map: IdHashMap<GenId, OverlapTerm> = IdHashMap::default();
+    overlap_type_value(store, left, right, &mut left_map, &mut right_map)
+}
+
+// ----------------------------------------------------------
+// Specificity ordering
+// ----------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpecializationOrder {
+    MoreSpecific,
+    LessSpecific,
+    Equal,
+    Incomparable,
+}
+
+fn compare_specialization_specificity(
+    store: &TypeStore,
+    left: TypeId,
+    right: TypeId,
+) -> SpecializationOrder {
+    let left_accepts_right = type_accepts(store, left, right);
+    let right_accepts_left = type_accepts(store, right, left);
+
+    match (left_accepts_right, right_accepts_left) {
+        (true, true) => SpecializationOrder::Equal,
+        (true, false) => SpecializationOrder::LessSpecific,
+        (false, true) => SpecializationOrder::MoreSpecific,
+        (false, false) => SpecializationOrder::Incomparable,
+    }
+}
+
+// ----------------------------------------------------------
+// DAG Construction + Coherence Validation
+// ----------------------------------------------------------
+// Assumptions / invariants this code relies on (per your pipeline):
+// - `reference_type` is already typed (debug_assert).
+// - every specialization in `entries` is already known to be accepted by `reference_type`
+//   (you validated this earlier in `check_and_record_function_set_types`).
+// - ambiguity policy here matches your *old tests*: if two incomparable specializations
+//   can overlap => error. (No "meet exists" exemption.)
+//   If you later want the "meet specialization resolves overlap" rule, you need a DAG
+//   (multi-parent) not a tree, and you must update tests accordingly.
+
+type SpecId = u32;
+
+#[derive(Debug, Clone)]
+pub struct SpecNode {
+    ty: TypeId,
+    site: Option<ValId>,   // best site to blame for ambiguity (decl or impl)
+    children: Vec<SpecId>, // specialization children (more specific)
+}
+
+#[derive(Debug, Clone)]
+pub enum SolvedFunctionTypes {
+    // common trivial case
+    Simple {
+        reference_type: TypeId,
+        reference_site: ValId,
+        reference_entry: SolvedFunctionSpecialization,
+    },
+
+    // specialization tree case
+    Complex {
+        reference_type: TypeId,
+        reference_site: ValId,
+
+        // stable per-type info (needed later)
+        per_type: IdHashMap<TypeId, SolvedFunctionSpecialization>,
+
+        // specialization tree rooted at reference_id (guaranteed to exist)
+        nodes: Vec<SpecNode>,
+        reference_id: SpecId,
+    },
 }
 
 impl SolvedFunctionTypes {
+    pub fn reference_type(&self) -> TypeId {
+        match self {
+            SolvedFunctionTypes::Simple { reference_type, .. } => *reference_type,
+            SolvedFunctionTypes::Complex { reference_type, .. } => *reference_type,
+        }
+    }
+
+    /// Optional helper if you ever need it in tests.
+    pub fn specialization_entry(&self, ty: TypeId) -> Option<SolvedFunctionSpecialization> {
+        match self {
+            SolvedFunctionTypes::Simple {
+                reference_type,
+                reference_entry,
+                ..
+            } => {
+                if *reference_type == ty {
+                    Some(*reference_entry)
+                } else {
+                    None
+                }
+            }
+            SolvedFunctionTypes::Complex { per_type, .. } => per_type.get(&ty).copied(),
+        }
+    }
+
+    /// Find best specialization for a *concrete* function-call type (must be a Func type).
+    /// No caching; caller can memoize if desired.
     pub fn best_specialization_for_concrete(
         &self,
         store: &TypeStore,
         concrete: TypeId,
     ) -> Option<TypeId> {
-        let mut chosen = None;
+        match self {
+            SolvedFunctionTypes::Simple { reference_type, .. } => {
+                if type_accepts(store, *reference_type, concrete) {
+                    Some(*reference_type)
+                } else {
+                    None
+                }
+            }
+            SolvedFunctionTypes::Complex {
+                reference_type,
+                nodes,
+                reference_id,
+                ..
+            } => {
+                // root must match or nothing matches
+                if !type_accepts(store, *reference_type, concrete) {
+                    return None;
+                }
 
-        for candidate in self.specializations.keys().copied() {
-            if !type_accepts(store, candidate, concrete) {
+                let mut cur = *reference_id;
+
+                loop {
+                    let mut next = None;
+
+                    for &child in &nodes[cur as usize].children {
+                        let child_ty = nodes[child as usize].ty;
+
+                        if type_accepts(store, child_ty, concrete) {
+                            next = Some(child);
+                            break;
+                        }
+                    }
+
+                    match next {
+                        Some(n) => cur = n,
+                        None => break,
+                    }
+                }
+
+                Some(nodes[cur as usize].ty)
+            }
+        }
+    }
+
+    fn new_complex(
+        ctx: &mut InferState,
+        reference_type: TypeId,
+        reference_site: ValId,
+        per_type: IdHashMap<TypeId, SolvedFunctionSpecialization>,
+        entries: Vec<(TypeId, Option<ValId>)>,
+    ) -> Self {
+        debug_assert!(reference_type != UNKNOWN_TYPE);
+
+        // ---------------------------------------------
+        // build nodes
+        // ---------------------------------------------
+        let mut nodes: Vec<SpecNode> = entries
+            .into_iter()
+            .map(|(ty, site)| SpecNode {
+                ty,
+                site,
+                children: Vec::new(),
+            })
+            .collect();
+
+        // reference must exist
+        let reference_id: SpecId = nodes
+            .iter()
+            .position(|n| n.ty == reference_type)
+            .expect("reference node must exist") as SpecId;
+
+        let n = nodes.len();
+
+        // --------------------------------------------------
+        // incremental DAG construction
+        // --------------------------------------------------
+        for new_id in 0..n as SpecId {
+            if new_id == reference_id {
                 continue;
             }
 
-            match chosen {
-                None => chosen = Some(candidate),
-                Some(current) => {
-                    if compare_specialization_specificity(store, candidate, current)
-                        == SpecializationOrder::MoreSpecific
+            let new_ty = nodes[new_id as usize].ty;
+
+            let mut parents: Vec<SpecId> = Vec::new();
+            let mut children: Vec<SpecId> = Vec::new();
+
+            // --------------------------------------
+            // classify relation vs all existing nodes
+            // --------------------------------------
+            for other_id in 0..n as SpecId {
+                if other_id == new_id {
+                    continue;
+                }
+
+                let other_ty = nodes[other_id as usize].ty;
+
+                let a = type_accepts(ctx.ex.store, other_ty, new_ty);
+                let b = type_accepts(ctx.ex.store, new_ty, other_ty);
+
+                match (a, b) {
+                    // other is more general -> parent candidate
+                    (true, false) => parents.push(other_id),
+
+                    // other is more specific -> child candidate
+                    (false, true) => children.push(other_id),
+
+                    // incomparable
+                    (false, false) => {
+                        // coherence rule: overlapping incomparable specializations illegal
+                        if types_can_overlap(ctx.ex.store, new_ty, other_ty) {
+                            let l = nodes[new_id as usize]
+                                .site
+                                .or(nodes[other_id as usize].site);
+                            let r = nodes[other_id as usize]
+                                .site
+                                .or(nodes[new_id as usize].site);
+
+                            if let (Some(l), Some(r)) = (l, r) {
+                                ctx.push_error(TypeError::AmbiguousFunctionSpecialization {
+                                    first_specialization: l,
+                                    second_specialization: r,
+                                });
+                            }
+                        }
+                    }
+
+                    // equal — ignore
+                    (true, true) => {}
+                }
+            }
+
+            // --------------------------------------
+            // keep only *immediate* parents
+            // (transitive reduction during insertion)
+            // --------------------------------------
+            let mut i = 0;
+            while i < parents.len() {
+                let p = parents[i];
+
+                let mut remove_p = false;
+
+                for j in 0..parents.len() {
+                    if i == j {
+                        continue;
+                    }
+
+                    let q = parents[j];
+
+                    // p > q  AND  q > new
+                    // => p is not an immediate parent
+                    if type_accepts(ctx.ex.store, nodes[p as usize].ty, nodes[q as usize].ty)
+                        && !type_accepts(ctx.ex.store, nodes[q as usize].ty, nodes[p as usize].ty)
                     {
-                        chosen = Some(candidate);
+                        remove_p = true;
+                        break;
                     }
                 }
+
+                if remove_p {
+                    parents.swap_remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+
+            // --------------------------------------
+            // attach to parents
+            // --------------------------------------
+            for p in parents.iter().copied() {
+                nodes[p as usize].children.push(new_id);
+            }
+
+            // --------------------------------------
+            // reparent children under new node
+            // --------------------------------------
+            for c in children.iter().copied() {
+                // remove c from all parents we attached to
+                for p in parents.iter().copied() {
+                    let parent_children = &mut nodes[p as usize].children;
+                    if let Some(pos) = parent_children.iter().position(|&x| x == c) {
+                        parent_children.swap_remove(pos);
+                    }
+                }
+
+                // attach under new node
+                nodes[new_id as usize].children.push(c);
             }
         }
 
-        chosen
+        SolvedFunctionTypes::Complex {
+            reference_type,
+            reference_site,
+            per_type,
+            nodes,
+            reference_id,
+        }
     }
+
+    fn new_simple(
+        reference_type: TypeId,
+        reference_site: ValId,
+        entry: SolvedFunctionSpecialization,
+    ) -> Self {
+        SolvedFunctionTypes::Simple {
+            reference_type,
+            reference_site,
+            reference_entry: entry,
+        }
+    }
+}
+
+// Heuristic: smaller score = more general, inserted earlier
+fn specificity_score(store: &TypeStore, ty: TypeId) -> u32 {
+    fn rec(store: &TypeStore, ty: TypeId, acc: &mut u32) {
+        match store.type_value(ty) {
+            TypeValue::Generic(_) => {}
+            TypeValue::Builtin(_) => *acc += 1,
+            TypeValue::Ptr { tgt, .. } => {
+                *acc += 2;
+                rec(store, *tgt, acc);
+            }
+            TypeValue::Tuple(items) => {
+                *acc += 2 + items.len() as u32;
+                for &t in items {
+                    rec(store, t, acc);
+                }
+            }
+            TypeValue::Array(item, _) => {
+                *acc += 2;
+                rec(store, *item, acc);
+            }
+            TypeValue::Struct { generics, .. } => {
+                *acc += 3;
+                for &g in generics {
+                    rec(store, g, acc);
+                }
+            }
+            TypeValue::Func { params, ret, .. } => {
+                *acc += 5 + params.len() as u32;
+                for &p in params {
+                    rec(store, p, acc);
+                }
+                rec(store, *ret, acc);
+            }
+        }
+    }
+    let mut s = 0;
+    rec(store, ty, &mut s);
+    s
+}
+
+// ----------------------------------------------------------
+// Function Set Recording
+// ----------------------------------------------------------
+pub fn check_and_record_function_set_types(
+    ctx: &mut InferState,
+    name: Option<NameId>,
+    functions: &FunctionSet,
+) -> Option<(TypeId, ValId)> {
+    let first_decl = functions.declarations.first().copied();
+    let first_impl = functions.implementations.first().copied();
+
+    // ------------------------------------------------------------
+    // 1) No declarations => MUST be exactly one implementation
+    // ------------------------------------------------------------
+    if first_decl.is_none() {
+        let Some(first_impl) = first_impl else {
+            // nothing to record
+            return None;
+        };
+
+        // extra impls require predeclaration
+        for extra_impl in functions.implementations.iter().copied().skip(1) {
+            ctx.push_error(TypeError::FunctionSpecializationRequiresPredeclaration {
+                specialization: extra_impl,
+                first_definition: first_impl,
+            });
+        }
+
+        let Some(reference_type) = ctx.ex.ans.type_of(first_impl) else {
+            // unsolved: bail (your rule)
+            return Some((UNKNOWN_TYPE, first_impl));
+        };
+
+        let entry = SolvedFunctionSpecialization {
+            implementation: Some(first_impl),
+            first_decl: None,
+        };
+
+        let solved = SolvedFunctionTypes::new_simple(reference_type, first_impl, entry);
+        if let Some(name) = name {
+            ctx.ex.ans.function_types.insert(name, solved);
+        }
+        return Some((reference_type, first_impl));
+    }
+
+    // ------------------------------------------------------------
+    // 2) Has declarations => first declaration defines reference type
+    // ------------------------------------------------------------
+    let first_decl = first_decl.unwrap();
+    let Some(reference_type) = ctx.ex.ans.type_of(first_decl) else {
+        return Some((UNKNOWN_TYPE, first_decl));
+    };
+
+    // Single-pass collection:
+    // - per_type: (decl_site, impl_site)
+    // - duplicate impl specialization detection
+    let mut per_type: IdHashMap<TypeId, SolvedFunctionSpecialization> = IdHashMap::default();
+    per_type.reserve(functions.declarations.len() + functions.implementations.len());
+
+    let mut seen_impl_types: IdHashMap<TypeId, ValId> = IdHashMap::default();
+    seen_impl_types.reserve(functions.implementations.len());
+
+    // ---- declarations pass (typed invariant holds) ----
+    for &decl in &functions.declarations {
+        let Some(ty) = ctx.ex.ans.type_of(decl) else {
+            return Some((UNKNOWN_TYPE, first_decl));
+        };
+        let ent = per_type.entry(ty).or_insert(SolvedFunctionSpecialization {
+            implementation: None,
+            first_decl: None,
+        });
+        if ent.first_decl.is_none() {
+            ent.first_decl = Some(decl);
+        }
+    }
+
+    // ---- implementations pass ----
+    for &imp in &functions.implementations {
+        let Some(ty) = ctx.ex.ans.type_of(imp) else {
+            // your rule: if unsolved implementation, stop early (keeps error behavior deterministic)
+            return Some((UNKNOWN_TYPE, first_decl));
+        };
+
+        if let Some(prev) = seen_impl_types.insert(ty, imp) {
+            ctx.push_error(TypeError::DuplicateFunctionImplementationSpecialization {
+                first_implementation: prev,
+                duplicate_implementation: imp,
+                specialization: ty,
+            });
+            continue;
+        }
+
+        let ent = per_type.entry(ty).or_insert(SolvedFunctionSpecialization {
+            implementation: None,
+            first_decl: None,
+        });
+        if ent.implementation.is_none() {
+            ent.implementation = Some(imp);
+        }
+    }
+
+    // ---- validations (done over per_type once) ----
+    // 1) all decl specializations must be accepted by reference
+    // 2) all impl specializations must be accepted by reference
+    for (&ty, ent) in per_type.iter() {
+        if ty == reference_type {
+            continue;
+        }
+
+        // decl must be same-or-specialization of reference
+        if let Some(decl_site) = ent.first_decl {
+            let mut generic_map = IdHashMap::default();
+            if !declaration_accepts_implementation(
+                ctx.ex.store,
+                reference_type,
+                ty,
+                &mut generic_map,
+            ) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason:
+                        "all declarations must be the same as or a specialization of the first declaration",
+                    site: decl_site,
+                    found: decl_site,
+                    expected_place: first_decl,
+                    clash: simple_type_clash(ty, reference_type),
+                });
+            }
+        }
+
+        // impl must be specialization of reference
+        if let Some(imp_site) = ent.implementation {
+            let mut generic_map = IdHashMap::default();
+            if !declaration_accepts_implementation(
+                ctx.ex.store,
+                reference_type,
+                ty,
+                &mut generic_map,
+            ) {
+                ctx.push_error(TypeError::ValuesContradict {
+                    expectation_reason:
+                        "function implementation must be a specialization of the declaration type",
+                    site: imp_site,
+                    found: imp_site,
+                    expected_place: first_decl,
+                    clash: simple_type_clash(ty, reference_type),
+                });
+            }
+        }
+    }
+
+    // If only one specialization total, store Simple (fast path)
+    if per_type.len() == 1 {
+        let entry = *per_type
+            .get(&reference_type)
+            .unwrap_or(&SolvedFunctionSpecialization {
+                implementation: None,
+                first_decl: Some(first_decl),
+            });
+        let solved = SolvedFunctionTypes::new_simple(reference_type, first_decl, entry);
+        if let Some(name) = name {
+            ctx.ex.ans.function_types.insert(name, solved);
+        }
+        return Some((reference_type, first_decl));
+    }
+
+    // Build entries for tree: one node per TypeId (site is decl-or-impl)
+    let mut entries: Vec<(TypeId, Option<ValId>)> = Vec::with_capacity(per_type.len());
+    for (&ty, ent) in per_type.iter() {
+        entries.push((ty, specialization_site(*ent)));
+    }
+
+    let solved =
+        SolvedFunctionTypes::new_complex(ctx, reference_type, first_decl, per_type, entries);
+
+    if let Some(name) = name {
+        ctx.ex.ans.function_types.insert(name, solved);
+    }
+
+    Some((reference_type, first_decl))
+}
+
+fn specialization_site(entry: SolvedFunctionSpecialization) -> Option<ValId> {
+    entry.first_decl.or(entry.implementation)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1230,466 +1965,6 @@ fn declaration_accepts_implementation(
 fn type_accepts(store: &TypeStore, declaration: TypeId, implementation: TypeId) -> bool {
     let mut generic_map = IdHashMap::default();
     declaration_accepts_implementation(store, declaration, implementation, &mut generic_map)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpecializationOrder {
-    MoreSpecific,
-    LessSpecific,
-    Equal,
-    Incomparable,
-}
-
-fn compare_specialization_specificity(
-    store: &TypeStore,
-    left: TypeId,
-    right: TypeId,
-) -> SpecializationOrder {
-    let left_accepts_right = type_accepts(store, left, right);
-    let right_accepts_left = type_accepts(store, right, left);
-    match (left_accepts_right, right_accepts_left) {
-        (true, true) => SpecializationOrder::Equal,
-        (true, false) => SpecializationOrder::LessSpecific,
-        (false, true) => SpecializationOrder::MoreSpecific,
-        (false, false) => SpecializationOrder::Incomparable,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum OverlapSide {
-    Left,
-    Right,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct OverlapTerm {
-    side: OverlapSide,
-    ty: TypeId,
-}
-
-impl OverlapTerm {
-    fn left(ty: TypeId) -> Self {
-        Self {
-            side: OverlapSide::Left,
-            ty,
-        }
-    }
-
-    fn right(ty: TypeId) -> Self {
-        Self {
-            side: OverlapSide::Right,
-            ty,
-        }
-    }
-}
-
-fn overlap_type_value(
-    store: &TypeStore,
-    left: TypeId,
-    right: TypeId,
-    left_map: &mut IdHashMap<GenId, OverlapTerm>,
-    right_map: &mut IdHashMap<GenId, OverlapTerm>,
-) -> bool {
-    overlap_terms(
-        store,
-        OverlapTerm::left(left),
-        OverlapTerm::right(right),
-        left_map,
-        right_map,
-    )
-}
-
-fn normalize_overlap_term(
-    store: &TypeStore,
-    mut term: OverlapTerm,
-    left_map: &mut IdHashMap<GenId, OverlapTerm>,
-    right_map: &mut IdHashMap<GenId, OverlapTerm>,
-) -> OverlapTerm {
-    loop {
-        match (term.side, store.type_value(term.ty)) {
-            (OverlapSide::Left, TypeValue::Generic(gid)) => {
-                let Some(next) = left_map.get(gid).copied() else {
-                    return term;
-                };
-                term = next;
-            }
-            (OverlapSide::Right, TypeValue::Generic(gid)) => {
-                let Some(next) = right_map.get(gid).copied() else {
-                    return term;
-                };
-                term = next;
-            }
-            _ => return term,
-        }
-    }
-}
-
-fn overlap_terms(
-    store: &TypeStore,
-    left_term: OverlapTerm,
-    right_term: OverlapTerm,
-    left_map: &mut IdHashMap<GenId, OverlapTerm>,
-    right_map: &mut IdHashMap<GenId, OverlapTerm>,
-) -> bool {
-    let left_term = normalize_overlap_term(store, left_term, left_map, right_map);
-    let right_term = normalize_overlap_term(store, right_term, left_map, right_map);
-
-    if left_term == right_term {
-        return true;
-    }
-
-    if let (OverlapSide::Left, TypeValue::Generic(gid)) =
-        (left_term.side, store.type_value(left_term.ty))
-    {
-        left_map.insert(*gid, right_term);
-        return true;
-    }
-
-    if let (OverlapSide::Right, TypeValue::Generic(gid)) =
-        (right_term.side, store.type_value(right_term.ty))
-    {
-        right_map.insert(*gid, left_term);
-        return true;
-    }
-
-    match (
-        store.type_value(left_term.ty),
-        store.type_value(right_term.ty),
-    ) {
-        (TypeValue::Builtin(a), TypeValue::Builtin(b)) => a == b,
-        (TypeValue::Tuple(a_items), TypeValue::Tuple(b_items)) => {
-            a_items.len() == b_items.len()
-                && a_items.iter().zip(b_items.iter()).all(|(a, b)| {
-                    overlap_terms(
-                        store,
-                        OverlapTerm::left(*a),
-                        OverlapTerm::right(*b),
-                        left_map,
-                        right_map,
-                    )
-                })
-        }
-        (TypeValue::Array(a_item, a_size), TypeValue::Array(b_item, b_size)) => {
-            a_size == b_size
-                && overlap_terms(
-                    store,
-                    OverlapTerm::left(*a_item),
-                    OverlapTerm::right(*b_item),
-                    left_map,
-                    right_map,
-                )
-        }
-        (
-            TypeValue::Ptr {
-                tgt: a_tgt,
-                raw: a_raw,
-                mutable: a_mutable,
-            },
-            TypeValue::Ptr {
-                tgt: b_tgt,
-                raw: b_raw,
-                mutable: b_mutable,
-            },
-        ) => {
-            a_raw == b_raw
-                && a_mutable == b_mutable
-                && overlap_terms(
-                    store,
-                    OverlapTerm::left(*a_tgt),
-                    OverlapTerm::right(*b_tgt),
-                    left_map,
-                    right_map,
-                )
-        }
-        (
-            TypeValue::Struct {
-                id: a_id,
-                generics: a_generics,
-            },
-            TypeValue::Struct {
-                id: b_id,
-                generics: b_generics,
-            },
-        ) => {
-            a_id == b_id
-                && a_generics.len() == b_generics.len()
-                && a_generics.iter().zip(b_generics.iter()).all(|(a, b)| {
-                    overlap_terms(
-                        store,
-                        OverlapTerm::left(*a),
-                        OverlapTerm::right(*b),
-                        left_map,
-                        right_map,
-                    )
-                })
-        }
-        (
-            TypeValue::Func {
-                calling_convention: a_cc,
-                params: a_params,
-                ret: a_ret,
-                ..
-            },
-            TypeValue::Func {
-                calling_convention: b_cc,
-                params: b_params,
-                ret: b_ret,
-                ..
-            },
-        ) => {
-            a_cc == b_cc
-                && a_params.len() == b_params.len()
-                && a_params.iter().zip(b_params.iter()).all(|(a, b)| {
-                    overlap_terms(
-                        store,
-                        OverlapTerm::left(*a),
-                        OverlapTerm::right(*b),
-                        left_map,
-                        right_map,
-                    )
-                })
-                && overlap_terms(
-                    store,
-                    OverlapTerm::left(*a_ret),
-                    OverlapTerm::right(*b_ret),
-                    left_map,
-                    right_map,
-                )
-        }
-        _ => false,
-    }
-}
-
-fn types_can_overlap(store: &TypeStore, left: TypeId, right: TypeId) -> bool {
-    let mut left_map = IdHashMap::default();
-    let mut right_map = IdHashMap::default();
-    overlap_type_value(store, left, right, &mut left_map, &mut right_map)
-}
-
-fn specialization_site(entry: SolvedFunctionSpecialization) -> Option<ValId> {
-    entry.first_decl.or(entry.implementation)
-}
-
-fn validate_specialization_ambiguity(
-    ctx: &mut InferState,
-    specializations: &IdHashMap<TypeId, SolvedFunctionSpecialization>,
-) {
-    let all_types: Vec<TypeId> = specializations.keys().copied().collect();
-
-    for (i, left_ty) in all_types.iter().copied().enumerate() {
-        for right_ty in all_types.iter().copied().skip(i + 1) {
-            if compare_specialization_specificity(ctx.ex.store, left_ty, right_ty)
-                != SpecializationOrder::Incomparable
-            {
-                continue;
-            }
-
-            if !types_can_overlap(ctx.ex.store, left_ty, right_ty) {
-                continue;
-            }
-
-            let Some(left_site) = specializations
-                .get(&left_ty)
-                .copied()
-                .and_then(specialization_site)
-            else {
-                continue;
-            };
-            let Some(right_site) = specializations
-                .get(&right_ty)
-                .copied()
-                .and_then(specialization_site)
-            else {
-                continue;
-            };
-
-            ctx.push_error(TypeError::AmbiguousFunctionSpecialization {
-                first_specialization: left_site,
-                second_specialization: right_site,
-            });
-        }
-    }
-}
-
-fn check_and_record_function_set_types(
-    ctx: &mut InferState,
-    name: Option<NameId>,
-    functions: &FunctionSet,
-) -> Option<(TypeId, ValId)> {
-    let first_decl = functions.declarations.first().copied();
-    let first_impl = functions.implementations.first().copied();
-    let mut specializations: IdHashMap<TypeId, SolvedFunctionSpecialization> = IdHashMap::default();
-    specializations.reserve(functions.declarations.len());
-
-    for declaration in &functions.declarations {
-        let Some(ty) = ctx.ex.ans.type_of(*declaration) else {
-            continue;
-        };
-        let entry = specializations
-            .entry(ty)
-            .or_insert(SolvedFunctionSpecialization {
-                implementation: None,
-                first_decl: None,
-            });
-        if entry.first_decl.is_none() {
-            entry.first_decl = Some(*declaration);
-        }
-    }
-
-    if let Some(first_decl) = first_decl {
-        let Some(reference_type) = ctx.ex.ans.type_of(first_decl) else {
-            if let Some(name) = name {
-                ctx.ex.ans.function_types.insert(
-                    name,
-                    SolvedFunctionTypes {
-                        reference_type: UNKNOWN_TYPE,
-                        specializations,
-                    },
-                );
-            }
-            return None;
-        };
-
-        let mut seen_impl_types: IdHashMap<TypeId, ValId> = IdHashMap::default();
-        seen_impl_types.reserve(functions.implementations.len());
-
-        for implementation in &functions.implementations {
-            let Some(ty) = ctx.ex.ans.type_of(*implementation) else {
-                continue;
-            };
-
-            if let Some(previous_impl) = seen_impl_types.insert(ty, *implementation) {
-                ctx.push_error(TypeError::DuplicateFunctionImplementationSpecialization {
-                    first_implementation: previous_impl,
-                    duplicate_implementation: *implementation,
-                    specialization: ty,
-                });
-                continue;
-            }
-
-            let entry = specializations
-                .entry(ty)
-                .or_insert(SolvedFunctionSpecialization {
-                    implementation: None,
-                    first_decl: None,
-                });
-            if entry.implementation.is_none() {
-                entry.implementation = Some(*implementation);
-            }
-        }
-
-        for (specialized_ty, entry) in specializations.iter() {
-            if *specialized_ty == reference_type {
-                continue;
-            }
-
-            if let Some(declaration) = entry.first_decl {
-                let mut generic_map = IdHashMap::default();
-                if !declaration_accepts_implementation(
-                    ctx.ex.store,
-                    reference_type,
-                    *specialized_ty,
-                    &mut generic_map,
-                ) {
-                    ctx.push_error(TypeError::ValuesContradict {
-                        expectation_reason:
-                            "all declarations must be the same as or a specialization of the first declaration",
-                        site: declaration,
-                        found: declaration,
-                        expected_place: first_decl,
-                        clash: simple_type_clash(*specialized_ty, reference_type),
-                    });
-                }
-            }
-        }
-
-        for implementation in &functions.implementations {
-            let Some(found_ty) = ctx.ex.ans.type_of(*implementation) else {
-                continue;
-            };
-            let mut generic_map = IdHashMap::default();
-            if !declaration_accepts_implementation(
-                ctx.ex.store,
-                reference_type,
-                found_ty,
-                &mut generic_map,
-            ) {
-                ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason:
-                        "function implementation must be a specialization of the declaration type",
-                    site: *implementation,
-                    found: *implementation,
-                    expected_place: first_decl,
-                    clash: simple_type_clash(found_ty, reference_type),
-                });
-            }
-        }
-
-        validate_specialization_ambiguity(ctx, &specializations);
-
-        let reference = Some((reference_type, first_decl));
-        if let Some(name) = name {
-            ctx.ex.ans.function_types.insert(
-                name,
-                SolvedFunctionTypes {
-                    reference_type,
-                    specializations,
-                },
-            );
-        }
-        return reference;
-    } else if let Some(first_impl) = first_impl {
-        for implementation in functions.implementations.iter().copied().skip(1) {
-            ctx.push_error(TypeError::FunctionSpecializationRequiresPredeclaration {
-                specialization: implementation,
-                first_definition: first_impl,
-            });
-        }
-
-        if let Some(ty) = ctx.ex.ans.type_of(first_impl) {
-            specializations
-                .entry(ty)
-                .or_insert(SolvedFunctionSpecialization {
-                    implementation: Some(first_impl),
-                    first_decl: None,
-                });
-
-            let reference = Some((ty, first_impl));
-            if let Some(name) = name {
-                ctx.ex.ans.function_types.insert(
-                    name,
-                    SolvedFunctionTypes {
-                        reference_type: ty,
-                        specializations,
-                    },
-                );
-            }
-            return reference;
-        }
-
-        if let Some(name) = name {
-            ctx.ex.ans.function_types.insert(
-                name,
-                SolvedFunctionTypes {
-                    reference_type: UNKNOWN_TYPE,
-                    specializations,
-                },
-            );
-        }
-        return None;
-    }
-
-    if let Some(name) = name {
-        ctx.ex.ans.function_types.insert(
-            name,
-            SolvedFunctionTypes {
-                reference_type: UNKNOWN_TYPE,
-                specializations,
-            },
-        );
-    }
-
-    None
 }
 
 pub fn infer_value_internals<'a>(
@@ -4275,7 +4550,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             }
 
             if let Some(f) = ctx.ex.ans.function_types_by_name(n) {
-                let t = f.reference_type;
+                let t = f.reference_type();
                 return global_to_specialized_local(
                     &mut ctx.ex,
                     &mut ctx.search,
@@ -8593,14 +8868,56 @@ mod type_infer_tests {
         let solved = solved_types
             .function_types_by_name(f_id)
             .expect("missing solved function types");
-        let reference = solved.reference_type;
+
+        // reference (generic) type must exist
+        let reference = solved.reference_type();
         assert_ne!(reference, UNKNOWN_TYPE);
-        let spec = solved
-            .specializations
-            .get(&reference)
-            .expect("missing reference specialization entry");
-        assert_eq!(spec.implementation, None);
-        assert!(spec.first_decl.is_some());
+
+        // --------------------------------------
+        // Check resolution for concrete `int`
+        // --------------------------------------
+
+        let int_ty = BuiltinType::Int.into();
+        let int_func = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: 0,
+            params: vec![int_ty],
+            ret: int_ty,
+        });
+
+        let chosen = solved
+            .best_specialization_for_concrete(&store, { int_func })
+            .expect("resolution failed for int");
+
+        // must NOT resolve to the generic
+        assert_ne!(
+            chosen, reference,
+            "int call incorrectly resolved to generic specialization"
+        );
+
+        // --------------------------------------
+        // Check resolution for unknown generic
+        // --------------------------------------
+
+        // create a fresh type variable / generic
+        let generic_ty = store.intern(TypeValue::Generic(GenId(0)));
+
+        let generic_func = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: 0,
+            params: vec![generic_ty],
+            ret: generic_ty,
+        });
+
+        let chosen_generic = solved
+            .best_specialization_for_concrete(&store, generic_func)
+            .expect("resolution failed for generic");
+
+        // generic call MUST choose the reference declaration
+        assert_eq!(
+            chosen_generic, reference,
+            "generic call did not resolve to the generic declaration"
+        );
     }
 
     #[test]
@@ -9847,6 +10164,28 @@ mod type_infer_tests {
         assert!(chain.iter().any(|t| t.contains("Box")));
         assert!(chain[2].contains("Box"));
         assert!(chain[3].contains("Inner"));
+    }
+
+    #[test]
+    fn diamond_specialization_is_ambiguous() {
+        let src = r#"
+            f = fn[T,U](x:T, y:U);
+            f = fn[T,U](x:T, y:U){};
+            f = fn(x:int, y:T);
+            f = fn(x:T, y:int);
+
+            main = fn(){
+                f(1,1)
+            };
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+
+        let result = infer_global_types(&program, &mut store, &mut solved_types);
+
+        assert!(result.is_err(), "diamond specialization must be ambiguous");
     }
 
     #[test]

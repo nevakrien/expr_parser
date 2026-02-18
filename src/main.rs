@@ -126,8 +126,8 @@ fn def_type_string(
         Defined::Func(_funcs) => solved
             .function_types_by_name(id)
             .and_then(|f| {
-                (f.reference_type != expr_parser::type_inference::UNKNOWN_TYPE)
-                    .then_some(f.reference_type)
+                (f.reference_type() != expr_parser::type_inference::UNKNOWN_TYPE)
+                    .then_some(f.reference_type())
             })
             .map(|ty| types.get_type_string(program, ty)),
         Defined::Type(texp) => solved

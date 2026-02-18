@@ -234,6 +234,7 @@ Main orchestration is two-phase:
       - helper dispatch API on `SolvedFunctionTypes`:
         - `best_specialization_for_concrete(&TypeStore, concrete: TypeId)` does a single-pass choice among matching specializations,
         - it prefers candidates that are strictly more specific via `compare_specialization_specificity`, while ambiguity is treated as a separate pre-validation concern,
+        - specialization sets now carry a first-argument index (`generic-first bucket + per-head buckets such as struct id / builtin / ptr-shape`) to avoid scanning all specializations on each dispatch lookup,
    - validates special member method signatures (`__add`, unary overload names, `__deref`, `__deref_mut`) against each method set reference type,
    - builds `TypeStore.struct_overloads` inline while walking member method sets (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.
