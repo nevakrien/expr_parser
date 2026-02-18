@@ -8034,33 +8034,18 @@ mod type_infer_tests {
     }
 
     const BOX_EXAMPLE: &str = r#"
-            //this is a system decleration to make destructors nice
-            __free = fn[T](p:&mut T)
-            //this impl is temporary later we actually make this a buildin
-            //specifically during link we look for undeclared/implmeneted __free
-            //if they exist instead of reporting link error compiler inserts them
-            __free = fn[T](p:&mut T){
-              __user_free(p);
-              //compiler may auto generate code here
-            }
-
-            __user_free = fn[T](p:&mut T)
-            __user_free = fn[T](p:&mut T){
-              //this the compiler doesnt touch
-            }
-
             //user code
-            free = cfn(p:*void)
-            __free = fn[T](b:&mut Box[T]){
-            __free(&*b.ptr)
+            free = cfn(p:*void);
+            Box.__free = fn[T](b:&mut Box[T]){
+            (&*b.p).__free()
             free(b->ptr as *void)
-            }
+            };
 
-            Box = struct[T]{ptr:*T}
-            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+            Box = struct[T]{ptr:*T};
+            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
+            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
 
-            f=fn(b:Box[[int]])->int { let y:int = b[0]; y }
+            f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
             
         "#;
     #[test]

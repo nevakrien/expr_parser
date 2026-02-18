@@ -10,10 +10,7 @@ fn write_line(writer: &mut BufWriter<File>, line_count: &mut usize, line: &str) 
 
 fn write_prelude(writer: &mut BufWriter<File>, line_count: &mut usize) {
     let lines = [
-        "__free=fn[T](p:&mut T);",
-        "__free=fn[T](p:&mut T){__user_free(p);}",
         "__user_free=fn[T](p:&mut T);",
-        "__user_free=fn[T](p:&mut T){}",
         "free = cfn(p:*void);",
         "opaque_alloc = cfn(n:usize)->*void;",
     ];
@@ -48,54 +45,54 @@ fn write_family(writer: &mut BufWriter<File>, line_count: &mut usize, i: usize) 
     write_line(
         writer,
         line_count,
-        &format!("__free = fn(x:&mut Base{i}) {{ free(x.raw) }};"),
+        &format!("free_base_impl_{i} = fn(x:&mut Base{i}) {{ free(x.raw) }};"),
     );
     write_line(
         writer,
         line_count,
-        &format!("__free = fn[T](x:&mut Box{i}[T]) {{ __free(&mut x.inner) }};"),
-    );
-    write_line(
-        writer,
-        line_count,
-        &format!("__free = fn[T](x:&mut Deep{i}[T]) {{ __free(&mut x.inner) }};"),
+        &format!("free_box_impl_{i} = fn[T](x:&mut Box{i}[T]) {{ __user_free(&mut x.inner) }};"),
     );
     write_line(
         writer,
         line_count,
         &format!(
-            "__free = fn[K, V](x:&mut Shell{i}[K, V]) {{ __user_free(&mut x.key); __free(&mut x.inner) }};"
+            "free_deep_impl_{i} = fn[T](x:&mut Deep{i}[T]) {{ free_box_impl_{i}(&mut x.inner) }};"
+        ),
+    );
+    write_line(
+        writer,
+        line_count,
+        &format!(
+            "free_shell_impl_{i} = fn[K, V](x:&mut Shell{i}[K, V]) {{ __user_free(&mut x.key); free_deep_impl_{i}(&mut x.inner) }};"
         ),
     );
 
     write_line(
         writer,
         line_count,
-        &format!("free_base_{i} = fn(x:&mut Base{i}) {{ __free(x) }};"),
+        &format!("free_base_{i} = fn(x:&mut Base{i}) {{ free_base_impl_{i}(x) }};"),
     );
     write_line(
         writer,
         line_count,
-        &format!("free_box_{i} = fn[T](x:&mut Box{i}[T]) {{ __free(x) }};"),
+        &format!("free_box_{i} = fn[T](x:&mut Box{i}[T]) {{ free_box_impl_{i}(x) }};"),
     );
     write_line(
         writer,
         line_count,
-        &format!("free_deep_{i} = fn[T](x:&mut Deep{i}[T]) {{ __free(x) }};"),
+        &format!("free_deep_{i} = fn[T](x:&mut Deep{i}[T]) {{ free_deep_impl_{i}(x) }};"),
     );
     write_line(
         writer,
         line_count,
-        &format!(
-            "free_shell_{i} = fn[K, V](x:&mut Shell{i}[K, V]) {{ __free(x); __user_free(&mut x.key) }};"
-        ),
+        &format!("free_shell_{i} = fn[K, V](x:&mut Shell{i}[K, V]) {{ free_shell_impl_{i}(x) }};"),
     );
 
     write_line(
         writer,
         line_count,
         &format!(
-            "build_and_free_{i} = fn()->int {{ let x = Base{i}{{ raw = opaque_alloc(8:usize), payload = {i}:int }}; __free(&mut x); x.payload }};"
+            "build_and_free_{i} = fn()->int {{ let x = Base{i}{{ raw = opaque_alloc(8:usize), payload = {i}:int }}; free_base_impl_{i}(&mut x); x.payload }};"
         ),
     );
 }

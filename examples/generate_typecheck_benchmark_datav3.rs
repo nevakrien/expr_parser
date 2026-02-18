@@ -16,7 +16,11 @@ impl Rng {
     }
 
     fn range(&mut self, max: u32) -> u32 {
-        if max == 0 { 0 } else { self.next_u32() % max }
+        if max == 0 {
+            0
+        } else {
+            self.next_u32() % max
+        }
     }
 }
 
@@ -90,12 +94,6 @@ fn write_noise_block(writer: &mut BufWriter<File>, line_count: &mut usize, rng: 
 
 fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
     let lines = [
-        //for now we need to put the prelude explictly
-        "__free=fn[T](p:&mut T);",
-        "__free=fn[T](p:&mut T){__user_free(p);}",
-        "__user_free=fn[T](p:&mut T);",
-        "__user_free=fn[T](p:&mut T){}",
-        "",
         "free = cfn(p:*void);",
         "opaque_alloc = cfn(n:usize)->*void;",
         "id = fn[T](x:T)->T { x };",
