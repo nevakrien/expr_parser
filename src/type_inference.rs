@@ -5808,15 +5808,14 @@ fn compile_lifetime_specialization_arg(ctx: &mut InferState, arg: TExpId) -> LId
     }
 }
 
-fn apply_elided_output_lifetime_rule(
+fn infer_elided_output_lifetime(
     ctx: &mut InferState,
     output_type: Option<TExpId>,
-    output: CId,
     undeclared_before_inputs: u32,
     undeclared_after_inputs: u32,
-) {
+) -> Option<LifeTime> {
     let Some(out_expr) = output_type else {
-        return;
+        return None;
     };
     if !matches!(
         ctx.ex.program.type_expr(out_expr),
@@ -5826,7 +5825,7 @@ fn apply_elided_output_lifetime_rule(
             ..
         }
     ) {
-        return;
+        return None;
     }
 
     let inferred_output_lifetime = if undeclared_after_inputs - undeclared_before_inputs == 1 {
@@ -5840,18 +5839,33 @@ fn apply_elided_output_lifetime_rule(
         LifeTime::Unknown
     };
 
-    let out_root = ctx.types.root(output);
-    let out_state = ctx.types.cluster_state(out_root);
-    if let ResolveKind::Ptr { tgt, mutable, .. } = out_state {
-        ctx.types.set_cluster_state(
-            out_root,
-            ResolveKind::Ptr {
-                tgt,
-                kind: PtrKind::Solved(PointerStyle::Ref(inferred_output_lifetime)),
-                mutable,
-            },
-        );
+    Some(inferred_output_lifetime)
+}
+
+fn compile_type_expr_with_forced_output_lifetime(
+    ctx: &mut InferState,
+    texpr: TExpId,
+    forced_output_lifetime: Option<LifeTime>,
+) -> CId {
+    if let Some(lifetime) = forced_output_lifetime
+        && let TypeExpr::Ptr {
+            base,
+            raw: false,
+            mutable,
+            lifetime: None,
+        } = ctx.ex.program.type_expr(texpr)
+    {
+        let tgt = compile_type_expr(ctx, base);
+        let ans = ctx.new_cluster();
+        ctx.types.core.cluster[ans].state = ResolveKind::Ptr {
+            tgt,
+            kind: PtrKind::Solved(PointerStyle::Ref(lifetime)),
+            mutable: Some(mutable),
+        };
+        return ans;
     }
+
+    compile_type_expr(ctx, texpr)
 }
 
 ///in order to break recursion this function MUST return a concrete type
@@ -6068,16 +6082,15 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                 .map(|arg| compile_type_expr(ctx, arg))
                 .collect::<Vec<_>>();
             let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
-            let output = output_type
-                .map(|o| compile_type_expr(ctx, o))
-                .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()));
-            apply_elided_output_lifetime_rule(
+            let output_lifetime = infer_elided_output_lifetime(
                 ctx,
                 output_type,
-                output,
                 undeclared_before_inputs,
                 undeclared_after_inputs,
             );
+            let output = output_type
+                .map(|o| compile_type_expr_with_forced_output_lifetime(ctx, o, output_lifetime))
+                .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()));
 
             ctx.new_func(FuncInfer {
                 calling_convention,
@@ -6238,19 +6251,18 @@ fn type_check_func_signature(
         .map(|pat| gather_pattern_constraints_with_generics::<true>(ctx, pat))
         .collect::<Vec<_>>();
     let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
-
-    let output = if let Some(x) = output_type {
-        compile_type_expr(ctx, x)
-    } else {
-        ctx.new_solved(BuiltinType::Void.into())
-    };
-    apply_elided_output_lifetime_rule(
+    let output_lifetime = infer_elided_output_lifetime(
         ctx,
         output_type,
-        output,
         undeclared_before_inputs,
         undeclared_after_inputs,
     );
+
+    let output = if let Some(x) = output_type {
+        compile_type_expr_with_forced_output_lifetime(ctx, x, output_lifetime)
+    } else {
+        ctx.new_solved(BuiltinType::Void.into())
+    };
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -6318,19 +6330,18 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
         .collect::<Vec<_>>();
     let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
-
-    let output = if let Some(x) = output_type {
-        compile_type_expr(ctx, x)
-    } else {
-        ctx.new_solved(BuiltinType::Void.into())
-    };
-    apply_elided_output_lifetime_rule(
+    let output_lifetime = infer_elided_output_lifetime(
         ctx,
         output_type,
-        output,
         undeclared_before_inputs,
         undeclared_after_inputs,
     );
+
+    let output = if let Some(x) = output_type {
+        compile_type_expr_with_forced_output_lifetime(ctx, x, output_lifetime)
+    } else {
+        ctx.new_solved(BuiltinType::Void.into())
+    };
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -9039,7 +9050,7 @@ mod type_infer_tests {
             chain,
             vec![
                 "Box₀".to_string(),
-                "&'a1 mut &'a1 [int;2]".to_string(),
+                "&'a0 mut &'a1 [int;2]".to_string(),
                 "&'a1 [int;2]".to_string(),
                 "[int;2]".to_string(),
             ],

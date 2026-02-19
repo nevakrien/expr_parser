@@ -449,6 +449,7 @@ This section records the intended implementation shape for adding lifetimes to t
   - explicit function lifetime generics are accepted and mapped to local signature lifetime slots (they are not overwritten by elision inference),
   - input-side unnamed lifetimes => fresh independent named/bound slots,
   - output-side unnamed lifetime => intended join over input lifetimes.
+  - implementation detail: elided output lifetime is now inferred before compiling the output type expression and applied directly to the outer output reference, so we do not mint-and-overwrite a throwaway external lifetime id (this keeps displayed implicit lifetimes dense/contiguous).
   - temporary implementation fallback: when exactly one implicit input lifetime exists, use it; otherwise emit a type error and set output lifetime to `Unknown` to keep inference progressing.
 - Function bodies:
   - always mint fresh lifetime ids for unnamed/unconstrained lifetimes,
