@@ -446,9 +446,10 @@ This section records the intended implementation shape for adding lifetimes to t
 ### Unnamed lifetime policy
 
 - Global signatures:
+  - explicit function lifetime generics are accepted and mapped to local signature lifetime slots (they are not overwritten by elision inference),
   - input-side unnamed lifetimes => fresh independent named/bound slots,
   - output-side unnamed lifetime => intended join over input lifetimes.
-  - temporary implementation fallback: when exactly one input lifetime exists, use it; otherwise emit `not implemented yet`.
+  - temporary implementation fallback: when exactly one implicit input lifetime exists, use it; otherwise emit a type error and set output lifetime to `Unknown` to keep inference progressing.
 - Function bodies:
   - always mint fresh lifetime ids for unnamed/unconstrained lifetimes,
   - store all minted ids so borrow checking can allocate dense per-lifetime vectors indexed by id.

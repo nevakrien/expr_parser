@@ -51,9 +51,10 @@ Each site should record at least:
 
 Global signatures:
 
+- explicit function lifetime generics are now accepted in typechecking and stay distinct from implicit/elided lifetime inference.
 - unnamed input lifetimes => fresh independent binders.
 - unnamed output lifetime => join of all input lifetimes (future).
-- temporary behavior: if exactly one input lifetime exists, use it; otherwise emit `not implemented yet`.
+- temporary behavior: if exactly one implicit input lifetime exists, assign that to the elided output; otherwise emit a type error and leave output lifetime as `Unknown` so inference can continue.
 
 Function bodies:
 

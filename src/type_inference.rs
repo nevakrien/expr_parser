@@ -1926,6 +1926,7 @@ struct SearchState {
     typedef_cluster: Vec<(TExpId, CId)>,
     local_types: IdHashMap<NameId, CId>,
     names: IdHashMap<NameId, CId>,
+    local_lifetimes: IdHashMap<LifeTimeId, LifeTime>,
 }
 
 impl SearchState {
@@ -1936,6 +1937,7 @@ impl SearchState {
             typedef_cluster: Vec::default(),
             local_types: IdHashMap::default(),
             names: IdHashMap::default(),
+            local_lifetimes: IdHashMap::default(),
         }
     }
 
@@ -1946,6 +1948,7 @@ impl SearchState {
             typedef_cluster,
             local_types,
             names,
+            local_lifetimes,
         } = self;
 
         val_cluster.clear();
@@ -1953,6 +1956,7 @@ impl SearchState {
         typedef_cluster.clear();
         local_types.clear();
         names.clear();
+        local_lifetimes.clear();
     }
 
     fn bind_val(&mut self, v: ValId, c: CId) {
@@ -5753,6 +5757,21 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
     }
 }
 
+fn bind_lifetime_generics(ctx: &mut InferState, generics: PatternSpan) {
+    for lifetime_pat in generics.ids() {
+        let Pattern::LifeTime(id) = ctx.ex.program.pattern(lifetime_pat) else {
+            let loc = ctx.ex.program.pattern_loc(lifetime_pat);
+            ctx.ex.push_error(TypeError::Simple {
+                loc,
+                message: "function lifetime parameters must be lifetime names",
+            });
+            continue;
+        };
+        let fresh = ctx.types.mint_undeclared_signature_lifetime();
+        ctx.search.local_lifetimes.insert(id, fresh);
+    }
+}
+
 #[inline(always)]
 fn lifetime_id_to_lifetime(id: LifeTimeId) -> LifeTime {
     if id == LifeTimeId::STATIC {
@@ -5798,6 +5817,52 @@ fn compile_lifetime_specialization_arg(ctx: &mut InferState, arg: TExpId) -> LId
             });
             ctx.types.new_lid_at(ValId(0))
         }
+    }
+}
+
+fn apply_elided_output_lifetime_rule(
+    ctx: &mut InferState,
+    output_type: Option<TExpId>,
+    output: CId,
+    undeclared_before_inputs: u32,
+    undeclared_after_inputs: u32,
+) {
+    let Some(out_expr) = output_type else {
+        return;
+    };
+    if !matches!(
+        ctx.ex.program.type_expr(out_expr),
+        TypeExpr::Ptr {
+            raw: false,
+            lifetime: None,
+            ..
+        }
+    ) {
+        return;
+    }
+
+    let inferred_output_lifetime = if undeclared_after_inputs - undeclared_before_inputs == 1 {
+        LifeTime::External(undeclared_before_inputs)
+    } else {
+        let loc = ctx.ex.program.type_expr_loc(out_expr);
+        ctx.ex.push_error(TypeError::Simple {
+            loc,
+            message: "elided output lifetime requires exactly one elided input lifetime",
+        });
+        LifeTime::Unknown
+    };
+
+    let out_root = ctx.types.root(output);
+    let out_state = ctx.types.cluster_state(out_root);
+    if let ResolveKind::Ptr { tgt, mutable, .. } = out_state {
+        ctx.types.set_cluster_state(
+            out_root,
+            ResolveKind::Ptr {
+                tgt,
+                kind: PtrKind::Solved(PointerStyle::Ref(inferred_output_lifetime)),
+                mutable,
+            },
+        );
     }
 }
 
@@ -5982,7 +6047,13 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                     ctx.types.mint_undeclared_signature_lifetime(),
                 ))
             } else if let Some(lid) = lifetime {
-                PtrKind::Solved(PointerStyle::Ref(LifeTime::External(lid.0 as u32)))
+                let lt = ctx
+                    .search
+                    .local_lifetimes
+                    .get(&lid)
+                    .copied()
+                    .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
+                PtrKind::Solved(PointerStyle::Ref(lt))
             } else {
                 PtrKind::Solved(PointerStyle::Ref(
                     ctx.types.mint_undeclared_signature_lifetime(),
@@ -6003,68 +6074,22 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             params,
             output_type,
         } => {
-            let mut unresolved_ref_inputs = Vec::new();
+            let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
             let inputs = params
                 .ids()
-                .map(|arg| {
-                    let c = compile_type_expr(ctx, arg);
-                    if matches!(
-                        ctx.ex.program.type_expr(arg),
-                        TypeExpr::Ptr {
-                            raw: false,
-                            lifetime: None,
-                            ..
-                        }
-                    ) {
-                        unresolved_ref_inputs.push(c);
-                    }
-                    c
-                })
+                .map(|arg| compile_type_expr(ctx, arg))
                 .collect::<Vec<_>>();
+            let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
             let output = output_type
                 .map(|o| compile_type_expr(ctx, o))
                 .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()));
-
-            if let Some(out_expr) = output_type
-                && matches!(
-                    ctx.ex.program.type_expr(out_expr),
-                    TypeExpr::Ptr {
-                        raw: false,
-                        lifetime: None,
-                        ..
-                    }
-                )
-            {
-                if unresolved_ref_inputs.len() == 1 {
-                    let in_root = ctx.types.root(unresolved_ref_inputs[0]);
-                    let out_root = ctx.types.root(output);
-                    let in_state = ctx.types.cluster_state(in_root);
-                    let out_state = ctx.types.cluster_state(out_root);
-                    if let (
-                        ResolveKind::Ptr {
-                            kind: PtrKind::Solved(PointerStyle::Ref(lt)),
-                            ..
-                        },
-                        ResolveKind::Ptr { tgt, mutable, .. },
-                    ) = (in_state, out_state)
-                    {
-                        ctx.types.set_cluster_state(
-                            out_root,
-                            ResolveKind::Ptr {
-                                tgt,
-                                kind: PtrKind::Solved(PointerStyle::Ref(lt)),
-                                mutable,
-                            },
-                        );
-                    }
-                } else {
-                    let loc = ctx.ex.program.type_expr_loc(out_expr);
-                    ctx.ex.push_error(TypeError::Simple {
-                        loc,
-                        message: "elided output lifetime requires exactly one elided input reference",
-                    });
-                }
-            }
+            apply_elided_output_lifetime_rule(
+                ctx,
+                output_type,
+                output,
+                undeclared_before_inputs,
+                undeclared_after_inputs,
+            );
 
             ctx.new_func(FuncInfer {
                 calling_convention,
@@ -6213,24 +6238,31 @@ fn type_check_func_signature(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) {
-    if !generics.lifetimes().is_empty() {
-        todo!("type checking functions with lifetime generics is not yet implemented");
-    }
+    bind_lifetime_generics(ctx, generics.lifetimes());
     let generics = generics.generics();
     for (i, pat) in generics.ids().enumerate() {
         gather_generic_constraints(ctx, pat, GenId(i));
     }
 
+    let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
     let inputs = params
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<true>(ctx, pat))
         .collect::<Vec<_>>();
+    let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
 
     let output = if let Some(x) = output_type {
         compile_type_expr(ctx, x)
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
+    apply_elided_output_lifetime_rule(
+        ctx,
+        output_type,
+        output,
+        undeclared_before_inputs,
+        undeclared_after_inputs,
+    );
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -6264,9 +6296,7 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
-    if !generics.lifetimes().is_empty() {
-        todo!("type checking functions with lifetime generics is not yet implemented");
-    }
+    let lifetime_generics = generics.lifetimes();
     let generics = generics.generics();
     // Reject generic functions in local scope.
     // The type inference is monomorphic (rank-1, no higher-ranked types)
@@ -6275,10 +6305,11 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     // higher-rank polymorphism (rank-2+) or a more expressive constraint system.
     // Generic functions are only allowed at the top-level where they can be
     // monomorphized at each call site.
-    if !GLOBAL_SCOPE && !generics.is_empty() {
+    if !GLOBAL_SCOPE && (!generics.is_empty() || !lifetime_generics.is_empty()) {
         let loc = generics
             .ids()
             .next()
+            .or_else(|| lifetime_generics.ids().next())
             .map(|pat| ctx.ex.program.pattern_loc(pat))
             .unwrap_or_else(|| ctx.ex.program.value_loc(v));
         ctx.push_error(TypeError::Simple {
@@ -6287,6 +6318,9 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         });
     }
 
+    bind_lifetime_generics(ctx, lifetime_generics);
+
+    let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
     for (i, pat) in generics.ids().enumerate() {
         gather_generic_constraints(ctx, pat, GenId(i));
     }
@@ -6295,12 +6329,20 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
         .collect::<Vec<_>>();
+    let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
 
     let output = if let Some(x) = output_type {
         compile_type_expr(ctx, x)
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
+    apply_elided_output_lifetime_rule(
+        ctx,
+        output_type,
+        output,
+        undeclared_before_inputs,
+        undeclared_after_inputs,
+    );
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -9531,6 +9573,35 @@ mod type_infer_tests {
         let f_ty = solved_types.type_of(f).unwrap();
 
         assert_eq!(store.get_type_string(&program, f_ty), "fn[T0](T0) -> T0");
+    }
+
+    #[test]
+    fn elided_output_lifetime_picks_single_implicit_input_lifetime() {
+        let src = "f = fn['a0](y:&'a0 int, x:&int)->&int { x }";
+        let mut store = TypeStore::new();
+        let program = gather_program(src);
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = extract_single_fn(&program);
+        let f_ty = solved_types.type_of(f).unwrap();
+
+        assert_eq!(
+            store.get_type_string(&program, f_ty),
+            "fn(&'a0 int, &'a1 int) -> &'a1 int"
+        );
+    }
+
+    #[test]
+    fn function_lifetime_generic_annotation_is_preserved() {
+        let src = "f = fn['a0](x:&'a0 int)->&'a0 int { x }";
+        let mut store = TypeStore::new();
+        let program = gather_program(src);
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = extract_single_fn(&program);
+        let f_ty = solved_types.type_of(f).unwrap();
+
+        assert_eq!(store.get_type_string(&program, f_ty), "fn(&'a0 int) -> &'a0 int");
     }
 
     #[test]
