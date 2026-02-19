@@ -1,5 +1,11 @@
-f=fn(){
-	let x = 2;
-	let y = x;
-	let z = 2;
-}
+free = cfn(p:*void);
+Box = struct[T]{ptr:*T};
+
+Box.__free = fn[T](b:&mut Box[T]){
+(&*b.ptr).__free()
+free(b->ptr as *void)
+};
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
+
+f=fn(b:Box[[int]])->int { let y:int = b[0]; y };

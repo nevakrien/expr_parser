@@ -1,0 +1,18 @@
+Wrapper = struct {inner:int};
+Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner}
+
+Unsafe = struct { inner: &'raw Wrapper };
+Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut int  { (&*self)->get() };
+
+RawCalc = struct { inner: &'raw Unsafe };
+RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw mut Unsafe { self->get() };
+
+Raw = struct { inner: &'raw RawCalc };
+Raw.__deref_mut = fn(self: &mut Raw) -> &'raw mut RawCalc { self->get() };
+
+Safe = struct { inner: &'raw Raw };
+Safe.__deref_mut = fn(self: &mut Safe) -> &mut (&'raw Raw) { self->get() };
+
+f = fn(s: &mut Safe) {
+    let out = *s;
+};

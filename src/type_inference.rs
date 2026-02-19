@@ -1230,6 +1230,10 @@ pub fn infer_global_types<'a>(
             continue;
         };
 
+        //structs have to all resolve in the same scope so they see eachother
+        //but we need to preserve them to have their own lifetime... 
+        //this is 100% a hack but because structs are so simple in terms of lifetimes it should work
+        ctx.types.next_undeclared_lifetime = 0;
         let t = do_typedef::<true>(&mut ctx, *n, *texp);
         if let Some(previous) = ctx.search.local_types.insert(*n, t)
             && let Err(clash) = ctx.unify(previous, t)
@@ -3937,10 +3941,10 @@ fn resolve_struct_deref_target(
     let deref_mut_resolved =
         deref_mut.and_then(|method| resolve_struct_deref_method(ex, types, site, method));
 
-    let (resolved, has_both) = match (deref_resolved, deref_mut_resolved) {
-        (Some(x), Some(_y)) => (x, true),
-        (Some(x), None) => (x, false),
-        (None, Some(y)) => (y, false),
+    let resolved = match (deref_resolved, deref_mut_resolved) {
+        (Some(x), Some(_y)) => x,
+        (Some(x), None) => x,
+        (None, Some(y)) => y,
         (None, None) => return None,
     };
 
@@ -3948,22 +3952,6 @@ fn resolve_struct_deref_target(
     let mut ret_kind = resolved.ret_kind;
     let mut self_mutable = resolved.self_mutable;
     let mut ret_mutable = resolved.ret_mutable;
-
-    if has_both {
-        let lid = match *shared_lid {
-            Some(lid) => lid,
-            None => {
-                let lid = types.new_lid_at(site);
-                *shared_lid = Some(lid);
-                lid
-            }
-        };
-        let lid_lt = types.lid_lifetime(lid);
-        self_kind = ptr_kind_attach_lid_if_safe_ref(self_kind, lid_lt);
-        ret_kind = ptr_kind_attach_lid_if_safe_ref(ret_kind, lid_lt);
-        self_mutable = None;
-        ret_mutable = None;
-    }
 
     if let Some(chain_m) = *chain_mutability {
         self_mutable = Some(chain_m);
@@ -9061,13 +9049,14 @@ mod type_infer_tests {
 
     const BOX_EXAMPLE: &str = r#"
             //user code
+            Box = struct[T]{ptr:*T};
+
             free = cfn(p:*void);
             Box.__free = fn[T](b:&mut Box[T]){
             (&*b.ptr).__free()
             free(b->ptr as *void)
             };
-
-            Box = struct[T]{ptr:*T};
+            
             Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
             Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
 
@@ -9075,6 +9064,8 @@ mod type_infer_tests {
             
         "#;
     #[test]
+
+    //currently fails over not doing places in f
     fn generic_box_array_index_chain_includes_box_step() {
         let program = gather_program(BOX_EXAMPLE);
         let mut store = TypeStore::new();
@@ -10570,27 +10561,29 @@ mod type_infer_tests {
         assert!(chain[2].contains("Inner"));
     }
 
+    //breaks because we dont wait our turn enough in derefs resolution
     #[test]
     fn deref_chain_supports_all_four_style_transitions_with_raw_links() {
         let src = "
             Wrapper = struct {inner:int};
-            Wrapper.get = fn(&mut self:Wrapper)->&mut int {&mut self.inner}
+            Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner}
 
             Unsafe = struct { inner: &'raw Wrapper };
-            Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut int  { (&*self)->get() };
+            Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
 
             RawCalc = struct { inner: &'raw Unsafe };
-            RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw mut Unsafe { self->get() };
+            RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
 
             Raw = struct { inner: &'raw RawCalc };
-            Raw.__deref_mut = fn(self: &mut Raw) -> &'raw mut RawCalc { self->get() };
+            Raw.__deref_mut = fn(self: &mut Raw) -> &'raw RawCalc { self.inner };
 
             Safe = struct { inner: &'raw Raw };
-            Safe.__deref_mut = fn(self: &mut Safe) -> &mut (&'raw Raw) { self->get() };
+            Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
 
             f = fn(s: &mut Safe) {
-                let out = *s;
+                let out : &mut int = s->get();
             };
+
         ";
 
         let program = gather_program(src);
@@ -11073,6 +11066,7 @@ mod type_infer_tests {
         ));
     }
 
+    ///currently fails because we dont do places properly
     #[test]
     fn generic_struct_deref_methods_specialize_from_receiver_type() {
         let src = r#"

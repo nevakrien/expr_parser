@@ -4,15 +4,24 @@ use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
 const SOURCE: &str = r#"
-free = cfn(p:*void);
-Box = struct[T]{ptr:*T};
-Box.__free = fn[T](b:&mut Box[T]){free(b->ptr as *void)}
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
-Box.get = fn[T](b:Box[T])->T {*b}
+Wrapper = struct {inner:int};
+Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner}
 
+Unsafe = struct { inner: &'raw Wrapper };
+Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
 
-f=fn(b:Box[Box[Box[int]]])->int {*b}
+RawCalc = struct { inner: &'raw Unsafe };
+RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
+
+Raw = struct { inner: &'raw RawCalc };
+Raw.__deref_mut = fn(self: &mut Raw) -> &'raw RawCalc { self.inner };
+
+Safe = struct { inner: &'raw Raw };
+Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
+
+f = fn(s: &mut Safe) {
+    let out : &mut int = s->get();
+};
 
 "#;
 

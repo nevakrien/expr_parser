@@ -249,7 +249,7 @@ fn read_repl_input() -> io::Result<ReplInput> {
             if trimmed.is_empty() {
                 continue;
             }
-            if trimmed == "quit" || trimmed == "exit" {
+            if trimmed == ":quit" || trimmed == ":exit" {
                 return Ok(ReplInput::Quit);
             }
             if trimmed == ":reset" || trimmed == ":clear" || trimmed == ":c" || trimmed == ":r" {
@@ -368,7 +368,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Expression Parser REPL");
     println!("Enter expressions; REPL waits for complete input.");
     println!(
-        "Commands: :load <path...>, :reset, :types, :types-of <name>, :type <name...>, quit, exit"
+        "Commands: :load <path...>, :reset, :types, :types-of <name>, :type <name...>, :quit, :exit"
     );
 
     loop {
