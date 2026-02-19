@@ -8814,8 +8814,8 @@ mod type_infer_tests {
             chain,
             vec![
                 "Box₀".to_string(),
-                "&mut &[int;2]".to_string(),
-                "&[int;2]".to_string(),
+                "&'a1 mut &'a1 [int;2]".to_string(),
+                "&'a1 [int;2]".to_string(),
                 "[int;2]".to_string(),
             ],
             "unexpected implicit deref chain for struct-deref indexing"
