@@ -270,7 +270,7 @@ impl<'a> LayoutComputer<'a> {
         field: Option<NameId>,
     ) -> Result<StructLayout, LayoutError> {
         let (struct_id, generics) = match self.store.type_value(type_id) {
-            TypeValue::Struct { id, generics } => (*id, generics.as_slice()),
+            TypeValue::Struct { id, generics, .. } => (*id, generics.as_slice()),
             _ => return Err(LayoutError::UnsupportedType { type_id }),
         };
 
@@ -542,6 +542,7 @@ mod tests {
         let specialized = store.intern(TypeValue::Struct {
             id: sid,
             generics: vec![BuiltinType::I32.into()],
+            lifetimes: Vec::new(),
         });
 
         let target = TargetLayout::for_pointer_width(64).unwrap();
@@ -570,10 +571,12 @@ mod tests {
         let self_ty = store.intern(TypeValue::Struct {
             id: sid,
             generics: Vec::new(),
+            lifetimes: Vec::new(),
         });
         store.values[self_ty.0] = TypeValue::Struct {
             id: sid,
             generics: vec![self_ty],
+            lifetimes: Vec::new(),
         };
 
         let target = TargetLayout::for_pointer_width(64).unwrap();

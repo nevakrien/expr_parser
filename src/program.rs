@@ -9,7 +9,7 @@ use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
-use crate::string_intern::{RAW_STR, STATIC_STR};
+use crate::string_intern::{RAW_STR, STATIC_STR,WILDCARD_STR};
 use crate::type_inference::TypeValue;
 use thiserror::Error;
 
@@ -101,10 +101,11 @@ pub(crate) struct PendingLabel {
     pub pending_gotos: Vec<ValId>,
 }
 
-pub const SPECIAL_LIFETIMES: &[StrId] = &[STATIC_STR, RAW_STR];
+pub const SPECIAL_LIFETIMES: &[StrId] = &[STATIC_STR, RAW_STR,WILDCARD_STR];
 impl LifeTimeId {
     pub const STATIC: Self = Self(0);
     pub const RAW: Self = Self(1);
+    pub const WILDCARD: Self = Self(2);
 }
 
 fn insert_builtin_lifetimes(p: &mut Program) {

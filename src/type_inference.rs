@@ -255,6 +255,7 @@ pub enum TypeValue {
     Struct {
         id: StructId,
         generics: Vec<TypeId>,
+        lifetimes: Vec<LifeTime>,
     },
 }
 
@@ -506,6 +507,7 @@ impl TypeStore {
         let tid = self.intern(TypeValue::Struct {
             id: sid,
             generics: Vec::new(),
+            lifetimes: Vec::new(),
         });
         (sid, tid)
     }
@@ -691,8 +693,12 @@ impl TypeStore {
             TypeValue::Generic(g) => format!("T{}", g.0),
 
             //TODO cover cases where we do know the name
-            TypeValue::Struct { id, generics } => {
-                self.format_struct_display(program, *id, generics, gen_count)
+            TypeValue::Struct {
+                id,
+                generics,
+                lifetimes,
+            } => {
+                self.format_struct_display(program, *id, generics, lifetimes, gen_count)
             }
         }
     }
@@ -711,6 +717,7 @@ impl TypeStore {
         program: &Program,
         sid: StructId,
         generics: &[TypeId],
+        lifetimes: &[LifeTime],
         gen_count: usize,
     ) -> String {
         let base = match self.struct_value(sid).name {
@@ -718,14 +725,17 @@ impl TypeStore {
             None => "UnamedStruct",
         };
         let mut base = format!("{}{}", base, subscript_id(sid.0));
-        if !generics.is_empty() {
-            let args = generics
+        if !lifetimes.is_empty() || !generics.is_empty() {
+            let mut args = lifetimes
+                .iter()
+                .map(|lt| format!("'{}", self.format_lifetime(*lt)))
+                .collect::<Vec<_>>();
+            args.extend(generics
                 .iter()
                 .map(|id| self.get_type_string_nested(program, *id, gen_count))
-                .collect::<Vec<_>>()
-                .join(", ");
+                .collect::<Vec<_>>());
             base.push('[');
-            base.push_str(&args);
+            base.push_str(&args.join(", "));
             base.push(']');
         }
         base
@@ -1577,8 +1587,8 @@ impl<'a> InferState<'a> {
         self.types.new_func(call)
     }
 
-    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>) -> CId {
-        self.types.new_struct_instance(sid, generics)
+    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>, lifetimes: Vec<LId>) -> CId {
+        self.types.new_struct_instance(sid, generics, lifetimes)
     }
 
     fn new_tuple_instance(&mut self, items: Vec<CId>) -> CId {
@@ -1755,6 +1765,7 @@ struct FuncInfer {
 struct StructInfer {
     sid: StructId,
     generics: Vec<CId>,
+    lifetimes: Vec<LId>,
 }
 
 #[derive(Debug)]
@@ -1784,6 +1795,7 @@ struct PendingSpecialization {
     name: NameId,
     global: TExpId,
     generics: Vec<CId>,
+    lifetimes: Vec<LId>,
     output: CId,
 }
 
@@ -1984,6 +1996,7 @@ struct TypeState {
     extra: TypeExtra,
     life_parent: LifeVec<LId>,
     life_place: LifeVec<ValId>,
+    life_known: LifeVec<Option<LifeTime>>,
     next_undeclared_lifetime: u32,
 }
 
@@ -2002,6 +2015,7 @@ impl TypeState {
             },
             life_parent: LifeVec(Vec::new()),
             life_place: LifeVec(Vec::new()),
+            life_known: LifeVec(Vec::new()),
             next_undeclared_lifetime: 0,
         }
     }
@@ -2027,6 +2041,7 @@ impl TypeState {
         tuple_infers.clear();
         self.life_parent.0.clear();
         self.life_place.0.clear();
+        self.life_known.0.clear();
         self.next_undeclared_lifetime = 0;
     }
 
@@ -2035,6 +2050,14 @@ impl TypeState {
         let id = LId(self.life_parent.0.len());
         self.life_parent.0.push(id);
         self.life_place.0.push(place);
+        self.life_known.0.push(None);
+        id
+    }
+
+    #[inline(always)]
+    fn new_lid_known_at(&mut self, place: ValId, known: LifeTime) -> LId {
+        let id = self.new_lid_at(place);
+        self.life_known[id] = Some(known);
         id
     }
 
@@ -2054,7 +2077,15 @@ impl TypeState {
         let ra = self.find_lid_root(a);
         let rb = self.find_lid_root(b);
         if ra != rb {
+            let merged_known = match (self.life_known[ra], self.life_known[rb]) {
+                (Some(a), Some(b)) if a == b => Some(a),
+                (Some(_), Some(_)) => Some(LifeTime::Unknown),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
             self.life_parent[rb] = ra;
+            self.life_known[ra] = merged_known;
         }
         ra
     }
@@ -2062,7 +2093,13 @@ impl TypeState {
     #[inline(always)]
     fn lid_lifetime(&mut self, lid: LId) -> LifeTime {
         let root = self.find_lid_root(lid);
-        LifeTime::Local(LifeId(root.0 as u32))
+        self.life_known[root].unwrap_or(LifeTime::Local(LifeId(root.0 as u32)))
+    }
+
+    #[inline(always)]
+    fn lid_lifetime_for_struct_arg(&mut self, lid: LId) -> LifeTime {
+        let root = self.find_lid_root(lid);
+        self.life_known[root].unwrap_or(LifeTime::Unknown)
     }
 
     #[inline(always)]
@@ -2112,9 +2149,13 @@ impl TypeState {
         id
     }
 
-    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>) -> CId {
+    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>, lifetimes: Vec<LId>) -> CId {
         let call_id = StructInferId(self.extra.struct_infers.len());
-        self.extra.struct_infers.push(StructInfer { sid, generics });
+        self.extra.struct_infers.push(StructInfer {
+            sid,
+            generics,
+            lifetimes,
+        });
 
         let id = self.new_cluster();
         self.core.cluster[id].state = ResolveKind::Struct(call_id);
@@ -2887,8 +2928,12 @@ fn unify_struct_with_type(
         BadTypeId(make_struct_mock(ex, &mut types.core, &types.extra, call))
     };
 
-    let (sid, glen) = match ex.store.type_value(ty) {
-        TypeValue::Struct { id, generics } => (*id, generics.len()),
+    let (sid, glen, lifetimes) = match ex.store.type_value(ty) {
+        TypeValue::Struct {
+            id,
+            generics,
+            lifetimes,
+        } => (*id, generics.len(), lifetimes.as_slice()),
         _ => {
             return Err(TypeClash {
                 found: Some(found_struct(ex, types)),
@@ -2899,7 +2944,16 @@ fn unify_struct_with_type(
 
     let call_sid = types.extra.struct_infers[call.0].sid;
 
-    if call_sid != sid || types.extra.struct_infers[call.0].generics.len() != glen {
+    let call_lids = types.extra.struct_infers[call.0].lifetimes.clone();
+    let call_lifetimes = call_lids
+        .iter()
+        .map(|lid| types.lid_lifetime_for_struct_arg(*lid))
+        .collect::<Vec<_>>();
+
+    if call_sid != sid
+        || types.extra.struct_infers[call.0].generics.len() != glen
+        || call_lifetimes.as_slice() != lifetimes
+    {
         return Err(TypeClash {
             found: Some(found_struct(ex, types)),
             wanted: Some(BadTypeId(ty)),
@@ -3037,14 +3091,15 @@ fn try_resolve_struct_type(
     call: StructInferId,
 ) -> Option<TypeId> {
     let site = &mut types.extra.struct_infers[call.0];
+    let sid = site.sid;
+    let mut generic_inputs = std::mem::take(&mut site.generics);
+    let lifetime_inputs = std::mem::take(&mut site.lifetimes);
 
-    let mut generics = Vec::with_capacity(site.generics.len());
+    let mut generics = Vec::with_capacity(generic_inputs.len());
 
-    for i in 0..site.generics.len() {
-        let input = site.generics[i];
-
-        let root = find_root(&mut types.core.parent, input);
-        site.generics[i] = root; // canonicalize
+    for input in generic_inputs.iter_mut() {
+        let root = find_root(&mut types.core.parent, *input);
+        *input = root;
 
         match types.core.cluster[root].state {
             ResolveKind::Solved(t) => generics.push(t),
@@ -3052,9 +3107,15 @@ fn try_resolve_struct_type(
         }
     }
 
+    let lifetimes = lifetime_inputs
+        .into_iter()
+        .map(|lid| types.lid_lifetime_for_struct_arg(lid))
+        .collect::<Vec<_>>();
+
     Some(ex.store.intern(TypeValue::Struct {
-        id: site.sid,
+        id: sid,
         generics,
+        lifetimes,
     }))
 }
 
@@ -3216,6 +3277,7 @@ fn make_struct_mock_inner(
     ex.store.intern(TypeValue::Struct {
         id: site.sid,
         generics,
+        lifetimes: vec![LifeTime::Unknown; site.lifetimes.len()],
     })
 }
 
@@ -3345,11 +3407,33 @@ fn extract_bad_type(
 // Specialization (monomorphisation into local clusters)
 // ============================================================
 
+fn specialize_lifetime(
+    types: &mut TypeState,
+    lt: LifeTime,
+    lifetime_generics: &[LifeTime],
+    lifetimes: &[LId],
+    loc: ValId,
+) -> LId {
+    if let Some(i) = lifetime_generics.iter().position(|candidate| *candidate == lt)
+        && let Some(lid) = lifetimes.get(i)
+    {
+        return *lid;
+    }
+
+    if matches!(lt, LifeTime::Unknown) {
+        types.new_lid_at(loc)
+    } else {
+        types.new_lid_known_at(loc, lt)
+    }
+}
+
 fn specialize_type(
     ex: &mut ExternState,
     types: &mut TypeState,
     ty: TypeId,
     generics: &[CId],
+    lifetime_generics: &[LifeTime],
+    lifetimes: &[LId],
     _loc: ValId,
 ) -> CId {
     match ex.store.type_value(ty).clone() {
@@ -3363,10 +3447,10 @@ fn specialize_type(
         } => {
             let inputs = params
                 .into_iter()
-                .map(|t| specialize_type(ex, types, t, generics, _loc))
+                .map(|t| specialize_type(ex, types, t, generics, lifetime_generics, lifetimes, _loc))
                 .collect::<Vec<_>>();
 
-            let output = specialize_type(ex, types, ret, generics, _loc);
+            let output = specialize_type(ex, types, ret, generics, lifetime_generics, lifetimes, _loc);
 
             // create FuncInfer
             let call_id = FuncInferId(types.extra.func_defs.len());
@@ -3388,8 +3472,9 @@ fn specialize_type(
         TypeValue::Struct {
             id,
             generics: parts,
+            lifetimes: life_parts,
         } => {
-            if parts.is_empty() {
+            if parts.is_empty() && life_parts.is_empty() {
                 let idc = CId(types.core.parent.len());
                 types.core.parent.0.push(idc);
                 types.core.cluster.0.push(Cluster {
@@ -3400,13 +3485,19 @@ fn specialize_type(
 
             let resolved = parts
                 .into_iter()
-                .map(|t| specialize_type(ex, types, t, generics, _loc))
+                .map(|t| specialize_type(ex, types, t, generics, lifetime_generics, lifetimes, _loc))
+                .collect::<Vec<_>>();
+
+            let resolved_lifetimes = life_parts
+                .into_iter()
+                .map(|lt| specialize_lifetime(types, lt, lifetime_generics, lifetimes, _loc))
                 .collect::<Vec<_>>();
 
             let call_id = StructInferId(types.extra.struct_infers.len());
             types.extra.struct_infers.push(StructInfer {
                 sid: id,
                 generics: resolved,
+                lifetimes: resolved_lifetimes,
             });
 
             let idc = CId(types.core.parent.len());
@@ -3422,7 +3513,7 @@ fn specialize_type(
             style,
             mutable,
         } => {
-            let target = specialize_type(ex, types, tgt, generics, _loc);
+            let target = specialize_type(ex, types, tgt, generics, lifetime_generics, lifetimes, _loc);
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -3439,7 +3530,7 @@ fn specialize_type(
         TypeValue::Tuple(items) => {
             let items = items
                 .into_iter()
-                .map(|item| specialize_type(ex, types, item, generics, _loc))
+                .map(|item| specialize_type(ex, types, item, generics, lifetime_generics, lifetimes, _loc))
                 .collect::<Vec<_>>();
 
             let tuple_id = TupleInferId(types.extra.tuple_infers.len());
@@ -3454,7 +3545,7 @@ fn specialize_type(
         }
 
         TypeValue::Array(inner, len) => {
-            let inner = specialize_type(ex, types, inner, generics, _loc);
+            let inner = specialize_type(ex, types, inner, generics, lifetime_generics, lifetimes, _loc);
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -3502,7 +3593,7 @@ fn solved_type_to_specialized_local(
             })
             .collect();
 
-        return specialize_type(ex, types, t, &gens, loc);
+        return specialize_type(ex, types, t, &gens, &[], &[], loc);
     }
 
     let id = CId(types.core.parent.len());
@@ -4072,7 +4163,11 @@ fn try_resolve_member_access(
                         used_implicit_deref_steps += 1;
                         current = next;
                     }
-                    TypeValue::Struct { id: sid, generics } => {
+                    TypeValue::Struct {
+                        id: sid,
+                        generics,
+                        ..
+                    } => {
                         let (field_ty, struct_name) = {
                             let rep = ex.store.struct_value(sid);
                             let field_ty = rep
@@ -5078,7 +5173,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             let base_type = *base_type;
 
             let sid = match ctx.ex.store.type_value(base_type) {
-                TypeValue::Struct { id, generics: _ } => *id,
+                TypeValue::Struct { id, generics: _, .. } => *id,
                 // TypeValue::Specialized { base, .. } => {
                 //     match ctx.ex.store.type_value(*base) {
                 //         TypeValue::Struct(sid) => *sid,
@@ -5121,7 +5216,12 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 });
             }
 
-            let TypeValue::Struct { id: _, generics } = ctx.ex.store.type_value(base_type) else {
+            let TypeValue::Struct {
+                id: _,
+                generics,
+                ..
+            } = ctx.ex.store.type_value(base_type)
+            else {
                 unreachable!("verified above");
             };
 
@@ -5137,7 +5237,15 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     (0..flen)
                         .map(|f| {
                             let (_, t) = ctx.ex.store.struct_value(sid).fields[f];
-                            specialize_type(&mut ctx.ex, &mut ctx.types, t, &generic_clusters, v)
+                            specialize_type(
+                                &mut ctx.ex,
+                                &mut ctx.types,
+                                t,
+                                &generic_clusters,
+                                &[],
+                                &[],
+                                v,
+                            )
                         })
                         .collect::<Vec<_>>(),
                 );
@@ -5252,13 +5360,14 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 let t = ctx.ex.store.intern(TypeValue::Struct {
                     id: sid,
                     generics: Vec::new(),
+                    lifetimes: Vec::new(),
                 });
                 let ans = ctx.new_solved(t);
                 ctx.bind_val(v, ans);
                 return ans;
             }
 
-            let ans = ctx.new_struct_instance(sid, generic_clusters);
+            let ans = ctx.new_struct_instance(sid, generic_clusters, Vec::new());
             ctx.bind_val(v, ans);
             ans
         }
@@ -5644,6 +5753,54 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
     }
 }
 
+#[inline(always)]
+fn lifetime_id_to_lifetime(id: LifeTimeId) -> LifeTime {
+    if id == LifeTimeId::STATIC {
+        LifeTime::Static
+    } else if id == LifeTimeId::RAW || id == LifeTimeId::WILDCARD {
+        LifeTime::Unknown
+    } else {
+        LifeTime::External(id.0 as u32)
+    }
+}
+
+#[inline(always)]
+fn struct_lifetime_to_lid(types: &mut TypeState, site: ValId, lt: LifeTime) -> LId {
+    if matches!(lt, LifeTime::Unknown) {
+        types.new_lid_at(site)
+    } else {
+        types.new_lid_known_at(site, lt)
+    }
+}
+
+fn compile_lifetime_specialization_arg(ctx: &mut InferState, arg: TExpId) -> LId {
+    match ctx.ex.program.type_expr(arg) {
+        TypeExpr::Wildcard => ctx.types.new_lid_at(ValId(0)),
+        TypeExpr::NameRef(name) => {
+            let sid = ctx.ex.program.name_str_id(name);
+            let Some(lid) = ctx.ex.program.try_get_lifetime(sid) else {
+                let loc = ctx.ex.program.type_expr_loc(arg);
+                ctx.ex.push_error(TypeError::Simple {
+                    loc,
+                    message: "expected a lifetime argument",
+                });
+                return ctx.types.new_lid_at(ValId(0));
+            };
+            let lt = lifetime_id_to_lifetime(lid);
+            struct_lifetime_to_lid(&mut ctx.types, ValId(0), lt)
+        }
+        TypeExpr::Poison => ctx.types.new_lid_at(ValId(0)),
+        _ => {
+            let loc = ctx.ex.program.type_expr_loc(arg);
+            ctx.ex.push_error(TypeError::Simple {
+                loc,
+                message: "expected a lifetime argument",
+            });
+            ctx.types.new_lid_at(ValId(0))
+        }
+    }
+}
+
 ///in order to break recursion this function MUST return a concrete type
 ///the returned struct is not fully realized yet and its fields are gona be handeled later
 fn compile_struct_type<const GLOBAL_SCOPE: bool>(
@@ -5655,9 +5812,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
-    if !generics.lifetimes().is_empty() {
-        todo!("type checking structs with lifetime generics is not yet implemented");
-    }
+    let lifetime_generics = generics.lifetimes();
     let generics = generics.generics();
     // Reject struct definitions in local scope.
     // The type inference is monomorphic (rank-1, no higher-ranked types)
@@ -5679,6 +5834,19 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         let _c = gather_generic_constraints(ctx, g, gid);
         // todo!()
         //TODO: we probably wana do something with generics that are ints here if we have them
+    }
+
+    let mut lifetimes = Vec::with_capacity(lifetime_generics.len());
+    for lifetime_pat in lifetime_generics.ids() {
+        let Pattern::LifeTime(id) = ctx.ex.program.pattern(lifetime_pat) else {
+            let loc = ctx.ex.program.pattern_loc(lifetime_pat);
+            ctx.ex.push_error(TypeError::Simple {
+                loc,
+                message: "struct lifetime parameters must be lifetime names",
+            });
+            continue;
+        };
+        lifetimes.push(lifetime_id_to_lifetime(id));
     }
 
     let mut field_info = Vec::with_capacity(fields.len());
@@ -5716,7 +5884,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
     let generics = (0..generics.len())
         .map(|x| ctx.ex.store.intern(TypeValue::Generic(GenId(x))))
         .collect();
-    let t = ctx.ex.store.intern(TypeValue::Struct { id: sid, generics });
+    let t = ctx.ex.store.intern(TypeValue::Struct { id: sid, generics, lifetimes });
     let output = ctx.new_solved(t);
 
     ctx.types.extra.struct_defs.push(StructDef {
@@ -5809,6 +5977,10 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                 PtrKind::Solved(PointerStyle::Ref(LifeTime::Static))
             } else if lifetime == Some(LifeTimeId::RAW) {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
+            } else if lifetime == Some(LifeTimeId::WILDCARD) {
+                PtrKind::Solved(PointerStyle::Ref(
+                    ctx.types.mint_undeclared_signature_lifetime(),
+                ))
             } else if let Some(lid) = lifetime {
                 PtrKind::Solved(PointerStyle::Ref(LifeTime::External(lid.0 as u32)))
             } else {
@@ -5907,9 +6079,11 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             ctx.new_array_instance(element, size)
         }
         TypeExpr::Index { base, args } => {
-            if !args.lifetimes().is_empty() {
-                todo!("type checking with lifetime generics in type index is not yet implemented");
-            }
+            let lifetimes = args
+                .lifetimes()
+                .ids()
+                .map(|arg| compile_lifetime_specialization_arg(ctx, arg))
+                .collect::<Vec<_>>();
             let args = args.generics();
             let generics = args
                 .ids()
@@ -5961,6 +6135,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                         name,
                         global: *g,
                         generics,
+                        lifetimes,
                         output,
                     });
                     return output;
@@ -5979,7 +6154,12 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                 return ctx.new_cluster();
             };
 
-            let TypeValue::Struct { id: sid, .. } = ctx.ex.store.type_value(*t) else {
+            let TypeValue::Struct {
+                id: sid,
+                lifetimes: expected_lifetimes,
+                ..
+            } = ctx.ex.store.type_value(*t)
+            else {
                 let loc = ctx.ex.program.type_expr_loc(base);
                 ctx.push_error(TypeError::Simple {
                     loc,
@@ -5999,7 +6179,16 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                 return ctx.new_cluster();
             }
 
-            ctx.new_struct_instance(sid, generics)
+            if lifetimes.len() != expected_lifetimes.len() {
+                let loc = ctx.ex.program.type_expr_loc(texpr);
+                ctx.ex.push_error(TypeError::Simple {
+                    loc,
+                    message: "wrong number of lifetime arguments for struct type",
+                });
+                return ctx.new_cluster();
+            }
+
+            ctx.new_struct_instance(sid, generics, lifetimes)
         }
         _ => {
             let c = ctx.new_cluster();
@@ -6240,7 +6429,7 @@ fn is_named_struct_type_with_all_generics_free(
     ty: TypeId,
     struct_name: NameId,
 ) -> bool {
-    let TypeValue::Struct { id, generics } = store.type_value(ty) else {
+    let TypeValue::Struct { id, generics, .. } = store.type_value(ty) else {
         return false;
     };
 
@@ -6898,7 +7087,11 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
         | ResolveKind::Tuple(_) => OperandKind::KnownNonUser,
 
         ResolveKind::Solved(t) => match ex.store.type_value(t) {
-            TypeValue::Struct { id, generics: _ } => {
+            TypeValue::Struct {
+                id,
+                generics: _,
+                ..
+            } => {
                 OperandKind::UserStruct(ex.store.struct_value(*id).name)
             }
             _ => OperandKind::KnownNonUser,
@@ -7238,7 +7431,7 @@ fn resolve_operator_site(
                 progress = true;
                 *kind = PtrKind::SafeRef;
             } else if matches!(kind.is_fancy(), Some(true)) {
-                todo!("error")
+                todo!("error because pointer arithmetic is for nullables")
             }
         }
 
@@ -8179,7 +8372,7 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
             return false;
         }
 
-        let found = types.new_struct_instance(sid, p.generics.clone());
+        let found = types.new_struct_instance(sid, p.generics.clone(), p.lifetimes.clone());
         if let Err(clash) = types.unify(ex, found, p.output) {
             ex.push_error(TypeError::TypeClashBeforeMentioned {
                 name: p.name,
@@ -9421,10 +9614,12 @@ mod type_infer_tests {
                 TypeValue::Struct {
                     id: a_id,
                     generics: a_generics,
+                    ..
                 },
                 TypeValue::Struct {
                     id: b_id,
                     generics: b_generics,
+                    ..
                 },
             ) => {
                 assert_eq!(a_id, b_id);
@@ -9495,7 +9690,11 @@ mod type_infer_tests {
 
         // Ensure it resolved to a struct
         let sid = match store.type_value(ty) {
-            TypeValue::Struct { id, generics: _ } => *id,
+            TypeValue::Struct {
+                id,
+                generics: _,
+                ..
+            } => *id,
             other => panic!("expected struct type, got {:?}", other),
         };
 
