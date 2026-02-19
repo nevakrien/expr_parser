@@ -21,6 +21,7 @@
 // most constrains place some sort of pending task.
 // and then later when enough type info is present we can apply unification.
 // ================================================================
+use crate::ir::LifeTimeId;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -156,37 +157,23 @@ pub enum ArrayType {
     Unsized,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TypeValue {
-    Builtin(BuiltinType),
-    Tuple(Vec<TypeId>),
-    Array(TypeId, ArrayType),
-    Func {
-        calling_convention: CallingConvention,
-        generics: usize,
-        params: Vec<TypeId>,
-        ret: TypeId,
-    },
-    Ptr {
-        tgt: TypeId,
-        raw: bool,
-        mutable: bool,
-    },
-    Generic(GenId),
-    // Specialized {
-    //     base: TypeId,
-    //     parts: Vec<TypeId>,
-    // },
-    Struct {
-        id: StructId,
-        generics: Vec<TypeId>,
-    },
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Nullable{
+    Yes,
+    No,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PointerStyle {
-    Raw,
+    ///true means non null
+    Raw(Nullable),
     Ref(LifeTime),
+}
+
+impl PointerStyle {
+    pub fn is_fancy(&self)->bool{
+        !matches!(self,PointerStyle::Raw(Nullable::Yes))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -200,9 +187,80 @@ pub enum LifeTime {
     ///for now no real use but it is technically a distinct category
     ///would probably add these for real once we actually have constants
     Static,
-    ///no lifetime just nonull and has syntax sugar
-    Raw,
+
+    ///ONLY MINTED AFTER MAIN SOLVER
+    ///basically only happens when someone derefs a raw pointer
+    ///or some signatures that are basically that
+    ///this one may later get unified by the borrow checker into something
+    Unknown,
 }
+
+use std::cmp::Ordering;
+impl PartialOrd for LifeTime {
+    fn partial_cmp(&self, other: &LifeTime) -> Option<Ordering> {
+        use LifeTime::*;
+
+        if self == other {
+            return Some(Ordering::Equal);
+        }
+
+        match (self, other) {
+            // locals are shorter than externals and static
+            (Local(_), External(_)) => Some(Ordering::Less),
+            (Local(_), Static)      => Some(Ordering::Less),
+
+            // external shorter than static
+            (External(_), Static)   => Some(Ordering::Less),
+
+            // reverse relations
+            (External(_), Local(_)) => Some(Ordering::Greater),
+            (Static, Local(_))      => Some(Ordering::Greater),
+            (Static, External(_))   => Some(Ordering::Greater),
+
+            // Unknown is incomparable
+            (Unknown, _) | (_, Unknown) => None,
+
+            // different locals are incomparable
+            (Local(_), Local(_)) => None,
+
+            // different externals are incomparable
+            (External(_), External(_)) => None,
+
+            //static is static
+            (LifeTime::Static, LifeTime::Static) => Some(Ordering::Equal),
+
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeValue {
+    Builtin(BuiltinType),
+    Tuple(Vec<TypeId>),
+    Array(TypeId, ArrayType),
+    Func {
+        calling_convention: CallingConvention,
+        generics: usize,
+        params: Vec<TypeId>,
+        ret: TypeId,
+    },
+    Ptr {
+        tgt: TypeId,
+        style:PointerStyle,
+        mutable: bool,
+    },
+    Generic(GenId),
+    // Specialized {
+    //     base: TypeId,
+    //     parts: Vec<TypeId>,
+    // },
+    Struct {
+        id: StructId,
+        generics: Vec<TypeId>,
+    },
+}
+
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LifeId(pub u32);
@@ -580,16 +638,41 @@ impl TypeStore {
                     self.get_type_string_nested(program, *ret, gen_count)
                 )
             }
-            TypeValue::Ptr { tgt, raw, mutable } => {
+            TypeValue::Ptr { tgt, style, mutable } => {
                 let inner = self.get_type_string_nested(program, *tgt, gen_count);
 
-                match (*raw, *mutable) {
-                    (true, true) => format!("*{inner}"),
-                    (true, false) => format!("*const {inner}"),
-                    (false, true) => format!("&mut {inner}"),
-                    (false, false) => format!("&{inner}"),
+                match style {
+                    // *T
+                    PointerStyle::Raw(Nullable::Yes) => {
+                        if *mutable {
+                            format!("*{inner}")
+                        } else {
+                            format!("*const {inner}")
+                        }
+                    }
+
+                    // &'raw T  (non-null raw pointer)
+                    PointerStyle::Raw(Nullable::No) => {
+                        if *mutable {
+                            format!("&'raw mut {inner}")
+                        } else {
+                            format!("&'raw {inner}")
+                        }
+                    }
+
+                    // &'a T  (safe reference)
+                    PointerStyle::Ref(lt) => {
+                        let lt = self.format_lifetime(*lt);
+
+                        if *mutable {
+                            format!("&'{lt} mut {inner}")
+                        } else {
+                            format!("&'{lt} {inner}")
+                        }
+                    }
                 }
             }
+
 
             TypeValue::Array(inner, ArrayType::Sized(n)) => {
                 format!(
@@ -614,6 +697,16 @@ impl TypeStore {
             }
         }
     }
+
+    fn format_lifetime(&self, lt: LifeTime) -> String {
+        match lt {
+            LifeTime::Local(id)    => format!("l{}",id.0),  // or however you name locals
+            LifeTime::External(i)  => format!("a{i}"),
+            LifeTime::Static       => "static".into(),
+            LifeTime::Unknown      => "idk".into(),
+        }
+    }
+
 
     fn format_struct_display(
         &self,
@@ -1569,10 +1662,12 @@ struct StructInferId(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleInferId(usize);
 
+
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PtrKind {
-    SolvedRaw,
-    SolvedRef(LifeTime),
+    Solved(PointerStyle),
 
     SafeRef,
     SomeRef,
@@ -1580,21 +1675,25 @@ enum PtrKind {
 }
 
 impl PtrKind {
-    fn is_ref(&self) -> Option<bool> {
+    pub fn is_fancy(self) -> Option<bool> {
         match self {
+            PtrKind::Solved(s) =>Some(s.is_fancy()),
             PtrKind::Unknown => None,
-            PtrKind::SolvedRaw => Some(false),
-            _ => Some(true),
+            _=> Some(true),
         }
     }
-    fn is_safe_ref(&self) -> Option<bool> {
+
+    ///this is specifically for diagnostics 
+    pub fn force_mock(&self)->PointerStyle {
         match self {
-            PtrKind::Unknown | PtrKind::SomeRef => None,
-            PtrKind::SolvedRaw | PtrKind::SolvedRef(LifeTime::Raw) => Some(false),
-            _ => Some(true),
+            PtrKind::Solved(s) =>*s,
+            PtrKind::Unknown => PointerStyle::Ref(LifeTime::Unknown),
+            PtrKind::SafeRef | PtrKind::SomeRef => PointerStyle::Ref(LifeTime::Unknown),
         }
     }
 }
+
+
 
 #[derive(Debug, Clone, Copy)]
 enum ResolveKind {
@@ -1618,7 +1717,7 @@ enum ResolveKind {
 
     Ptr {
         tgt: CId,
-        raw: Option<bool>,
+        kind: PtrKind,
         mutable: Option<bool>,
     },
 }
@@ -1862,6 +1961,7 @@ struct TypeExtra {
 struct TypeState {
     core: TypeCore,
     extra: TypeExtra,
+    next_local_lifetime: u32,
 }
 
 impl TypeState {
@@ -1877,6 +1977,7 @@ impl TypeState {
                 struct_infers: Vec::new(),
                 tuple_infers: Vec::new(),
             },
+            next_local_lifetime: 0,
         }
     }
 
@@ -1902,6 +2003,14 @@ impl TypeState {
         struct_defs.clear();
         struct_infers.clear();
         tuple_infers.clear();
+        self.next_local_lifetime = 0;
+    }
+
+    #[inline(always)]
+    fn mint_local_lifetime(&mut self) -> LifeTime {
+        let id = self.next_local_lifetime;
+        self.next_local_lifetime += 1;
+        LifeTime::Local(LifeId(id))
     }
 
     // =========================================================
@@ -2338,31 +2447,31 @@ fn __try_absorb(
         // =====================================================
         // Ptr
         // =====================================================
-        (Solved(t), Ptr { tgt, raw, mutable }) => {
-            unify_ptr_with_type(ex, types, tgt, raw, mutable, t)?;
+        (Solved(t), Ptr { tgt, kind, mutable }) => {
+            unify_ptr_with_type(ex, types, tgt, kind, mutable, t)?;
             Ok(true)
         }
 
         (
             Ptr {
                 tgt: dst_tgt,
-                raw: dst_raw,
+                kind: dst_kind,
                 mutable: dst_mut,
             },
             Ptr {
                 tgt: src_tgt,
-                raw: src_raw,
+                kind: src_kind,
                 mutable: src_mut,
             },
         ) => {
-            let raw = merge_ptr_flag(dst_raw, src_raw).ok_or_else(|| types.clash(ex, dst, src))?;
+            let kind = merge_ptr_kind(dst_kind, src_kind).ok_or_else(|| types.clash(ex, dst, src))?;
 
             let mutable =
                 merge_ptr_flag(dst_mut, src_mut).ok_or_else(|| types.clash(ex, dst, src))?;
 
             let tgt = types.unify(ex, dst_tgt, src_tgt)?;
 
-            types.set_cluster_state(dst, Ptr { tgt, raw, mutable });
+            types.set_cluster_state(dst, Ptr { tgt, kind, mutable });
             Ok(true)
         }
 
@@ -2520,8 +2629,8 @@ fn force_type(
             Ok(())
         }
 
-        ResolveKind::Ptr { tgt, raw, mutable } => {
-            unify_ptr_with_type(ex, types, tgt, raw, mutable, ty)?;
+        ResolveKind::Ptr { tgt, kind, mutable } => {
+            unify_ptr_with_type(ex, types, tgt, kind, mutable, ty)?;
             types.set_cluster_state(root, ResolveKind::Solved(ty));
             Ok(())
         }
@@ -2535,6 +2644,50 @@ fn merge_ptr_flag(a: Option<bool>, b: Option<bool>) -> Option<Option<bool>> {
         (Some(x), _) => Some(Some(x)),
         (_, Some(y)) => Some(Some(y)),
         (None, None) => Some(None),
+    }
+}
+
+fn merge_ptr_kind(a: PtrKind, b: PtrKind) -> Option<PtrKind> {
+    use PtrKind::*;
+
+    match (a, b) {
+        // identical
+        (x, y) if x == y => Some(x),
+
+        // Unknown disappears
+        (Unknown, x) | (x, Unknown) => Some(x),
+
+        // partial info refinement
+        (SomeRef, SafeRef) | (SafeRef, SomeRef) => Some(SafeRef),
+
+        // solved vs partial
+        (Solved(style), SafeRef) | (SafeRef, Solved(style)) => {
+            match style {
+                PointerStyle::Ref(lt) if lt != LifeTime::Unknown => Some(Solved(style)),
+                PointerStyle::Ref(_) => None, // &'? or &'raw is not safe
+                PointerStyle::Raw(_) => None,
+            }
+        }
+
+        (Solved(style), SomeRef) | (SomeRef, Solved(style)) => {
+            match style {
+                PointerStyle::Ref(_) => Some(Solved(style)),
+                PointerStyle::Raw(Nullable::No) => Some(Solved(style)), // &'raw
+                PointerStyle::Raw(Nullable::Yes) => None, // *T is nullable
+            }
+        }
+
+        // solved vs solved
+        (Solved(a), Solved(b)) => {
+            if a == b {
+                Some(Solved(a))
+            } else {
+                None
+            }
+        }
+
+        // remaining cases are incompatible
+        _ => None,
     }
 }
 
@@ -2555,34 +2708,34 @@ fn unify_ptr_with_type(
     ex: &mut ExternState,
     types: &mut TypeState,
     tgt: CId,
-    raw: Option<bool>,
+    kind: PtrKind,
     mutable: Option<bool>,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_ptr = BadTypeId(make_ptr_mock(
+    let found_ptr = |ex,types:&mut TypeState| {BadTypeId(make_ptr_mock(
         ex,
         &mut types.core,
         &types.extra,
         tgt,
-        raw,
+        kind,
         mutable,
-    ));
+    ))};
 
     let TypeValue::Ptr {
         tgt: ty_tgt,
-        raw: ty_raw,
+        style,
         mutable: ty_mut,
     } = *ex.store.type_value(ty)
     else {
         return Err(TypeClash {
-            found: Some(found_ptr),
+            found: Some(found_ptr(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     };
-
-    if matches!(raw, Some(x) if x != ty_raw) || matches!(mutable, Some(x) if x != ty_mut) {
+    //TODO lifetime
+    if matches!(kind.is_fancy(), Some(x) if x != style.is_fancy()) || matches!(mutable, Some(x) if x != ty_mut) {
         return Err(TypeClash {
-            found: Some(found_ptr),
+            found: Some(found_ptr(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2596,7 +2749,7 @@ fn unify_func_with_type(
     call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_func = BadTypeId(make_func_mock(ex, &mut types.core, &types.extra, call));
+    let found_func = |ex,types:&mut TypeState|{BadTypeId(make_func_mock(ex, &mut types.core, &types.extra, call))};
 
     let (cc, generics, params, ret) = match ex.store.type_value(ty) {
         TypeValue::Func {
@@ -2607,7 +2760,7 @@ fn unify_func_with_type(
         } => (*calling_convention, *generics, params.as_slice(), *ret),
         _ => {
             return Err(TypeClash {
-                found: Some(found_func),
+                found: Some(found_func(ex,types)),
                 wanted: Some(BadTypeId(ty)),
             });
         }
@@ -2616,7 +2769,7 @@ fn unify_func_with_type(
     let infer_cc = types.extra.func_defs[call.0].calling_convention;
     let Some(merged_cc) = merge_calling_convention(infer_cc, cc) else {
         return Err(TypeClash {
-            found: Some(found_func),
+            found: Some(found_func(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     };
@@ -2625,7 +2778,7 @@ fn unify_func_with_type(
 
     if types.extra.func_defs[call.0].generics != generics {
         return Err(TypeClash {
-            found: Some(found_func),
+            found: Some(found_func(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2633,7 +2786,7 @@ fn unify_func_with_type(
     let input_len = types.extra.func_defs[call.0].inputs.len();
     if params.len() != input_len {
         return Err(TypeClash {
-            found: Some(found_func),
+            found: Some(found_func(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2664,13 +2817,13 @@ fn unify_struct_with_type(
     call: StructInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_struct = BadTypeId(make_struct_mock(ex, &mut types.core, &types.extra, call));
+    let found_struct = |ex,types:&mut TypeState|{BadTypeId(make_struct_mock(ex, &mut types.core, &types.extra, call))};
 
     let (sid, glen) = match ex.store.type_value(ty) {
         TypeValue::Struct { id, generics } => (*id, generics.len()),
         _ => {
             return Err(TypeClash {
-                found: Some(found_struct),
+                found: Some(found_struct(ex,types)),
                 wanted: Some(BadTypeId(ty)),
             });
         }
@@ -2680,7 +2833,7 @@ fn unify_struct_with_type(
 
     if call_sid != sid || types.extra.struct_infers[call.0].generics.len() != glen {
         return Err(TypeClash {
-            found: Some(found_struct),
+            found: Some(found_struct(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2703,20 +2856,20 @@ fn unify_tuple_with_type(
     tuple: TupleInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_tuple = BadTypeId(make_tuple_mock(ex, &mut types.core, &types.extra, tuple));
+    let found_tuple = |ex,types:&mut TypeState|{BadTypeId(make_tuple_mock(ex, &mut types.core, &types.extra, tuple))};
 
     let ilen = types.extra.tuple_infers[tuple.0].items.len();
 
     let TypeValue::Tuple(items) = ex.store.type_value(ty) else {
         return Err(TypeClash {
-            found: Some(found_tuple),
+            found: Some(found_tuple(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     };
 
     if items.len() != ilen {
         return Err(TypeClash {
-            found: Some(found_tuple),
+            found: Some(found_tuple(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2740,19 +2893,19 @@ fn unify_array_with_type(
     size: ArrayType,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_array = BadTypeId(make_array_mock(
+    let found_array = |ex,types:&mut TypeState|{BadTypeId(make_array_mock(
         ex,
         &mut types.core,
         &types.extra,
         element,
         size,
-    ));
+    ))};
 
     let (ty_element, ty_size) = match ex.store.type_value(ty) {
         TypeValue::Array(item, n) => (*item, *n),
         _ => {
             return Err(TypeClash {
-                found: Some(found_array),
+                found: Some(found_array(ex,types)),
                 wanted: Some(BadTypeId(ty)),
             });
         }
@@ -2760,7 +2913,7 @@ fn unify_array_with_type(
 
     if ty_size != size {
         return Err(TypeClash {
-            found: Some(found_array),
+            found: Some(found_array(ex,types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2877,10 +3030,12 @@ fn try_resolve_ptr_type(
     ex: &mut ExternState,
     types: &mut TypeState,
     tgt: CId,
-    raw: Option<bool>,
+    kind: PtrKind,
     mutable: Option<bool>,
 ) -> Option<TypeId> {
-    let raw = raw?;
+    let PtrKind::Solved(style) = kind else {
+        return None 
+    };
     let mutable = mutable?;
 
     let root = types.root(tgt);
@@ -2890,7 +3045,7 @@ fn try_resolve_ptr_type(
         _ => return None,
     };
 
-    Some(ex.store.intern(TypeValue::Ptr { tgt, raw, mutable }))
+    Some(ex.store.intern(TypeValue::Ptr { tgt, style, mutable }))
 }
 
 fn simple_type_clash(a: TypeId, b: TypeId) -> TypeClash {
@@ -2926,8 +3081,8 @@ fn mock_type_from_cluster(
         ResolveKind::Array { element, size } => {
             make_array_mock_inner(ex, core, extra, element, size, limit)
         }
-        ResolveKind::Ptr { tgt, raw, mutable } => {
-            make_ptr_mock_inner(ex, core, extra, tgt, raw, mutable, limit)
+        ResolveKind::Ptr { tgt, kind, mutable } => {
+            make_ptr_mock_inner(ex, core, extra, tgt, kind, mutable, limit)
         }
         ResolveKind::Nothing => UNKNOWN_TYPE,
     };
@@ -3051,14 +3206,14 @@ fn make_ptr_mock_inner(
     core: &mut TypeCore,
     extra: &TypeExtra,
     tgt: CId,
-    raw: Option<bool>,
+    kind: PtrKind,
     mutable: Option<bool>,
     limit: &mut usize,
 ) -> TypeId {
     let tgt = mock_type_from_cluster(ex, core, extra, tgt, limit);
     ex.store.intern(TypeValue::Ptr {
         tgt,
-        raw: raw.unwrap_or(false),
+        style: kind.force_mock(),
         mutable: mutable.unwrap_or(false),
     })
 }
@@ -3068,11 +3223,11 @@ fn make_ptr_mock(
     core: &mut TypeCore,
     extra: &TypeExtra,
     tgt: CId,
-    raw: Option<bool>,
+    kind: PtrKind,
     mutable: Option<bool>,
 ) -> TypeId {
     let mut limit = EXPANSION_LIMIT;
-    make_ptr_mock_inner(ex, core, extra, tgt, raw, mutable, &mut limit)
+    make_ptr_mock_inner(ex, core, extra, tgt, kind, mutable, &mut limit)
 }
 
 fn extract_bad_type(
@@ -3098,8 +3253,8 @@ fn extract_bad_type(
         ResolveKind::Array { element, size } => {
             Some(BadTypeId(make_array_mock(ex, core, extra, element, size)))
         }
-        ResolveKind::Ptr { tgt, raw, mutable } => {
-            Some(BadTypeId(make_ptr_mock(ex, core, extra, tgt, raw, mutable)))
+        ResolveKind::Ptr { tgt, kind, mutable } => {
+            Some(BadTypeId(make_ptr_mock(ex, core, extra, tgt, kind, mutable)))
         }
 
         ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
@@ -3186,7 +3341,7 @@ fn specialize_type(
             idc
         }
 
-        TypeValue::Ptr { tgt, raw, mutable } => {
+        TypeValue::Ptr { tgt, style, mutable } => {
             let target = specialize_type(ex, types, tgt, generics, _loc);
 
             let id = CId(types.core.parent.len());
@@ -3194,7 +3349,7 @@ fn specialize_type(
             types.core.cluster.0.push(Cluster {
                 state: ResolveKind::Ptr {
                     tgt: target,
-                    raw: Some(raw),
+                    kind: PtrKind::Solved(style),
                     mutable: Some(mutable),
                 },
             });
@@ -3349,18 +3504,6 @@ fn resolve_member_method_access(
 
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, access_site);
 
-    let Some(self_style) = get_member_self_style(ex.store, method_ty, struct_name) else {
-        member_method_type_sites.push(PendingMemberMethodType {
-            site: access_site,
-            member: member_name,
-            full_method: method_local,
-            receiver: base_cluster,
-            receiver_value: base_value,
-        });
-        search.bind_val(access_site, method_local);
-        return method_local;
-    };
-
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
         unreachable!("specialized member access method must resolve to a function shape");
     };
@@ -3372,7 +3515,6 @@ fn resolve_member_method_access(
         ResolvedMemberOverload {
             params,
             ret,
-            self_style,
             full_method: method_local,
         },
         access_site,
@@ -3422,16 +3564,18 @@ fn resolve_any_type_builtin_member_access(
     base_cluster: CId,
     member_name: StrId,
 ) -> CId {
-    let (self_style, self_param, output) = if member_name == FREE_STR {
+    //this assumes u can full solve here
+    //u cant we dont know the lifetime at all
+    //we need to do a downcast of it which is a bit anoying
+    let (self_param, output) = if member_name == FREE_STR {
         let generic_self = types.new_cluster();
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
             tgt: generic_self,
-            raw: Some(false),
+            kind:PtrKind::SafeRef,
             mutable: Some(true),
         };
         (
-            MemberSelfStyle::Ref { mutable: true },
             self_param,
             types.new_solved(BuiltinType::Void.into()),
         )
@@ -3439,11 +3583,10 @@ fn resolve_any_type_builtin_member_access(
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
             tgt: base_cluster,
-            raw: Some(false),
+            kind:PtrKind::Solved(PointerStyle::Raw(Nullable::No)),
             mutable: Some(false),
         };
         (
-            MemberSelfStyle::Ref { mutable: false },
             self_param,
             types.new_solved(BuiltinType::Usize.into()),
         )
@@ -3464,7 +3607,6 @@ fn resolve_any_type_builtin_member_access(
     let overload = ResolvedMemberOverload {
         params: vec![self_param],
         ret: output,
-        self_style,
         full_method,
     };
 
@@ -3514,15 +3656,40 @@ fn is_any_ref_to_named_struct_input_type(
     }
 }
 
-fn try_resolve_struct_deref_method(
+#[derive(Debug, Clone, Copy)]
+struct ResolvedStructDerefMethod {
+    self_param: CId,
+    self_kind: PtrKind,
+    self_mutable: Option<bool>,
+    target: CId,
+    ret_kind: PtrKind,
+    ret_mutable: Option<bool>,
+}
+
+fn ptr_parts_from_cluster(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    cid: CId,
+) -> Option<(CId, PtrKind, Option<bool>)> {
+    let root = types.root(cid);
+    match types.cluster_state(root) {
+        ResolveKind::Ptr { tgt, kind, mutable } => Some((tgt, kind, mutable)),
+        ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
+            TypeValue::Ptr { tgt, style, mutable } => {
+                Some((types.new_solved(*tgt), PtrKind::Solved(*style), Some(*mutable)))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn resolve_struct_deref_method(
     ex: &mut ExternState,
     types: &mut TypeState,
     site: ValId,
-    base_value: ValId,
-    base_cluster: CId,
     method_ty: TypeId,
-    expected_self_mutable: bool,
-) -> Option<ResolvedStructDerefTarget> {
+) -> Option<ResolvedStructDerefMethod> {
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, site);
 
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
@@ -3532,46 +3699,24 @@ fn try_resolve_struct_deref_method(
     let self_param = params.first().copied()?;
     debug_assert_eq!(params.len(), 1);
 
-    let self_input = member_self_input_cluster(
-        &mut types.core,
-        base_cluster,
-        MemberSelfStyle::Ref {
-            mutable: expected_self_mutable,
-        },
-    );
-
-    if let Err(clash) = unify_if_distinct(ex, types, self_param, self_input) {
-        ex.push_error(TypeError::ValuesContradict {
-            expectation_reason: "deref receiver must match special deref method self parameter",
-            site,
-            found: base_value,
-            expected_place: site,
-            clash,
-        });
+    let (_, self_kind, self_mutable) = ptr_parts_from_cluster(ex, types, self_param)?;
+    if !matches!(self_kind.is_fancy(), Some(true)) {
         return None;
     }
 
-    let ret_root = types.root(ret);
-    match types.cluster_state(ret_root) {
-        ResolveKind::Ptr {
-            tgt,
-            raw: Some(false),
-            ..
-        } => Some(ResolvedStructDerefTarget {
-            target: tgt,
-            deref_result_ptr: ret_root,
-        }),
-
-        ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
-            TypeValue::Ptr { tgt, raw, .. } if !*raw => Some(ResolvedStructDerefTarget {
-                target: types.new_solved(*tgt),
-                deref_result_ptr: types.new_solved(ty),
-            }),
-            _ => None,
-        },
-
-        _ => None,
+    let (target, ret_kind, ret_mutable) = ptr_parts_from_cluster(ex, types, ret)?;
+    if !matches!(ret_kind.is_fancy(), Some(true)) {
+        return None;
     }
+
+    Some(ResolvedStructDerefMethod {
+        self_param,
+        self_kind,
+        self_mutable,
+        target,
+        ret_kind,
+        ret_mutable,
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3593,23 +3738,45 @@ fn resolve_struct_deref_target(
         .map(|info| (info.deref, info.deref_mut))
         .unwrap_or((None, None));
 
-    deref_mut
-        .and_then(|method| {
-            try_resolve_struct_deref_method(ex, types, site, base_value, base_cluster, method, true)
-        })
-        .or_else(|| {
-            deref.and_then(|method| {
-                try_resolve_struct_deref_method(
-                    ex,
-                    types,
-                    site,
-                    base_value,
-                    base_cluster,
-                    method,
-                    false,
-                )
-            })
-        })
+    let has_both = deref.is_some() && deref_mut.is_some();
+    let chosen_method = deref.or(deref_mut)?;
+    let resolved = resolve_struct_deref_method(ex, types, site, chosen_method)?;
+
+    let receiver_input = types.new_cluster();
+    types.set_cluster_state(
+        receiver_input,
+        ResolveKind::Ptr {
+            tgt: base_cluster,
+            kind: resolved.self_kind,
+            mutable: if has_both { None } else { resolved.self_mutable },
+        },
+    );
+
+    if let Err(clash) = unify_if_distinct(ex, types, resolved.self_param, receiver_input) {
+        ex.push_error(TypeError::ValuesContradict {
+            expectation_reason: "deref receiver must match special deref method self parameter",
+            site,
+            found: base_value,
+            expected_place: site,
+            clash,
+        });
+        return None;
+    }
+
+    let deref_result_ptr = types.new_cluster();
+    types.set_cluster_state(
+        deref_result_ptr,
+        ResolveKind::Ptr {
+            tgt: resolved.target,
+            kind: resolved.ret_kind,
+            mutable: if has_both { None } else { resolved.ret_mutable },
+        },
+    );
+
+    Some(ResolvedStructDerefTarget {
+        target: resolved.target,
+        deref_result_ptr,
+    })
 }
 
 fn push_cannot_deref_error(
@@ -4312,7 +4479,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             let ans = ctx.new_cluster();
             ctx.types.core.cluster[ans].state = ResolveKind::Ptr {
                 tgt,
-                raw: None,
+                kind:PtrKind::Unknown,
                 mutable,
             };
             ctx.bind_val(v, ans);
@@ -5242,7 +5409,7 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             let c = ctx.new_cluster();
             ctx.types.core.cluster[c].state = ResolveKind::Ptr {
                 mutable: Some(mutable),
-                raw: Some(false),
+                kind:PtrKind::SafeRef,
                 tgt,
             };
             ctx.bind_pat(p, c);
@@ -5466,13 +5633,23 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             base,
             raw,
             mutable,
-            lifetime: _,
+            lifetime,
         } => {
+            let kind = if raw {
+                PtrKind::Solved(PointerStyle::Raw(Nullable::Yes))
+            }else if lifetime == Some(LifeTimeId::STATIC){
+                PtrKind::Solved(PointerStyle::Ref(LifeTime::Static))
+            }else if lifetime == Some(LifeTimeId::RAW){
+                PtrKind::Solved(PointerStyle::Raw(Nullable::No))
+            }else {
+                PtrKind::SafeRef
+            };
+
             let tgt = compile_type_expr(ctx, base);
             let ans = ctx.new_cluster();
             ctx.types.core.cluster[ans].state = ResolveKind::Ptr {
                 tgt,
-                raw: Some(raw),
+                kind,
                 mutable: Some(mutable),
             };
             ans
@@ -5851,58 +6028,83 @@ fn is_named_struct_type_with_all_generics_free(
 
 #[inline(always)]
 fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeId], TypeId)> {
+    if ty.0 >= store.values.len() {
+        return None;
+    }
     match store.type_value(ty) {
         TypeValue::Func { params, ret, .. } => Some((params.as_slice(), *ret)),
         _ => None,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MemberSelfStyle {
-    Value,
-    Ref { mutable: bool },
-}
-
 #[derive(Debug, Clone, Copy)]
 struct StructOperatorOverload {
     method_type: TypeId,
-    self_style: MemberSelfStyle,
+    method_site:ValId,
+    self_pointer_style: Option<PointerStyle>,
 }
 
 #[inline(always)]
-fn get_member_self_style(
+fn get_member_self_pointer_style(
     store: &TypeStore,
     method_ty: TypeId,
     struct_name: NameId,
-) -> Option<MemberSelfStyle> {
+) -> Option<Option<PointerStyle>> {
     let (inputs, _) = method_signature_type_parts(store, method_ty)?;
     let first_input = *inputs.first()?;
     match store.type_value(first_input) {
         TypeValue::Struct { .. } if is_named_struct_type(store, first_input, struct_name) => {
-            Some(MemberSelfStyle::Value)
+            Some(None)
         }
-        TypeValue::Ptr { tgt, raw, mutable }
-            if !*raw && is_named_struct_type(store, *tgt, struct_name) =>
+        TypeValue::Ptr { tgt, style, mutable }
+            if style.is_fancy() && is_named_struct_type(store, *tgt, struct_name) =>
         {
-            Some(MemberSelfStyle::Ref { mutable: *mutable })
+            let _ = mutable;
+            Some(Some(*style))
         }
         _ => None,
     }
 }
 
 #[inline(always)]
-fn member_self_input_cluster(core: &mut TypeCore, lhs: CId, style: MemberSelfStyle) -> CId {
-    match style {
-        MemberSelfStyle::Value => lhs,
-        MemberSelfStyle::Ref { mutable } => {
-            let ans = core.new_cluster();
-            core.cluster[ans].state = ResolveKind::Ptr {
-                tgt: lhs,
-                raw: Some(false),
-                mutable: Some(mutable),
-            };
-            ans
+fn receiver_cluster_for_self_param(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    receiver: CId,
+    self_param: CId,
+) -> Option<CId> {
+    let self_root = types.root(self_param);
+    match types.cluster_state(self_root) {
+        ResolveKind::Struct(_) => Some(receiver),
+        ResolveKind::Solved(t) => match ex.store.type_value(t) {
+            TypeValue::Struct { .. } => Some(receiver),
+            TypeValue::Ptr { style, mutable, .. } => {
+                let adapted = types.new_cluster();
+                types.set_cluster_state(
+                    adapted,
+                    ResolveKind::Ptr {
+                        tgt: receiver,
+                        kind: PtrKind::Solved(*style),
+                        mutable: Some(*mutable),
+                    },
+                );
+                Some(adapted)
+            }
+            _ => Some(receiver),
+        },
+        ResolveKind::Ptr { kind, mutable, .. } => {
+            let adapted = types.new_cluster();
+            types.set_cluster_state(
+                adapted,
+                ResolveKind::Ptr {
+                    tgt: receiver,
+                    kind,
+                    mutable,
+                },
+            );
+            Some(adapted)
         }
+        _ => Some(receiver),
     }
 }
 
@@ -5912,9 +6114,9 @@ fn is_self_like_member_input_type(store: &TypeStore, input: TypeId, struct_name:
         TypeValue::Struct { .. } => is_named_struct_type(store, input, struct_name),
         TypeValue::Ptr {
             tgt,
-            raw,
+            style,
             mutable: _,
-        } => !*raw && is_named_struct_type(store, *tgt, struct_name),
+        } => style.is_fancy() && is_named_struct_type(store, *tgt, struct_name),
         _ => false,
     }
 }
@@ -5929,9 +6131,9 @@ fn is_ref_to_named_struct_input_type(
     match store.type_value(input) {
         TypeValue::Ptr {
             tgt,
-            raw,
+            style,
             mutable: is_mut,
-        } => !*raw && *is_mut == mutable && is_named_struct_type(store, *tgt, struct_name),
+        } => style.is_fancy() && *is_mut == mutable && is_named_struct_type(store, *tgt, struct_name),
         _ => false,
     }
 }
@@ -5943,8 +6145,8 @@ fn is_mut_ref_to_named_struct_input_type(
     struct_name: NameId,
 ) -> bool {
     match store.type_value(input) {
-        TypeValue::Ptr { tgt, raw, mutable } => {
-            !*raw
+        TypeValue::Ptr { tgt, style, mutable } => {
+            style.is_fancy()
                 && *mutable
                 && is_named_struct_type_with_all_generics_free(store, *tgt, struct_name)
         }
@@ -5957,9 +6159,9 @@ fn get_ref_target_type_if_kind(store: &TypeStore, ty: TypeId, mutable: bool) -> 
     match store.type_value(ty) {
         TypeValue::Ptr {
             tgt,
-            raw,
+            style,
             mutable: is_mut,
-        } if !*raw && *is_mut == mutable => Some(*tgt),
+        } if style.is_fancy() && *is_mut == mutable => Some(*tgt),
         _ => None,
     }
 }
@@ -6027,13 +6229,14 @@ fn maybe_insert_member_overload(
         && is_self_like_member_input_type(store, first_input, struct_name)
         && extra == 1
     {
-        let self_style = get_member_self_style(store, method_ty, struct_name)
+        let self_pointer_style = get_member_self_pointer_style(store, method_ty, struct_name)
             .expect("validated binary operator overload must have self-like first parameter");
         info.operators.insert(
             method_name,
             StructOperatorOverload {
                 method_type: method_ty,
-                self_style,
+                method_site,
+                self_pointer_style,
             },
         );
         return;
@@ -6043,13 +6246,14 @@ fn maybe_insert_member_overload(
         && is_self_like_member_input_type(store, first_input, struct_name)
         && extra == 0
     {
-        let self_style = get_member_self_style(store, method_ty, struct_name)
+        let self_pointer_style = get_member_self_pointer_style(store, method_ty, struct_name)
             .expect("validated unary operator overload must have self-like first parameter");
         info.operators.insert(
             method_name,
             StructOperatorOverload {
                 method_type: method_ty,
-                self_style,
+                method_site,
+                self_pointer_style,
             },
         );
     }
@@ -6392,17 +6596,20 @@ fn classify_raw_pointer_operand(
     let root = core.find_root(cid);
     match core.cluster[root].state {
         ResolveKind::Solved(t) => match ex.store.type_value(t) {
-            TypeValue::Ptr { raw: true, .. } => RawPointerOperandKind::RawPointer(root),
-            TypeValue::Ptr { raw: false, .. } => RawPointerOperandKind::NonRawPointer,
+            TypeValue::Ptr { style:PointerStyle::Raw(Nullable::Yes), .. } => RawPointerOperandKind::RawPointer(root),
+            TypeValue::Ptr { .. } => RawPointerOperandKind::NonRawPointer,
             _ => RawPointerOperandKind::NotPointer,
         },
-        ResolveKind::Ptr {
-            raw: Some(true), ..
-        } => RawPointerOperandKind::RawPointer(root),
-        ResolveKind::Ptr {
-            raw: Some(false), ..
-        } => RawPointerOperandKind::NonRawPointer,
-        ResolveKind::Ptr { raw: None, .. } => RawPointerOperandKind::UnknownRawPointer(root),
+         ResolveKind::Ptr {
+           kind, ..
+        } => {
+            match kind.is_fancy(){
+                Some(false)=>RawPointerOperandKind::RawPointer(root),
+                Some(true)=>RawPointerOperandKind::NonRawPointer,
+                None=> RawPointerOperandKind::UnknownRawPointer(root),
+            }
+        }
+
         ResolveKind::Nothing => RawPointerOperandKind::Unknown,
         _ => RawPointerOperandKind::NotPointer,
     }
@@ -6428,19 +6635,16 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
             let sid = types.extra.struct_infers[call_id.0].sid;
             OperandKind::UserStruct(ex.store.struct_value(sid).name)
         }
-
-        ResolveKind::Ptr {
-            raw: Some(true), ..
-        } => OperandKind::KnownNonUser,
-        ResolveKind::Ptr {
-            tgt,
-            raw: Some(false),
-            ..
-        } => classify_operand(ex, types, tgt),
-        ResolveKind::Ptr { tgt, .. } => match classify_operand(ex, types, tgt) {
-            OperandKind::KnownNonUser => OperandKind::KnownNonUser,
-            _ => OperandKind::Unknown,
-        },
+        ResolveKind::Ptr { tgt, kind,.. }=>{
+            match kind.is_fancy(){
+                Some(false)=>OperandKind::KnownNonUser,
+                Some(true)=>classify_operand(ex, types, tgt),
+                None=>match classify_operand(ex, types, tgt) {
+                    OperandKind::KnownNonUser => OperandKind::KnownNonUser,
+                    _ => OperandKind::Unknown,
+                },
+            }
+        } 
 
         ResolveKind::Nothing => OperandKind::Unknown,
     }
@@ -6581,7 +6785,6 @@ const OP_OVERLOAD_SIGNATURE_MISMATCH: &str =
 struct ResolvedMemberOverload {
     params: Vec<CId>,
     ret: CId,
-    self_style: MemberSelfStyle,
     full_method: CId,
 }
 
@@ -6623,7 +6826,6 @@ fn resolve_member_overload_signature(
     ex: &mut ExternState,
     types: &mut TypeState,
     method_ty: TypeId,
-    self_style: MemberSelfStyle,
     loc: ValId,
 ) -> Option<ResolvedMemberOverload> {
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, loc);
@@ -6634,7 +6836,6 @@ fn resolve_member_overload_signature(
     Some(ResolvedMemberOverload {
         params,
         ret,
-        self_style,
         full_method: method_local,
     })
 }
@@ -6650,13 +6851,13 @@ fn make_member_closure(
     let ResolvedMemberOverload {
         mut params,
         ret,
-        self_style,
         full_method: _,
     } = method;
     debug_assert!(!params.is_empty());
 
     let self_param = params.remove(0);
-    let self_input = member_self_input_cluster(&mut types.core, receiver, self_style);
+    let self_input = receiver_cluster_for_self_param(ex, types, receiver, self_param)
+        .ok_or_else(|| types.clash(ex, self_param, receiver))?;
     unify_if_distinct(ex, types, self_param, self_input)?;
 
     Ok(types.new_func(FuncInfer {
@@ -6704,7 +6905,6 @@ fn resolve_operator_site(
                 ex,
                 types,
                 method.method_type,
-                method.self_style,
                 site.loc,
             ) else {
                 let err = bin_op_overload_not_found_error(ex, types, site, lhs, rhs);
@@ -6765,13 +6965,13 @@ fn resolve_operator_site(
     if matches!(op, Add | Sub) {
         //there simply isnt any intresting operator on non user types other than pointer arithmetic
         if matches!(lhs_kind, OperandKind::KnownNonUser)
-            && let ResolveKind::Ptr { ref mut raw, .. } = types.core.cluster[lhs].state
+            && let ResolveKind::Ptr { ref mut kind, .. } = types.core.cluster[lhs].state
         {
-            if raw.is_none() {
+            if kind.is_fancy().is_none() {
                 progress = true;
-                *raw = Some(true);
-            } else if matches!(raw, Some(false)) {
-                //todo!("error")
+                *kind=PtrKind::SafeRef;
+            } else if matches!(kind.is_fancy(), Some(true)) {
+                todo!("error")
             }
         }
 
@@ -6991,7 +7191,6 @@ fn resolve_unary_operator_site(
                 ex,
                 types,
                 method.method_type,
-                method.self_style,
                 site.loc,
             ) else {
                 let err = un_op_overload_not_found_error(ex, types, site, input);
@@ -7156,7 +7355,6 @@ fn resolve_assign_pre_post_site(
                 ex,
                 types,
                 method.method_type,
-                method.self_style,
                 site.loc,
             ) else {
                 return ResolveOutcome::drop(progress);
@@ -7425,8 +7623,8 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
             ResolveKind::Array { element, size } => {
                 try_resolve_array_type(&mut ctx.ex, &mut ctx.types, element, size)
             }
-            ResolveKind::Ptr { tgt, raw, mutable } => {
-                try_resolve_ptr_type(&mut ctx.ex, &mut ctx.types, tgt, raw, mutable)
+            ResolveKind::Ptr { tgt, kind, mutable } => {
+                try_resolve_ptr_type(&mut ctx.ex, &mut ctx.types, tgt,kind, mutable)
             }
             _ => None,
         };
@@ -8535,13 +8733,13 @@ mod type_infer_tests {
         let is_int_ptr = |store: &TypeStore, ty: TypeId, raw: bool, mutable: bool| {
             let TypeValue::Ptr {
                 tgt,
-                raw: got_raw,
+                style,
                 mutable: got_mut,
             } = *store.type_value(ty)
             else {
                 return false;
             };
-            got_raw == raw
+            style.is_fancy() == raw
                 && got_mut == mutable
                 && matches!(store.type_value(tgt), TypeValue::Builtin(BuiltinType::Int))
         };
@@ -9389,10 +9587,10 @@ mod type_infer_tests {
             infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
         let y_ty = find_let_stmt_type(&program, solved_types, f, "y");
 
-        let TypeValue::Ptr { tgt, raw, mutable } = *store.type_value(y_ty) else {
+        let TypeValue::Ptr { tgt, style, mutable } = *store.type_value(y_ty) else {
             panic!("expected raw pointer result type")
         };
-        assert!(raw);
+        assert_eq!(style,PointerStyle::Raw(Nullable::Yes));
         assert!(!mutable);
         assert!(matches!(
             store.type_value(tgt),
@@ -9413,10 +9611,10 @@ mod type_infer_tests {
             infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
         let y_ty = find_let_stmt_type(&program, solved_types, f, "y");
 
-        let TypeValue::Ptr { tgt, raw, mutable } = *store.type_value(y_ty) else {
+        let TypeValue::Ptr { tgt, style, mutable } = *store.type_value(y_ty) else {
             panic!("expected raw pointer result type")
         };
-        assert!(raw);
+        assert_eq!(style,PointerStyle::Raw(Nullable::Yes));
         assert!(mutable);
         assert!(matches!(
             store.type_value(tgt),
@@ -9649,10 +9847,10 @@ mod type_infer_tests {
             panic!("expected tracked full member method type to be a function")
         };
         assert_eq!(full_params.len(), 1);
-        let TypeValue::Ptr { tgt, raw, mutable } = store.type_value(full_params[0]) else {
+        let TypeValue::Ptr { tgt, style, mutable } = store.type_value(full_params[0]) else {
             panic!("expected tracked full self parameter to stay as pointer")
         };
-        assert!(!*raw);
+        assert!(matches!(style,PointerStyle::Ref(LifeTime::External(_))));
         assert!(!*mutable);
         assert_eq!(*tgt, s_ty);
         assert!(matches!(

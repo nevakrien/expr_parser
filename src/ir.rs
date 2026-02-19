@@ -1915,6 +1915,9 @@ impl Program {
                                 return TypeExpr::Poison;
                             };
 
+                            if life == LifeTimeId::RAW {
+                                mutable = true;
+                            }
                             Some(life)
                         }
                     }

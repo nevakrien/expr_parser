@@ -1,8 +1,8 @@
 use crate::ir::NameId;
 use crate::program::Program;
 use crate::type_inference::{
-    ArrayType, BuiltinType, StructId, TypeId, TypeStore, TypeValue, UNKNOWN_FLOAT_SIZE,
-    UNKNOWN_INT_SIZE, UNKNOWN_TYPE,
+    ArrayType, BuiltinType, Nullable, PointerStyle, StructId, TypeId, TypeStore, TypeValue,
+    UNKNOWN_FLOAT_SIZE, UNKNOWN_INT_SIZE, UNKNOWN_TYPE,
 };
 use std::collections::HashMap;
 
@@ -466,7 +466,7 @@ mod tests {
 
         let ptr_a = store.intern(TypeValue::Ptr {
             tgt: a_tid,
-            raw: true,
+            style: PointerStyle::Raw(Nullable::Yes),
             mutable: true,
         });
         store.set_struct_fields(a_sid, vec![(next, ptr_a)]);
@@ -494,7 +494,7 @@ mod tests {
         ));
         let ptr_unsized = store.intern(TypeValue::Ptr {
             tgt: unsized_array,
-            raw: true,
+            style: PointerStyle::Raw(Nullable::Yes),
             mutable: true,
         });
         store.set_struct_fields(sid, vec![(data, ptr_unsized)]);
