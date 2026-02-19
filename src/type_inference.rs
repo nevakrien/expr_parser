@@ -9254,7 +9254,7 @@ mod type_infer_tests {
             else {
                 return false;
             };
-            style.is_fancy() == raw
+            style.is_fancy() == !raw
                 && got_mut == mutable
                 && matches!(store.type_value(tgt), TypeValue::Builtin(BuiltinType::Int))
         };
@@ -10577,7 +10577,7 @@ mod type_infer_tests {
             Wrapper.get = fn(&mut self:Wrapper)->&mut int {&mut self.inner}
 
             Unsafe = struct { inner: &'raw Wrapper };
-            Unsafe.__deref_mut = fn(self: &'raw mut Unsafe) -> &mut int  { (&*self)->get() };
+            Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut int  { (&*self)->get() };
 
             RawCalc = struct { inner: &'raw Unsafe };
             RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw mut Unsafe { self->get() };
