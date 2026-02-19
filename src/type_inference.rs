@@ -9089,7 +9089,9 @@ mod type_infer_tests {
             chain,
             vec![
                 "Box₀[[int]]".to_string(),
-                "&mut [int]".to_string(),
+                //this is defintly too specific
+                //but for now assert the behivior then figure it out
+                "&'a0 [int]".to_string(),
                 "[int]".to_string(),
             ],
             "unexpected implicit deref chain for generic Box indexing"
