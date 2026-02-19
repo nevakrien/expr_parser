@@ -1149,11 +1149,11 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     let mut err_count = 0;
     let mut function_checked = 0;
 
-    unsafe {
-        perf_init();
-    }
+    // unsafe {
+    //     perf_init();
+    // }
 
-    unsafe { perf_begin() }
+    // unsafe { perf_begin() }
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
@@ -1164,10 +1164,10 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
 
         return Ok((Err(err_count), function_checked));
     }
-    let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
-    unsafe { perf_done(name.as_ptr()) };
+    // let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()) };
 
-    unsafe { perf_begin() }
+    // unsafe { perf_begin() }
 
     for (_n, methods) in program.member_methods.iter() {
         for (_s, method_set) in methods.iter() {
@@ -1205,8 +1205,8 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         }
     }
 
-    let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
-    unsafe { perf_done(name.as_ptr()) };
+    // let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()) };
 
     if err_count > 0 {
         return Ok((Err(err_count), function_checked));
@@ -7430,9 +7430,11 @@ fn resolve_operator_site(
             if kind.is_fancy().is_none() {
                 progress = true;
                 *kind = PtrKind::SafeRef;
-            } else if matches!(kind.is_fancy(), Some(true)) {
-                todo!("error because pointer arithmetic is for nullables")
-            }
+            } 
+
+            // else if matches!(kind.is_fancy(), Some(true)) {
+            //     todo!("error because pointer arithmetic is for nullables")
+            // }
         }
 
         let lhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, lhs);
