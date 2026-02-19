@@ -10,6 +10,13 @@ The implementation is intentionally constraint-first and error-tolerant:
 
 There is also an explicit engineering style used in the file: many internal "workhorse" helpers take *parts* of `InferState` (`store`, `parent`, `cluster`, `func_defs`, `struct_infers`, etc.) instead of taking `&mut InferState` wholesale. This is deliberate to enable complex borrow patterns and avoid borrow-checker dead ends during recursive unification and deferred solving.
 
+Recent lifetime/deref work added two important implementation details:
+
+- `TypeState` now carries a lightweight lifetime union-find (`LId` parent + origin site storage) used by implicit deref chains.
+- Implicit deref resolution threads shared chain state (`shared_lid`, chain mutability) through `resolve_struct_deref_target`, so multiple deref hops can share one lifetime identity and defer mutability collapse until enough information is known.
+- Finalization currently applies a temporary hack that normalizes unresolved pointer lifetime kinds (`SafeRef`/`SomeRef`) to `Ref(Unknown)` right before `finalize`.
+- Unresolved finalization diagnostics (`Unresolved`, `UnresolvedPattern`, `UnresolvedTypeExpr`) now carry a best-effort mock type shape (`BadTypeId`) for richer error output.
+
 For syntax-level semantics that span parser/lowering/typecheck (for example `fn` vs `cfn`, `struct` vs `cstruct`, and `. / :: / ->` behavior), see `agent_docs/language_semantics.md`.
 
 ## The Workhorses (Read These First)

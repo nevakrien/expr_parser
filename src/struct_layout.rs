@@ -1,8 +1,8 @@
 use crate::ir::NameId;
 use crate::program::Program;
 use crate::type_inference::{
-    ArrayType, BuiltinType, Nullable, PointerStyle, StructId, TypeId, TypeStore, TypeValue,
-    UNKNOWN_FLOAT_SIZE, UNKNOWN_INT_SIZE, UNKNOWN_TYPE,
+    ArrayType, BuiltinType, StructId, TypeId, TypeStore, TypeValue, UNKNOWN_FLOAT_SIZE,
+    UNKNOWN_INT_SIZE, UNKNOWN_TYPE,
 };
 use std::collections::HashMap;
 
@@ -411,6 +411,8 @@ mod tests {
     use super::*;
     use crate::ir::StructLayoutSpec;
     use crate::program::Program;
+    use crate::type_inference::Nullable;
+    use crate::type_inference::PointerStyle;
     use crate::type_inference::{ArrayType, GenId, StructRep, TypeStore, TypeValue};
 
     fn name(program: &mut Program, text: &str) -> NameId {

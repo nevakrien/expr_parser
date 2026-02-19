@@ -291,32 +291,47 @@ impl ErrorReporter {
 
                 self.print_report(report.finish())
             }
-            TypeError::Unresolved { value } => {
+            TypeError::Unresolved { value, found } => {
                 let loc = program.value_loc(*value);
-                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("could not infer type")
                     .with_label(
                         Label::new((loc.file, loc.range.clone()))
                             .with_message("type is needed here"),
                     );
 
+                if let Some(found) = found {
+                    let found = store.get_bad_type_string(program, *found);
+                    report = report.with_note(format!("best known unresolved shape: {found}"));
+                }
+
                 self.print_report(report.finish())
             }
-            TypeError::UnresolvedPattern { pattern } => {
+            TypeError::UnresolvedPattern { pattern, found } => {
                 let loc = program.pattern_loc(*pattern);
-                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("could not infer pattern type")
                     .with_label(
                         Label::new((loc.file, loc.range.clone()))
                             .with_message("pattern type is needed here"),
                     );
 
+                if let Some(found) = found {
+                    let found = store.get_bad_type_string(program, *found);
+                    report = report.with_note(format!("best known unresolved shape: {found}"));
+                }
+
                 self.print_report(report.finish())
             }
-            TypeError::UnresolvedTypeExpr { expr } => {
+            TypeError::UnresolvedTypeExpr { expr, found } => {
                 let loc = program.type_expr_loc(*expr);
-                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("could not infer state type");
+
+                if let Some(found) = found {
+                    let found = store.get_bad_type_string(program, *found);
+                    report = report.with_note(format!("best known unresolved shape: {found}"));
+                }
 
                 self.print_report(report.finish())
             }

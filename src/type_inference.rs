@@ -21,11 +21,11 @@
 // most constrains place some sort of pending task.
 // and then later when enough type info is present we can apply unification.
 // ================================================================
-use crate::ir::LifeTimeId;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
+use crate::ir::LifeTimeId;
 use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
@@ -157,9 +157,8 @@ pub enum ArrayType {
     Unsized,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Nullable{
+pub enum Nullable {
     Yes,
     No,
 }
@@ -171,8 +170,8 @@ pub enum PointerStyle {
 }
 
 impl PointerStyle {
-    pub fn is_fancy(&self)->bool{
-        !matches!(self,PointerStyle::Raw(Nullable::Yes))
+    pub fn is_fancy(&self) -> bool {
+        !matches!(self, PointerStyle::Raw(Nullable::Yes))
     }
 }
 
@@ -207,15 +206,15 @@ impl PartialOrd for LifeTime {
         match (self, other) {
             // locals are shorter than externals and static
             (Local(_), External(_)) => Some(Ordering::Less),
-            (Local(_), Static)      => Some(Ordering::Less),
+            (Local(_), Static) => Some(Ordering::Less),
 
             // external shorter than static
-            (External(_), Static)   => Some(Ordering::Less),
+            (External(_), Static) => Some(Ordering::Less),
 
             // reverse relations
             (External(_), Local(_)) => Some(Ordering::Greater),
-            (Static, Local(_))      => Some(Ordering::Greater),
-            (Static, External(_))   => Some(Ordering::Greater),
+            (Static, Local(_)) => Some(Ordering::Greater),
+            (Static, External(_)) => Some(Ordering::Greater),
 
             // Unknown is incomparable
             (Unknown, _) | (_, Unknown) => None,
@@ -228,7 +227,6 @@ impl PartialOrd for LifeTime {
 
             //static is static
             (LifeTime::Static, LifeTime::Static) => Some(Ordering::Equal),
-
         }
     }
 }
@@ -246,7 +244,7 @@ pub enum TypeValue {
     },
     Ptr {
         tgt: TypeId,
-        style:PointerStyle,
+        style: PointerStyle,
         mutable: bool,
     },
     Generic(GenId),
@@ -259,8 +257,6 @@ pub enum TypeValue {
         generics: Vec<TypeId>,
     },
 }
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LifeId(pub u32);
@@ -638,7 +634,11 @@ impl TypeStore {
                     self.get_type_string_nested(program, *ret, gen_count)
                 )
             }
-            TypeValue::Ptr { tgt, style, mutable } => {
+            TypeValue::Ptr {
+                tgt,
+                style,
+                mutable,
+            } => {
                 let inner = self.get_type_string_nested(program, *tgt, gen_count);
 
                 match style {
@@ -673,7 +673,6 @@ impl TypeStore {
                 }
             }
 
-
             TypeValue::Array(inner, ArrayType::Sized(n)) => {
                 format!(
                     "[{};{n}]",
@@ -700,13 +699,12 @@ impl TypeStore {
 
     fn format_lifetime(&self, lt: LifeTime) -> String {
         match lt {
-            LifeTime::Local(id)    => format!("l{}",id.0),  // or however you name locals
-            LifeTime::External(i)  => format!("a{i}"),
-            LifeTime::Static       => "static".into(),
-            LifeTime::Unknown      => "idk".into(),
+            LifeTime::Local(id) => format!("l{}", id.0), // or however you name locals
+            LifeTime::External(i) => format!("a{i}"),
+            LifeTime::Static => "static".into(),
+            LifeTime::Unknown => "idk".into(),
         }
     }
-
 
     fn format_struct_display(
         &self,
@@ -949,13 +947,16 @@ pub enum TypeError {
     },
     Unresolved {
         value: ValId,
+        found: Option<BadTypeId>,
     },
     UnresolvedPattern {
         pattern: PatId,
+        found: Option<BadTypeId>,
     },
 
     UnresolvedTypeExpr {
         expr: TExpId,
+        found: Option<BadTypeId>,
     },
 
     UnknownField {
@@ -1503,7 +1504,32 @@ fn main_solver(ctx: &mut InferState) {
         return;
     }
 
+    // HACK (temporary, likely not the final design): before finalize we force unresolved
+    // pointer lifetime kinds (`SafeRef`/`SomeRef`) into `Ref(Unknown)`.
+    finalize_unresolved_lifetimes_as_unknown(ctx);
+
     finalize(ctx);
+}
+
+fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
+    for cid in (0..ctx.types.core.cluster.len()).map(CId) {
+        let root = ctx.types.root(cid);
+        if root != cid {
+            continue;
+        }
+
+        let state = ctx.types.cluster_state(root);
+        if let ResolveKind::Ptr { tgt, kind, mutable } = state {
+            let kind = match kind {
+                PtrKind::SafeRef | PtrKind::SomeRef => {
+                    PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
+                }
+                x => x,
+            };
+            ctx.types
+                .set_cluster_state(root, ResolveKind::Ptr { tgt, kind, mutable });
+        }
+    }
 }
 
 // ===================================
@@ -1662,9 +1688,6 @@ struct StructInferId(usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct TupleInferId(usize);
 
-
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum PtrKind {
     Solved(PointerStyle),
@@ -1677,23 +1700,21 @@ enum PtrKind {
 impl PtrKind {
     pub fn is_fancy(self) -> Option<bool> {
         match self {
-            PtrKind::Solved(s) =>Some(s.is_fancy()),
+            PtrKind::Solved(s) => Some(s.is_fancy()),
             PtrKind::Unknown => None,
-            _=> Some(true),
+            _ => Some(true),
         }
     }
 
-    ///this is specifically for diagnostics 
-    pub fn force_mock(&self)->PointerStyle {
+    ///this is specifically for diagnostics
+    pub fn force_mock(&self) -> PointerStyle {
         match self {
-            PtrKind::Solved(s) =>*s,
+            PtrKind::Solved(s) => *s,
             PtrKind::Unknown => PointerStyle::Ref(LifeTime::Unknown),
             PtrKind::SafeRef | PtrKind::SomeRef => PointerStyle::Ref(LifeTime::Unknown),
         }
     }
 }
-
-
 
 #[derive(Debug, Clone, Copy)]
 enum ResolveKind {
@@ -1961,7 +1982,9 @@ struct TypeExtra {
 struct TypeState {
     core: TypeCore,
     extra: TypeExtra,
-    next_local_lifetime: u32,
+    life_parent: LifeVec<LId>,
+    life_place: LifeVec<ValId>,
+    next_undeclared_lifetime: u32,
 }
 
 impl TypeState {
@@ -1977,15 +2000,14 @@ impl TypeState {
                 struct_infers: Vec::new(),
                 tuple_infers: Vec::new(),
             },
-            next_local_lifetime: 0,
+            life_parent: LifeVec(Vec::new()),
+            life_place: LifeVec(Vec::new()),
+            next_undeclared_lifetime: 0,
         }
     }
 
     fn clear_local_state(&mut self) {
-        let TypeCore {
-            parent,
-            cluster,
-        } = &mut self.core;
+        let TypeCore { parent, cluster } = &mut self.core;
 
         let TypeExtra {
             func_defs,
@@ -2003,14 +2025,51 @@ impl TypeState {
         struct_defs.clear();
         struct_infers.clear();
         tuple_infers.clear();
-        self.next_local_lifetime = 0;
+        self.life_parent.0.clear();
+        self.life_place.0.clear();
+        self.next_undeclared_lifetime = 0;
     }
 
     #[inline(always)]
-    fn mint_local_lifetime(&mut self) -> LifeTime {
-        let id = self.next_local_lifetime;
-        self.next_local_lifetime += 1;
-        LifeTime::Local(LifeId(id))
+    fn new_lid_at(&mut self, place: ValId) -> LId {
+        let id = LId(self.life_parent.0.len());
+        self.life_parent.0.push(id);
+        self.life_place.0.push(place);
+        id
+    }
+
+    #[inline(always)]
+    fn find_lid_root(&mut self, lid: LId) -> LId {
+        let p = self.life_parent[lid];
+        if p == lid {
+            return lid;
+        }
+        let root = self.find_lid_root(p);
+        self.life_parent[lid] = root;
+        root
+    }
+
+    #[inline(always)]
+    fn union_lids(&mut self, a: LId, b: LId) -> LId {
+        let ra = self.find_lid_root(a);
+        let rb = self.find_lid_root(b);
+        if ra != rb {
+            self.life_parent[rb] = ra;
+        }
+        ra
+    }
+
+    #[inline(always)]
+    fn lid_lifetime(&mut self, lid: LId) -> LifeTime {
+        let root = self.find_lid_root(lid);
+        LifeTime::Local(LifeId(root.0 as u32))
+    }
+
+    #[inline(always)]
+    fn mint_undeclared_signature_lifetime(&mut self) -> LifeTime {
+        let id = self.next_undeclared_lifetime;
+        self.next_undeclared_lifetime += 1;
+        LifeTime::External(id)
     }
 
     // =========================================================
@@ -2464,7 +2523,8 @@ fn __try_absorb(
                 mutable: src_mut,
             },
         ) => {
-            let kind = merge_ptr_kind(dst_kind, src_kind).ok_or_else(|| types.clash(ex, dst, src))?;
+            let kind =
+                merge_ptr_kind(dst_kind, src_kind).ok_or_else(|| types.clash(ex, dst, src))?;
 
             let mutable =
                 merge_ptr_flag(dst_mut, src_mut).ok_or_else(|| types.clash(ex, dst, src))?;
@@ -2673,7 +2733,7 @@ fn merge_ptr_kind(a: PtrKind, b: PtrKind) -> Option<PtrKind> {
             match style {
                 PointerStyle::Ref(_) => Some(Solved(style)),
                 PointerStyle::Raw(Nullable::No) => Some(Solved(style)), // &'raw
-                PointerStyle::Raw(Nullable::Yes) => None, // *T is nullable
+                PointerStyle::Raw(Nullable::Yes) => None,               // *T is nullable
             }
         }
 
@@ -2712,14 +2772,16 @@ fn unify_ptr_with_type(
     mutable: Option<bool>,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_ptr = |ex,types:&mut TypeState| {BadTypeId(make_ptr_mock(
-        ex,
-        &mut types.core,
-        &types.extra,
-        tgt,
-        kind,
-        mutable,
-    ))};
+    let found_ptr = |ex, types: &mut TypeState| {
+        BadTypeId(make_ptr_mock(
+            ex,
+            &mut types.core,
+            &types.extra,
+            tgt,
+            kind,
+            mutable,
+        ))
+    };
 
     let TypeValue::Ptr {
         tgt: ty_tgt,
@@ -2728,14 +2790,16 @@ fn unify_ptr_with_type(
     } = *ex.store.type_value(ty)
     else {
         return Err(TypeClash {
-            found: Some(found_ptr(ex,types)),
+            found: Some(found_ptr(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     };
     //TODO lifetime
-    if matches!(kind.is_fancy(), Some(x) if x != style.is_fancy()) || matches!(mutable, Some(x) if x != ty_mut) {
+    if matches!(kind.is_fancy(), Some(x) if x != style.is_fancy())
+        || matches!(mutable, Some(x) if x != ty_mut)
+    {
         return Err(TypeClash {
-            found: Some(found_ptr(ex,types)),
+            found: Some(found_ptr(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2749,7 +2813,9 @@ fn unify_func_with_type(
     call: FuncInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_func = |ex,types:&mut TypeState|{BadTypeId(make_func_mock(ex, &mut types.core, &types.extra, call))};
+    let found_func = |ex, types: &mut TypeState| {
+        BadTypeId(make_func_mock(ex, &mut types.core, &types.extra, call))
+    };
 
     let (cc, generics, params, ret) = match ex.store.type_value(ty) {
         TypeValue::Func {
@@ -2760,7 +2826,7 @@ fn unify_func_with_type(
         } => (*calling_convention, *generics, params.as_slice(), *ret),
         _ => {
             return Err(TypeClash {
-                found: Some(found_func(ex,types)),
+                found: Some(found_func(ex, types)),
                 wanted: Some(BadTypeId(ty)),
             });
         }
@@ -2769,7 +2835,7 @@ fn unify_func_with_type(
     let infer_cc = types.extra.func_defs[call.0].calling_convention;
     let Some(merged_cc) = merge_calling_convention(infer_cc, cc) else {
         return Err(TypeClash {
-            found: Some(found_func(ex,types)),
+            found: Some(found_func(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     };
@@ -2778,7 +2844,7 @@ fn unify_func_with_type(
 
     if types.extra.func_defs[call.0].generics != generics {
         return Err(TypeClash {
-            found: Some(found_func(ex,types)),
+            found: Some(found_func(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2786,7 +2852,7 @@ fn unify_func_with_type(
     let input_len = types.extra.func_defs[call.0].inputs.len();
     if params.len() != input_len {
         return Err(TypeClash {
-            found: Some(found_func(ex,types)),
+            found: Some(found_func(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2817,13 +2883,15 @@ fn unify_struct_with_type(
     call: StructInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_struct = |ex,types:&mut TypeState|{BadTypeId(make_struct_mock(ex, &mut types.core, &types.extra, call))};
+    let found_struct = |ex, types: &mut TypeState| {
+        BadTypeId(make_struct_mock(ex, &mut types.core, &types.extra, call))
+    };
 
     let (sid, glen) = match ex.store.type_value(ty) {
         TypeValue::Struct { id, generics } => (*id, generics.len()),
         _ => {
             return Err(TypeClash {
-                found: Some(found_struct(ex,types)),
+                found: Some(found_struct(ex, types)),
                 wanted: Some(BadTypeId(ty)),
             });
         }
@@ -2833,7 +2901,7 @@ fn unify_struct_with_type(
 
     if call_sid != sid || types.extra.struct_infers[call.0].generics.len() != glen {
         return Err(TypeClash {
-            found: Some(found_struct(ex,types)),
+            found: Some(found_struct(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2856,20 +2924,22 @@ fn unify_tuple_with_type(
     tuple: TupleInferId,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_tuple = |ex,types:&mut TypeState|{BadTypeId(make_tuple_mock(ex, &mut types.core, &types.extra, tuple))};
+    let found_tuple = |ex, types: &mut TypeState| {
+        BadTypeId(make_tuple_mock(ex, &mut types.core, &types.extra, tuple))
+    };
 
     let ilen = types.extra.tuple_infers[tuple.0].items.len();
 
     let TypeValue::Tuple(items) = ex.store.type_value(ty) else {
         return Err(TypeClash {
-            found: Some(found_tuple(ex,types)),
+            found: Some(found_tuple(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     };
 
     if items.len() != ilen {
         return Err(TypeClash {
-            found: Some(found_tuple(ex,types)),
+            found: Some(found_tuple(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -2893,19 +2963,21 @@ fn unify_array_with_type(
     size: ArrayType,
     ty: TypeId,
 ) -> Result<(), TypeClash> {
-    let found_array = |ex,types:&mut TypeState|{BadTypeId(make_array_mock(
-        ex,
-        &mut types.core,
-        &types.extra,
-        element,
-        size,
-    ))};
+    let found_array = |ex, types: &mut TypeState| {
+        BadTypeId(make_array_mock(
+            ex,
+            &mut types.core,
+            &types.extra,
+            element,
+            size,
+        ))
+    };
 
     let (ty_element, ty_size) = match ex.store.type_value(ty) {
         TypeValue::Array(item, n) => (*item, *n),
         _ => {
             return Err(TypeClash {
-                found: Some(found_array(ex,types)),
+                found: Some(found_array(ex, types)),
                 wanted: Some(BadTypeId(ty)),
             });
         }
@@ -2913,7 +2985,7 @@ fn unify_array_with_type(
 
     if ty_size != size {
         return Err(TypeClash {
-            found: Some(found_array(ex,types)),
+            found: Some(found_array(ex, types)),
             wanted: Some(BadTypeId(ty)),
         });
     }
@@ -3034,7 +3106,7 @@ fn try_resolve_ptr_type(
     mutable: Option<bool>,
 ) -> Option<TypeId> {
     let PtrKind::Solved(style) = kind else {
-        return None 
+        return None;
     };
     let mutable = mutable?;
 
@@ -3045,7 +3117,11 @@ fn try_resolve_ptr_type(
         _ => return None,
     };
 
-    Some(ex.store.intern(TypeValue::Ptr { tgt, style, mutable }))
+    Some(ex.store.intern(TypeValue::Ptr {
+        tgt,
+        style,
+        mutable,
+    }))
 }
 
 fn simple_type_clash(a: TypeId, b: TypeId) -> TypeClash {
@@ -3253,9 +3329,9 @@ fn extract_bad_type(
         ResolveKind::Array { element, size } => {
             Some(BadTypeId(make_array_mock(ex, core, extra, element, size)))
         }
-        ResolveKind::Ptr { tgt, kind, mutable } => {
-            Some(BadTypeId(make_ptr_mock(ex, core, extra, tgt, kind, mutable)))
-        }
+        ResolveKind::Ptr { tgt, kind, mutable } => Some(BadTypeId(make_ptr_mock(
+            ex, core, extra, tgt, kind, mutable,
+        ))),
 
         ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
         ResolveKind::FloatLike => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
@@ -3341,7 +3417,11 @@ fn specialize_type(
             idc
         }
 
-        TypeValue::Ptr { tgt, style, mutable } => {
+        TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } => {
             let target = specialize_type(ex, types, tgt, generics, _loc);
 
             let id = CId(types.core.parent.len());
@@ -3572,24 +3652,18 @@ fn resolve_any_type_builtin_member_access(
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
             tgt: generic_self,
-            kind:PtrKind::SafeRef,
+            kind: PtrKind::SafeRef,
             mutable: Some(true),
         };
-        (
-            self_param,
-            types.new_solved(BuiltinType::Void.into()),
-        )
+        (self_param, types.new_solved(BuiltinType::Void.into()))
     } else if matches!(member_name, SIZE_OF_STR | ALIGN_OF_STR) {
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
             tgt: base_cluster,
-            kind:PtrKind::Solved(PointerStyle::Raw(Nullable::No)),
+            kind: PtrKind::Solved(PointerStyle::Raw(Nullable::No)),
             mutable: Some(false),
         };
-        (
-            self_param,
-            types.new_solved(BuiltinType::Usize.into()),
-        )
+        (self_param, types.new_solved(BuiltinType::Usize.into()))
     } else {
         ex.push_error(TypeError::IlegalMethod {
             member_name,
@@ -3666,6 +3740,23 @@ struct ResolvedStructDerefMethod {
     ret_mutable: Option<bool>,
 }
 
+#[inline(always)]
+fn ptr_kind_attach_lid_if_safe_ref(kind: PtrKind, lt: LifeTime) -> PtrKind {
+    match kind {
+        PtrKind::Solved(PointerStyle::Ref(_)) => PtrKind::Solved(PointerStyle::Ref(lt)),
+        PtrKind::SafeRef => PtrKind::Solved(PointerStyle::Ref(lt)),
+        x => x,
+    }
+}
+
+#[inline(always)]
+fn ptr_kind_is_safe_ref(kind: PtrKind) -> bool {
+    matches!(
+        kind,
+        PtrKind::SafeRef | PtrKind::Solved(PointerStyle::Ref(_))
+    )
+}
+
 fn ptr_parts_from_cluster(
     ex: &mut ExternState,
     types: &mut TypeState,
@@ -3675,9 +3766,15 @@ fn ptr_parts_from_cluster(
     match types.cluster_state(root) {
         ResolveKind::Ptr { tgt, kind, mutable } => Some((tgt, kind, mutable)),
         ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
-            TypeValue::Ptr { tgt, style, mutable } => {
-                Some((types.new_solved(*tgt), PtrKind::Solved(*style), Some(*mutable)))
-            }
+            TypeValue::Ptr {
+                tgt,
+                style,
+                mutable,
+            } => Some((
+                types.new_solved(*tgt),
+                PtrKind::Solved(*style),
+                Some(*mutable),
+            )),
             _ => None,
         },
         _ => None,
@@ -3700,12 +3797,12 @@ fn resolve_struct_deref_method(
     debug_assert_eq!(params.len(), 1);
 
     let (_, self_kind, self_mutable) = ptr_parts_from_cluster(ex, types, self_param)?;
-    if !matches!(self_kind.is_fancy(), Some(true)) {
+    if matches!(self_kind.is_fancy(), Some(false)) {
         return None;
     }
 
     let (target, ret_kind, ret_mutable) = ptr_parts_from_cluster(ex, types, ret)?;
-    if !matches!(ret_kind.is_fancy(), Some(true)) {
+    if matches!(ret_kind.is_fancy(), Some(false)) {
         return None;
     }
 
@@ -3731,6 +3828,8 @@ fn resolve_struct_deref_target(
     base_value: ValId,
     base_cluster: CId,
     struct_name: NameId,
+    shared_lid: &mut Option<LId>,
+    chain_mutability: &mut Option<bool>,
 ) -> Option<ResolvedStructDerefTarget> {
     let (deref, deref_mut) = ex
         .store
@@ -3738,17 +3837,71 @@ fn resolve_struct_deref_target(
         .map(|info| (info.deref, info.deref_mut))
         .unwrap_or((None, None));
 
-    let has_both = deref.is_some() && deref_mut.is_some();
-    let chosen_method = deref.or(deref_mut)?;
-    let resolved = resolve_struct_deref_method(ex, types, site, chosen_method)?;
+    let deref_resolved =
+        deref.and_then(|method| resolve_struct_deref_method(ex, types, site, method));
+    let deref_mut_resolved =
+        deref_mut.and_then(|method| resolve_struct_deref_method(ex, types, site, method));
+
+    let (resolved, has_both) = match (deref_resolved, deref_mut_resolved) {
+        (Some(x), Some(_y)) => (x, true),
+        (Some(x), None) => (x, false),
+        (None, Some(y)) => (y, false),
+        (None, None) => return None,
+    };
+
+    let mut self_kind = resolved.self_kind;
+    let mut ret_kind = resolved.ret_kind;
+    let mut self_mutable = resolved.self_mutable;
+    let mut ret_mutable = resolved.ret_mutable;
+
+    if has_both {
+        let lid = match *shared_lid {
+            Some(lid) => lid,
+            None => {
+                let lid = types.new_lid_at(site);
+                *shared_lid = Some(lid);
+                lid
+            }
+        };
+        let lid_lt = types.lid_lifetime(lid);
+        self_kind = ptr_kind_attach_lid_if_safe_ref(self_kind, lid_lt);
+        ret_kind = ptr_kind_attach_lid_if_safe_ref(ret_kind, lid_lt);
+        self_mutable = None;
+        ret_mutable = None;
+    }
+
+    if let Some(chain_m) = *chain_mutability {
+        self_mutable = Some(chain_m);
+        ret_mutable = Some(chain_m);
+    } else if let Some(step_m) = self_mutable.or(ret_mutable) {
+        *chain_mutability = Some(step_m);
+        self_mutable = Some(step_m);
+        ret_mutable = Some(step_m);
+    }
+
+    if ptr_kind_is_safe_ref(self_kind)
+        && matches!(ret_kind, PtrKind::Solved(PointerStyle::Raw(Nullable::No)))
+    {
+        let lid = match *shared_lid {
+            Some(lid) => lid,
+            None => {
+                let lid = types.new_lid_at(site);
+                *shared_lid = Some(lid);
+                lid
+            }
+        };
+        let lid_lt = types.lid_lifetime(lid);
+        ret_kind = PtrKind::Solved(PointerStyle::Ref(lid_lt));
+        ret_mutable = Some(false);
+    }
 
     let receiver_input = types.new_cluster();
     types.set_cluster_state(
         receiver_input,
         ResolveKind::Ptr {
             tgt: base_cluster,
-            kind: resolved.self_kind,
-            mutable: if has_both { None } else { resolved.self_mutable },
+            kind: self_kind,
+            mutable: self_mutable,
         },
     );
 
@@ -3768,8 +3921,8 @@ fn resolve_struct_deref_target(
         deref_result_ptr,
         ResolveKind::Ptr {
             tgt: resolved.target,
-            kind: resolved.ret_kind,
-            mutable: if has_both { None } else { resolved.ret_mutable },
+            kind: ret_kind,
+            mutable: ret_mutable,
         },
     );
 
@@ -3863,6 +4016,8 @@ fn try_resolve_member_access(
         AccessKind::Static => "static member access does not support implicit dereference",
     };
     let mut used_implicit_deref_steps = 0usize;
+    let mut deref_chain_lid = None;
+    let mut deref_chain_mutability = None;
 
     loop {
         match types.core.cluster[current].state {
@@ -4008,6 +4163,8 @@ fn try_resolve_member_access(
                                     base_value,
                                     current,
                                     struct_name,
+                                    &mut deref_chain_lid,
+                                    &mut deref_chain_mutability,
                                 )
                             {
                                 let next = types.root(target.target);
@@ -4145,6 +4302,8 @@ fn try_resolve_member_access(
                             base_value,
                             current,
                             struct_name,
+                            &mut deref_chain_lid,
+                            &mut deref_chain_mutability,
                         )
                     {
                         let next = types.root(target.target);
@@ -4479,7 +4638,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             let ans = ctx.new_cluster();
             ctx.types.core.cluster[ans].state = ResolveKind::Ptr {
                 tgt,
-                kind:PtrKind::Unknown,
+                kind: PtrKind::Unknown,
                 mutable,
             };
             ctx.bind_val(v, ans);
@@ -4492,6 +4651,8 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
             let src = gather_constraints(ctx, base, current_output);
             let src = ctx.types.root(src);
+            let mut deref_chain_lid = None;
+            let mut deref_chain_mutability = None;
             let resolved_target = match ctx.types.core.cluster[src].state {
                 ResolveKind::Ptr { tgt, .. } => Some(tgt),
                 ResolveKind::Nothing => {
@@ -4517,6 +4678,8 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                         base,
                         src,
                         struct_name,
+                        &mut deref_chain_lid,
+                        &mut deref_chain_mutability,
                     ) else {
                         push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
                         return output;
@@ -4541,6 +4704,8 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                                 base,
                                 src,
                                 struct_name,
+                                &mut deref_chain_lid,
+                                &mut deref_chain_mutability,
                             ) else {
                                 push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
                                 return output;
@@ -4899,7 +5064,10 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             };
 
             let Some(base_type) = ctx.ex.ans.typedef_types.get(texp) else {
-                ctx.push_error(TypeError::UnresolvedTypeExpr { expr: *texp });
+                ctx.push_error(TypeError::UnresolvedTypeExpr {
+                    expr: *texp,
+                    found: None,
+                });
                 for arg in cons.args.ids() {
                     gather_constraints(ctx, arg, current_output);
                 }
@@ -5409,7 +5577,7 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             let c = ctx.new_cluster();
             ctx.types.core.cluster[c].state = ResolveKind::Ptr {
                 mutable: Some(mutable),
-                kind:PtrKind::SafeRef,
+                kind: PtrKind::SafeRef,
                 tgt,
             };
             ctx.bind_pat(p, c);
@@ -5637,12 +5805,16 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
         } => {
             let kind = if raw {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::Yes))
-            }else if lifetime == Some(LifeTimeId::STATIC){
+            } else if lifetime == Some(LifeTimeId::STATIC) {
                 PtrKind::Solved(PointerStyle::Ref(LifeTime::Static))
-            }else if lifetime == Some(LifeTimeId::RAW){
+            } else if lifetime == Some(LifeTimeId::RAW) {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
-            }else {
-                PtrKind::SafeRef
+            } else if let Some(lid) = lifetime {
+                PtrKind::Solved(PointerStyle::Ref(LifeTime::External(lid.0 as u32)))
+            } else {
+                PtrKind::Solved(PointerStyle::Ref(
+                    ctx.types.mint_undeclared_signature_lifetime(),
+                ))
             };
 
             let tgt = compile_type_expr(ctx, base);
@@ -5659,13 +5831,69 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             params,
             output_type,
         } => {
+            let mut unresolved_ref_inputs = Vec::new();
             let inputs = params
                 .ids()
-                .map(|arg| compile_type_expr(ctx, arg))
+                .map(|arg| {
+                    let c = compile_type_expr(ctx, arg);
+                    if matches!(
+                        ctx.ex.program.type_expr(arg),
+                        TypeExpr::Ptr {
+                            raw: false,
+                            lifetime: None,
+                            ..
+                        }
+                    ) {
+                        unresolved_ref_inputs.push(c);
+                    }
+                    c
+                })
                 .collect::<Vec<_>>();
             let output = output_type
                 .map(|o| compile_type_expr(ctx, o))
                 .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()));
+
+            if let Some(out_expr) = output_type
+                && matches!(
+                    ctx.ex.program.type_expr(out_expr),
+                    TypeExpr::Ptr {
+                        raw: false,
+                        lifetime: None,
+                        ..
+                    }
+                )
+            {
+                if unresolved_ref_inputs.len() == 1 {
+                    let in_root = ctx.types.root(unresolved_ref_inputs[0]);
+                    let out_root = ctx.types.root(output);
+                    let in_state = ctx.types.cluster_state(in_root);
+                    let out_state = ctx.types.cluster_state(out_root);
+                    if let (
+                        ResolveKind::Ptr {
+                            kind: PtrKind::Solved(PointerStyle::Ref(lt)),
+                            ..
+                        },
+                        ResolveKind::Ptr { tgt, mutable, .. },
+                    ) = (in_state, out_state)
+                    {
+                        ctx.types.set_cluster_state(
+                            out_root,
+                            ResolveKind::Ptr {
+                                tgt,
+                                kind: PtrKind::Solved(PointerStyle::Ref(lt)),
+                                mutable,
+                            },
+                        );
+                    }
+                } else {
+                    let loc = ctx.ex.program.type_expr_loc(out_expr);
+                    ctx.ex.push_error(TypeError::Simple {
+                        loc,
+                        message: "elided output lifetime requires exactly one elided input reference",
+                    });
+                }
+            }
+
             ctx.new_func(FuncInfer {
                 calling_convention,
                 generics: 0,
@@ -6040,7 +6268,7 @@ fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeI
 #[derive(Debug, Clone, Copy)]
 struct StructOperatorOverload {
     method_type: TypeId,
-    method_site:ValId,
+    method_site: ValId,
     self_pointer_style: Option<PointerStyle>,
 }
 
@@ -6056,9 +6284,11 @@ fn get_member_self_pointer_style(
         TypeValue::Struct { .. } if is_named_struct_type(store, first_input, struct_name) => {
             Some(None)
         }
-        TypeValue::Ptr { tgt, style, mutable }
-            if style.is_fancy() && is_named_struct_type(store, *tgt, struct_name) =>
-        {
+        TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } if style.is_fancy() && is_named_struct_type(store, *tgt, struct_name) => {
             let _ = mutable;
             Some(Some(*style))
         }
@@ -6133,7 +6363,9 @@ fn is_ref_to_named_struct_input_type(
             tgt,
             style,
             mutable: is_mut,
-        } => style.is_fancy() && *is_mut == mutable && is_named_struct_type(store, *tgt, struct_name),
+        } => {
+            style.is_fancy() && *is_mut == mutable && is_named_struct_type(store, *tgt, struct_name)
+        }
         _ => false,
     }
 }
@@ -6145,7 +6377,11 @@ fn is_mut_ref_to_named_struct_input_type(
     struct_name: NameId,
 ) -> bool {
     match store.type_value(input) {
-        TypeValue::Ptr { tgt, style, mutable } => {
+        TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } => {
             style.is_fancy()
                 && *mutable
                 && is_named_struct_type_with_all_generics_free(store, *tgt, struct_name)
@@ -6272,18 +6508,55 @@ fn check_struct_deref_targets_compatible(
         return;
     };
 
-    let Some(deref_target) =
-        get_deref_method_target_type(ctx.ex.store, deref_ty, _struct_name, false, false)
+    let Some((deref_inputs, deref_output)) = method_signature_type_parts(ctx.ex.store, deref_ty)
     else {
         return;
     };
-    let Some(deref_mut_target) =
-        get_deref_method_target_type(ctx.ex.store, deref_mut_ty, _struct_name, true, true)
+    let Some((deref_mut_inputs, deref_mut_output)) =
+        method_signature_type_parts(ctx.ex.store, deref_mut_ty)
     else {
         return;
     };
+    if deref_inputs.len() != 1 || deref_mut_inputs.len() != 1 {
+        return;
+    }
 
-    if deref_target != deref_mut_target {
+    let (deref_self_style, deref_self_mut) = match ctx.ex.store.type_value(deref_inputs[0]) {
+        TypeValue::Ptr { style, mutable, .. } => (*style, *mutable),
+        _ => return,
+    };
+    let (deref_mut_self_style, deref_mut_self_mut) =
+        match ctx.ex.store.type_value(deref_mut_inputs[0]) {
+            TypeValue::Ptr { style, mutable, .. } => (*style, *mutable),
+            _ => return,
+        };
+    let (deref_out_style, deref_out_mut, deref_target) = match ctx.ex.store.type_value(deref_output)
+    {
+        TypeValue::Ptr {
+            style,
+            mutable,
+            tgt,
+        } => (*style, *mutable, *tgt),
+        _ => return,
+    };
+    let (deref_mut_out_style, deref_mut_out_mut, deref_mut_target) =
+        match ctx.ex.store.type_value(deref_mut_output) {
+            TypeValue::Ptr {
+                style,
+                mutable,
+                tgt,
+            } => (*style, *mutable, *tgt),
+            _ => return,
+        };
+
+    if deref_target != deref_mut_target
+        || deref_self_style.is_fancy() != deref_mut_self_style.is_fancy()
+        || deref_out_style.is_fancy() != deref_mut_out_style.is_fancy()
+        || deref_self_mut
+        || !deref_mut_self_mut
+        || deref_out_mut
+        || !deref_mut_out_mut
+    {
         ctx.push_error(TypeError::Simple {
             loc: ctx.ex.program.value_loc(deref_mut_site),
             message: "`__deref` and `__deref_mut` must dereference to the same target type",
@@ -6596,19 +6869,18 @@ fn classify_raw_pointer_operand(
     let root = core.find_root(cid);
     match core.cluster[root].state {
         ResolveKind::Solved(t) => match ex.store.type_value(t) {
-            TypeValue::Ptr { style:PointerStyle::Raw(Nullable::Yes), .. } => RawPointerOperandKind::RawPointer(root),
+            TypeValue::Ptr {
+                style: PointerStyle::Raw(Nullable::Yes),
+                ..
+            } => RawPointerOperandKind::RawPointer(root),
             TypeValue::Ptr { .. } => RawPointerOperandKind::NonRawPointer,
             _ => RawPointerOperandKind::NotPointer,
         },
-         ResolveKind::Ptr {
-           kind, ..
-        } => {
-            match kind.is_fancy(){
-                Some(false)=>RawPointerOperandKind::RawPointer(root),
-                Some(true)=>RawPointerOperandKind::NonRawPointer,
-                None=> RawPointerOperandKind::UnknownRawPointer(root),
-            }
-        }
+        ResolveKind::Ptr { kind, .. } => match kind.is_fancy() {
+            Some(false) => RawPointerOperandKind::RawPointer(root),
+            Some(true) => RawPointerOperandKind::NonRawPointer,
+            None => RawPointerOperandKind::UnknownRawPointer(root),
+        },
 
         ResolveKind::Nothing => RawPointerOperandKind::Unknown,
         _ => RawPointerOperandKind::NotPointer,
@@ -6635,16 +6907,14 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
             let sid = types.extra.struct_infers[call_id.0].sid;
             OperandKind::UserStruct(ex.store.struct_value(sid).name)
         }
-        ResolveKind::Ptr { tgt, kind,.. }=>{
-            match kind.is_fancy(){
-                Some(false)=>OperandKind::KnownNonUser,
-                Some(true)=>classify_operand(ex, types, tgt),
-                None=>match classify_operand(ex, types, tgt) {
-                    OperandKind::KnownNonUser => OperandKind::KnownNonUser,
-                    _ => OperandKind::Unknown,
-                },
-            }
-        } 
+        ResolveKind::Ptr { tgt, kind, .. } => match kind.is_fancy() {
+            Some(false) => OperandKind::KnownNonUser,
+            Some(true) => classify_operand(ex, types, tgt),
+            None => match classify_operand(ex, types, tgt) {
+                OperandKind::KnownNonUser => OperandKind::KnownNonUser,
+                _ => OperandKind::Unknown,
+            },
+        },
 
         ResolveKind::Nothing => OperandKind::Unknown,
     }
@@ -6901,12 +7171,9 @@ fn resolve_operator_site(
             .copied();
 
         if let Some(method) = method {
-            let Some(overload_sig) = resolve_member_overload_signature(
-                ex,
-                types,
-                method.method_type,
-                site.loc,
-            ) else {
+            let Some(overload_sig) =
+                resolve_member_overload_signature(ex, types, method.method_type, site.loc)
+            else {
                 let err = bin_op_overload_not_found_error(ex, types, site, lhs, rhs);
                 ex.push_error(err);
                 return ResolveOutcome::drop(progress);
@@ -6969,7 +7236,7 @@ fn resolve_operator_site(
         {
             if kind.is_fancy().is_none() {
                 progress = true;
-                *kind=PtrKind::SafeRef;
+                *kind = PtrKind::SafeRef;
             } else if matches!(kind.is_fancy(), Some(true)) {
                 todo!("error")
             }
@@ -7187,12 +7454,9 @@ fn resolve_unary_operator_site(
             .and_then(|info| info.operators.get(&method_name))
             .copied();
         if let Some(method) = method {
-            let Some(overload_sig) = resolve_member_overload_signature(
-                ex,
-                types,
-                method.method_type,
-                site.loc,
-            ) else {
+            let Some(overload_sig) =
+                resolve_member_overload_signature(ex, types, method.method_type, site.loc)
+            else {
                 let err = un_op_overload_not_found_error(ex, types, site, input);
                 ex.push_error(err);
                 return ResolveOutcome::drop(progress);
@@ -7351,12 +7615,9 @@ fn resolve_assign_pre_post_site(
             .copied();
 
         if let Some(method) = method {
-            let Some(overload_sig) = resolve_member_overload_signature(
-                ex,
-                types,
-                method.method_type,
-                site.loc,
-            ) else {
+            let Some(overload_sig) =
+                resolve_member_overload_signature(ex, types, method.method_type, site.loc)
+            else {
                 return ResolveOutcome::drop(progress);
             };
 
@@ -7460,6 +7721,8 @@ fn resolve_index_site(
     let mut used_implicit_deref_steps = 0usize;
     let max_implicit_deref_steps = 64usize;
     let mut implicit_receivers = Vec::new();
+    let mut deref_chain_lid = None;
+    let mut deref_chain_mutability = None;
 
     let element = loop {
         let program = &ex.program;
@@ -7512,6 +7775,8 @@ fn resolve_index_site(
                         site.base_value,
                         current,
                         struct_name,
+                        &mut deref_chain_lid,
+                        &mut deref_chain_mutability,
                     ) else {
                         ex.push_error(TypeError::Simple {
                             loc: ex.program.value_loc(site.site),
@@ -7548,6 +7813,8 @@ fn resolve_index_site(
                     site.base_value,
                     current,
                     struct_name,
+                    &mut deref_chain_lid,
+                    &mut deref_chain_mutability,
                 ) else {
                     ex.push_error(TypeError::Simple {
                         loc: ex.program.value_loc(site.site),
@@ -7624,7 +7891,7 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
                 try_resolve_array_type(&mut ctx.ex, &mut ctx.types, element, size)
             }
             ResolveKind::Ptr { tgt, kind, mutable } => {
-                try_resolve_ptr_type(&mut ctx.ex, &mut ctx.types, tgt,kind, mutable)
+                try_resolve_ptr_type(&mut ctx.ex, &mut ctx.types, tgt, kind, mutable)
             }
             _ => None,
         };
@@ -7644,6 +7911,8 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
     ctx.req.pointer_likes.retain_mut(|pending| {
         let types = &mut ctx.types;
         let ex = &mut ctx.ex;
+        let mut deref_chain_lid = None;
+        let mut deref_chain_mutability = None;
         let source = types.root(pending.source);
         pending.source = source;
 
@@ -7662,6 +7931,8 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                             pending.source_value,
                             source,
                             struct_name,
+                            &mut deref_chain_lid,
+                            &mut deref_chain_mutability,
                         )
                         .map(|resolved| resolved.target)
                     })
@@ -7679,6 +7950,8 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                         pending.source_value,
                         source,
                         struct_name,
+                        &mut deref_chain_lid,
+                        &mut deref_chain_mutability,
                     )
                     .map(|resolved| resolved.target)
                 })
@@ -7926,27 +8199,19 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 // #[inline(never)]
 // #[unsafe(no_mangle)]
 fn finalize(ctx: &mut InferState) {
-    let (
-        val_cluster,
-        pat_cluster,
-        member_method_type_sites,
-        member_access_implicit_deref_sites,
-        index_implicit_deref_sites,
-        parent,
-        cluster,
-        errors,
-        ans,
-    ) = (
-        &ctx.search.val_cluster,
-        &ctx.search.pat_cluster,
-        &ctx.req.member_method_type_sites,
-        &ctx.req.member_access_implicit_deref_sites,
-        &ctx.req.index_implicit_deref_sites,
-        &mut ctx.types.core.parent,
-        &ctx.types.core.cluster,
-        &mut ctx.ex.errors,
-        &mut ctx.ex.ans,
-    );
+    let val_cluster = ctx.search.val_cluster.clone();
+    let pat_cluster = ctx.search.pat_cluster.clone();
+    let typedef_cluster = ctx.search.typedef_cluster.clone();
+    let member_method_type_sites = ctx.req.member_method_type_sites.clone();
+    let member_access_implicit_deref_sites = ctx.req.member_access_implicit_deref_sites.clone();
+    let index_implicit_deref_sites = ctx.req.index_implicit_deref_sites.clone();
+    let struct_defs = ctx
+        .types
+        .extra
+        .struct_defs
+        .iter()
+        .map(|s| (s.sid, s.loc, s.fields.clone()))
+        .collect::<Vec<_>>();
 
     // unsafe{perf_begin();}
 
@@ -7955,60 +8220,69 @@ fn finalize(ctx: &mut InferState) {
     for entry in member_method_type_sites.iter().copied() {
         member_method_by_site.insert(entry.site, entry);
     }
-    for (e, c) in ctx.search.typedef_cluster.iter() {
-        let root = find_root(parent, *c);
-        if let ResolveKind::Solved(t) = cluster[root].state {
-            ans.typedef_types.insert(*e, t);
+    for (e, c) in typedef_cluster.iter() {
+        let root = ctx.types.root(*c);
+        if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
+            ctx.ex.ans.typedef_types.insert(*e, t);
         } else if *c == root {
-            errors.push(TypeError::UnresolvedTypeExpr { expr: *e });
-            reported.insert(*c, ());
+            let found = ctx.types.bad_type(&mut ctx.ex, root);
+            ctx.ex
+                .errors
+                .push(TypeError::UnresolvedTypeExpr { expr: *e, found });
+            reported.insert(root, ());
         }
     }
 
-    for sdef in ctx.types.extra.struct_defs.iter() {
-        for (i, (_n, c)) in sdef.fields.iter().enumerate() {
-            let root = find_root(parent, *c);
-            if let ResolveKind::Solved(t) = cluster[root].state {
-                ctx.ex.store.structs[sdef.sid.0].fields[i].1 = t;
+    for (sid, loc_expr, fields) in struct_defs.iter() {
+        for (i, (_n, c)) in fields.iter().enumerate() {
+            let root = ctx.types.root(*c);
+            if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
+                ctx.ex.store.structs[sid.0].fields[i].1 = t;
             } else if *c == root {
-                let loc = ctx.ex.program.type_expr_loc(sdef.loc);
-                errors.push(TypeError::Simple {
+                let loc = ctx.ex.program.type_expr_loc(*loc_expr);
+                ctx.ex.errors.push(TypeError::Simple {
                     loc,
                     message: "could not infer struct field type",
                 });
-                reported.insert(*c, ());
+                reported.insert(root, ());
             }
         }
     }
 
     for (v, c) in val_cluster.iter() {
-        let root = find_root(parent, *c);
-        if let ResolveKind::Solved(t) = cluster[root].state {
-            ans.set_val(*v, t);
+        let root = ctx.types.root(*c);
+        if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
+            ctx.ex.ans.set_val(*v, t);
         } else if *c == root && !reported.contains_key(c) {
-            errors.push(TypeError::Unresolved { value: *v });
-            reported.insert(*c, ());
+            let found = ctx.types.bad_type(&mut ctx.ex, root);
+            ctx.ex
+                .errors
+                .push(TypeError::Unresolved { value: *v, found });
+            reported.insert(root, ());
             if let Some(entry) = member_method_by_site.get(v) {
-                let full_root = find_root(parent, entry.full_method);
+                let full_root = ctx.types.root(entry.full_method);
                 reported.insert(full_root, ());
             }
         }
     }
 
     for (p, c) in pat_cluster.iter() {
-        let root = find_root(parent, *c);
-        if let ResolveKind::Solved(t) = cluster[root].state {
-            ans.set_pat(*p, t);
+        let root = ctx.types.root(*c);
+        if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
+            ctx.ex.ans.set_pat(*p, t);
         } else if *c == root && !reported.contains_key(c) {
-            errors.push(TypeError::UnresolvedPattern { pattern: *p });
-            reported.insert(*c, ());
+            let found = ctx.types.bad_type(&mut ctx.ex, root);
+            ctx.ex
+                .errors
+                .push(TypeError::UnresolvedPattern { pattern: *p, found });
+            reported.insert(root, ());
         }
     }
 
     for entry in member_method_type_sites.iter() {
-        let root = find_root(parent, entry.full_method);
-        if let ResolveKind::Solved(full_type) = cluster[root].state {
-            ans.member_method_types.insert(
+        let root = ctx.types.root(entry.full_method);
+        if let ResolveKind::Solved(full_type) = ctx.types.cluster_state(root) {
+            ctx.ex.ans.member_method_types.insert(
                 entry.site,
                 SolvedMemberMethodType {
                     member: entry.member,
@@ -8029,12 +8303,16 @@ fn finalize(ctx: &mut InferState) {
         //if it CAN be solved but the full signature cant that must be because of &self not being clear
         //in that case we need to report an error but its gona be a bad one...
 
-        let receiver_root = find_root(parent, entry.receiver);
-        if !matches!(cluster[receiver_root].state, ResolveKind::Solved(_))
-            && !reported.contains_key(&receiver_root)
+        let receiver_root = ctx.types.root(entry.receiver);
+        if !matches!(
+            ctx.types.cluster_state(receiver_root),
+            ResolveKind::Solved(_)
+        ) && !reported.contains_key(&receiver_root)
         {
-            errors.push(TypeError::Unresolved {
+            let found = ctx.types.bad_type(&mut ctx.ex, receiver_root);
+            ctx.ex.errors.push(TypeError::Unresolved {
                 value: entry.receiver_value,
+                found,
             });
             reported.insert(receiver_root, ());
             reported.insert(root, ());
@@ -8042,16 +8320,16 @@ fn finalize(ctx: &mut InferState) {
     }
 
     store_implicit_deref_chains(
-        &mut ans.implicit_derefs,
-        member_access_implicit_deref_sites,
-        parent,
-        cluster,
+        &mut ctx.ex.ans.implicit_derefs,
+        &member_access_implicit_deref_sites,
+        &mut ctx.types.core.parent,
+        &ctx.types.core.cluster,
     );
     store_implicit_deref_chains(
-        &mut ans.implicit_derefs,
-        index_implicit_deref_sites,
-        parent,
-        cluster,
+        &mut ctx.ex.ans.implicit_derefs,
+        &index_implicit_deref_sites,
+        &mut ctx.types.core.parent,
+        &ctx.types.core.cluster,
     );
 
     // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
@@ -8548,7 +8826,7 @@ mod type_infer_tests {
             //user code
             free = cfn(p:*void);
             Box.__free = fn[T](b:&mut Box[T]){
-            (&*b.p).__free()
+            (&*b.ptr).__free()
             free(b->ptr as *void)
             };
 
@@ -9375,8 +9653,8 @@ mod type_infer_tests {
         let unresolved_locs = errs
             .iter()
             .filter_map(|err| match err {
-                TypeError::Unresolved { value } => Some(program.value_loc(*value)),
-                TypeError::UnresolvedPattern { pattern } => Some(program.pattern_loc(*pattern)),
+                TypeError::Unresolved { value, .. } => Some(program.value_loc(*value)),
+                TypeError::UnresolvedPattern { pattern, .. } => Some(program.pattern_loc(*pattern)),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -9587,10 +9865,15 @@ mod type_infer_tests {
             infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
         let y_ty = find_let_stmt_type(&program, solved_types, f, "y");
 
-        let TypeValue::Ptr { tgt, style, mutable } = *store.type_value(y_ty) else {
+        let TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } = *store.type_value(y_ty)
+        else {
             panic!("expected raw pointer result type")
         };
-        assert_eq!(style,PointerStyle::Raw(Nullable::Yes));
+        assert_eq!(style, PointerStyle::Raw(Nullable::Yes));
         assert!(!mutable);
         assert!(matches!(
             store.type_value(tgt),
@@ -9611,10 +9894,15 @@ mod type_infer_tests {
             infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
         let y_ty = find_let_stmt_type(&program, solved_types, f, "y");
 
-        let TypeValue::Ptr { tgt, style, mutable } = *store.type_value(y_ty) else {
+        let TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } = *store.type_value(y_ty)
+        else {
             panic!("expected raw pointer result type")
         };
-        assert_eq!(style,PointerStyle::Raw(Nullable::Yes));
+        assert_eq!(style, PointerStyle::Raw(Nullable::Yes));
         assert!(mutable);
         assert!(matches!(
             store.type_value(tgt),
@@ -9847,10 +10135,15 @@ mod type_infer_tests {
             panic!("expected tracked full member method type to be a function")
         };
         assert_eq!(full_params.len(), 1);
-        let TypeValue::Ptr { tgt, style, mutable } = store.type_value(full_params[0]) else {
+        let TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } = store.type_value(full_params[0])
+        else {
             panic!("expected tracked full self parameter to stay as pointer")
         };
-        assert!(matches!(style,PointerStyle::Ref(LifeTime::External(_))));
+        assert!(matches!(style, PointerStyle::Ref(LifeTime::External(_))));
         assert!(!*mutable);
         assert_eq!(*tgt, s_ty);
         assert!(matches!(
@@ -10003,6 +10296,56 @@ mod type_infer_tests {
         assert!(chain[0].contains("Wrap"));
         assert!(chain[1].contains("Box"));
         assert!(chain[2].contains("Inner"));
+    }
+
+    #[test]
+    fn deref_chain_supports_all_four_style_transitions_with_raw_links() {
+        let src = "
+            Wrapper = struct {inner:int};
+            Wrapper.get = fn(&mut self:Wrapper)->&mut int {&mut self.inner}
+
+            Unsafe = struct { inner: &'raw Wrapper };
+            Unsafe.__deref_mut = fn(self: &'raw mut Unsafe) -> &mut int  { (&*self)->get() };
+
+            RawCalc = struct { inner: &'raw Unsafe };
+            RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw mut Unsafe { self->get() };
+
+            Raw = struct { inner: &'raw RawCalc };
+            Raw.__deref_mut = fn(self: &mut Raw) -> &'raw mut RawCalc { self->get() };
+
+            Safe = struct { inner: &'raw Raw };
+            Safe.__deref_mut = fn(self: &mut Safe) -> &mut (&'raw Raw) { self->get() };
+
+            f = fn(s: &mut Safe) {
+                let out = *s;
+            };
+        ";
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let body_ty = find_let_stmt_type(&program, solved_types, f, "out");
+
+        let TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } = store.type_value(body_ty)
+        else {
+            panic!("expected function body to infer as pointer")
+        };
+        assert!(style.is_fancy());
+        assert!(*mutable);
+        assert!(matches!(
+            store.type_value(*tgt),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
     }
 
     #[test]
