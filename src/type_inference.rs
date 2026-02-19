@@ -697,9 +697,7 @@ impl TypeStore {
                 id,
                 generics,
                 lifetimes,
-            } => {
-                self.format_struct_display(program, *id, generics, lifetimes, gen_count)
-            }
+            } => self.format_struct_display(program, *id, generics, lifetimes, gen_count),
         }
     }
 
@@ -730,10 +728,12 @@ impl TypeStore {
                 .iter()
                 .map(|lt| format!("'{}", self.format_lifetime(*lt)))
                 .collect::<Vec<_>>();
-            args.extend(generics
-                .iter()
-                .map(|id| self.get_type_string_nested(program, *id, gen_count))
-                .collect::<Vec<_>>());
+            args.extend(
+                generics
+                    .iter()
+                    .map(|id| self.get_type_string_nested(program, *id, gen_count))
+                    .collect::<Vec<_>>(),
+            );
             base.push('[');
             base.push_str(&args.join(", "));
             base.push(']');
@@ -1231,7 +1231,7 @@ pub fn infer_global_types<'a>(
         };
 
         //structs have to all resolve in the same scope so they see eachother
-        //but we need to preserve them to have their own lifetime... 
+        //but we need to preserve them to have their own lifetime...
         //this is 100% a hack but because structs are so simple in terms of lifetimes it should work
         ctx.types.next_undeclared_lifetime = 0;
         let t = do_typedef::<true>(&mut ctx, *n, *texp);
@@ -1591,7 +1591,12 @@ impl<'a> InferState<'a> {
         self.types.new_func(call)
     }
 
-    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>, lifetimes: Vec<LId>) -> CId {
+    fn new_struct_instance(
+        &mut self,
+        sid: StructId,
+        generics: Vec<CId>,
+        lifetimes: Vec<LId>,
+    ) -> CId {
         self.types.new_struct_instance(sid, generics, lifetimes)
     }
 
@@ -2157,7 +2162,12 @@ impl TypeState {
         id
     }
 
-    fn new_struct_instance(&mut self, sid: StructId, generics: Vec<CId>, lifetimes: Vec<LId>) -> CId {
+    fn new_struct_instance(
+        &mut self,
+        sid: StructId,
+        generics: Vec<CId>,
+        lifetimes: Vec<LId>,
+    ) -> CId {
         let call_id = StructInferId(self.extra.struct_infers.len());
         self.extra.struct_infers.push(StructInfer {
             sid,
@@ -3422,7 +3432,9 @@ fn specialize_lifetime(
     lifetimes: &[LId],
     loc: ValId,
 ) -> LId {
-    if let Some(i) = lifetime_generics.iter().position(|candidate| *candidate == lt)
+    if let Some(i) = lifetime_generics
+        .iter()
+        .position(|candidate| *candidate == lt)
         && let Some(lid) = lifetimes.get(i)
     {
         return *lid;
@@ -3455,10 +3467,13 @@ fn specialize_type(
         } => {
             let inputs = params
                 .into_iter()
-                .map(|t| specialize_type(ex, types, t, generics, lifetime_generics, lifetimes, _loc))
+                .map(|t| {
+                    specialize_type(ex, types, t, generics, lifetime_generics, lifetimes, _loc)
+                })
                 .collect::<Vec<_>>();
 
-            let output = specialize_type(ex, types, ret, generics, lifetime_generics, lifetimes, _loc);
+            let output =
+                specialize_type(ex, types, ret, generics, lifetime_generics, lifetimes, _loc);
 
             // create FuncInfer
             let call_id = FuncInferId(types.extra.func_defs.len());
@@ -3493,7 +3508,9 @@ fn specialize_type(
 
             let resolved = parts
                 .into_iter()
-                .map(|t| specialize_type(ex, types, t, generics, lifetime_generics, lifetimes, _loc))
+                .map(|t| {
+                    specialize_type(ex, types, t, generics, lifetime_generics, lifetimes, _loc)
+                })
                 .collect::<Vec<_>>();
 
             let resolved_lifetimes = life_parts
@@ -3521,7 +3538,8 @@ fn specialize_type(
             style,
             mutable,
         } => {
-            let target = specialize_type(ex, types, tgt, generics, lifetime_generics, lifetimes, _loc);
+            let target =
+                specialize_type(ex, types, tgt, generics, lifetime_generics, lifetimes, _loc);
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -3538,7 +3556,17 @@ fn specialize_type(
         TypeValue::Tuple(items) => {
             let items = items
                 .into_iter()
-                .map(|item| specialize_type(ex, types, item, generics, lifetime_generics, lifetimes, _loc))
+                .map(|item| {
+                    specialize_type(
+                        ex,
+                        types,
+                        item,
+                        generics,
+                        lifetime_generics,
+                        lifetimes,
+                        _loc,
+                    )
+                })
                 .collect::<Vec<_>>();
 
             let tuple_id = TupleInferId(types.extra.tuple_infers.len());
@@ -3553,7 +3581,15 @@ fn specialize_type(
         }
 
         TypeValue::Array(inner, len) => {
-            let inner = specialize_type(ex, types, inner, generics, lifetime_generics, lifetimes, _loc);
+            let inner = specialize_type(
+                ex,
+                types,
+                inner,
+                generics,
+                lifetime_generics,
+                lifetimes,
+                _loc,
+            );
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -4156,9 +4192,7 @@ fn try_resolve_member_access(
                         current = next;
                     }
                     TypeValue::Struct {
-                        id: sid,
-                        generics,
-                        ..
+                        id: sid, generics, ..
                     } => {
                         let (field_ty, struct_name) = {
                             let rep = ex.store.struct_value(sid);
@@ -5165,7 +5199,9 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             let base_type = *base_type;
 
             let sid = match ctx.ex.store.type_value(base_type) {
-                TypeValue::Struct { id, generics: _, .. } => *id,
+                TypeValue::Struct {
+                    id, generics: _, ..
+                } => *id,
                 // TypeValue::Specialized { base, .. } => {
                 //     match ctx.ex.store.type_value(*base) {
                 //         TypeValue::Struct(sid) => *sid,
@@ -5209,9 +5245,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             }
 
             let TypeValue::Struct {
-                id: _,
-                generics,
-                ..
+                id: _, generics, ..
             } = ctx.ex.store.type_value(base_type)
             else {
                 unreachable!("verified above");
@@ -5951,7 +5985,11 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
     let generics = (0..generics.len())
         .map(|x| ctx.ex.store.intern(TypeValue::Generic(GenId(x))))
         .collect();
-    let t = ctx.ex.store.intern(TypeValue::Struct { id: sid, generics, lifetimes });
+    let t = ctx.ex.store.intern(TypeValue::Struct {
+        id: sid,
+        generics,
+        lifetimes,
+    });
     let output = ctx.new_solved(t);
 
     ctx.types.extra.struct_defs.push(StructDef {
@@ -7129,12 +7167,8 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
 
         ResolveKind::Solved(t) => match ex.store.type_value(t) {
             TypeValue::Struct {
-                id,
-                generics: _,
-                ..
-            } => {
-                OperandKind::UserStruct(ex.store.struct_value(*id).name)
-            }
+                id, generics: _, ..
+            } => OperandKind::UserStruct(ex.store.struct_value(*id).name),
             _ => OperandKind::KnownNonUser,
         },
         ResolveKind::Struct(call_id) => {
@@ -7471,7 +7505,7 @@ fn resolve_operator_site(
             if kind.is_fancy().is_none() {
                 progress = true;
                 *kind = PtrKind::SafeRef;
-            } 
+            }
 
             // else if matches!(kind.is_fancy(), Some(true)) {
             //     todo!("error because pointer arithmetic is for nullables")
@@ -9605,7 +9639,10 @@ mod type_infer_tests {
         let f = extract_single_fn(&program);
         let f_ty = solved_types.type_of(f).unwrap();
 
-        assert_eq!(store.get_type_string(&program, f_ty), "fn(&'a0 int) -> &'a0 int");
+        assert_eq!(
+            store.get_type_string(&program, f_ty),
+            "fn(&'a0 int) -> &'a0 int"
+        );
     }
 
     #[test]
@@ -9768,9 +9805,7 @@ mod type_infer_tests {
         // Ensure it resolved to a struct
         let sid = match store.type_value(ty) {
             TypeValue::Struct {
-                id,
-                generics: _,
-                ..
+                id, generics: _, ..
             } => *id,
             other => panic!("expected struct type, got {:?}", other),
         };

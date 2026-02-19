@@ -17,6 +17,7 @@ It is often the quickest way to inspect what the compiler currently thinks, with
 - Type dump helpers:
   - `:types` dumps solved type info for the current program,
   - `:types-of <name>` dumps the solved type region for one definition,
+  - `:types-of <Struct.method>` also works for struct member methods,
   - `:type <name...>` prints one-line type info for selected names.
   - Type dump now also annotates member-access sites with `member access implicit deref chain: ...`, listing each implicit dereference step plus the final resolved base type used for member lookup.
 
@@ -34,6 +35,15 @@ It is often the quickest way to inspect what the compiler currently thinks, with
 This intentionally creates a type obligation and usually surfaces what the checker inferred versus what was required.
 
 5. Use `:types-of <name>` to inspect only one function/type definition when a full dump is noisy.
+
+## Debugger-first pipeline example
+
+When you need debugger breakpoints, assertions, or a reproducible one-file harness, use `examples/debuger.rs` instead of the interactive REPL.
+
+- Run it with `cargo run --example debuger`.
+- Put `dbg!`, `assert!`, or temporary prints directly in the example.
+- For debugger stepping, launch `gdb --args target/debug/examples/debuger` after building.
+- The example already runs parse + lower + typecheck and wires diagnostics through `ErrorReporter`, so it is a good template for targeted investigations.
 
 ## Related commands
 

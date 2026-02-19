@@ -200,6 +200,29 @@ fn definition_loc_for_type_dump(
     }
 }
 
+fn member_method_loc_for_type_dump(
+    program: &Program,
+    query: &str,
+) -> Option<expr_parser::parsing::Loc> {
+    let (struct_name, method_name) = query.split_once('.')?;
+    if struct_name.is_empty() || method_name.is_empty() || method_name.contains('.') {
+        return None;
+    }
+
+    let struct_id = lookup_global_name_id(program, struct_name)?;
+    let methods = program.member_methods.get(&struct_id)?;
+    let funcs = methods.iter().find_map(|(sid, funcs)| {
+        (program.str_intern.resolve(*sid) == method_name).then_some(funcs)
+    })?;
+
+    funcs
+        .declarations
+        .first()
+        .copied()
+        .or_else(|| funcs.implementations.first().copied())
+        .map(|v| program.value_loc(v))
+}
+
 fn is_incomplete_error(error: &ParseError) -> bool {
     match error {
         ParseError::UnterminatedString { .. } => true,
@@ -399,13 +422,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 };
 
-                let Some(id) = lookup_global_name_id(&program, &name) else {
-                    println!("{}: <not found>", name);
-                    continue;
-                };
-                let Some(loc) = definition_loc_for_type_dump(&program, id) else {
-                    println!("{}: <no value/type definition span>", name);
-                    continue;
+                let loc = if let Some(id) = lookup_global_name_id(&program, &name) {
+                    let Some(loc) = definition_loc_for_type_dump(&program, id) else {
+                        println!("{}: <no value/type definition span>", name);
+                        continue;
+                    };
+                    loc
+                } else {
+                    let Some(loc) = member_method_loc_for_type_dump(&program, &name) else {
+                        println!("{}: <not found>", name);
+                        continue;
+                    };
+                    loc
                 };
 
                 reporter.report_type_dump_in_region(&program, types, solved, Some(&loc))?;
