@@ -582,6 +582,8 @@ pub enum TypeExpr {
         mutable: bool,
     },
 
+    LifeTime(LifeTimeId),
+
     Func {
         calling_convention: CallingConvention,
         params: TypeExprSpan,
@@ -1152,7 +1154,7 @@ impl Program {
         ret_expr: Option<LExpr>,
         body_expr: Option<LExpr>,
     ) -> Value {
-        let (lifetime_end, items_vec) = match generics_expr {
+        let items_vec = match generics_expr {
             Some(gen_expr) => {
                 let Expr::Prefix(open, items) = gen_expr.value else {
                     debug_assert!(false, "fn generics must use brackets");
@@ -1160,32 +1162,9 @@ impl Program {
                 };
                 debug_assert!(open.value == "[", "fn generics must use brackets");
 
-                let items_len = items.len();
-
-                let mut lifetime_end = items_len;
-                let mut seen_generic = false;
-                for (index, expr) in items.iter().enumerate() {
-                    let is_lifetime = matches!(
-                        &expr.value,
-                        Expr::Prefix(op, _) if op.value == "'"
-                    );
-                    if is_lifetime {
-                        if seen_generic {
-                            self.push_lowering_error(CompileError::SimpleError {
-                                loc: expr.loc.clone(),
-                                s: "lifetimes must come before generic parameters",
-                            });
-                        }
-                    } else {
-                        seen_generic = true;
-                        if lifetime_end == items_len {
-                            lifetime_end = index;
-                        }
-                    }
-                }
-                (lifetime_end, Some(items))
+                Some(items)
             }
-            None => (0, None),
+            None => None,
         };
 
         self.with_scope_value(|this| {
@@ -1196,6 +1175,7 @@ impl Program {
                         let target = parts.at(index);
                         this.lower_pattern_into(target, expr, VarKind::Const);
                     }
+                    let lifetime_end = this.find_lifetime_end_in_pattern_span(parts);
                     GenDec {
                         parts,
                         lifetime_end,
@@ -1832,17 +1812,24 @@ impl Program {
                 }
 
                 let items_len = items.len() - 1;
+                let mut items = items.into_iter();
+                let base = self.lower_type_expr(items.next().unwrap());
+
+                let parts = self.reserve_type_expr_span(items_len);
+                for (index, arg) in items.enumerate() {
+                    let target = parts.at(index);
+                    self.lower_type_expr_into(target, arg);
+                }
+
                 let mut lifetime_end = items_len;
                 let mut seen_generic = false;
-                for (index, expr) in items[1..].iter().enumerate() {
-                    let is_lifetime = matches!(
-                        &expr.value,
-                        Expr::Prefix(op, _) if op.value == "'"
-                    );
+                for index in 0..items_len {
+                    let arg = parts.at(index);
+                    let is_lifetime = matches!(self.type_expr(arg), TypeExpr::LifeTime(_));
                     if is_lifetime {
                         if seen_generic {
                             self.push_lowering_error(CompileError::SimpleError {
-                                loc: expr.loc.clone(),
+                                loc: self.type_expr_loc(arg),
                                 s: "lifetimes must come before generic parameters",
                             });
                         }
@@ -1854,15 +1841,6 @@ impl Program {
                     }
                 }
 
-                let mut items = items.into_iter();
-                let base = self.lower_type_expr(items.next().unwrap());
-
-                let parts = self.reserve_type_expr_span(items_len);
-                for (index, arg) in items.enumerate() {
-                    let target = parts.at(index);
-                    self.lower_type_expr_into(target, arg);
-                }
-
                 TypeExpr::Index {
                     base,
                     args: GenIndex {
@@ -1871,6 +1849,39 @@ impl Program {
                         lifetime_end,
                     },
                 }
+            }
+
+            Expr::Prefix(op, items) if op.value == "'" => {
+                if items.len() != 1 {
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc,
+                        s: "invalid lifetime syntax",
+                    });
+                    return TypeExpr::Poison;
+                }
+
+                let Expr::Atom(Token::Ident(n)) = &items[0].value else {
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc,
+                        s: "invalid lifetime syntax",
+                    });
+                    return TypeExpr::Poison;
+                };
+
+                if n == "_" {
+                    return TypeExpr::LifeTime(LifeTimeId::WILDCARD);
+                }
+
+                let sid = self.str_intern.intern(n);
+                let Some(life) = self.try_get_lifetime(sid) else {
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc,
+                        s: "unknown lifetime",
+                    });
+                    return TypeExpr::Poison;
+                };
+
+                TypeExpr::LifeTime(life)
             }
 
             Expr::Prefix(op, mut items) if matches!(op.value, "*" | "&") => {
@@ -2108,33 +2119,12 @@ impl Program {
                 };
                 debug_assert!(open.value == "[");
 
-                let mut lifetime_end = items.len();
-                let mut seen_generic = false;
-                for (index, expr) in items.iter().enumerate() {
-                    let is_lifetime = matches!(
-                        &expr.value,
-                        Expr::Prefix(op, _) if op.value == "'"
-                    );
-                    if is_lifetime {
-                        if seen_generic {
-                            self.push_lowering_error(CompileError::SimpleError {
-                                loc: expr.loc.clone(),
-                                s: "lifetimes must come before generic parameters",
-                            });
-                        }
-                    } else {
-                        seen_generic = true;
-                        if lifetime_end == items.len() {
-                            lifetime_end = index;
-                        }
-                    }
-                }
-
                 let parts = self.reserve_pattern_span(items.len());
                 for (index, item) in items.into_iter().enumerate() {
                     let target = parts.at(index);
                     self.lower_pattern_into(target, item, VarKind::Const);
                 }
+                let lifetime_end = self.find_lifetime_end_in_pattern_span(parts);
                 GenDec {
                     parts,
                     lifetime_end,
@@ -2181,6 +2171,30 @@ impl Program {
             "union" => TypeExpr::Union(def),
             _ => TypeExpr::Poison,
         }
+    }
+
+    #[inline(always)]
+    fn find_lifetime_end_in_pattern_span(&mut self, parts: PatternSpan) -> usize {
+        let mut lifetime_end = parts.len();
+        let mut seen_generic = false;
+        for index in 0..parts.len() {
+            let pat = parts.at(index);
+            let is_lifetime = matches!(self.pattern(pat), Pattern::LifeTime(_));
+            if is_lifetime {
+                if seen_generic {
+                    self.push_lowering_error(CompileError::SimpleError {
+                        loc: self.pattern_loc(pat),
+                        s: "lifetimes must come before generic parameters",
+                    });
+                }
+            } else {
+                seen_generic = true;
+                if lifetime_end == parts.len() {
+                    lifetime_end = index;
+                }
+            }
+        }
+        lifetime_end
     }
 }
 
@@ -3360,6 +3374,65 @@ mod lowering_tests {
     }
 
     #[test]
+    fn type_index_lifetime_then_generic_lowers_lifetime_arg() {
+        let src = "Box = struct['a, T]{inner:T}; f = fn['a](x: Box['a, int]) -> void {}";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+        assert!(program.lowering_errors.is_empty());
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f binding");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
+
+        let value = match defined {
+            Defined::Func(funcs) => funcs
+                .implementations
+                .first()
+                .copied()
+                .expect("expected function implementation"),
+            _ => panic!("expected function definition"),
+        };
+
+        let Value::Func { params, .. } = program.value(value) else {
+            panic!("expected function value");
+        };
+        let x_pat = params.at(0);
+        let Pattern::TypeAnnotation { ty, .. } = program.pattern(x_pat) else {
+            panic!("expected typed parameter");
+        };
+        let TypeExpr::Index { args, .. } = program.type_expr(ty) else {
+            panic!("expected indexed type");
+        };
+
+        assert_eq!(args.lifetimes().len(), 1);
+        assert_eq!(args.generics().len(), 1);
+
+        let lifetime_arg = args
+            .lifetimes()
+            .ids()
+            .next()
+            .expect("expected one lifetime arg");
+        match program.type_expr(lifetime_arg) {
+            TypeExpr::LifeTime(_) => {}
+            _ => panic!("expected lowered lifetime type arg"),
+        }
+    }
+
+    #[test]
+    fn type_index_lifetime_without_scope_errors() {
+        let src = "{ let x: Box['a, int] = Box.new(); }";
+        let (program, _) = lower_block(src);
+        assert!(!program.lowering_errors.is_empty());
+        let err_msg = program.lowering_errors[0].to_string();
+        assert!(err_msg.contains("unknown lifetime"));
+    }
+
+    #[test]
     fn fn_mixed_lifetimes_generics_error() {
         let src = "f = fn[T, 'a](x: &'a T) -> T { x }";
         let mut parser = Parser::new(src, 0);
@@ -3372,7 +3445,7 @@ mod lowering_tests {
 
     #[test]
     fn type_index_mixed_lifetimes_generics_error() {
-        let src = "{ let x: Box[int, 'a] = Box.new(); }";
+        let src = "{ let x: Box[int, 'raw] = Box.new(); }";
         let (program, _) = lower_block(src);
         assert!(!program.lowering_errors.is_empty());
         let err_msg = program.lowering_errors[0].to_string();

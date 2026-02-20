@@ -1513,7 +1513,6 @@ fn main_solver(ctx: &mut InferState) {
         progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_int_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
-        
 
         if progress {
             continue;
@@ -1531,13 +1530,11 @@ fn main_solver(ctx: &mut InferState) {
         return;
     }
 
-
-
     finalize(ctx);
 }
 
-fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) ->bool {
-    let mut progress=false;
+fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) -> bool {
+    let mut progress = false;
     for cid in (0..ctx.types.core.cluster.len()).map(CId) {
         let root = ctx.types.root(cid);
         if root != cid {
@@ -1548,7 +1545,7 @@ fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) ->bool {
         if let ResolveKind::Ptr { tgt, kind, mutable } = state {
             let kind = match kind {
                 PtrKind::SafeRef | PtrKind::SomeRef => {
-                    progress=true;
+                    progress = true;
                     PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
                 }
                 x => x,
@@ -2031,16 +2028,15 @@ struct TypeState {
 }
 
 #[inline(always)]
-fn find_lid_root(life_parent:&mut LifeVec<LId>, lid: LId) -> LId {
+fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
     let p = life_parent[lid];
     if p == lid {
         return lid;
     }
-    let root = find_lid_root(life_parent,p);
+    let root = find_lid_root(life_parent, p);
     life_parent[lid] = root;
     root
 }
-
 
 impl TypeState {
     fn new() -> Self {
@@ -2105,7 +2101,7 @@ impl TypeState {
 
     #[inline(always)]
     fn find_lid_root(&mut self, lid: LId) -> LId {
-        find_lid_root(&mut self.life_parent,lid)
+        find_lid_root(&mut self.life_parent, lid)
     }
 
     #[inline(always)]
@@ -2221,7 +2217,10 @@ impl TypeState {
 }
 
 #[inline(always)]
-fn merge_lifetime_known_strict(a: Option<LifeTime>, b: Option<LifeTime>) -> Option<Option<LifeTime>> {
+fn merge_lifetime_known_strict(
+    a: Option<LifeTime>,
+    b: Option<LifeTime>,
+) -> Option<Option<LifeTime>> {
     match (a, b) {
         (None, None) => Some(None),
         (Some(x), None) | (None, Some(x)) => Some(Some(x)),
@@ -2239,7 +2238,8 @@ fn unify_struct_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
         return true;
     }
 
-    let Some(merged) = merge_lifetime_known_strict(types.life_known[ra], types.life_known[rb]) else {
+    let Some(merged) = merge_lifetime_known_strict(types.life_known[ra], types.life_known[rb])
+    else {
         return false;
     };
 
@@ -3250,7 +3250,6 @@ fn try_resolve_struct_type(
         };
         lifetimes.push(ans);
     }
-
 
     Some(ex.store.intern(TypeValue::Struct {
         id: sid,
@@ -6018,6 +6017,15 @@ fn compile_lifetime_specialization_arg(
             }
             TypeExprCompileMode::Local => ctx.types.new_lid_at(ValId(0)),
         },
+        TypeExpr::LifeTime(lid) => {
+            let lt = ctx
+                .search
+                .local_lifetimes
+                .get(&lid)
+                .copied()
+                .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
+            struct_lifetime_to_lid(&mut ctx.types, ValId(0), lt)
+        }
         TypeExpr::NameRef(name) => {
             let sid = ctx.ex.program.name_str_id(name);
             let Some(lid) = ctx.ex.program.try_get_lifetime(sid) else {
@@ -6326,7 +6334,9 @@ fn compile_type_expr_with_mode(
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
             } else if lifetime == Some(LifeTimeId::WILDCARD) {
                 let lt = match mode {
-                    TypeExprCompileMode::Signature => ctx.types.mint_undeclared_signature_lifetime(),
+                    TypeExprCompileMode::Signature => {
+                        ctx.types.mint_undeclared_signature_lifetime()
+                    }
                     TypeExprCompileMode::Local => LifeTime::Unknown,
                 };
                 PtrKind::Solved(PointerStyle::Ref(lt))
@@ -6340,7 +6350,9 @@ fn compile_type_expr_with_mode(
                 PtrKind::Solved(PointerStyle::Ref(lt))
             } else {
                 let lt = match mode {
-                    TypeExprCompileMode::Signature => ctx.types.mint_undeclared_signature_lifetime(),
+                    TypeExprCompileMode::Signature => {
+                        ctx.types.mint_undeclared_signature_lifetime()
+                    }
                     TypeExprCompileMode::Local => LifeTime::Unknown,
                 };
                 PtrKind::Solved(PointerStyle::Ref(lt))
@@ -9363,7 +9375,7 @@ mod type_infer_tests {
 
     #[test]
     fn struct_deref_to_array_index_expression_typechecks() {
-        let src = "Box=struct['a]{inner:&'a [int;2]}; Box.__deref_mut = fn['a](self:&mut Box['a])->&mut &'a [int;2] { &mut self.inner }; f = fn['a](b:Box['a])->int { let y:int = b[1:usize]; y };";
+        let src = "Box=struct['a]{inner:&'a [int;2]}; Box.__deref_mut = fn['a](self:&mut Box['a])->&mut &'a [int;2] { &mut self.inner }; f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -9392,8 +9404,8 @@ mod type_infer_tests {
             chain,
             vec![
                 "Box₀['a0]".to_string(),
-                "&'a0 mut &'a1 [int;2]".to_string(),
-                "&'a1 [int;2]".to_string(),
+                "&'l0 mut &'a0 [int;2]".to_string(),
+                "&'a0    [int;2]".to_string(),
                 "[int;2]".to_string(),
             ],
             "unexpected implicit deref chain for struct-deref indexing"

@@ -90,6 +90,7 @@ Rough dispatch order:
 Supported today:
 
 - bind (`x`), wildcard (`_`), tuple patterns, mutability wrappers (`mut`/`const`), and pattern annotations (`pat : type`).
+- generic declaration lists (`fn[...]`, type-literal `struct[...]`) now compute lifetime-vs-generic split from lowered patterns (`Pattern::LifeTime`) rather than raw parser prefixes.
 
 Notably, pattern binds allocate fresh `NameId` into current scope immediately.
 
@@ -100,6 +101,7 @@ Supported today:
 - names and `_`
 - tuples
 - specialization/index syntax: `Base[T, U]`
+  - lifetime specialization args are accepted in leading slots (`Base['a, T]`), resolved against the active lifetime scope, lowered as `TypeExpr::LifeTime`, and split from type generics via `GenIndex::lifetime_end`
 - pointer/reference forms via prefix `*` and `&` with optional `mut`/`const`
 - inline `struct`/`cstruct`/`enum`/`union` forms through `StructLike`
 
