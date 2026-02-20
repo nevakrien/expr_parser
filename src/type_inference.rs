@@ -1513,6 +1513,15 @@ fn main_solver(ctx: &mut InferState) {
         progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_int_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
+        
+
+        if progress {
+            continue;
+        }
+        // HACK (temporary, likely not the final design): before finalize we force unresolved
+        // pointer lifetime kinds (`SafeRef`/`SomeRef`) into `Ref(Unknown)`.
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx);
+
         if !progress {
             break;
         }
@@ -1522,14 +1531,13 @@ fn main_solver(ctx: &mut InferState) {
         return;
     }
 
-    // HACK (temporary, likely not the final design): before finalize we force unresolved
-    // pointer lifetime kinds (`SafeRef`/`SomeRef`) into `Ref(Unknown)`.
-    finalize_unresolved_lifetimes_as_unknown(ctx);
+
 
     finalize(ctx);
 }
 
-fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
+fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) ->bool {
+    let mut progress=false;
     for cid in (0..ctx.types.core.cluster.len()).map(CId) {
         let root = ctx.types.root(cid);
         if root != cid {
@@ -1540,6 +1548,7 @@ fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
         if let ResolveKind::Ptr { tgt, kind, mutable } = state {
             let kind = match kind {
                 PtrKind::SafeRef | PtrKind::SomeRef => {
+                    progress=true;
                     PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
                 }
                 x => x,
@@ -1548,6 +1557,7 @@ fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
                 .set_cluster_state(root, ResolveKind::Ptr { tgt, kind, mutable });
         }
     }
+    progress
 }
 
 // ===================================
@@ -5893,7 +5903,11 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         Pattern::TypeAnnotation { pat, ty } => {
             let (c, n) =
                 gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, pat);
-            let t = compile_type_expr(ctx, ty);
+            let t = if GLOBAL_SCOPE {
+                compile_signature_type_expr(ctx, ty)
+            } else {
+                compile_type_expr(ctx, ty)
+            };
 
             if let Err(clash) = ctx.unify(c, t) {
                 ctx.push_error(TypeError::PatternAnnotationMismatch {
@@ -5965,6 +5979,12 @@ fn bind_lifetime_generics(ctx: &mut InferState, generics: PatternSpan) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeExprCompileMode {
+    Signature,
+    Local,
+}
+
 #[inline(always)]
 fn lifetime_id_to_lifetime(id: LifeTimeId) -> LifeTime {
     if id == LifeTimeId::STATIC {
@@ -5985,9 +6005,19 @@ fn struct_lifetime_to_lid(types: &mut TypeState, site: ValId, lt: LifeTime) -> L
     }
 }
 
-fn compile_lifetime_specialization_arg(ctx: &mut InferState, arg: TExpId) -> LId {
+fn compile_lifetime_specialization_arg(
+    ctx: &mut InferState,
+    arg: TExpId,
+    mode: TypeExprCompileMode,
+) -> LId {
     match ctx.ex.program.type_expr(arg) {
-        TypeExpr::Wildcard => ctx.types.new_lid_at(ValId(0)),
+        TypeExpr::Wildcard => match mode {
+            TypeExprCompileMode::Signature => {
+                let lt = ctx.types.mint_undeclared_signature_lifetime();
+                struct_lifetime_to_lid(&mut ctx.types, ValId(0), lt)
+            }
+            TypeExprCompileMode::Local => ctx.types.new_lid_at(ValId(0)),
+        },
         TypeExpr::NameRef(name) => {
             let sid = ctx.ex.program.name_str_id(name);
             let Some(lid) = ctx.ex.program.try_get_lifetime(sid) else {
@@ -6056,6 +6086,7 @@ fn compile_type_expr_with_forced_output_lifetime(
     ctx: &mut InferState,
     texpr: TExpId,
     forced_output_lifetime: Option<LifeTime>,
+    mode: TypeExprCompileMode,
 ) -> CId {
     if let Some(lifetime) = forced_output_lifetime
         && let TypeExpr::Ptr {
@@ -6065,7 +6096,7 @@ fn compile_type_expr_with_forced_output_lifetime(
             lifetime: None,
         } = ctx.ex.program.type_expr(texpr)
     {
-        let tgt = compile_type_expr(ctx, base);
+        let tgt = compile_type_expr_with_mode(ctx, base, mode);
         let ans = ctx.new_cluster();
         ctx.types.core.cluster[ans].state = ResolveKind::Ptr {
             tgt,
@@ -6075,7 +6106,7 @@ fn compile_type_expr_with_forced_output_lifetime(
         return ans;
     }
 
-    compile_type_expr(ctx, texpr)
+    compile_type_expr_with_mode(ctx, texpr, mode)
 }
 
 ///in order to break recursion this function MUST return a concrete type
@@ -6144,7 +6175,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
                     });
                     continue;
                 };
-                let c = compile_type_expr(ctx, ty);
+                let c = compile_type_expr_with_mode(ctx, ty, TypeExprCompileMode::Signature);
                 field_info.push((n, c));
             }
             _ => {
@@ -6221,11 +6252,23 @@ fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
 
             cid
         }
-        _ => compile_type_expr(ctx, texpr),
+        _ => compile_type_expr_with_mode(
+            ctx,
+            texpr,
+            if ALLOW_STRUCT_GENERICS {
+                TypeExprCompileMode::Signature
+            } else {
+                TypeExprCompileMode::Local
+            },
+        ),
     }
 }
 
-fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
+fn compile_type_expr_with_mode(
+    ctx: &mut InferState,
+    texpr: TExpId,
+    mode: TypeExprCompileMode,
+) -> CId {
     match ctx.ex.program.type_expr(texpr) {
         TypeExpr::NameRef(n) => {
             if let Some(ans) = ctx.search.local_types.get(&n) {
@@ -6263,7 +6306,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
         TypeExpr::Tuple(items) => {
             let item_clusters = items
                 .ids()
-                .map(|item| compile_type_expr(ctx, item))
+                .map(|item| compile_type_expr_with_mode(ctx, item, mode))
                 .collect::<Vec<_>>();
             ctx.new_tuple_instance(item_clusters)
         }
@@ -6282,9 +6325,11 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             } else if lifetime == Some(LifeTimeId::RAW) {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
             } else if lifetime == Some(LifeTimeId::WILDCARD) {
-                PtrKind::Solved(PointerStyle::Ref(
-                    ctx.types.mint_undeclared_signature_lifetime(),
-                ))
+                let lt = match mode {
+                    TypeExprCompileMode::Signature => ctx.types.mint_undeclared_signature_lifetime(),
+                    TypeExprCompileMode::Local => LifeTime::Unknown,
+                };
+                PtrKind::Solved(PointerStyle::Ref(lt))
             } else if let Some(lid) = lifetime {
                 let lt = ctx
                     .search
@@ -6294,12 +6339,14 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
                     .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
                 PtrKind::Solved(PointerStyle::Ref(lt))
             } else {
-                PtrKind::Solved(PointerStyle::Ref(
-                    ctx.types.mint_undeclared_signature_lifetime(),
-                ))
+                let lt = match mode {
+                    TypeExprCompileMode::Signature => ctx.types.mint_undeclared_signature_lifetime(),
+                    TypeExprCompileMode::Local => LifeTime::Unknown,
+                };
+                PtrKind::Solved(PointerStyle::Ref(lt))
             };
 
-            let tgt = compile_type_expr(ctx, base);
+            let tgt = compile_type_expr_with_mode(ctx, base, mode);
             let ans = ctx.new_cluster();
             ctx.types.core.cluster[ans].state = ResolveKind::Ptr {
                 tgt,
@@ -6316,18 +6363,32 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
             let inputs = params
                 .ids()
-                .map(|arg| compile_type_expr(ctx, arg))
+                .map(|arg| compile_type_expr_with_mode(ctx, arg, mode))
                 .collect::<Vec<_>>();
-            let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
-            let output_lifetime = infer_elided_output_lifetime(
-                ctx,
-                output_type,
-                undeclared_before_inputs,
-                undeclared_after_inputs,
-            );
-            let output = output_type
-                .map(|o| compile_type_expr_with_forced_output_lifetime(ctx, o, output_lifetime))
-                .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()));
+            let output = match mode {
+                TypeExprCompileMode::Signature => {
+                    let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
+                    let output_lifetime = infer_elided_output_lifetime(
+                        ctx,
+                        output_type,
+                        undeclared_before_inputs,
+                        undeclared_after_inputs,
+                    );
+                    output_type
+                        .map(|o| {
+                            compile_type_expr_with_forced_output_lifetime(
+                                ctx,
+                                o,
+                                output_lifetime,
+                                mode,
+                            )
+                        })
+                        .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into()))
+                }
+                TypeExprCompileMode::Local => output_type
+                    .map(|o| compile_type_expr_with_mode(ctx, o, mode))
+                    .unwrap_or_else(|| ctx.new_solved(BuiltinType::Void.into())),
+            };
 
             ctx.new_func(FuncInfer {
                 calling_convention,
@@ -6337,7 +6398,7 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             })
         }
         TypeExpr::Array(element, len) => {
-            let element = compile_type_expr(ctx, element);
+            let element = compile_type_expr_with_mode(ctx, element, mode);
             let size = len.map_or(ArrayType::Unsized, ArrayType::Sized);
             ctx.new_array_instance(element, size)
         }
@@ -6345,12 +6406,12 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
             let mut lifetimes = args
                 .lifetimes()
                 .ids()
-                .map(|arg| compile_lifetime_specialization_arg(ctx, arg))
+                .map(|arg| compile_lifetime_specialization_arg(ctx, arg, mode))
                 .collect::<Vec<_>>();
             let args = args.generics();
             let generics = args
                 .ids()
-                .map(|arg| compile_type_expr(ctx, arg))
+                .map(|arg| compile_type_expr_with_mode(ctx, arg, mode))
                 .collect::<Vec<_>>();
 
             // let ans = ctx.new_cluster();
@@ -6468,6 +6529,16 @@ fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
     }
 }
 
+#[inline(always)]
+fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
+    compile_type_expr_with_mode(ctx, texpr, TypeExprCompileMode::Local)
+}
+
+#[inline(always)]
+fn compile_signature_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
+    compile_type_expr_with_mode(ctx, texpr, TypeExprCompileMode::Signature)
+}
+
 fn get_type_name(prog: &Program, t: TExpId) -> Option<NameId> {
     match prog.type_expr(t) {
         TypeExpr::NameRef(n) => Some(n),
@@ -6503,7 +6574,12 @@ fn type_check_func_signature(
     );
 
     let output = if let Some(x) = output_type {
-        compile_type_expr_with_forced_output_lifetime(ctx, x, output_lifetime)
+        compile_type_expr_with_forced_output_lifetime(
+            ctx,
+            x,
+            output_lifetime,
+            TypeExprCompileMode::Signature,
+        )
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
@@ -6582,7 +6658,12 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     );
 
     let output = if let Some(x) = output_type {
-        compile_type_expr_with_forced_output_lifetime(ctx, x, output_lifetime)
+        compile_type_expr_with_forced_output_lifetime(
+            ctx,
+            x,
+            output_lifetime,
+            TypeExprCompileMode::Signature,
+        )
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
