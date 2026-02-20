@@ -45,12 +45,12 @@ use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, FunctionSet, Program};
 
-use std::ffi::CStr;
-unsafe extern "C" {
-    fn perf_init();
-    fn perf_begin();
-    fn perf_done(name: *const std::os::raw::c_char);
-}
+// use std::ffi::CStr;
+// unsafe extern "C" {
+//     fn perf_init();
+//     fn perf_begin();
+//     fn perf_done(name: *const std::os::raw::c_char);
+// }
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -1518,7 +1518,7 @@ fn main_solver(ctx: &mut InferState) {
             continue;
         }
         // HACK (temporary, likely not the final design): before finalize we force unresolved
-        // pointer lifetime kinds (`SafeRef`/`SomeRef`) into `Ref(Unknown)`.
+        // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
         progress |= finalize_unresolved_lifetimes_as_unknown(ctx);
 
         if !progress {
@@ -1535,25 +1535,21 @@ fn main_solver(ctx: &mut InferState) {
 
 fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) -> bool {
     let mut progress = false;
-    for cid in (0..ctx.types.core.cluster.len()).map(CId) {
-        let root = ctx.types.root(cid);
-        if root != cid {
+
+    let mut seen_roots = vec![false; ctx.types.life_parent.0.len()];
+    for lid in 0..ctx.types.life_parent.0.len() {
+        let root = ctx.types.find_lid_root(LId(lid));
+        if seen_roots[root.0] {
             continue;
         }
+        seen_roots[root.0] = true;
 
-        let state = ctx.types.cluster_state(root);
-        if let ResolveKind::Ptr { tgt, kind, mutable } = state {
-            let kind = match kind {
-                PtrKind::SafeRef | PtrKind::SomeRef => {
-                    progress = true;
-                    PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
-                }
-                x => x,
-            };
-            ctx.types
-                .set_cluster_state(root, ResolveKind::Ptr { tgt, kind, mutable });
+        if ctx.types.life_known[root].is_none() {
+            ctx.types.life_known[root] = Some(LifeTime::Unknown);
+            progress = true;
         }
     }
+
     progress
 }
 
@@ -1679,6 +1675,7 @@ impl<T> IndexMut<CId> for ClusterVec<T> {
 struct LId(usize);
 
 struct LifeVec<T>(Vec<T>);
+#[allow(dead_code)]
 impl<T> LifeVec<T> {
     fn new() -> Self {
         Self(Vec::new())
@@ -6011,10 +6008,7 @@ fn compile_lifetime_specialization_arg(
 ) -> LId {
     match ctx.ex.program.type_expr(arg) {
         TypeExpr::Wildcard => match mode {
-            TypeExprCompileMode::Signature => {
-                let lt = ctx.types.mint_undeclared_signature_lifetime();
-                struct_lifetime_to_lid(&mut ctx.types, ValId(0), lt)
-            }
+            TypeExprCompileMode::Signature => ctx.types.new_lid_at(ValId(0)),
             TypeExprCompileMode::Local => ctx.types.new_lid_at(ValId(0)),
         },
         TypeExpr::LifeTime(lid) => {
@@ -6088,6 +6082,76 @@ fn infer_elided_output_lifetime(
     };
 
     Some(inferred_output_lifetime)
+}
+
+fn apply_signature_elided_output_lifetime_rule(
+    ctx: &mut InferState,
+    output_type: Option<TExpId>,
+    implicit_input_lifetimes: &[LifeTime],
+    lids_before_output: usize,
+    lids_after_output: usize,
+) {
+    let Some(output_type) = output_type else {
+        return;
+    };
+
+    let mut seen_output_roots = vec![false; ctx.types.life_parent.0.len()];
+    let mut output_elided_roots = Vec::new();
+    for lid in lids_before_output..lids_after_output {
+        let root = ctx.types.find_lid_root(LId(lid));
+        if seen_output_roots[root.0] {
+            continue;
+        }
+        seen_output_roots[root.0] = true;
+        if ctx.types.life_known[root].is_none() {
+            output_elided_roots.push(root);
+        }
+    }
+
+    if output_elided_roots.is_empty() {
+        return;
+    }
+
+    if implicit_input_lifetimes.len() != 1 {
+        let loc = ctx.ex.program.type_expr_loc(output_type);
+        ctx.ex.push_error(TypeError::Simple {
+            loc,
+            message: "elided output lifetime requires exactly one elided input lifetime",
+        });
+        return;
+    }
+
+    let target_lifetime = implicit_input_lifetimes[0];
+    for output_root in output_elided_roots {
+        let _ = bind_struct_lid_to_lifetime(&mut ctx.types, output_root, target_lifetime);
+    }
+}
+
+fn assign_signature_implicit_input_lifetimes(
+    ctx: &mut InferState,
+    lids_before_inputs: usize,
+    lids_after_inputs: usize,
+) -> Vec<LifeTime> {
+    let mut seen_input_roots = vec![false; ctx.types.life_parent.0.len()];
+    let mut implicit_input_roots = Vec::new();
+    for lid in lids_before_inputs..lids_after_inputs {
+        let root = ctx.types.find_lid_root(LId(lid));
+        if seen_input_roots[root.0] {
+            continue;
+        }
+        seen_input_roots[root.0] = true;
+        if ctx.types.life_known[root].is_none() {
+            implicit_input_roots.push(root);
+        }
+    }
+
+    let mut implicit_input_lifetimes = Vec::with_capacity(implicit_input_roots.len());
+    for root in implicit_input_roots {
+        let fresh = ctx.types.mint_undeclared_signature_lifetime();
+        let _ = bind_struct_lid_to_lifetime(&mut ctx.types, root, fresh);
+        implicit_input_lifetimes.push(fresh);
+    }
+    implicit_input_lifetimes
 }
 
 fn compile_type_expr_with_forced_output_lifetime(
@@ -6333,13 +6397,14 @@ fn compile_type_expr_with_mode(
             } else if lifetime == Some(LifeTimeId::RAW) {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
             } else if lifetime == Some(LifeTimeId::WILDCARD) {
-                let lt = match mode {
+                match mode {
                     TypeExprCompileMode::Signature => {
-                        ctx.types.mint_undeclared_signature_lifetime()
+                        PtrKind::RefInfer(ctx.types.new_lid_at(ValId(0)))
                     }
-                    TypeExprCompileMode::Local => LifeTime::Unknown,
-                };
-                PtrKind::Solved(PointerStyle::Ref(lt))
+                    TypeExprCompileMode::Local => {
+                        PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
+                    }
+                }
             } else if let Some(lid) = lifetime {
                 let lt = ctx
                     .search
@@ -6349,13 +6414,14 @@ fn compile_type_expr_with_mode(
                     .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
                 PtrKind::Solved(PointerStyle::Ref(lt))
             } else {
-                let lt = match mode {
+                match mode {
                     TypeExprCompileMode::Signature => {
-                        ctx.types.mint_undeclared_signature_lifetime()
+                        PtrKind::RefInfer(ctx.types.new_lid_at(ValId(0)))
                     }
-                    TypeExprCompileMode::Local => LifeTime::Unknown,
-                };
-                PtrKind::Solved(PointerStyle::Ref(lt))
+                    TypeExprCompileMode::Local => {
+                        PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
+                    }
+                }
             };
 
             let tgt = compile_type_expr_with_mode(ctx, base, mode);
@@ -6572,29 +6638,28 @@ fn type_check_func_signature(
         gather_generic_constraints(ctx, pat, GenId(i));
     }
 
-    let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
+    let lids_before_inputs = ctx.types.life_parent.0.len();
     let inputs = params
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<true>(ctx, pat))
         .collect::<Vec<_>>();
-    let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
-    let output_lifetime = infer_elided_output_lifetime(
-        ctx,
-        output_type,
-        undeclared_before_inputs,
-        undeclared_after_inputs,
-    );
-
+    let lids_after_inputs = ctx.types.life_parent.0.len();
+    let implicit_input_lifetimes =
+        assign_signature_implicit_input_lifetimes(ctx, lids_before_inputs, lids_after_inputs);
+    let lids_before_output = ctx.types.life_parent.0.len();
     let output = if let Some(x) = output_type {
-        compile_type_expr_with_forced_output_lifetime(
-            ctx,
-            x,
-            output_lifetime,
-            TypeExprCompileMode::Signature,
-        )
+        compile_type_expr_with_mode(ctx, x, TypeExprCompileMode::Signature)
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
+    let lids_after_output = ctx.types.life_parent.0.len();
+    apply_signature_elided_output_lifetime_rule(
+        ctx,
+        output_type,
+        &implicit_input_lifetimes,
+        lids_before_output,
+        lids_after_output,
+    );
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -6652,7 +6717,7 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
 
     bind_lifetime_generics(ctx, lifetime_generics);
 
-    let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
+    let lids_before_inputs = ctx.types.life_parent.0.len();
     for (i, pat) in generics.ids().enumerate() {
         gather_generic_constraints(ctx, pat, GenId(i));
     }
@@ -6661,24 +6726,23 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
         .collect::<Vec<_>>();
-    let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
-    let output_lifetime = infer_elided_output_lifetime(
-        ctx,
-        output_type,
-        undeclared_before_inputs,
-        undeclared_after_inputs,
-    );
-
+    let lids_after_inputs = ctx.types.life_parent.0.len();
+    let implicit_input_lifetimes =
+        assign_signature_implicit_input_lifetimes(ctx, lids_before_inputs, lids_after_inputs);
+    let lids_before_output = ctx.types.life_parent.0.len();
     let output = if let Some(x) = output_type {
-        compile_type_expr_with_forced_output_lifetime(
-            ctx,
-            x,
-            output_lifetime,
-            TypeExprCompileMode::Signature,
-        )
+        compile_type_expr_with_mode(ctx, x, TypeExprCompileMode::Signature)
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
+    let lids_after_output = ctx.types.life_parent.0.len();
+    apply_signature_elided_output_lifetime_rule(
+        ctx,
+        output_type,
+        &implicit_input_lifetimes,
+        lids_before_output,
+        lids_after_output,
+    );
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -9997,7 +10061,7 @@ mod type_infer_tests {
         let f_ty = solved_types.type_of(f).unwrap();
         assert_eq!(
             store.get_type_string(&program, f_ty),
-            "fn(&'a0 int, &'a1 int) -> Pair['a0, 'a1, int]"
+            "fn(&'a0 int, &'a1 int) -> Pair₀['a0, 'a1, int]"
         );
     }
 

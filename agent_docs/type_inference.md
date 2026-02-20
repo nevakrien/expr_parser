@@ -450,11 +450,12 @@ This section records the intended implementation shape for adding lifetimes to t
   - explicit function lifetime generics are accepted and mapped to local signature lifetime slots (they are not overwritten by elision inference),
   - input-side unnamed lifetimes => fresh independent named/bound slots,
   - output-side unnamed lifetime => intended join over input lifetimes.
-  - implementation detail: elided output lifetime is now inferred before compiling the output type expression and applied directly to the outer output reference, so we do not mint-and-overwrite a throwaway external lifetime id (this keeps displayed implicit lifetimes dense/contiguous).
-  - temporary implementation fallback: when exactly one implicit input lifetime exists, use it; otherwise emit a type error and set output lifetime to `Unknown` to keep inference progressing.
+  - implementation detail: signature compile now tracks lid ranges for input/output compilation, assigns concrete external lifetimes to new input-elided lids, then applies output elision by directly inspecting newly-created output lids (no output-type rewalk).
+  - temporary implementation fallback: when exactly one implicit input lifetime exists, rewrite all output-elided lifetime slots to that lifetime; otherwise emit a type error and keep unresolved output lifetime slots so inference can continue.
 - Function bodies:
   - always mint fresh lifetime ids for unnamed/unconstrained lifetimes,
   - store all minted ids so borrow checking can allocate dense per-lifetime vectors indexed by id.
+  - pre-finalize fallback now resolves unresolved lifetime roots (by iterating lifetime union-find roots) to `Unknown`, rather than scanning type clusters.
 
 ### Suggested implementation staging
 

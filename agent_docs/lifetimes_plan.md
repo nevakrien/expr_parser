@@ -54,7 +54,7 @@ Global signatures:
 - explicit function lifetime generics are now accepted in typechecking and stay distinct from implicit/elided lifetime inference.
 - unnamed input lifetimes => fresh independent binders.
 - unnamed output lifetime => join of all input lifetimes (future).
-- temporary behavior: if exactly one implicit input lifetime exists, assign that to the elided output; otherwise emit a type error and leave output lifetime as `Unknown` so inference can continue.
+- temporary behavior: if exactly one implicit input lifetime exists, rewrite all output-elided lifetime slots (including struct-specialization lifetime args) to that lifetime; otherwise emit a type error and leave those output slots unresolved so inference can continue.
 
 Function bodies:
 
