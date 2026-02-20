@@ -4,25 +4,32 @@ use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
 const SOURCE: &str = r#"
+// type Pair = struct['a, 'b, T] {
+//                 left: &'a T,
+//                 right: &'b T,
+//             }
+
+//             f = fn['x](x:&'x int, y:&int)->Pair['x, '_, int] {
+//                 Pair{ left = x, right = y }
+//             }
 Wrapper = struct {inner:int};
-Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner}
+            Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner}
 
-Unsafe = struct { inner: &'raw Wrapper };
-Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
+            Unsafe = struct { inner: &'raw Wrapper };
+            Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
 
-RawCalc = struct { inner: &'raw Unsafe };
-RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
+            RawCalc = struct { inner: &'raw Unsafe };
+            RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
 
-Raw = struct { inner: &'raw RawCalc };
-Raw.__deref_mut = fn(self: &mut Raw) -> &'raw RawCalc { self.inner };
+            Raw = struct { inner: &'raw RawCalc };
+            Raw.__deref_mut = fn(self: &mut Raw) -> &'raw RawCalc { self.inner };
 
-Safe = struct { inner: &'raw Raw };
-Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
+            Safe = struct { inner: &'raw Raw };
+            Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
 
-f = fn(s: &mut Safe) {
-    let out : &mut int = s->get();
-};
-
+            f = fn(s: &mut Safe) {
+                let out : &mut int = s->get();
+            };
 "#;
 
 fn main() {

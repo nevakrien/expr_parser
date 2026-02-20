@@ -535,6 +535,7 @@ mod tests {
             name: None,
             fields: vec![(value, generic)],
             gen_count: 1,
+            lifetime_params: Vec::new(),
             layout: StructLayoutSpec::Hot,
         };
         let sid = store.new_struct(rep);
@@ -564,6 +565,7 @@ mod tests {
             name: None,
             fields: vec![(value, generic)],
             gen_count: 1,
+            lifetime_params: Vec::new(),
             layout: StructLayoutSpec::Hot,
         };
         let sid = store.new_struct(rep);
