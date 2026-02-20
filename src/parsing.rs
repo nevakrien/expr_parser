@@ -288,7 +288,7 @@ const BP_PATH: u32 = 880; // ., ->, ::
 const BP_CALL: u32 = 860; // (), []
 const BP_POSTFIX_INC: u32 = 850;
 const BP_PREFIX: u32 = 840;
-const BP_LIFETIME: u32 = BP_PREFIX;
+const BP_LIFETIME: u32 = BP_PATH + 2;
 
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
@@ -2525,6 +2525,65 @@ mod parse_tests {
                 }
             }
             _ => panic!("expected assignment expression"),
+        }
+
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn lifetime_reference_does_not_consume_array_suffix() {
+        let src = "Box=struct['a]{inner:&'a [int;2]};";
+        let mut p = Parser::new(src, 0);
+
+        let expr = p.consume_stmt().unwrap();
+
+        let Expr::Bin(eq, parts) = expr.value else {
+            panic!("expected assignment expression")
+        };
+        assert_eq!(eq.value, "=");
+        let (_, rhs) = *parts;
+
+        let Expr::Prefix(struct_kw, struct_parts) = rhs.value else {
+            panic!("expected struct definition")
+        };
+        assert_eq!(struct_kw.value, "struct");
+
+        let fields = match &struct_parts[1].value {
+            Expr::Prefix(open, fields) => {
+                assert_eq!(open.value, "{");
+                fields
+            }
+            _ => panic!("expected struct field list"),
+        };
+
+        let Expr::Bin(colon, field_parts) = &fields[0].value else {
+            panic!("expected typed field")
+        };
+        assert_eq!(colon.value, ":");
+
+        let (_, ty) = &**field_parts;
+        let Expr::Prefix(and_tok, and_parts) = &ty.value else {
+            panic!("expected reference type")
+        };
+        assert_eq!(and_tok.value, "&");
+        assert_eq!(and_parts.len(), 2);
+
+        let Expr::Prefix(life_tok, life_parts) = &and_parts[0].value else {
+            panic!("expected lifetime prefix")
+        };
+        assert_eq!(life_tok.value, "'");
+        assert_eq!(life_parts.len(), 1);
+        match &life_parts[0].value {
+            Expr::Atom(Token::Ident(name)) => assert_eq!(name, "a"),
+            _ => panic!("expected named lifetime"),
+        }
+
+        match &and_parts[1].value {
+            Expr::Prefix(open, items) => {
+                assert_eq!(open.value, "[");
+                assert_eq!(items.len(), 2);
+            }
+            _ => panic!("expected array type expression"),
         }
 
         assert!(p.is_empty());

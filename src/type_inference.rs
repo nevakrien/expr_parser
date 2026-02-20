@@ -9282,7 +9282,7 @@ mod type_infer_tests {
 
     #[test]
     fn struct_deref_to_array_index_expression_typechecks() {
-        let src = "type A=[int;2]; Box=struct['a]{inner:&'a A}; Box.__deref_mut = fn['a](self:&mut Box['a])->&mut &'a A { &mut self.inner }; f = fn['a](b:Box['a])->int { let y:int = b[1:usize]; y };";
+        let src = "Box=struct['a]{inner:&'a [int;2]}; Box.__deref_mut = fn['a](self:&mut Box['a])->&mut &'a [int;2] { &mut self.inner }; f = fn['a](b:Box['a])->int { let y:int = b[1:usize]; y };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);

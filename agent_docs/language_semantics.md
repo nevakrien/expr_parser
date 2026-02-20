@@ -108,6 +108,9 @@ Unnamed lifetimes:
 - In bodies:
   - every unresolved/unnamed lifetime site mints a fresh lifetime id,
   - minted ids are tracked explicitly so later borrow analysis can index per-lifetime data in dense vectors.
+- Parser note:
+  - lifetime tokens in reference syntax are parsed atomically (`&'a T` keeps `'a` as just the lifetime name),
+  - postfix/path continuations are not consumed as part of the lifetime node.
 
 ## Member Access Semantics (`.`, `::`, `->`)
 
