@@ -5,10 +5,10 @@ use expr_parser::type_inference::run_typechecker;
 
 // const SOURCE: &str = "Box=struct{inner:&[int;2]}; f=fn(){};";
 // const SOURCE: &str = r#"
-// Box=struct['a]{inner:&'a [int;2]}; 
-// Box.__deref_mut = 
-//   fn['a](self:&mut Box['a])->&mut &'a [int;2] 
-//     { &mut self.inner }; 
+// Box=struct['a]{inner:&'a [int;2]};
+// Box.__deref_mut =
+//   fn['a](self:&mut Box['a])->&mut &'a [int;2]
+//     { &mut self.inner };
 // f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };
 // "#;
 const SOURCE: &str = r#"

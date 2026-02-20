@@ -59,6 +59,12 @@ pub struct FunctionSet {
     pub implementations: Vec<ValId>,
 }
 
+impl Default for FunctionSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FunctionSet {
     pub fn new() -> Self {
         Self {

@@ -41,6 +41,7 @@ use crate::string_intern::{
     SUB_STR, StrId, USER_FREE_STR,
 };
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, FunctionSet, Program};
@@ -727,9 +728,9 @@ impl TypeStore {
                     // &'raw T  (non-null raw pointer)
                     PointerStyle::Raw(Nullable::No) => {
                         if *mutable {
-                            format!("&'raw mut {inner}")
-                        } else {
                             format!("&'raw {inner}")
+                        } else {
+                            format!("&'raw const {inner}")
                         }
                     }
 
@@ -878,7 +879,7 @@ pub fn check_and_record_function_set_types(
                 site: decl,
                 found: decl,
                 expected_place: reference_site,
-                clash: simple_type_clash(ty, reference_type),
+                clash: simple_type_clash(&ctx.ex, ty, reference_type),
             });
         }
     }
@@ -902,7 +903,7 @@ pub fn check_and_record_function_set_types(
                 site: first_impl,
                 found: first_impl,
                 expected_place,
-                clash: simple_type_clash(impl_type, reference_type),
+                clash: simple_type_clash(&ctx.ex, impl_type, reference_type),
             });
         }
     }
@@ -1028,16 +1029,16 @@ pub enum TypeError {
     },
     Unresolved {
         value: ValId,
-        found: Option<BadTypeId>,
+        found: Option<String>,
     },
     UnresolvedPattern {
         pattern: PatId,
-        found: Option<BadTypeId>,
+        found: Option<String>,
     },
 
     UnresolvedTypeExpr {
         expr: TExpId,
-        found: Option<BadTypeId>,
+        found: Option<String>,
     },
 
     UnknownField {
@@ -1092,7 +1093,7 @@ pub enum TypeError {
 
     ConstructorBaseNotStruct {
         site: ValId,
-        found: Option<BadTypeId>,
+        found: Option<String>,
     },
 
     TypeClashBeforeMentioned {
@@ -1128,8 +1129,8 @@ pub enum TypeError {
         op: BinOp,
         lhs: ValId,
         rhs: ValId,
-        lhs_type: Option<BadTypeId>,
-        rhs_type: Option<BadTypeId>,
+        lhs_type: Option<String>,
+        rhs_type: Option<String>,
     },
 
     /// No overload exists for the operator with the given operand type.
@@ -1137,13 +1138,13 @@ pub enum TypeError {
         site: ValId,
         op: UnOp,
         operand: ValId,
-        operand_type: Option<BadTypeId>,
+        operand_type: Option<String>,
     },
 
     CannotDeref {
         site: ValId,
         operand: ValId,
-        operand_type: Option<BadTypeId>,
+        operand_type: Option<String>,
     },
 
     /// `expr : T` or `pat : T` conflicts with what the value/pattern already implies.
@@ -1199,15 +1200,25 @@ pub enum TypeError {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct TypeClash {
-    pub found: Option<BadTypeId>,
-    pub wanted: Option<BadTypeId>,
+    pub found: Option<String>,
+    pub wanted: Option<String>,
 }
 
 const CLOSURES_UNSUPPORTED_MSG: &str = "sorry we dont support closures";
 
 impl TypeClash {
+    #[must_use]
+    pub fn found(&self) -> Option<&str> {
+        self.found.as_deref()
+    }
+
+    #[must_use]
+    pub fn wanted(&self) -> Option<&str> {
+        self.wanted.as_deref()
+    }
+
     pub fn swap(self) -> Self {
         Self {
             found: self.wanted,
@@ -2505,9 +2516,9 @@ impl TypeState {
     // diagnostics
     // =========================================================
 
-    pub fn bad_type(&mut self, ex: &mut ExternState, cid: CId) -> Option<BadTypeId> {
+    pub fn bad_type(&mut self, ex: &mut ExternState, cid: CId) -> Option<String> {
         let mut limit = EXPANSION_LIMIT;
-        extract_bad_type(ex, &mut self.core, &self.extra, cid, &mut limit)
+        extract_clash_type_string(ex, &mut self.core, &self.extra, cid, &mut limit)
     }
 
     pub fn clash(&mut self, ex: &mut ExternState, found: CId, wanted: CId) -> TypeClash {
@@ -2584,8 +2595,8 @@ fn __try_absorb(
                 Ok(true)
             } else {
                 Err(TypeClash {
-                    found: Some(BadTypeId(t2)),
-                    wanted: Some(BadTypeId(t1)),
+                    found: Some(type_string_from_type_id(ex, t2)),
+                    wanted: Some(type_string_from_type_id(ex, t1)),
                 })
             }
         }
@@ -2596,8 +2607,8 @@ fn __try_absorb(
         (Solved(t), IntLike) => {
             if !ex.store.is_int_like(t) {
                 return Err(TypeClash {
-                    found: Some(BadTypeId(UNKNOWN_INT_SIZE)),
-                    wanted: Some(BadTypeId(t)),
+                    found: Some(type_string_from_type_id(ex, UNKNOWN_INT_SIZE)),
+                    wanted: Some(type_string_from_type_id(ex, t)),
                 });
             }
             Ok(true)
@@ -2606,8 +2617,8 @@ fn __try_absorb(
         (Solved(t), FloatLike) => {
             if !ex.store.is_float_like(t) {
                 return Err(TypeClash {
-                    found: Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
-                    wanted: Some(BadTypeId(t)),
+                    found: Some(type_string_from_type_id(ex, UNKNOWN_FLOAT_SIZE)),
+                    wanted: Some(type_string_from_type_id(ex, t)),
                 });
             }
             Ok(true)
@@ -2855,13 +2866,13 @@ fn force_type(
 
         ResolveKind::Solved(t) if t == ty => Ok(()),
 
-        ResolveKind::Solved(t) => Err(simple_type_clash(t, ty)),
+        ResolveKind::Solved(t) => Err(simple_type_clash(ex, t, ty)),
 
         ResolveKind::IntLike => {
             if !ex.store.is_int_like(ty) {
                 return Err(TypeClash {
-                    found: Some(BadTypeId(UNKNOWN_INT_SIZE)),
-                    wanted: Some(BadTypeId(ty)),
+                    found: Some(type_string_from_type_id(ex, UNKNOWN_INT_SIZE)),
+                    wanted: Some(type_string_from_type_id(ex, ty)),
                 });
             }
             types.set_cluster_state(root, ResolveKind::Solved(ty));
@@ -2871,8 +2882,8 @@ fn force_type(
         ResolveKind::FloatLike => {
             if !ex.store.is_float_like(ty) {
                 return Err(TypeClash {
-                    found: Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
-                    wanted: Some(BadTypeId(ty)),
+                    found: Some(type_string_from_type_id(ex, UNKNOWN_FLOAT_SIZE)),
+                    wanted: Some(type_string_from_type_id(ex, ty)),
                 });
             }
             types.set_cluster_state(root, ResolveKind::Solved(ty));
@@ -3013,14 +3024,19 @@ fn unify_ptr_with_type(
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let found_ptr = |ex, types: &mut TypeState| {
-        BadTypeId(make_ptr_mock(
+        let mut out = String::new();
+        let mut limit = EXPANSION_LIMIT;
+        write_ptr_mock_string_inner(
             ex,
             &mut types.core,
             &types.extra,
             tgt,
             kind,
             mutable,
-        ))
+            &mut out,
+            &mut limit,
+        );
+        out
     };
 
     let TypeValue::Ptr {
@@ -3031,7 +3047,7 @@ fn unify_ptr_with_type(
     else {
         return Err(TypeClash {
             found: Some(found_ptr(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     };
     match (kind, style) {
@@ -3039,7 +3055,7 @@ fn unify_ptr_with_type(
             if !unify_ptr_lifetimes(types, a, b) {
                 return Err(TypeClash {
                     found: Some(found_ptr(ex, types)),
-                    wanted: Some(BadTypeId(ty)),
+                    wanted: Some(type_string_from_type_id(ex, ty)),
                 });
             }
         }
@@ -3047,7 +3063,7 @@ fn unify_ptr_with_type(
             if !bind_struct_lid_to_lifetime(types, lid, b) {
                 return Err(TypeClash {
                     found: Some(found_ptr(ex, types)),
-                    wanted: Some(BadTypeId(ty)),
+                    wanted: Some(type_string_from_type_id(ex, ty)),
                 });
             }
         }
@@ -3059,7 +3075,7 @@ fn unify_ptr_with_type(
     {
         return Err(TypeClash {
             found: Some(found_ptr(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     }
 
@@ -3073,7 +3089,17 @@ fn unify_func_with_type(
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let found_func = |ex, types: &mut TypeState| {
-        BadTypeId(make_func_mock(ex, &mut types.core, &types.extra, call))
+        let mut out = String::new();
+        let mut limit = EXPANSION_LIMIT;
+        write_func_mock_string_inner(
+            ex,
+            &mut types.core,
+            &types.extra,
+            call,
+            &mut out,
+            &mut limit,
+        );
+        out
     };
 
     let (cc, generics, params, ret) = match ex.store.type_value(ty) {
@@ -3086,7 +3112,7 @@ fn unify_func_with_type(
         _ => {
             return Err(TypeClash {
                 found: Some(found_func(ex, types)),
-                wanted: Some(BadTypeId(ty)),
+                wanted: Some(type_string_from_type_id(ex, ty)),
             });
         }
     };
@@ -3095,7 +3121,7 @@ fn unify_func_with_type(
     let Some(merged_cc) = merge_calling_convention(infer_cc, cc) else {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     };
 
@@ -3104,7 +3130,7 @@ fn unify_func_with_type(
     if types.extra.func_defs[call.0].generics != generics {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     }
 
@@ -3112,7 +3138,7 @@ fn unify_func_with_type(
     if params.len() != input_len {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     }
 
@@ -3143,7 +3169,17 @@ fn unify_struct_with_type(
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let found_struct = |ex, types: &mut TypeState| {
-        BadTypeId(make_struct_mock(ex, &mut types.core, &types.extra, call))
+        let mut out = String::new();
+        let mut limit = EXPANSION_LIMIT;
+        write_struct_mock_string_inner(
+            ex,
+            &mut types.core,
+            &types.extra,
+            call,
+            &mut out,
+            &mut limit,
+        );
+        out
     };
 
     let (sid, glen, lifetimes) = match ex.store.type_value(ty) {
@@ -3155,7 +3191,7 @@ fn unify_struct_with_type(
         _ => {
             return Err(TypeClash {
                 found: Some(found_struct(ex, types)),
-                wanted: Some(BadTypeId(ty)),
+                wanted: Some(type_string_from_type_id(ex, ty)),
             });
         }
     };
@@ -3167,7 +3203,7 @@ fn unify_struct_with_type(
     {
         return Err(TypeClash {
             found: Some(found_struct(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     }
 
@@ -3176,7 +3212,7 @@ fn unify_struct_with_type(
         if !bind_struct_lid_to_lifetime(types, lid, target_lt) {
             return Err(TypeClash {
                 found: Some(found_struct(ex, types)),
-                wanted: Some(BadTypeId(ty)),
+                wanted: Some(type_string_from_type_id(ex, ty)),
             });
         }
     }
@@ -3200,7 +3236,17 @@ fn unify_tuple_with_type(
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let found_tuple = |ex, types: &mut TypeState| {
-        BadTypeId(make_tuple_mock(ex, &mut types.core, &types.extra, tuple))
+        let mut out = String::new();
+        let mut limit = EXPANSION_LIMIT;
+        write_tuple_mock_string_inner(
+            ex,
+            &mut types.core,
+            &types.extra,
+            tuple,
+            &mut out,
+            &mut limit,
+        );
+        out
     };
 
     let ilen = types.extra.tuple_infers[tuple.0].items.len();
@@ -3208,14 +3254,14 @@ fn unify_tuple_with_type(
     let TypeValue::Tuple(items) = ex.store.type_value(ty) else {
         return Err(TypeClash {
             found: Some(found_tuple(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     };
 
     if items.len() != ilen {
         return Err(TypeClash {
             found: Some(found_tuple(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     }
 
@@ -3239,13 +3285,18 @@ fn unify_array_with_type(
     ty: TypeId,
 ) -> Result<(), TypeClash> {
     let found_array = |ex, types: &mut TypeState| {
-        BadTypeId(make_array_mock(
+        let mut out = String::new();
+        let mut limit = EXPANSION_LIMIT;
+        write_array_mock_string_inner(
             ex,
             &mut types.core,
             &types.extra,
             element,
             size,
-        ))
+            &mut out,
+            &mut limit,
+        );
+        out
     };
 
     let (ty_element, ty_size) = match ex.store.type_value(ty) {
@@ -3253,7 +3304,7 @@ fn unify_array_with_type(
         _ => {
             return Err(TypeClash {
                 found: Some(found_array(ex, types)),
-                wanted: Some(BadTypeId(ty)),
+                wanted: Some(type_string_from_type_id(ex, ty)),
             });
         }
     };
@@ -3261,7 +3312,7 @@ fn unify_array_with_type(
     if ty_size != size {
         return Err(TypeClash {
             found: Some(found_array(ex, types)),
-            wanted: Some(BadTypeId(ty)),
+            wanted: Some(type_string_from_type_id(ex, ty)),
         });
     }
 
@@ -3414,222 +3465,270 @@ fn try_resolve_ptr_type(
     }))
 }
 
-fn simple_type_clash(a: TypeId, b: TypeId) -> TypeClash {
+fn type_string_from_type_id(ex: &ExternState<'_>, t: TypeId) -> String {
+    ex.store.get_type_string(ex.program, t)
+}
+
+fn simple_type_clash(ex: &ExternState<'_>, a: TypeId, b: TypeId) -> TypeClash {
     TypeClash {
-        found: Some(BadTypeId(a)),
-        wanted: Some(BadTypeId(b)),
+        found: Some(type_string_from_type_id(ex, a)),
+        wanted: Some(type_string_from_type_id(ex, b)),
     }
 }
 
-//TODO: this should actually check if some of the types are known
-// we wana do recursive partial resolution
-fn mock_type_from_cluster(
-    ex: &mut ExternState,
+fn write_lifetime_for_display(out: &mut String, lt: LifeTime) {
+    match lt {
+        LifeTime::Local(id) => {
+            let _ = write!(out, "l{}", id.0);
+        }
+        LifeTime::External(i) => {
+            let _ = write!(out, "a{i}");
+        }
+        LifeTime::Static => {
+            let _ = out.write_str("static");
+        }
+        LifeTime::Unknown => {
+            let _ = out.write_str("idk");
+        }
+    }
+}
+
+fn calling_convention_keyword(cc: CallingConvention) -> &'static str {
+    match cc {
+        CallingConvention::Hot => "fn",
+        CallingConvention::C => "cfn",
+        CallingConvention::Unknown => "fn?",
+    }
+}
+
+fn write_mock_type_from_cluster(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     cid: CId,
+    out: &mut String,
     limit: &mut usize,
-) -> TypeId {
+) {
     if *limit == 0 {
-        return EXPANSION_STOPED;
+        let _ = out.write_str("...");
+        return;
     }
     *limit -= 1;
 
     let root = find_root(&mut core.parent, cid);
-
-    let ty = match core.cluster[root].state {
-        ResolveKind::Solved(t) => t,
-        ResolveKind::IntLike => UNKNOWN_INT_SIZE,
-        ResolveKind::FloatLike => UNKNOWN_FLOAT_SIZE,
-        ResolveKind::Func(call) => make_func_mock_inner(ex, core, extra, call, limit),
-        ResolveKind::Struct(call) => make_struct_mock_inner(ex, core, extra, call, limit),
-        ResolveKind::Tuple(call) => make_tuple_mock_inner(ex, core, extra, call, limit),
+    match core.cluster[root].state {
+        ResolveKind::Solved(t) => {
+            let _ = out.write_str(&type_string_from_type_id(ex, t));
+        }
+        ResolveKind::IntLike => {
+            let _ = out.write_str("int?");
+        }
+        ResolveKind::FloatLike => {
+            let _ = out.write_str("float?");
+        }
+        ResolveKind::Func(call) => write_func_mock_string_inner(ex, core, extra, call, out, limit),
+        ResolveKind::Struct(call) => {
+            write_struct_mock_string_inner(ex, core, extra, call, out, limit)
+        }
+        ResolveKind::Tuple(tuple) => {
+            write_tuple_mock_string_inner(ex, core, extra, tuple, out, limit)
+        }
         ResolveKind::Array { element, size } => {
-            make_array_mock_inner(ex, core, extra, element, size, limit)
+            write_array_mock_string_inner(ex, core, extra, element, size, out, limit)
         }
         ResolveKind::Ptr { tgt, kind, mutable } => {
-            make_ptr_mock_inner(ex, core, extra, tgt, kind, mutable, limit)
+            write_ptr_mock_string_inner(ex, core, extra, tgt, kind, mutable, out, limit)
         }
-        ResolveKind::Nothing => UNKNOWN_TYPE,
-    };
+        ResolveKind::Nothing => {
+            let _ = out.write_char('_');
+        }
+    }
 
     *limit += 1;
-    ty
 }
 
-fn make_func_mock_inner(
-    ex: &mut ExternState,
+fn write_func_mock_string_inner(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     call: FuncInferId,
+    out: &mut String,
     limit: &mut usize,
-) -> TypeId {
+) {
     let site = &extra.func_defs[call.0];
-    let params = site
-        .inputs
-        .iter()
-        .map(|&input| mock_type_from_cluster(ex, core, extra, input, limit))
-        .collect::<Vec<_>>();
-    let ret = mock_type_from_cluster(ex, core, extra, site.output, limit);
-
-    ex.store.intern(TypeValue::Func {
-        calling_convention: site.calling_convention,
-        generics: site.generics,
-        params,
-        ret,
-    })
+    let _ = out.write_str(calling_convention_keyword(site.calling_convention));
+    if site.generics > 0 {
+        let _ = out.write_char('[');
+        for i in 0..site.generics {
+            if i > 0 {
+                let _ = out.write_str(", ");
+            }
+            let _ = write!(out, "T{i}");
+        }
+        let _ = out.write_char(']');
+    }
+    let _ = out.write_char('(');
+    for (i, input) in site.inputs.iter().copied().enumerate() {
+        if i > 0 {
+            let _ = out.write_str(", ");
+        }
+        write_mock_type_from_cluster(ex, core, extra, input, out, limit);
+    }
+    let _ = out.write_str(") -> ");
+    write_mock_type_from_cluster(ex, core, extra, site.output, out, limit);
 }
 
-fn make_func_mock(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    call: FuncInferId,
-) -> TypeId {
-    let mut limit = EXPANSION_LIMIT;
-    make_func_mock_inner(ex, core, extra, call, &mut limit)
-}
-
-fn make_struct_mock_inner(
-    ex: &mut ExternState,
+fn write_struct_mock_string_inner(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     call: StructInferId,
+    out: &mut String,
     limit: &mut usize,
-) -> TypeId {
+) {
     let site = &extra.struct_infers[call.0];
-    let generics = site
-        .generics
-        .iter()
-        .map(|&input| mock_type_from_cluster(ex, core, extra, input, limit))
-        .collect::<Vec<_>>();
-    ex.store.intern(TypeValue::Struct {
-        id: site.sid,
-        generics,
-        lifetimes: vec![LifeTime::Unknown; site.lifetimes.len()],
-    })
+    let rep = ex.store.struct_value(site.sid);
+    match rep.name {
+        Some(name) => {
+            let _ = write!(
+                out,
+                "{}{}",
+                ex.program.name_string(name),
+                subscript_id(site.sid.0)
+            );
+        }
+        None => {
+            let _ = write!(out, "UnamedStruct{}", subscript_id(site.sid.0));
+        }
+    }
+
+    if site.lifetimes.is_empty() && site.generics.is_empty() {
+        return;
+    }
+
+    let _ = out.write_char('[');
+    let mut wrote_any = false;
+    for _ in &site.lifetimes {
+        if wrote_any {
+            let _ = out.write_str(", ");
+        }
+        wrote_any = true;
+        let _ = out.write_char('\'');
+        write_lifetime_for_display(out, LifeTime::Unknown);
+    }
+    for input in site.generics.iter().copied() {
+        if wrote_any {
+            let _ = out.write_str(", ");
+        }
+        wrote_any = true;
+        write_mock_type_from_cluster(ex, core, extra, input, out, limit);
+    }
+    let _ = out.write_char(']');
 }
 
-fn make_struct_mock(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    call: StructInferId,
-) -> TypeId {
-    let mut limit = EXPANSION_LIMIT;
-    make_struct_mock_inner(ex, core, extra, call, &mut limit)
-}
-
-fn make_tuple_mock_inner(
-    ex: &mut ExternState,
+fn write_tuple_mock_string_inner(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     tuple: TupleInferId,
+    out: &mut String,
     limit: &mut usize,
-) -> TypeId {
-    let items = extra.tuple_infers[tuple.0]
+) {
+    let _ = out.write_char('(');
+    for (i, item) in extra.tuple_infers[tuple.0]
         .items
         .iter()
-        .map(|&item| mock_type_from_cluster(ex, core, extra, item, limit))
-        .collect::<Vec<_>>();
-    ex.store.intern(TypeValue::Tuple(items))
+        .copied()
+        .enumerate()
+    {
+        if i > 0 {
+            let _ = out.write_str(", ");
+        }
+        write_mock_type_from_cluster(ex, core, extra, item, out, limit);
+    }
+    let _ = out.write_char(')');
 }
 
-fn make_tuple_mock(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    tuple: TupleInferId,
-) -> TypeId {
-    let mut limit = EXPANSION_LIMIT;
-    make_tuple_mock_inner(ex, core, extra, tuple, &mut limit)
-}
-
-fn make_array_mock_inner(
-    ex: &mut ExternState,
+fn write_array_mock_string_inner(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     element: CId,
     size: ArrayType,
+    out: &mut String,
     limit: &mut usize,
-) -> TypeId {
-    let element = mock_type_from_cluster(ex, core, extra, element, limit);
-    ex.store.intern(TypeValue::Array(element, size))
+) {
+    let _ = out.write_char('[');
+    write_mock_type_from_cluster(ex, core, extra, element, out, limit);
+    if let ArrayType::Sized(n) = size {
+        let _ = out.write_char(';');
+        let _ = write!(out, "{n}");
+    }
+    let _ = out.write_char(']');
 }
 
-fn make_array_mock(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    element: CId,
-    size: ArrayType,
-) -> TypeId {
-    let mut limit = EXPANSION_LIMIT;
-    make_array_mock_inner(ex, core, extra, element, size, &mut limit)
-}
-
-fn make_ptr_mock_inner(
-    ex: &mut ExternState,
+fn write_ptr_mock_string_inner(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     tgt: CId,
     kind: PtrKind,
     mutable: Option<bool>,
+    out: &mut String,
     limit: &mut usize,
-) -> TypeId {
-    let tgt = mock_type_from_cluster(ex, core, extra, tgt, limit);
-    ex.store.intern(TypeValue::Ptr {
-        tgt,
-        style: kind.force_mock(),
-        mutable: mutable.unwrap_or(false),
-    })
+) {
+    let mutable = mutable.unwrap_or(false);
+    let style = kind.force_mock();
+    match style {
+        PointerStyle::Raw(Nullable::Yes) => {
+            if mutable {
+                let _ = out.write_char('*');
+                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+            } else {
+                let _ = out.write_str("*const ");
+                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+            }
+        }
+        PointerStyle::Raw(Nullable::No) => {
+            if mutable {
+                let _ = out.write_str("&'raw ");
+            } else {
+                let _ = out.write_str("&'raw const ");
+            }
+            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+        }
+        PointerStyle::Ref(lt) => {
+            let _ = out.write_char('&');
+            let _ = out.write_char('\'');
+            write_lifetime_for_display(out, lt);
+            let _ = out.write_char(' ');
+            if mutable {
+                let _ = out.write_str("mut ");
+            }
+            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+        }
+    }
 }
 
-fn make_ptr_mock(
-    ex: &mut ExternState,
-    core: &mut TypeCore,
-    extra: &TypeExtra,
-    tgt: CId,
-    kind: PtrKind,
-    mutable: Option<bool>,
-) -> TypeId {
-    let mut limit = EXPANSION_LIMIT;
-    make_ptr_mock_inner(ex, core, extra, tgt, kind, mutable, &mut limit)
-}
-
-fn extract_bad_type(
-    ex: &mut ExternState,
+fn extract_clash_type_string(
+    ex: &ExternState<'_>,
     core: &mut TypeCore,
     extra: &TypeExtra,
     cid: CId,
     limit: &mut usize,
-) -> Option<BadTypeId> {
+) -> Option<String> {
     if *limit == 0 {
-        return Some(BadTypeId(EXPANSION_STOPED));
+        return Some("...".to_string());
     }
-    *limit -= 1;
 
     let root = find_root(&mut core.parent, cid);
-    let out = match core.cluster[root].state {
-        ResolveKind::Solved(t) => Some(BadTypeId(t)),
-        ResolveKind::Nothing => None,
+    if matches!(core.cluster[root].state, ResolveKind::Nothing) {
+        return None;
+    }
 
-        ResolveKind::Func(call) => Some(BadTypeId(make_func_mock(ex, core, extra, call))),
-        ResolveKind::Struct(call) => Some(BadTypeId(make_struct_mock(ex, core, extra, call))),
-        ResolveKind::Tuple(call) => Some(BadTypeId(make_tuple_mock(ex, core, extra, call))),
-        ResolveKind::Array { element, size } => {
-            Some(BadTypeId(make_array_mock(ex, core, extra, element, size)))
-        }
-        ResolveKind::Ptr { tgt, kind, mutable } => Some(BadTypeId(make_ptr_mock(
-            ex, core, extra, tgt, kind, mutable,
-        ))),
-
-        ResolveKind::IntLike => Some(BadTypeId(UNKNOWN_INT_SIZE)),
-        ResolveKind::FloatLike => Some(BadTypeId(UNKNOWN_FLOAT_SIZE)),
-    };
-
-    *limit += 1;
-    out
+    let mut out = String::new();
+    write_mock_type_from_cluster(ex, core, extra, cid, &mut out, limit);
+    Some(out)
 }
 
 // ============================================================
@@ -4074,18 +4173,6 @@ fn resolve_any_type_builtin_member_access(
     }
 }
 
-#[inline(always)]
-fn is_any_ref_to_named_struct_input_type(
-    store: &TypeStore,
-    input: TypeId,
-    struct_name: NameId,
-) -> bool {
-    match store.type_value(input) {
-        TypeValue::Ptr { tgt, .. } => is_named_struct_type(store, *tgt, struct_name),
-        _ => false,
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ResolvedStructDerefMethod {
     self_param: CId,
@@ -4094,15 +4181,6 @@ struct ResolvedStructDerefMethod {
     target: CId,
     ret_kind: PtrKind,
     ret_mutable: Option<bool>,
-}
-
-#[inline(always)]
-fn ptr_kind_attach_lid_if_safe_ref(kind: PtrKind, lt: LifeTime) -> PtrKind {
-    match kind {
-        PtrKind::Solved(PointerStyle::Ref(_)) => PtrKind::Solved(PointerStyle::Ref(lt)),
-        PtrKind::SafeRef => PtrKind::Solved(PointerStyle::Ref(lt)),
-        x => x,
-    }
 }
 
 #[inline(always)]
@@ -4205,7 +4283,7 @@ fn resolve_struct_deref_target(
         (None, None) => return None,
     };
 
-    let mut self_kind = resolved.self_kind;
+    let self_kind = resolved.self_kind;
     let mut ret_kind = resolved.ret_kind;
     let mut self_mutable = resolved.self_mutable;
     let mut ret_mutable = resolved.ret_mutable;
@@ -4279,13 +4357,8 @@ fn push_cannot_deref_error(
     source: CId,
 ) {
     let mut limit = EXPANSION_LIMIT;
-    let source_type = extract_bad_type(
-        /*ex=*/ ex,
-        /*core=*/ &mut types.core,
-        /*extra=*/ &types.extra,
-        source,
-        &mut limit,
-    );
+    let source_type =
+        extract_clash_type_string(ex, &mut types.core, &types.extra, source, &mut limit);
 
     ex.push_error(TypeError::CannotDeref {
         site,
@@ -5471,7 +5544,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 //         _ => {
                 //             ctx.push_error(TypeError::ConstructorBaseNotStruct {
                 //                 site: cons.base,
-                //                 found: Some(BadTypeId(*base)),
+                //                 found: Some(ctx.ex.store.get_type_string(ctx.ex.program, *base)),
                 //             });
                 //             for arg in cons.args.ids() {
                 //                 gather_constraints(ctx, arg);
@@ -5485,7 +5558,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 _ => {
                     ctx.push_error(TypeError::ConstructorBaseNotStruct {
                         site: cons.base,
-                        found: Some(BadTypeId(base_type)),
+                        found: Some(ctx.ex.store.get_type_string(ctx.ex.program, base_type)),
                     });
                     for arg in cons.args.ids() {
                         gather_constraints(ctx, arg, current_output);
@@ -8244,16 +8317,15 @@ fn resolve_operator_site(
         //there simply isnt any intresting operator on non user types other than pointer arithmetic
         if matches!(lhs_kind, OperandKind::KnownNonUser)
             && let ResolveKind::Ptr { ref mut kind, .. } = types.core.cluster[lhs].state
+            && kind.is_fancy().is_none()
         {
-            if kind.is_fancy().is_none() {
-                progress = true;
-                *kind = PtrKind::SafeRef;
-            }
-
-            // else if matches!(kind.is_fancy(), Some(true)) {
-            //     todo!("error because pointer arithmetic is for nullables")
-            // }
+            progress = true;
+            *kind = PtrKind::SafeRef;
         }
+
+        // else if matches!(kind.is_fancy(), Some(true)) {
+        //     todo!("error because pointer arithmetic is for nullables")
+        // }
 
         let lhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, lhs);
         let rhs_ptr = classify_raw_pointer_operand(ex, &mut types.core, rhs);
@@ -9944,19 +10016,16 @@ mod type_infer_tests {
                 expectation_reason: "if condition must be bool",
                 clash,
                 ..
-            } => Some(*clash),
+            } => Some(clash),
             _ => None,
         });
         let clash = clash.expect("expected if-condition type mismatch");
 
-        let found = clash.found.expect("missing found type");
-        let wanted = clash.wanted.expect("missing expected type");
+        let found = clash.found().expect("missing found type");
+        let wanted = clash.wanted().expect("missing expected type");
 
-        assert!(matches!(store.type_value(found.0), TypeValue::Ptr { .. }));
-        assert!(matches!(
-            store.type_value(wanted.0),
-            TypeValue::Builtin(BuiltinType::Bool)
-        ));
+        assert!(found.starts_with('&') || found.starts_with('*'));
+        assert_eq!(wanted, "bool");
     }
 
     #[test]
@@ -9976,19 +10045,16 @@ mod type_infer_tests {
                 expectation_reason: "called function with wrong signature",
                 clash,
                 ..
-            } => Some(*clash),
+            } => Some(clash),
             _ => None,
         });
         let clash = clash.expect("expected call-signature mismatch");
 
-        let found = clash.found.expect("missing found type");
-        let wanted = clash.wanted.expect("missing expected type");
+        let found = clash.found().expect("missing found type");
+        let wanted = clash.wanted().expect("missing expected type");
 
-        assert!(matches!(store.type_value(found.0), TypeValue::Func { .. }));
-        assert!(matches!(
-            store.type_value(wanted.0),
-            TypeValue::Builtin(BuiltinType::Int)
-        ));
+        assert!(found.starts_with("fn") || found.starts_with("cfn"));
+        assert_eq!(wanted, "int");
     }
 
     #[test]
@@ -10004,19 +10070,16 @@ mod type_infer_tests {
             .unwrap_or_default();
 
         let clash = errs.iter().find_map(|err| match err {
-            TypeError::AnnotationMismatch { clash, .. } => Some(*clash),
+            TypeError::AnnotationMismatch { clash, .. } => Some(clash),
             _ => None,
         });
         let clash = clash.expect("expected annotation mismatch");
 
-        let found = clash.found.expect("missing found type");
-        let wanted = clash.wanted.expect("missing expected type");
+        let found = clash.found().expect("missing found type");
+        let wanted = clash.wanted().expect("missing expected type");
 
-        assert!(matches!(store.type_value(found.0), TypeValue::Tuple(_)));
-        assert!(matches!(
-            store.type_value(wanted.0),
-            TypeValue::Builtin(BuiltinType::Int)
-        ));
+        assert!(found.starts_with('('));
+        assert_eq!(wanted, "int");
     }
 
     #[test]
@@ -10277,25 +10340,19 @@ mod type_infer_tests {
             .unwrap_or_default();
 
         let clash = errs.iter().find_map(|err| match err {
-            TypeError::ValuesContradict { clash, .. } => Some(*clash),
+            TypeError::ValuesContradict { clash, .. } => Some(clash),
             _ => None,
         });
         let clash = clash.expect("expected mismatch error");
 
         let mut saw_hot = false;
         let mut saw_c = false;
-        for side in [clash.found, clash.wanted] {
+        for side in [clash.found(), clash.wanted()] {
             let Some(side) = side else {
                 continue;
             };
-            let TypeValue::Func {
-                calling_convention, ..
-            } = store.type_value(side.0)
-            else {
-                continue;
-            };
-            saw_hot |= *calling_convention == CallingConvention::Hot;
-            saw_c |= *calling_convention == CallingConvention::C;
+            saw_hot |= side.starts_with("fn(") || side.starts_with("fn[");
+            saw_c |= side.starts_with("cfn(") || side.starts_with("cfn[");
         }
 
         assert!(
@@ -10926,22 +10983,17 @@ mod type_infer_tests {
         let clash = errs
             .iter()
             .find_map(|err| match err {
-                TypeError::FunctionOutputAnnotationMismatch { clash, .. } => Some(*clash),
+                TypeError::FunctionOutputAnnotationMismatch { clash, .. } => Some(clash),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("expected type mismatch, got errs={errs:?}"));
 
-        let found = clash
-            .found
+        let found_s = clash
+            .found()
             .unwrap_or_else(|| panic!("expected found side in clash: {clash:?}"));
-        let wanted = clash
-            .wanted
+        let wanted_s = clash
+            .wanted()
             .unwrap_or_else(|| panic!("expected wanted side in clash: {clash:?}"));
-        assert_ne!(found.0, UNKNOWN_TYPE, "found side should not be unknown");
-        assert_ne!(wanted.0, UNKNOWN_TYPE, "wanted side should not be unknown");
-
-        let found_s = store.get_bad_type_string(&program, found);
-        let wanted_s = store.get_bad_type_string(&program, wanted);
         assert!(
             (found_s == "int" && wanted_s.contains("Box"))
                 || (wanted_s == "int" && found_s.contains("Box")),
@@ -10965,22 +11017,17 @@ mod type_infer_tests {
         let clash = errs
             .iter()
             .find_map(|err| match err {
-                TypeError::FunctionOutputAnnotationMismatch { clash, .. } => Some(*clash),
+                TypeError::FunctionOutputAnnotationMismatch { clash, .. } => Some(clash),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("expected type mismatch, got errs={errs:?}"));
 
-        let found = clash
-            .found
+        let found_s = clash
+            .found()
             .unwrap_or_else(|| panic!("expected found side in clash: {clash:?}"));
-        let wanted = clash
-            .wanted
+        let wanted_s = clash
+            .wanted()
             .unwrap_or_else(|| panic!("expected wanted side in clash: {clash:?}"));
-        assert_ne!(found.0, UNKNOWN_TYPE, "found side should not be unknown");
-        assert_ne!(wanted.0, UNKNOWN_TYPE, "wanted side should not be unknown");
-
-        let found_s = store.get_bad_type_string(&program, found);
-        let wanted_s = store.get_bad_type_string(&program, wanted);
 
         let (ret_side, box_side) = if found_s == "T0" {
             (found_s, wanted_s)
@@ -11765,8 +11812,9 @@ mod type_infer_tests {
 
     #[test]
     fn free_member_on_generic_struct_requires_all_generics_free_in_order() {
-        let errs =
-            infer_global_errs("S=struct[T,U]{x:T,y:U}; S.__free = fn[T,U](self:&mut S[U,T]){}; f=fn(){};");
+        let errs = infer_global_errs(
+            "S=struct[T,U]{x:T,y:U}; S.__free = fn[T,U](self:&mut S[U,T]){}; f=fn(){};",
+        );
         assert!(errs.iter().any(|err| {
             matches!(
                 err,
@@ -12002,9 +12050,9 @@ mod type_infer_tests {
             matches!(
                 err,
                 TypeError::CannotDeref {
-                    operand_type: Some(BadTypeId(t)),
+                    operand_type: Some(t),
                     ..
-                } if matches!(store.type_value(*t), TypeValue::Builtin(BuiltinType::Int))
+                } if t == "int"
             )
         }));
     }

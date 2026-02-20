@@ -15,7 +15,7 @@ Recent lifetime/deref work added two important implementation details:
 - `TypeState` now carries a lightweight lifetime union-find (`LId` parent + origin site storage) used by implicit deref chains.
 - Implicit deref resolution threads shared chain state (`shared_lid`, chain mutability) through `resolve_struct_deref_target`, so multiple deref hops can share one lifetime identity and defer mutability collapse until enough information is known.
 - Finalization currently applies a temporary hack that normalizes unresolved pointer lifetime kinds (`SafeRef`/`SomeRef`) to `Ref(Unknown)` right before `finalize`.
-- Unresolved finalization diagnostics (`Unresolved`, `UnresolvedPattern`, `UnresolvedTypeExpr`) now carry a best-effort mock type shape (`BadTypeId`) for richer error output.
+- Unresolved finalization diagnostics (`Unresolved`, `UnresolvedPattern`, `UnresolvedTypeExpr`) now carry a best-effort mock type string for richer error output.
 
 For syntax-level semantics that span parser/lowering/typecheck (for example `fn` vs `cfn`, `struct` vs `cstruct`, and `. / :: / ->` behavior), see `agent_docs/language_semantics.md`.
 
@@ -57,7 +57,7 @@ These functions are the center of the entire file and appear all over inference:
 - `Struct` with `Struct` requires same struct id + same generic arity, then unifies generic clusters.
 - pointer states merge only when `raw`/`mutable` flags are compatible and targets unify.
 
-If both directions fail, `TypeClash` is produced with best-effort `found`/`wanted` mock types (`extract_bad_type` + `make_*_mock` helpers).
+If both directions fail, `TypeClash` is produced with best-effort `found`/`wanted` type strings generated directly from unresolved cluster structure (`write_*_mock_string_inner` + `extract_clash_type_string`).
 
 ### How clashes become user errors
 
@@ -184,7 +184,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 
 - `TypeId`, `GenId`, `StructId`: core ids.
 - `UNKNOWN_TYPE`, `UNKNOWN_INT_SIZE`, `UNKNOWN_FLOAT_SIZE`: unresolved/weak placeholders for diagnostics.
-- `BadTypeId`: wrapper used when diagnostics can include unresolved internals.
+- `BadTypeId`: legacy wrapper still used by some non-clash diagnostics; clash payloads now use strings directly.
 
 ### Type shapes and storage
 
@@ -222,7 +222,7 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 
 ### Diagnostic mock types
 
-When unresolved clusters must still be printed in errors, mock builders (`mock_type_from_cluster`, `make_func_mock`, `make_struct_mock`, `make_ptr_mock`) synthesize best-effort type shapes.
+When unresolved clusters must still be printed in errors, writers now stream best-effort type strings into `&mut String` (`write_mock_type_from_cluster` and shape-specific `write_*_mock_string_inner` helpers), instead of interning temporary mock `TypeId`s for clash payloads.
 
 ## Inference Pipeline
 

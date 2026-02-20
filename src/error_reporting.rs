@@ -1,9 +1,7 @@
 use crate::ir::{BinOp, PatId, UnOp, ValId};
 use crate::parsing::{Loc, OTok, ParseError};
 use crate::program::{CompileError, Program};
-use crate::type_inference::{
-    BadTypeId, SolvedTypes, TypeClash, TypeError, TypeStore, UNKNOWN_TYPE,
-};
+use crate::type_inference::{SolvedTypes, TypeClash, TypeError, TypeStore, UNKNOWN_TYPE};
 use ariadne::{Cache, Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
@@ -116,19 +114,16 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report = Report::build(
-                    ReportKind::Error,
-                    primary.file,
-                    primary.range.start,
-                )
-                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
-                    format!("Unresolved name '{name}'")
-                } else {
-                    format!(
+                let mut report =
+                    Report::build(ReportKind::Error, primary.file, primary.range.start)
+                        .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                            format!("Unresolved name '{name}'")
+                        } else {
+                            format!(
                         "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
                         locs.len()
                     )
-                });
+                        });
 
                 for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
@@ -301,7 +296,6 @@ impl ErrorReporter {
                     );
 
                 if let Some(found) = found {
-                    let found = store.get_bad_type_string(program, *found);
                     report = report.with_note(format!("best known unresolved shape: {found}"));
                 }
 
@@ -317,7 +311,6 @@ impl ErrorReporter {
                     );
 
                 if let Some(found) = found {
-                    let found = store.get_bad_type_string(program, *found);
                     report = report.with_note(format!("best known unresolved shape: {found}"));
                 }
 
@@ -329,7 +322,6 @@ impl ErrorReporter {
                     .with_message("could not infer state type");
 
                 if let Some(found) = found {
-                    let found = store.get_bad_type_string(program, *found);
                     report = report.with_note(format!("best known unresolved shape: {found}"));
                 }
 
@@ -415,7 +407,7 @@ impl ErrorReporter {
             } => {
                 let loc = program.value_loc(*value);
                 let field_name = program.str_intern.resolve(*field);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message(format!("field `{}` type mismatch", field_name))
                     .with_label(
@@ -458,7 +450,8 @@ impl ErrorReporter {
             TypeError::ConstructorBaseNotStruct { site, found } => {
                 let loc = program.value_loc(*site);
                 let found_msg = found
-                    .map(|t| format!("found {}", store.get_bad_type_string(program, t)))
+                    .as_ref()
+                    .map(|t| format!("found {t}"))
                     .unwrap_or_else(|| "found unknown".to_string());
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("constructor base must be a struct type")
@@ -490,7 +483,7 @@ impl ErrorReporter {
                 let site_loc = program.value_loc(*site);
                 let found_loc = program.value_loc(*found);
                 let expected_loc = program.value_loc(*expected_place);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let mut report =
                     Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
@@ -526,8 +519,10 @@ impl ErrorReporter {
                 let site_loc = program.value_loc(*site);
                 let lhs_loc = program.value_loc(*lhs);
                 let rhs_loc = program.value_loc(*rhs);
-                let lhs_msg = operand_type_message(program, store, "left operand", *lhs_type);
-                let rhs_msg = operand_type_message(program, store, "right operand", *rhs_type);
+                let lhs_msg =
+                    operand_type_message(program, store, "left operand", lhs_type.as_deref());
+                let rhs_msg =
+                    operand_type_message(program, store, "right operand", rhs_type.as_deref());
 
                 let mut report =
                     Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
@@ -560,7 +555,8 @@ impl ErrorReporter {
             } => {
                 let site_loc = program.value_loc(*site);
                 let operand_loc = program.value_loc(*operand);
-                let operand_msg = operand_type_message(program, store, "operand", *operand_type);
+                let operand_msg =
+                    operand_type_message(program, store, "operand", operand_type.as_deref());
 
                 let mut report =
                     Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
@@ -586,7 +582,8 @@ impl ErrorReporter {
             } => {
                 let site_loc = program.value_loc(*site);
                 let operand_loc = program.value_loc(*operand);
-                let operand_msg = operand_type_message(program, store, "operand", *operand_type);
+                let operand_msg =
+                    operand_type_message(program, store, "operand", operand_type.as_deref());
 
                 let report = Report::build(ReportKind::Error, site_loc.file, site_loc.range.start)
                     .with_message("cannot dereference this value")
@@ -610,7 +607,7 @@ impl ErrorReporter {
             } => {
                 let ann_loc = program.value_loc(*annotation);
                 let constrained_loc = program.value_loc(*constrained);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let report = Report::build(ReportKind::Error, ann_loc.file, ann_loc.range.start)
                     .with_message("type annotation mismatch")
@@ -634,7 +631,7 @@ impl ErrorReporter {
             } => {
                 let ann_loc = program.type_expr_loc(*annotation);
                 let constrained_loc = program.value_loc(*constrained);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let report = Report::build(ReportKind::Error, ann_loc.file, ann_loc.range.start)
                     .with_message("function output type annotation mismatch")
@@ -657,7 +654,7 @@ impl ErrorReporter {
                 clash,
             } => {
                 let constrained_loc = program.value_loc(*constrained);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let report = Report::build(
                     ReportKind::Error,
@@ -685,7 +682,7 @@ impl ErrorReporter {
             } => {
                 let ann_loc = program.pattern_loc(*annotation);
                 let constrained_loc = program.pattern_loc(*constrained);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let report = Report::build(ReportKind::Error, ann_loc.file, ann_loc.range.start)
                     .with_message("pattern annotation mismatch")
@@ -705,7 +702,7 @@ impl ErrorReporter {
 
             TypeError::TypeDefPatternMismatch { pattern, clash } => {
                 let loc = program.pattern_loc(*pattern);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message("type definition name must be a type")
@@ -899,7 +896,7 @@ impl ErrorReporter {
 
             TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
                 let loc = program.type_expr_loc(*expr);
-                let (found_msg, expected_msg) = clash_messages(program, store, *clash);
+                let (found_msg, expected_msg) = clash_messages(program, store, clash);
 
                 let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message(format!(
@@ -1057,19 +1054,19 @@ fn loc_in_region(loc: &Loc, region: Option<&Loc>) -> bool {
         && loc.range.end <= region.range.end
 }
 
-fn clash_messages(program: &Program, store: &TypeStore, clash: TypeClash) -> (String, String) {
-    let found = type_string(program, store, clash.found).unwrap_or_else(|| "unknown".to_string());
-    let wanted = type_string(program, store, clash.wanted).unwrap_or_else(|| "unknown".to_string());
+fn clash_messages(_program: &Program, _store: &TypeStore, clash: &TypeClash) -> (String, String) {
+    let found = clash.found().unwrap_or("unknown");
+    let wanted = clash.wanted().unwrap_or("unknown");
     (format!("found {found}"), format!("expected {wanted}"))
 }
 
 fn operand_type_message(
-    program: &Program,
-    store: &TypeStore,
+    _program: &Program,
+    _store: &TypeStore,
     label: &str,
-    ty: Option<BadTypeId>,
+    ty: Option<&str>,
 ) -> String {
-    match type_string(program, store, ty) {
+    match ty {
         Some(ty) => format!("{label} has type {ty}"),
         None => format!("{label} type is unknown"),
     }
@@ -1106,10 +1103,6 @@ fn un_op_symbol(op: UnOp) -> &'static str {
         // UnOp::AddrOf(Some(VarKind::Mut)) => "&mut",
         // UnOp::AddrOf(Some(VarKind::Const)) => "&const",
     }
-}
-
-fn type_string(program: &Program, store: &TypeStore, ty: Option<BadTypeId>) -> Option<String> {
-    ty.map(|t| store.get_bad_type_string(program, t))
 }
 
 impl Default for ErrorReporter {

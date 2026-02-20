@@ -13,10 +13,15 @@
 - Function body inference may be able to stay gather-only for many cases.
 - This is a design follow-up note only; no behavior change is implied by this note.
 
+## Diagnostic Naming Follow-up
+
+- Planned improvement: print user-declared generic/lifetime names in `TypeClash`/mock-type diagnostics (instead of fallback `T{i}` / `'a{i}` / `'l{i}` labels where possible).
+- Current blocker: struct inference can currently represent multiple source names for the same generic identity in one context, so a simple inverse map from internal id -> single display name is not sound yet.
+- Required refactor (deferred): stabilize/normalize generic identity ownership for struct contexts first, then add per-scope display-name tables for diagnostic writers.
+
 ## Known Temporary Failing Tests
 
 - `type_inference::type_infer_tests::generic_box_array_index_chain_includes_box_step`
-- `type_inference::type_infer_tests::member_access_curried_ref_self_and_tracks_full_signature`
 - `type_inference::type_infer_tests::struct_deref_to_array_index_expression_typechecks`
 
 These currently fail during the specialization/lifetime refactor because assertions still expect pre-refactor lifetime display/resolution behavior.
