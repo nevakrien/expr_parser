@@ -35,6 +35,10 @@ These functions are the center of the entire file and appear all over inference:
   - substitutes generic placeholders (`TypeValue::Generic(GenId)`) with concrete local clusters,
   - recursively specializes function/struct/pointer shapes,
   - this is the mechanism that prevents generic-id scope collisions from leaking across call sites.
+- `specialize_type(...)`:
+  - now always wraps specialization in a shared specialization context,
+  - guarantees lifetime specialization is applied together with generic specialization,
+  - maps solved/global lifetimes used in specialized signatures to fresh local unresolved `LId`s per specialization call.
 - `unify_if_distinct(...)`:
   - utility wrapper used heavily in operator resolution,
   - avoids redundant unify calls when both clusters already share one root,
@@ -170,6 +174,8 @@ Specialization avoids that by replacing generic placeholders with fresh local cl
 3. Run `specialize_type` recursively to substitute every `TypeValue::Generic` occurrence.
 4. Unify/force substituted result against call-site or annotation constraints.
 
+Lifetime invariant: every call-site specialization now carries a lifetime map as well. Even when type-generic arity is zero, function signatures are still specialized so solved/global lifetime identities do not leak directly into local inference clusters.
+
 Pointer note: specialization must recurse through `TypeValue::Ptr` as well as function and struct shapes. If pointer wrappers are left unspecialized, methods like `__deref` / `__deref_mut` can incorrectly keep `T` as a global generic id instead of binding it from the receiver (for example `&Box[T] -> &T` called with `Box[int]`), which then produces spurious receiver/type-clash diagnostics.
 
 ## Core Type Model
@@ -226,7 +232,9 @@ Main orchestration is two-phase:
 1. `infer_global_types`
    - resolves typedefs/structs,
    - resolves function signatures (without body internals),
-   - reports unused function generic slots from solved signature types (for example `fn[T, U](x:T)->T` reports `U`),
+  - reports unused function generic slots and unused function lifetime slots from solved signature types,
+    - examples: `fn[T, U](x:T)->T` reports unused `U`; `fn['a](x:int)->int` reports unused `'a`,
+  - reports unused struct generic/lifetime slots from struct field signatures in global typedefs.
      - performs a single per-function-set pass that validates declaration/implementation grouping for both global functions and member methods:
       - when declarations exist, the first declaration is the only reference signature,
       - if that first declaration is unsolved, compatibility checks for that set are skipped,
@@ -338,6 +346,7 @@ Critical type-expression fragility points:
   - sized form `[T; N]` lowers to deferred `ResolveKind::Array { element, size: ArrayType::Sized(N) }`,
   - unsized form `[T]` now lowers to deferred `ResolveKind::Array { element, size: ArrayType::Unsized }`.
 - inline struct type definitions now reject elided reference lifetimes in fields (for example `inner:&[int;2]`), and require those lifetimes to be declared in the struct lifetime parameter list.
+  - implementation detail: struct-field type compilation now uses a dedicated `TypeExprCompileMode::Struct` branch so `&T`/`&'_ T` in struct fields emit a direct hard error instead of silently acting like function-signature elision.
 - pointer type expressions (`TypeExpr::Ptr`) feed directly into deferred pointer cluster states, so pointer semantics changes usually require touching both gather and deferred resolution helpers.
 
 Maintenance note: this whole gather layer is intentionally unfinished in places. Treat `NameRef`, `Call`, `Construct`, `TypeExpr::Index`, `AddrOf` (and future `Deref`) as priority review zones whenever adding type-system features, implicit conversions, or dispatch behavior.

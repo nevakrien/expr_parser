@@ -39,6 +39,7 @@
 - `agent_docs/string_intern_and_ids.md`: intern table internals and `IdHashMap`/`IdentityHasher` conventions for ID-keyed maps.
 - `agent_docs/low_ir_sketch.md`: current status and intent for the unfinished low-level IR sketch in `src/low_ir.rs`.
 - `agent_docs/lifetimes_plan.md`: planned lifetime semantics and staged implementation notes across type inference and borrow checking.
+- `agent_docs/todo.md`: short-lived implementation notes (including active refactor items and known temporary failures).
 
 ## Commands
 - `cargo run` runs the CLI/REPL, which can be used to inspect parsed AST shape and type inference behavior.
@@ -57,3 +58,11 @@
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
+
+### Known Temporary Failures
+- During the current specialization/lifetime refactor, some tests are expected to fail until lifetime display/assertion expectations are updated.
+- Current expected failing tests:
+  - `type_inference::type_infer_tests::generic_box_array_index_chain_includes_box_step`
+  - `type_inference::type_infer_tests::member_access_curried_ref_self_and_tracks_full_signature`
+  - `type_inference::type_infer_tests::struct_deref_to_array_index_expression_typechecks`
+- Keep this list in sync with `agent_docs/todo.md`.

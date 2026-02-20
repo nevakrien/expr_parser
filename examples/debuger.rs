@@ -3,15 +3,25 @@ use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
-
 // const SOURCE: &str = "Box=struct{inner:&[int;2]}; f=fn(){};";
+// const SOURCE: &str = r#"
+// Box=struct['a]{inner:&'a [int;2]}; 
+// Box.__deref_mut = 
+//   fn['a](self:&mut Box['a])->&mut &'a [int;2] 
+//     { &mut self.inner }; 
+// f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };
+// "#;
 const SOURCE: &str = r#"
-Box=struct['a]{inner:&'a [int;2]}; 
-Box.__deref_mut = 
-  fn['a](self:&mut Box['a])->&mut &'a [int;2] 
-    { &mut self.inner }; 
-f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };
+type Pair = struct['a, 'b, T] {
+    left: &'a T,
+    right: &'b T,
+}
+
+f = fn['x](x:&'x int, y:&int)->Pair['x, '_, int] {
+    Pair{ left = x, right = y }
+}
 "#;
+
 // const SOURCE: &str = r#"
 // // type Pair = struct['a, 'b, T] {
 // //user code
@@ -22,7 +32,7 @@ f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y }
 //             (&*b.ptr).__free()
 //             free(b->ptr as *void)
 //             };
-            
+
 //             Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
 //             Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
 
@@ -49,9 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(type_error_count) = result {
             println!("Type errors: {type_error_count}");
         }
-        if let Ok((solved,store)) = result {
-            reporter.report_type_dump(&program,&solved,&store)?;
-
+        if let Ok((solved, store)) = result {
+            reporter.report_type_dump(&program, &solved, &store)?;
         }
     }
     Ok(())

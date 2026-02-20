@@ -784,6 +784,119 @@ impl ErrorReporter {
                 self.print_report(report.finish())
             }
 
+            TypeError::UnusedFunctionLifetime {
+                function,
+                lifetime_index,
+            } => {
+                let function_loc = program.value_loc(*function);
+                let lifetime_loc = match program.value(*function) {
+                    crate::ir::Value::Func { generics, .. } => generics
+                        .lifetimes()
+                        .ids()
+                        .nth(*lifetime_index)
+                        .map(|pat| program.pattern_loc(pat))
+                        .unwrap_or(function_loc.clone()),
+                    _ => function_loc.clone(),
+                };
+
+                let report = Report::build(
+                    ReportKind::Error,
+                    lifetime_loc.file,
+                    lifetime_loc.range.start,
+                )
+                .with_message(format!(
+                    "unused lifetime parameter 'a{} in function signature",
+                    lifetime_index
+                ))
+                .with_label(
+                    Label::new((lifetime_loc.file, lifetime_loc.range.clone()))
+                        .with_message("lifetime parameter declared here")
+                        .with_color(Color::Red),
+                )
+                .with_label(
+                    Label::new((function_loc.file, function_loc.range.clone()))
+                        .with_message("function signature does not use this lifetime")
+                        .with_color(Color::Cyan),
+                );
+
+                self.print_report(report.finish())
+            }
+
+            TypeError::UnusedStructGeneric {
+                type_expr,
+                generic_index,
+            } => {
+                let type_loc = program.type_expr_loc(*type_expr);
+                let generic_loc = match program.type_expr(*type_expr) {
+                    crate::ir::TypeExpr::Struct(def) => def
+                        .generics
+                        .generics()
+                        .ids()
+                        .nth(*generic_index)
+                        .map(|pat| program.pattern_loc(pat))
+                        .unwrap_or(type_loc.clone()),
+                    _ => type_loc.clone(),
+                };
+
+                let report =
+                    Report::build(ReportKind::Error, generic_loc.file, generic_loc.range.start)
+                        .with_message(format!(
+                            "unused generic parameter T{} in struct signature",
+                            generic_index
+                        ))
+                        .with_label(
+                            Label::new((generic_loc.file, generic_loc.range.clone()))
+                                .with_message("generic parameter declared here")
+                                .with_color(Color::Red),
+                        )
+                        .with_label(
+                            Label::new((type_loc.file, type_loc.range.clone()))
+                                .with_message("struct signature does not use this generic")
+                                .with_color(Color::Cyan),
+                        );
+
+                self.print_report(report.finish())
+            }
+
+            TypeError::UnusedStructLifetime {
+                type_expr,
+                lifetime_index,
+            } => {
+                let type_loc = program.type_expr_loc(*type_expr);
+                let lifetime_loc = match program.type_expr(*type_expr) {
+                    crate::ir::TypeExpr::Struct(def) => def
+                        .generics
+                        .lifetimes()
+                        .ids()
+                        .nth(*lifetime_index)
+                        .map(|pat| program.pattern_loc(pat))
+                        .unwrap_or(type_loc.clone()),
+                    _ => type_loc.clone(),
+                };
+
+                let report = Report::build(
+                    ReportKind::Error,
+                    lifetime_loc.file,
+                    lifetime_loc.range.start,
+                )
+                .with_message(format!(
+                    "unused lifetime parameter 'a{} in struct signature",
+                    lifetime_index
+                ))
+                .with_label(
+                    Label::new((lifetime_loc.file, lifetime_loc.range.clone()))
+                        .with_message("lifetime parameter declared here")
+                        .with_color(Color::Red),
+                )
+                .with_label(
+                    Label::new((type_loc.file, type_loc.range.clone()))
+                        .with_message("struct signature does not use this lifetime")
+                        .with_color(Color::Cyan),
+                );
+
+                self.print_report(report.finish())
+            }
+
             TypeError::TypeClashBeforeMentioned { name, expr, clash } => {
                 let loc = program.type_expr_loc(*expr);
                 let (found_msg, expected_msg) = clash_messages(program, store, *clash);
