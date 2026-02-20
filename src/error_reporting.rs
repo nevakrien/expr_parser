@@ -319,7 +319,11 @@ impl ErrorReporter {
             TypeError::UnresolvedTypeExpr { expr, found } => {
                 let loc = program.type_expr_loc(*expr);
                 let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
-                    .with_message("could not infer state type");
+                    .with_message("could not infer type")
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("this type is probably recursive in some way"),
+                    );
 
                 if let Some(found) = found {
                     report = report.with_note(format!("best known unresolved shape: {found}"));

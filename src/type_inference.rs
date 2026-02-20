@@ -2085,6 +2085,7 @@ impl SearchState {
         self.pat_cluster.push((p, c));
     }
 }
+
 struct TypeCore {
     // unify-find
     parent: ClusterVec<CId>,
