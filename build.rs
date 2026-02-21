@@ -14,6 +14,7 @@ fn main() {
         .flag_if_supported("-Wno-unused-function")
         .flag_if_supported("-Wno-unused-variable")
         .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-comment")
         .compile("perf_counter");
 }
 // fn main() {}

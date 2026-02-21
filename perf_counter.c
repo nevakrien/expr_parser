@@ -723,3 +723,134 @@ void perf_done(const char* name) {
 
     printf("=============================\n\n");
 }
+
+// #define _GNU_SOURCE
+// #include <linux/perf_event.h>
+// #include <sys/syscall.h>
+// #include <sys/ioctl.h>
+// #include <unistd.h>
+// #include <stdint.h>
+// #include <string.h>
+// #include <stdio.h>
+// #include <errno.h>
+// #include <stdlib.h>
+
+// #define DIE(...) do { \
+//     fprintf(stderr, "perf: "); \
+//     fprintf(stderr, __VA_ARGS__); \
+//     fprintf(stderr, " (%s, errno=%d)\n", strerror(errno), errno); \
+//     exit(1); \
+// } while (0)
+
+// static int fd_group = -1;   /* branches (leader) */
+// static int fd_miss  = -1;   /* branch-misses (member) */
+
+// static int perf_open(struct perf_event_attr* attr, pid_t pid, int cpu, int group_fd) {
+//     return (int)syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, 0);
+// }
+
+// static void setup_attr(struct perf_event_attr* a, uint64_t config) {
+//     memset(a, 0, sizeof(*a));
+//     a->type = PERF_TYPE_HARDWARE;
+//     a->size = sizeof(*a);
+//     a->config = config;
+
+//     a->disabled = 1;
+//     a->exclude_kernel = 1;
+//     a->exclude_hv = 1;
+
+//     /* Read as a group + include timing so we can scale if multiplexed. */
+//     a->read_format =
+//         PERF_FORMAT_GROUP |
+//         PERF_FORMAT_TOTAL_TIME_ENABLED |
+//         PERF_FORMAT_TOTAL_TIME_RUNNING;
+// }
+
+// /* read group for exactly 2 counters:
+//    u64 nr
+//    u64 time_enabled
+//    u64 time_running
+//    u64 value0
+//    u64 value1
+// */
+// typedef struct {
+//     uint64_t nr;
+//     uint64_t time_enabled;
+//     uint64_t time_running;
+//     uint64_t values[2];
+// } read_group2_t;
+
+// static read_group2_t read_group2_full(int fd) {
+//     read_group2_t rg;
+//     memset(&rg, 0, sizeof(rg));
+
+//     size_t off = 0;
+//     unsigned char* p = (unsigned char*)&rg;
+//     while (off < sizeof(rg)) {
+//         ssize_t n = read(fd, p + off, sizeof(rg) - off);
+//         if (n < 0) DIE("read(group) failed");
+//         if (n == 0) { errno = EIO; DIE("read(group) EOF"); }
+//         off += (size_t)n;
+//     }
+//     return rg;
+// }
+
+// static double scale_count(uint64_t raw, uint64_t enabled, uint64_t running) {
+//     if (running == 0) return 0.0;
+//     if (running == enabled) return (double)raw;
+//     return (double)raw * (double)enabled / (double)running;
+// }
+
+// /* ------------------ public API (same names) ------------------ */
+
+// void perf_init(void) {
+//     pid_t pid = 0;  /* current thread */
+//     int cpu = -1;   /* any CPU */
+
+//     struct perf_event_attr a_br, a_miss;
+//     setup_attr(&a_br,   PERF_COUNT_HW_BRANCH_INSTRUCTIONS);
+//     setup_attr(&a_miss, PERF_COUNT_HW_BRANCH_MISSES);
+
+//     fd_group = perf_open(&a_br, pid, cpu, -1);
+//     if (fd_group < 0) DIE("perf_event_open(branches) failed");
+
+//     fd_miss = perf_open(&a_miss, pid, cpu, fd_group);
+//     if (fd_miss < 0) DIE("perf_event_open(branch-misses) failed");
+// }
+
+// void perf_begin(void) {
+//     if (fd_group < 0) return;
+
+//     if (ioctl(fd_group, PERF_EVENT_IOC_RESET, PERF_IOC_FLAG_GROUP) < 0)
+//         DIE("ioctl RESET(group) failed");
+//     if (ioctl(fd_group, PERF_EVENT_IOC_ENABLE, PERF_IOC_FLAG_GROUP) < 0)
+//         DIE("ioctl ENABLE(group) failed");
+// }
+
+// void perf_done(const char* name) {
+//     if (fd_group < 0) return;
+
+//     if (ioctl(fd_group, PERF_EVENT_IOC_DISABLE, PERF_IOC_FLAG_GROUP) < 0)
+//         DIE("ioctl DISABLE(group) failed");
+
+//     read_group2_t rg = read_group2_full(fd_group);
+//     if (rg.nr < 2) {
+//         errno = EINVAL;
+//         DIE("expected 2 counters in group, got %llu", (unsigned long long)rg.nr);
+//     }
+
+//     double branches = scale_count(rg.values[0], rg.time_enabled, rg.time_running);
+//     double misses   = scale_count(rg.values[1], rg.time_enabled, rg.time_running);
+//     double rate     = (branches > 0.0) ? (misses / branches * 100.0) : 0.0;
+
+//     printf("\n=== PERF (branch-only): %s ===\n", name ? name : "(null)");
+//     printf("time_enabled:  %llu\n", (unsigned long long)rg.time_enabled);
+//     printf("time_running:  %llu\n", (unsigned long long)rg.time_running);
+//     if (rg.time_running != rg.time_enabled)
+//         printf("NOTE: multiplexed; counts scaled by enabled/running\n");
+
+//     printf("Branches:      %.0f\n", branches);
+//     printf("Branch misses: %.0f\n", misses);
+//     printf("Miss rate:     %.2f%%\n", rate);
+//     printf("================================\n\n");
+// }
