@@ -7368,7 +7368,7 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         lids_after_output,
     );
 
-    let lifetime_count = ctx.types.life_parent.0.len() - lifetime_before_signature;
+    let lifetime_count = lids_before_output - lifetime_before_signature;
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
