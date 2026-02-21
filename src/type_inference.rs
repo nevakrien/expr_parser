@@ -1651,6 +1651,8 @@ fn main_solver(ctx: &mut InferState) {
     //this loop only exists once ALL requirments have checked and didnt complain
     //on the state we are gona release. since there was no change
     //this is SUPER important because they are not just progressions
+    let mut unknown_count = 0;
+
     loop {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
@@ -1666,7 +1668,7 @@ fn main_solver(ctx: &mut InferState) {
         }
         // HACK (temporary, likely not the final design): before finalize we force unresolved
         // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
-        progress |= finalize_unresolved_lifetimes_as_unknown(ctx);
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx,&mut unknown_count);
 
         if !progress {
             break;
@@ -1680,17 +1682,19 @@ fn main_solver(ctx: &mut InferState) {
     finalize(ctx);
 }
 
-fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) -> bool {
+fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState,unknown_count:&mut u32) -> bool {
     let mut progress = false;
     //should properly increment 
-    let hack = LifeId(0);
+    
     for lid in ctx.types.life_parent.0.iter() {
         if *lid!=ctx.types.life_parent[*lid]{
             continue;
         }
 
         if ctx.types.life_known[*lid].is_none() {
+            let hack = LifeId(*unknown_count);
             ctx.types.life_known[*lid] = Some(LifeTime::Unknown(hack));
+            *unknown_count+=1;
             progress = true;
         }
     }
@@ -10112,7 +10116,7 @@ mod type_infer_tests {
             chain,
             vec![
                 "Box₀['a1]".to_string(),
-                "&'l0 mut &'a1 [int;2]".to_string(),
+                "&'idk0 mut &'a1 [int;2]".to_string(),
                 "&'a1 [int;2]".to_string(),
                 "[int;2]".to_string(),
             ],
@@ -10188,7 +10192,7 @@ mod type_infer_tests {
             chain,
             vec![
                 "Box₀[[int]]".to_string(),
-                "&'l0 [int]".to_string(),
+                "&'idk0 [int]".to_string(),
                 "[int]".to_string(),
             ],
             "unexpected implicit deref chain for generic Box indexing"
@@ -10664,7 +10668,7 @@ mod type_infer_tests {
 
         assert_eq!(
             store.get_type_string(&program, f_ty),
-            "fn(&'a0 int, &'a1 int) -> &'a1 int"
+            "fn['a0, 'a1](&'a0 int, &'a1 int) -> &'a1 int"
         );
     }
 
@@ -10680,7 +10684,7 @@ mod type_infer_tests {
 
         assert_eq!(
             store.get_type_string(&program, f_ty),
-            "fn(&'a0 int) -> &'a0 int"
+            "fn['a0](&'a0 int) -> &'a0 int"
         );
     }
 
@@ -10742,7 +10746,7 @@ mod type_infer_tests {
         let f_ty = solved_types.type_of(f).unwrap();
         assert_eq!(
             store.get_type_string(&program, f_ty),
-            "fn(&'a0 int, &'a1 int) -> Pair₀['a0, 'a1, int]"
+            "fn['a0, 'a1](&'a0 int, &'a1 int) -> Pair₀['a0, 'a1, int]"
         );
     }
 
