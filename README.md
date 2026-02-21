@@ -1,5 +1,14 @@
 # expr_parser
-this languge is kinda of ridiclous its essentially a mix of Rust and C++ with a C like grammar that treats everything as an expression.
+this languge is kinda of ridiclous its essentially a mix of Rust and C++ with a C like grammar that treats everything as an expression. the main goal of this languge is to be non restrictive to its users and support multiple styles.
+its aimed at intermidate programers who want to learn system level stuff but not sure what style exactly they prefer.
+
+we have optional borrow checking for programs using safe refrences, but using regular pointers or unsafe refrences is also supported just as much. its generally expected that both are used for most programs so people getting into systems programing can decide which style they like best.
+
+
+# syntax
+
+syntax errors on missing semi colons and simlar things are deliberatly ignored.
+
 so this
 ```
 x = while t v; 
@@ -12,15 +21,6 @@ x = y = z = 2 = 3 = if x y else {z w}
 
 ";" "," and "(" are almost completly optional so the grammar is allowed to kinda go nuts.
 
-the AST is fairly simplistic on purpose which should mean most functions on it are fairly small.
-we are destinguishing between prefix postfix and infix operations to allow using just the operator string directly.
-
-it should be fairly straight forward to add operators and behivior as the AST requires no design changes.
-
-the main issue is that later you would still need to run a few checks on the outputs because some operators dont really make sense in some places, and there is no enum for them.
-
-
-# syntax
 for defining a varible we use a `let` expression, this semantically states that some address must be reserved even if the variable is constant.
 
 ```
@@ -58,15 +58,21 @@ f = fn[T] (x:T)->T {
 }
 ```
 
+
 or predclared by ommiting the body. function types are the same as predclartions in terms of syntax.
+
+calling functions is allowed like so 
+```
+f(1,2)
+1 |> f(2)
+```
+code generally doesnt mind too much which way ur going with (currently named args arent supported on functions but they will be).
 
 similar to functions structs enums and unions are just type values to be assigned.
 they all share the exact same syntax for construction
 
 ```
 Point = struct[f] {x:f,b:f};
-Point = struct[f] {x:f,b};
-Point = struct[f] {x:f b};
 ```
 
 construction of a struct/union can be done like so
@@ -75,21 +81,138 @@ Point{4,y=2}
 Union{float=2.1}
 ```
 note that when using a call/constructor name=x expressions are interpeted as passing arguments by name.
+this includes when they are piped as pipe expressions are essentially just reorgenizing.
 
 defining dot methods destructors and constructors are viewed as just operator overloading.
 so constructing a class for point would look like
 ```
-Point.dist = fn(self,other:Point)->float {
-	let dx = self.x-other.x
-	let dy = self.y-other.y
-	sqrt(dx*dx+dy*dy)
+sqrt = cfn(f:float)->float;
+Point = struct{x:float,y:float}
+Point.dist = fn(self:&Point,other:Point)->float {
+    let dx = self.x-other.x
+    let dy = self.y-other.y
+    sqrt(dx*dx+dy*dy)
 }
-__user_free = fn(self:Point) {}
-Point.new = fn()->Point {Point{0,0}}
+__user_free = fn(self:&mut Point) {}
+Point.new = fn()->Point {Point{0.0,0.0}}
+Point.__add = fn(p1:&Point,p2:Point)->Point {Point{p1.x+p2.x,p1.y+p2.y}}
+f=fn(p1:Point,p2:Point)->Point {p1+p2}
+```
+notice we can overload the + method for Point in order to make nicer syntax.
+type infrence very delibrately wont break when adding new operator overloads.
+we basically assume all overloads may exist for all types untill the very last moment.
+
+
+we also support generics so nad destructors to allow for this
+```
+Box = struct[T]{ptr:&'raw T};
+
+free = cfn(p:*void);
+no_fail_alloc = cfn(s:usize)->*void;
+Box.new = fn[T](x:T)->Box[T] {
+  let p=no_fail_alloc(x.__size_of());
+  Box{p as &'raw _}
+}
+Box.__free = fn[T](b:&mut Box[T]){
+(&*b.ptr).__free()
+free(b->ptr as *void)
+}
+
+
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
+
 ```
 
-# Type System
-currently we have basic generics and automatic inference, and we would have some level of operator overloading.
+is completly valid code. if we really wanted we could mark ptr as being &'static mut so that its passed as non aliasing.
+but thats a bit more confusing and can cause some confusion when acessing ptr directly.
+
+## Types
+types are automatically infered with casts being as _ and :  meaning "this value is of type ..."
+so for example
+```
+f=fn(x:int)->float {
+  let y = 1.0+0.2+x as _
+  sqrt(y:float)
+}
+```
+this gurntees y is a float when calling sqrt, and we cast x from an int to a float.
+lifetime
+
+in type expressions pointers are assumed to be mutable while safe refrences are assumed constants so
+```
+*int //mut
+*const int//const
+*mut int//mut
+
+&'raw int //mut
+&'raw const int//const
+&'raw mut int//mut
+
+&int //const
+&const int //const
+&mut int //mut
+```
+
+
+## Lifetimes (planned semantics)
+lifetime rules of safe refrences (& and &mut) follow the same underlying semantics of Rust.
+ie 1 and only 1 holder of &mut. this is because operations like vector resize or free take in a &mut.
+so for them to be safe it has to be unique. 
+this also lets us put noalias/restrict on every safe refrences which is great for performance.
+
+but we still want to support C++ like code that doesnt fit neatly into the lifetime model.
+which is why we take kind of a middele road aproch.
+
+member methods can either use lifetimes or use raw refrences.
+its on users to mark unsafe methods with unsafe_... or not we dont mind.
+if code does not use any raw pointers it is gurnteed to safe (and if there is UB thats a compiler bug).
+the main way this works is we have  &'raw which is essentially a non null pointer.
+raw can be used in .methods to make raw pointer like behivior
+```
+Pointer.__deref_mut = fn['a](self:&'raw self)->&'a mut int {...}
+```
+
+or if we dont want to mess around the aliasing rules its possible to stay entirly within &'raw.
+raw is never going to be infered by the compiler unless explictly stated in a method signature.
+so it is not going to creep up on safe code.
+
+if u do want no-alias then u have to take in a &mut and this is because no alias is just such a trap inherently.
+u can get around this by immidiatly casting the &mut into a &raw in the functions body.
+and by doing the explicit cast &* on the call site.
+but chances are this is just a footgun around UB. no-alias is incredibly strict,
+
+lifetimes are also more explicit from what they are in Rust and the system is just less powerfull 
+rust has closures that are generic over lifetime and this actually allows a lot of powerful patterns like taging.
+
+we also dont automatically coehrce lifetimes, instead an explicit reborrow is needed.
+this is partly a limitation because coersion is hard but its also a philosphy of less implicit behivior.
+we very delibratly keep . to a single implicit deref. for the rust style "deref until u find something"
+users are expcted to use -> which is an explicit way to show more than 1 derfrence
+
+## Safety and Panics
+we dont have exceptions at all... this is a delibrate decision as they cause a lot of weird edge cases for usnafe code.
+panic would simply be a trap instruction. and some code would also print the reason for panics in debug mode.
+
+array indexing for example is bounds check with a trap and also automatically derfrences.
+if users want a less implicit operation calling get() or direct pointer arithmetic is the way to go.
+
+
+we will hopefully ship a sanitizer runtime that comes with the languge and checks that user code does actually fufil the requirments.
+
+
+# Design 
+the AST is fairly simplistic on purpose which should mean most functions on it are fairly small.
+we are destinguishing between prefix postfix and infix operations to allow using just the operator string directly.
+
+it should be fairly straight forward to add operators and behivior as the AST requires no design changes.
+
+the main issue is that later you would still need to run a few checks on the outputs because some operators dont really make sense in some places, and there is no enum for them.
+
+## Type Checking
+currently we have basic generics and automatic inference,
 with everything being required to be monomorphic in the end so we can get C++/Rust level inlining everywhere.
 
 we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being inferred.
@@ -127,51 +250,6 @@ we can even add proper full overloading to this using the ideas from https://dl.
 but this has been avoided as it leads to confusing type checks we might allow overloading on arity alone.
 this is because such overloads are trivial to resolve and when combined with generic methods they give the full range of functions.
 the only real problem is that the type checker would be unable to infer a few things if everything is generic.
-
-## Lifetimes (planned semantics)
-lifetime rules of safe refrences (& and &mut) follow the same underlying semantics of Rust.
-ie 1 and only 1 holder of &mut. this is because operations like vector resize or free take in a &mut.
-so for them to be safe it has to be unique. this also lets us put noalias on things.
-
-but we still want to support C++ like code that doesnt fit neatly into the lifetime model.
-which is why we take kind of a middele road aproch.
-
-member methods can either use lifetimes or use raw pointers.
-its on users to mark unsafe methods with unsafe_... or not we dont mind.
-if code does not use any raw pointers it is gurnteed to safe (and if there is UB thats a compiler bug).
-the main way this works is we have a special lifetime &'raw which is essentially a non null pointer.
-raw can be used in .methods to make raw pointer like behivior
-```
-Pointer.__deref_mut = fn['a](self:&'raw self)->&'a mut int {...}
-```
-
-or if we dont want to mess around the aliasing rules its possible to stay entirly within &'raw.
-raw is never going to be infered by the compiler unless explictly stated in a method signature.
-so it is not going to creep up on safe code.
-
-if u do want no-alias then u have to take in a &mut and this is because no alias is just such a trap inherently.
-u can get around this by immidiatly casting the &mut into a &raw in the functions body.
-and by doing the explicit cast &* on the call site.
-but chances are this is just a footgun around UB. no-alias is incredibly strict,
-
-lifetimes are also more explicit from what they are in Rust and the system is just less powerfull 
-rust has closures that are generic over lifetime and this actually allows a lot of powerful patterns like taging.
-
-we also dont automatically coehrce lifetimes, instead an explicit reborrow is needed.
-this is partly a limitation because coersion is hard but its also a philosphy of less implicit behivior.
-we very delibratly keep . to a single implicit deref. for the rust style "deref until u find something"
-users are expcted to use -> which is an explicit way to show more than 1 derfrence
-
-## Safety and Panics
-we dont have exceptions at all... this is a delibrate decision as they cause a lot of weird edge cases for usnafe code.
-panic would simply be a trap instruction. and some code would also print the reason for panics in debug mode.
-
-array indexing for example is bounds check with a trap and also automatically derfrences.
-if users want a less implicit operation calling get() or direct pointer arithmetic is the way to go.
-
-
-we will hopefully ship a sanitizer runtime that comes with the languge and checks that user code does actually fufil the requirments.
-
 
 # Performance
 this should be more than fast enough for any reasonbly size toy project. but it is still much slower than what is possible.

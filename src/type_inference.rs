@@ -775,7 +775,7 @@ impl TypeStore {
 
     fn format_lifetime(&self, lt: LifeTime) -> String {
         match lt {
-            LifeTime::Local(id) => format!("l{}", id.0), // or however you name locals
+            LifeTime::Local(id) => format!("l{}", id.0), 
             LifeTime::External(i) => format!("a{i}"),
             LifeTime::Static => "static".into(),
             LifeTime::Unknown => "idk".into(),
@@ -1234,40 +1234,6 @@ impl TypeClash {
 type TypecheckSummary = (Result<(TypeStore, SolvedTypes), usize>, usize);
 type TypecheckResult = Result<TypecheckSummary, Box<dyn std::error::Error>>;
 
-const FORCE_DISABLE_INTERNAL_PERF: bool = false;
-
-fn internal_perf_enabled() -> bool {
-    if FORCE_DISABLE_INTERNAL_PERF {
-        return false;
-    }
-
-    std::env::var_os("EXPR_PARSER_DISABLE_INTERNAL_PERF").is_none()
-}
-
-unsafe fn perf_init_if_enabled() {
-    if internal_perf_enabled() {
-        unsafe {
-            perf_init();
-        }
-    }
-}
-
-unsafe fn perf_begin_if_enabled() {
-    if internal_perf_enabled() {
-        unsafe {
-            perf_begin();
-        }
-    }
-}
-
-unsafe fn perf_done_if_enabled(name: &CStr) {
-    if internal_perf_enabled() {
-        unsafe {
-            perf_done(name.as_ptr());
-        }
-    }
-}
-
 ///runs the typechecker and reports all errors
 ///the rhs value is the total number of functions checked
 ///the lhs value is either the result or the number of errors found
@@ -1278,9 +1244,10 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     let mut function_checked = 0;
 
     unsafe {
-        perf_init_if_enabled();
-        perf_begin_if_enabled();
+        perf_init();
     }
+
+    unsafe { perf_begin() }
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
@@ -1291,11 +1258,10 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
 
         return Ok((Err(err_count), function_checked));
     }
-    unsafe {
-        let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
-        perf_done_if_enabled(name);
-        perf_begin_if_enabled();
-    }
+    let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
+    unsafe { perf_done(name.as_ptr()) };
+
+    unsafe { perf_begin() }
 
     for (_n, methods) in program.member_methods.iter() {
         for (_s, method_set) in methods.iter() {
@@ -1333,10 +1299,8 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         }
     }
 
-    unsafe {
-        let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
-        perf_done_if_enabled(name);
-    }
+    let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
+    unsafe { perf_done(name.as_ptr()) };
 
     if err_count > 0 {
         return Ok((Err(err_count), function_checked));
@@ -1667,18 +1631,14 @@ fn main_solver(ctx: &mut InferState) {
         if progress {
             continue;
         }
-        // // HACK (temporary, likely not the final design): before finalize we force unresolved
-        // // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
-        // progress |= finalize_unresolved_lifetimes_as_unknown(ctx);
+        // HACK (temporary, likely not the final design): before finalize we force unresolved
+        // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx);
 
         if !progress {
             break;
         }
     }
-
-    // HACK (temporary, likely not the final design): before finalize we force unresolved
-    // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
-    finalize_unresolved_lifetimes_as_unknown(ctx);
 
     if !ctx.ex.errors.is_empty() {
         return;
@@ -1690,22 +1650,20 @@ fn main_solver(ctx: &mut InferState) {
 fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) -> bool {
     let mut progress = false;
 
-    let mut seen_roots = vec![false; ctx.types.life_parent.0.len()];
-    for lid in 0..ctx.types.life_parent.0.len() {
-        let root = ctx.types.find_lid_root(LId(lid));
-        if seen_roots[root.0] {
+    for lid in ctx.types.life_parent.0.iter() {
+        if *lid!=ctx.types.life_parent[*lid]{
             continue;
         }
-        seen_roots[root.0] = true;
 
-        if ctx.types.life_known[root].is_none() {
-            ctx.types.life_known[root] = Some(LifeTime::Unknown);
+        if ctx.types.life_known[*lid].is_none() {
+            ctx.types.life_known[*lid] = Some(LifeTime::Unknown);
             progress = true;
         }
     }
 
     progress
 }
+
 
 // ===================================
 // Inference state + unify-find clusters
@@ -10218,19 +10176,24 @@ mod type_infer_tests {
     }
 
     const BOX_EXAMPLE: &str = r#"
-            //user code
-            Box = struct[T]{ptr:*T};
+        Box = struct[T]{ptr:&'raw T};
 
-            free = cfn(p:*void);
-            Box.__free = fn[T](b:&mut Box[T]){
-            (&*b.ptr).__free()
-            free(b->ptr as *void)
-            };
-            
-            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
-            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
+        free = cfn(p:*void);
+        no_fail_alloc = cfn(s:usize)->*void;
+        Box.new = fn[T](x:T)->Box[T] {
+          let p=no_fail_alloc(x.__size_of());
+          Box{p as &'raw _}
+        }
+        Box.__free = fn[T](b:&mut Box[T]){
+        (&*b.ptr).__free()
+        free(b->ptr as *void)
+        }
 
-            f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
+
+        Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+        Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+        f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
             
         "#;
     #[test]

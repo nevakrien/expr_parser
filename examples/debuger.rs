@@ -12,14 +12,17 @@ use expr_parser::type_inference::run_typechecker;
 // f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };
 // "#;
 const SOURCE: &str = r#"
-type Pair = struct['a, 'b, T] {
-    left: &'a T,
-    right: &'b T,
+sqrt = fn(f:float)->float;
+Point = struct{x:float,y:float}
+Point.dist = fn(self:&Point,other:Point)->float {
+    let dx = self.x-other.x
+    let dy = self.y-other.y
+    sqrt(dx*dx+dy*dy)
 }
-
-f = fn['x](x:&'x int, y:&int)->Pair['x, '_, int] {
-    Pair{ left = x, right = y }
-}
+__user_free = fn(self:&mut Point) {}
+Point.new = fn()->Point {Point{0.0,0.0}}
+Point.__add = fn(p1:&Point,p2:Point)->Point {Point{p1.x+p2.x,p1.y+p2.y}}
+f=fn(p1:Point,p2:Point)->Point {p1+p2}
 "#;
 
 // const SOURCE: &str = r#"
