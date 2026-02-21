@@ -257,7 +257,7 @@ Main orchestration is two-phase:
   - reconciles with known global signatures when present.
   - for function values, local signature/body gathering now anchors to the already-solved global signature before body constraints by unifying directly with the solved `TypeValue::Func` shape.
 
-`run_typechecker` runs global pass, then member methods, then global functions, reporting through `ErrorReporter` and returning solved data or error count.
+`run_typechecker` runs global pass, then member methods, then global functions, reporting through `ErrorReporter` and returning solved data or error count. Internal C-side perf hooks are gated via helper wrappers (`perf_*_if_enabled`) and can be disabled at runtime with `EXPR_PARSER_DISABLE_INTERNAL_PERF=1` or forced off in-source with `FORCE_DISABLE_INTERNAL_PERF`.
 
 ## Constraint Gathering
 
