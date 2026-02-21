@@ -4249,39 +4249,10 @@ fn resolve_member_method_access(
     access_site: ValId,
     base_value: ValId,
     base_cluster: CId,
-    struct_name: NameId,
     member_name: StrId,
+    method_ty:TypeId,
 ) -> CId {
-    let Some(method_set) = ex
-        .program
-        .member_methods
-        .get(&struct_name)
-        .and_then(|methods| methods.get(&member_name))
-    else {
-        let unresolved = types.new_cluster();
-        search.bind_val(access_site, unresolved);
-        ex.push_error(TypeError::UnknownField {
-            field: member_name,
-            site: access_site,
-        });
-        return unresolved;
-    };
-
-    let reference_site = if let Some(decl) = method_set.declarations.first().copied() {
-        Some(decl)
-    } else {
-        method_set.implementations.first().copied()
-    };
-    let Some(reference_site) = reference_site else {
-        let unresolved = types.new_cluster();
-        search.bind_val(access_site, unresolved);
-        return unresolved;
-    };
-    let Some(method_ty) = ex.ans.type_of(reference_site) else {
-        let unresolved = types.new_cluster();
-        search.bind_val(access_site, unresolved);
-        return unresolved;
-    };
+    
 
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, access_site);
 
@@ -4804,11 +4775,10 @@ fn try_resolve_member_access(
                             };
                         }
 
-                        let has_member_method = struct_name
-                            .and_then(|sn| ex.program.member_methods.get(&sn))
-                            .is_some_and(|methods| methods.contains_key(&member_name));
+                        let member_method = struct_name
+                            .and_then(|sn| ex.ans.member_function_types.get(&(sn,member_name)));
                         if let Some(struct_name) = struct_name {
-                            if has_member_method {
+                            if let Some(member_method) = member_method {
                                 let result = resolve_member_method_access(
                                     ex,
                                     types,
@@ -4817,8 +4787,8 @@ fn try_resolve_member_access(
                                     site,
                                     base_value,
                                     current,
-                                    struct_name,
                                     member_name,
+                                    member_method.ty,
                                 );
                                 return MemberAccessResolve::Resolved {
                                     result,
@@ -4950,11 +4920,9 @@ fn try_resolve_member_access(
                     };
                 }
 
-                let has_member_method = struct_name
-                    .and_then(|sn| ex.program.member_methods.get(&sn))
-                    .is_some_and(|methods| methods.contains_key(&member_name));
+
                 if let Some(struct_name) = struct_name {
-                    if has_member_method {
+                    if let Some(member_method) = ex.ans.member_function_types.get(&(struct_name,member_name)) {
                         let result = resolve_member_method_access(
                             ex,
                             types,
@@ -4963,8 +4931,8 @@ fn try_resolve_member_access(
                             site,
                             base_value,
                             current,
-                            struct_name,
                             member_name,
+                            member_method.ty,
                         );
                         return MemberAccessResolve::Resolved {
                             result,
