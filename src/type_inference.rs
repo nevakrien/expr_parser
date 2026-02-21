@@ -21,6 +21,7 @@
 // most constrains place some sort of pending task.
 // and then later when enough type info is present we can apply unification.
 // ================================================================
+use std::arch::asm;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -192,7 +193,7 @@ pub enum LifeTime {
     ///basically only happens when someone derefs a raw pointer
     ///or some signatures that are basically that
     ///this one may later get unified by the borrow checker into something
-    Unknown,
+    Unknown(LifeId),
 }
 
 use std::cmp::Ordering;
@@ -218,7 +219,7 @@ impl PartialOrd for LifeTime {
             (Static, External(_)) => Some(Ordering::Greater),
 
             // Unknown is incomparable
-            (Unknown, _) | (_, Unknown) => None,
+            (Unknown(..), _) | (_, Unknown(..)) => None,
 
             // different locals are incomparable
             (Local(_), Local(_)) => None,
@@ -240,6 +241,7 @@ pub enum TypeValue {
     Func {
         calling_convention: CallingConvention,
         generics: usize,
+        lifetimes: usize,
         params: Vec<TypeId>,
         ret: TypeId,
     },
@@ -338,7 +340,7 @@ pub struct StructRep {
     pub name: Option<NameId>,
     pub fields: Vec<(NameId, TypeId)>,
     pub gen_count: usize,
-    pub lifetime_params: Vec<LifeTime>,
+    pub life_count: usize,
     pub layout: StructLayoutSpec,
 }
 
@@ -346,7 +348,7 @@ impl StructRep {
     fn new(
         names: impl Iterator<Item = NameId>,
         gen_count: usize,
-        lifetime_params: Vec<LifeTime>,
+        life_count: usize,
         layout: StructLayoutSpec,
     ) -> Self {
         Self {
@@ -355,7 +357,7 @@ impl StructRep {
             name: None,
             fields: names.map(|x| (x, UNKNOWN_TYPE)).collect(),
             gen_count,
-            lifetime_params,
+            life_count,
             layout,
         }
     }
@@ -572,7 +574,7 @@ impl TypeStore {
             name,
             fields,
             gen_count: 0,
-            lifetime_params: Vec::new(),
+            life_count: 0,
             layout: StructLayoutSpec::Hot,
         };
         let sid = self.new_struct(rep);
@@ -627,9 +629,15 @@ impl TypeStore {
         self.get_type_string(program, t.0)
     }
     pub fn get_type_string(&self, program: &Program, t: TypeId) -> String {
-        self.get_type_string_nested(program, t, 0)
+        self.get_type_string_nested(program, t, 0, 0)
     }
-    pub fn get_type_string_nested(&self, program: &Program, t: TypeId, gen_count: usize) -> String {
+    pub fn get_type_string_nested(
+        &self,
+        program: &Program,
+        t: TypeId,
+        gen_count: usize,
+        life_count: usize,
+    ) -> String {
         if t == UNKNOWN_TYPE {
             return "_".to_string();
         }
@@ -670,7 +678,7 @@ impl TypeStore {
             TypeValue::Tuple(items) => {
                 let inner = items
                     .iter()
-                    .map(|id| self.get_type_string_nested(program, *id, gen_count))
+                    .map(|id| self.get_type_string_nested(program, *id, gen_count, life_count))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("({})", inner)
@@ -678,12 +686,20 @@ impl TypeStore {
             TypeValue::Func {
                 calling_convention,
                 generics,
+                lifetimes,
                 params,
                 ret,
             } => {
                 let params = params
                     .iter()
-                    .map(|id| self.get_type_string_nested(program, *id, gen_count))
+                    .map(|id| {
+                        self.get_type_string_nested(
+                            program,
+                            *id,
+                            gen_count + generics,
+                            life_count + lifetimes,
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let fn_kw = match calling_convention {
@@ -691,21 +707,26 @@ impl TypeStore {
                     CallingConvention::C => "cfn",
                     CallingConvention::Unknown => "fn?",
                 };
-                let generic_params = if *generics == 0 {
+                let mut sig_parts = (life_count..(life_count + lifetimes))
+                    .map(|i| format!("'a{i}"))
+                    .collect::<Vec<_>>();
+                sig_parts.extend((gen_count..(gen_count + generics)).map(|i| format!("T{i}")));
+                let signature_params = if sig_parts.is_empty() {
                     String::new()
                 } else {
-                    let pars = (gen_count..(gen_count + generics))
-                        .map(|i| format!("T{i}"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("[{pars}]")
+                    format!("[{}]", sig_parts.join(", "))
                 };
                 format!(
                     "{}{}({}) -> {}",
                     fn_kw,
-                    generic_params,
+                    signature_params,
                     params,
-                    self.get_type_string_nested(program, *ret, gen_count)
+                    self.get_type_string_nested(
+                        program,
+                        *ret,
+                        gen_count + generics,
+                        life_count + lifetimes,
+                    )
                 )
             }
             TypeValue::Ptr {
@@ -713,7 +734,7 @@ impl TypeStore {
                 style,
                 mutable,
             } => {
-                let inner = self.get_type_string_nested(program, *tgt, gen_count);
+                let inner = self.get_type_string_nested(program, *tgt, gen_count, life_count);
 
                 match style {
                     // *T
@@ -750,14 +771,14 @@ impl TypeStore {
             TypeValue::Array(inner, ArrayType::Sized(n)) => {
                 format!(
                     "[{};{n}]",
-                    self.get_type_string_nested(program, *inner, gen_count)
+                    self.get_type_string_nested(program, *inner, gen_count, life_count)
                 )
             }
 
             TypeValue::Array(inner, ArrayType::Unsized) => {
                 format!(
                     "[{}]",
-                    self.get_type_string_nested(program, *inner, gen_count)
+                    self.get_type_string_nested(program, *inner, gen_count, life_count)
                 )
             }
 
@@ -769,7 +790,7 @@ impl TypeStore {
                 id,
                 generics,
                 lifetimes,
-            } => self.format_struct_display(program, *id, generics, lifetimes, gen_count),
+            } => self.format_struct_display(program, *id, generics, lifetimes, gen_count, life_count),
         }
     }
 
@@ -778,7 +799,7 @@ impl TypeStore {
             LifeTime::Local(id) => format!("l{}", id.0), 
             LifeTime::External(i) => format!("a{i}"),
             LifeTime::Static => "static".into(),
-            LifeTime::Unknown => "idk".into(),
+            LifeTime::Unknown(id) => format!("idk{}",id.0),
         }
     }
 
@@ -789,6 +810,7 @@ impl TypeStore {
         generics: &[TypeId],
         lifetimes: &[LifeTime],
         gen_count: usize,
+        life_count: usize,
     ) -> String {
         let base = match self.struct_value(sid).name {
             Some(name) => program.name_string(name),
@@ -803,7 +825,7 @@ impl TypeStore {
             args.extend(
                 generics
                     .iter()
-                    .map(|id| self.get_type_string_nested(program, *id, gen_count))
+                    .map(|id| self.get_type_string_nested(program, *id, gen_count, life_count))
                     .collect::<Vec<_>>(),
             );
             base.push('[');
@@ -1660,14 +1682,15 @@ fn main_solver(ctx: &mut InferState) {
 
 fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState) -> bool {
     let mut progress = false;
-
+    //should properly increment 
+    let hack = LifeId(0);
     for lid in ctx.types.life_parent.0.iter() {
         if *lid!=ctx.types.life_parent[*lid]{
             continue;
         }
 
         if ctx.types.life_known[*lid].is_none() {
-            ctx.types.life_known[*lid] = Some(LifeTime::Unknown);
+            ctx.types.life_known[*lid] = Some(LifeTime::Unknown(hack));
             progress = true;
         }
     }
@@ -1903,6 +1926,7 @@ enum ResolveKind {
 struct FuncInfer {
     calling_convention: CallingConvention,
     generics: usize,
+    lifetimes: usize,
     inputs: Vec<CId>,
     output: CId,
 }
@@ -2138,7 +2162,7 @@ struct SearchState {
     typedef_cluster: Vec<(TExpId, CId)>,
     local_types: IdHashMap<NameId, CId>,
     names: IdHashMap<NameId, CId>,
-    local_lifetimes: IdHashMap<LifeTimeId, LifeTime>,
+    local_lifetimes: IdHashMap<LifeTimeId, (LifeTime,LId)>,
 }
 
 impl SearchState {
@@ -2213,7 +2237,6 @@ struct TypeState {
     core: TypeCore,
     extra: TypeExtra,
     life_parent: LifeVec<LId>,
-    life_place: LifeVec<ValId>,
     life_known: LifeVec<Option<LifeTime>>,
     next_undeclared_lifetime: u32,
 }
@@ -2243,7 +2266,6 @@ impl TypeState {
                 tuple_infers: Vec::new(),
             },
             life_parent: LifeVec(Vec::new()),
-            life_place: LifeVec(Vec::new()),
             life_known: LifeVec(Vec::new()),
             next_undeclared_lifetime: 0,
         }
@@ -2269,23 +2291,21 @@ impl TypeState {
         struct_infers.clear();
         tuple_infers.clear();
         self.life_parent.0.clear();
-        self.life_place.0.clear();
         self.life_known.0.clear();
         self.next_undeclared_lifetime = 0;
     }
 
     #[inline(always)]
-    fn new_lid_at(&mut self, place: ValId) -> LId {
+    fn new_lid(&mut self) -> LId {
         let id = LId(self.life_parent.0.len());
         self.life_parent.0.push(id);
-        self.life_place.0.push(place);
         self.life_known.0.push(None);
         id
     }
 
     #[inline(always)]
-    fn new_lid_known_at(&mut self, place: ValId, known: LifeTime) -> LId {
-        let id = self.new_lid_at(place);
+    fn new_lid_known(&mut self,known: LifeTime) -> LId {
+        let id = self.new_lid();
         self.life_known[id] = Some(known);
         id
     }
@@ -2293,25 +2313,6 @@ impl TypeState {
     #[inline(always)]
     fn find_lid_root(&mut self, lid: LId) -> LId {
         find_lid_root(&mut self.life_parent, lid)
-    }
-
-    #[inline(always)]
-    #[allow(dead_code)]
-    fn union_lids(&mut self, a: LId, b: LId) -> LId {
-        let ra = self.find_lid_root(a);
-        let rb = self.find_lid_root(b);
-        if ra != rb {
-            let merged_known = match (self.life_known[ra], self.life_known[rb]) {
-                (Some(a), Some(b)) if a == b => Some(a),
-                (Some(_), Some(_)) => Some(LifeTime::Unknown),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
-            self.life_parent[rb] = ra;
-            self.life_known[ra] = merged_known;
-        }
-        ra
     }
 
     #[inline(always)]
@@ -2416,7 +2417,6 @@ fn merge_lifetime_known_strict(
     match (a, b) {
         (None, None) => Some(None),
         (Some(x), None) | (None, Some(x)) => Some(Some(x)),
-        (Some(LifeTime::Unknown), Some(x)) | (Some(x), Some(LifeTime::Unknown)) => Some(Some(x)),
         (Some(x), Some(y)) if x == y => Some(Some(x)),
         _ => None,
     }
@@ -2451,12 +2451,8 @@ fn bind_struct_lid_to_lifetime(types: &mut TypeState, lid: LId, target: LifeTime
 }
 
 #[inline(always)]
-fn unify_ptr_lifetimes(types: &mut TypeState, a: LifeTime, b: LifeTime) -> bool {
-    let _ = types;
-    match (a, b) {
-        (LifeTime::Unknown, _) | (_, LifeTime::Unknown) => true,
-        (x, y) => x == y,
-    }
+fn unify_ptr_lifetimes(_types: &mut TypeState, a: LifeTime, b: LifeTime) -> bool {
+    a == b
 }
 
 struct ReqState {
@@ -3072,8 +3068,7 @@ fn merge_ptr_kind(types: &mut TypeState, a: PtrKind, b: PtrKind) -> Option<PtrKi
         // solved vs partial
         (Solved(style), SafeRef) | (SafeRef, Solved(style)) => {
             match style {
-                PointerStyle::Ref(lt) if lt != LifeTime::Unknown => Some(Solved(style)),
-                PointerStyle::Ref(_) => None, // &'? or &'raw is not safe
+                PointerStyle::Ref(_lt)  => Some(Solved(style)),
                 PointerStyle::Raw(_) => None,
             }
         }
@@ -3200,13 +3195,20 @@ fn unify_func_with_type(
         out
     };
 
-    let (cc, generics, params, ret) = match ex.store.type_value(ty) {
+    let (cc, generics, lifetimes, params, ret) = match ex.store.type_value(ty) {
         TypeValue::Func {
             calling_convention,
             generics,
+            lifetimes,
             params,
             ret,
-        } => (*calling_convention, *generics, params.as_slice(), *ret),
+        } => (
+            *calling_convention,
+            *generics,
+            *lifetimes,
+            params.as_slice(),
+            *ret,
+        ),
         _ => {
             return Err(TypeClash {
                 found: Some(found_func(ex, types)),
@@ -3225,7 +3227,9 @@ fn unify_func_with_type(
 
     types.extra.func_defs[call.0].calling_convention = merged_cc;
 
-    if types.extra.func_defs[call.0].generics != generics {
+    if types.extra.func_defs[call.0].generics != generics
+        || types.extra.func_defs[call.0].lifetimes != lifetimes
+    {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
             wanted: Some(type_string_from_type_id(ex, ty)),
@@ -3450,6 +3454,7 @@ fn try_resolve_func_type(
     Some(ex.store.intern(TypeValue::Func {
         calling_convention: func.calling_convention,
         generics: func.generics,
+        lifetimes: func.lifetimes,
         params,
         ret,
     }))
@@ -3564,10 +3569,15 @@ fn try_resolve_ptr_type(
 }
 
 fn type_string_from_type_id(ex: &ExternState<'_>, t: TypeId) -> String {
-    type_string_from_type_id_nested(ex, t, 0)
+    type_string_from_type_id_nested(ex, t, 0, 0)
 }
 
-fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: usize) -> String {
+fn type_string_from_type_id_nested(
+    ex: &ExternState<'_>,
+    t: TypeId,
+    gen_count: usize,
+    life_count: usize,
+) -> String {
     if t == UNKNOWN_TYPE {
         return "unknown".to_string();
     }
@@ -3607,7 +3617,7 @@ fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: u
         TypeValue::Tuple(items) => {
             let items = items
                 .iter()
-                .map(|id| type_string_from_type_id_nested(ex, *id, gen_count))
+                .map(|id| type_string_from_type_id_nested(ex, *id, gen_count, life_count))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("({items})")
@@ -3615,31 +3625,44 @@ fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: u
         TypeValue::Func {
             calling_convention,
             generics,
+            lifetimes,
             params,
             ret,
         } => {
             let params = params
                 .iter()
-                .map(|id| type_string_from_type_id_nested(ex, *id, gen_count + *generics))
+                .map(|id| {
+                    type_string_from_type_id_nested(
+                        ex,
+                        *id,
+                        gen_count + *generics,
+                        life_count + *lifetimes,
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
 
-            let generic_params = if *generics == 0 {
+            let mut sig_parts = (life_count..(life_count + *lifetimes))
+                .map(|i| format!("'{}", ex.name_render.external_lifetime_name(i as u32)))
+                .collect::<Vec<_>>();
+            sig_parts.extend((gen_count..(gen_count + *generics)).map(|i| ex.name_render.generic_name(i)));
+            let signature_params = if sig_parts.is_empty() {
                 String::new()
             } else {
-                let pars = (gen_count..(gen_count + *generics))
-                    .map(|i| ex.name_render.generic_name(i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("[{pars}]")
+                format!("[{}]", sig_parts.join(", "))
             };
 
             format!(
                 "{}{}({}) -> {}",
                 calling_convention_keyword(*calling_convention),
-                generic_params,
+                signature_params,
                 params,
-                type_string_from_type_id_nested(ex, *ret, gen_count + *generics)
+                type_string_from_type_id_nested(
+                    ex,
+                    *ret,
+                    gen_count + *generics,
+                    life_count + *lifetimes,
+                )
             )
         }
         TypeValue::Ptr {
@@ -3647,7 +3670,7 @@ fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: u
             style,
             mutable,
         } => {
-            let inner = type_string_from_type_id_nested(ex, *tgt, gen_count);
+            let inner = type_string_from_type_id_nested(ex, *tgt, gen_count, life_count);
             match style {
                 PointerStyle::Raw(Nullable::Yes) => {
                     if *mutable {
@@ -3676,13 +3699,13 @@ fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: u
         TypeValue::Array(inner, ArrayType::Sized(n)) => {
             format!(
                 "[{};{n}]",
-                type_string_from_type_id_nested(ex, *inner, gen_count)
+                type_string_from_type_id_nested(ex, *inner, gen_count, life_count)
             )
         }
         TypeValue::Array(inner, ArrayType::Unsized) => {
             format!(
                 "[{}]",
-                type_string_from_type_id_nested(ex, *inner, gen_count)
+                type_string_from_type_id_nested(ex, *inner, gen_count, life_count)
             )
         }
         TypeValue::Generic(g) => ex.name_render.generic_name(g.0),
@@ -3703,7 +3726,7 @@ fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: u
                 args.extend(
                     generics
                         .iter()
-                        .map(|id| type_string_from_type_id_nested(ex, *id, gen_count)),
+                        .map(|id| type_string_from_type_id_nested(ex, *id, gen_count, life_count)),
                 );
                 base.push('[');
                 base.push_str(&args.join(", "));
@@ -3724,9 +3747,9 @@ fn simple_type_clash(ex: &ExternState<'_>, a: TypeId, b: TypeId) -> TypeClash {
 fn lifetime_for_display(ex: &ExternState<'_>, lt: LifeTime) -> String {
     match lt {
         LifeTime::Local(id) => format!("l{}", id.0),
+        LifeTime::Unknown(id) => format!("idk{}", id.0),
         LifeTime::External(i) => ex.name_render.external_lifetime_name(i),
         LifeTime::Static => "static".to_string(),
-        LifeTime::Unknown => "idk".to_string(),
     }
 }
 
@@ -3849,8 +3872,7 @@ fn write_struct_mock_string_inner(
             let _ = out.write_str(", ");
         }
         wrote_any = true;
-        let _ = out.write_char('\'');
-        write_lifetime_for_display(ex, out, LifeTime::Unknown);
+        let _ = out.write_str("\'idx");
     }
     for input in site.generics.iter().copied() {
         if wrote_any {
@@ -3983,50 +4005,33 @@ fn extract_clash_type_string(
 
 struct SpecializeCtx<'a> {
     generics: &'a [CId],
-    lifetime_generics: &'a [LifeTime],
     lifetimes: &'a [LId],
-    global_lifetime_lids: IdHashMap<LifeTime, LId>,
     loc: ValId,
 }
 
 impl<'a> SpecializeCtx<'a> {
     fn new(
         generics: &'a [CId],
-        lifetime_generics: &'a [LifeTime],
         lifetimes: &'a [LId],
         loc: ValId,
     ) -> Self {
         Self {
             generics,
-            lifetime_generics,
             lifetimes,
-            global_lifetime_lids: IdHashMap::default(),
             loc,
         }
     }
 }
 
 fn specialize_lifetime(types: &mut TypeState, ctx: &mut SpecializeCtx<'_>, lt: LifeTime) -> LId {
-    if let Some(i) = ctx
-        .lifetime_generics
-        .iter()
-        .position(|candidate| *candidate == lt)
-        && let Some(lid) = ctx.lifetimes.get(i)
-    {
-        return *lid;
-    }
+    
 
     match lt {
-        LifeTime::Unknown => types.new_lid_at(ctx.loc),
-        LifeTime::Static => types.new_lid_known_at(ctx.loc, LifeTime::Static),
-        LifeTime::External(_) | LifeTime::Local(_) => {
-            if let Some(existing) = ctx.global_lifetime_lids.get(&lt).copied() {
-                existing
-            } else {
-                let lid = types.new_lid_at(ctx.loc);
-                ctx.global_lifetime_lids.insert(lt, lid);
-                lid
-            }
+        LifeTime::Static => types.new_lid_known( LifeTime::Static),
+        LifeTime::External(i)=>*ctx.lifetimes.get(i as usize).unwrap(),
+        _ => {
+            debug_assert!(false,"bad lifetime");
+            types.new_lid()
         }
     }
 }
@@ -4042,10 +4047,13 @@ fn specialize_type_inner(
 
         TypeValue::Func {
             calling_convention,
-            generics: _,
+            generics,
+            lifetimes,
             params,
             ret,
         } => {
+
+
             let inputs = params
                 .into_iter()
                 .map(|t| specialize_type_inner(ex, types, t, ctx))
@@ -4057,6 +4065,7 @@ fn specialize_type_inner(
             let call_id = FuncInferId(types.extra.func_defs.len());
             types.extra.func_defs.push(FuncInfer {
                 generics: 0,
+                lifetimes: 0,
                 inputs,
                 output,
                 calling_convention,
@@ -4183,11 +4192,10 @@ fn specialize_type(
     types: &mut TypeState,
     ty: TypeId,
     generics: &[CId],
-    lifetime_generics: &[LifeTime],
     lifetimes: &[LId],
     loc: ValId,
 ) -> CId {
-    let mut ctx = SpecializeCtx::new(generics, lifetime_generics, lifetimes, loc);
+    let mut ctx = SpecializeCtx::new(generics, lifetimes, loc);
     specialize_type_inner(ex, types, ty, &mut ctx)
 }
 
@@ -4201,9 +4209,11 @@ fn solved_type_to_specialized_local(
     t: TypeId,
     loc: ValId,
 ) -> CId {
-    if let TypeValue::Func { generics, .. } = *ex.store.type_value(t) {
+    //BUG
+    if let TypeValue::Func { generics, lifetimes,..} = *ex.store.type_value(t) {
         let gens: Vec<_> = (0..generics).map(|_| types.new_cluster()).collect();
-        return specialize_type(ex, types, t, &gens, &[], &[], loc);
+        let lifes: Vec<_> = (0..lifetimes).map(|_| types.new_lid()).collect();
+        return specialize_type(ex, types, t, &gens, &lifes, loc);
     }
 
     let id = CId(types.core.parent.len());
@@ -4347,6 +4357,7 @@ fn resolve_any_type_builtin_member_access(
     let full_method = types.new_func(FuncInfer {
         calling_convention: CallingConvention::Unknown,
         generics: 0,
+        lifetimes: 0,
         inputs: vec![self_param],
         output,
     });
@@ -4520,7 +4531,7 @@ fn resolve_struct_deref_target(
         let lid = match *shared_lid {
             Some(lid) => lid,
             None => {
-                let lid = types.new_lid_at(site);
+                let lid = types.new_lid();
                 *shared_lid = Some(lid);
                 lid
             }
@@ -4629,13 +4640,11 @@ fn specialize_struct_field_type(
     generics: &[CId],
     lifetimes: &[LId],
 ) -> CId {
-    let lifetime_generics = ex.store.struct_value(sid).lifetime_params.clone();
     specialize_type(
         ex,
         types,
         field_ty,
         generics,
-        &lifetime_generics,
         lifetimes,
         site,
     )
@@ -4754,7 +4763,7 @@ fn try_resolve_member_access(
                                 .collect::<Vec<_>>();
                             let lifetime_inputs = lifetimes
                                 .iter()
-                                .map(|&lt| struct_lifetime_to_lid(types, site, lt))
+                                .map(|&lt| types.new_lid_known(lt))
                                 .collect::<Vec<_>>();
                             let result = specialize_struct_field_type(
                                 ex,
@@ -5671,6 +5680,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 let found = ctx.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
                     generics: 0,
+                    lifetimes: 0,
                     inputs,
                     output,
                 });
@@ -5806,7 +5816,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
 
             let generic_clusters = (0..glen).map(|_| ctx.new_cluster()).collect::<Vec<_>>();
             let lifetime_clusters = (0..llen)
-                .map(|_| ctx.types.new_lid_at(v))
+                .map(|_| ctx.types.new_lid())
                 .collect::<Vec<_>>();
 
             let mut field_type_clusters = None;
@@ -5822,7 +5832,6 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                                 &mut ctx.types,
                                 t,
                                 &generic_clusters,
-                                &lifetime_generics,
                                 &lifetime_clusters,
                                 v,
                             )
@@ -6373,7 +6382,8 @@ fn bind_lifetime_generics(ctx: &mut InferState, generics: PatternSpan) {
             continue;
         };
         let fresh = ctx.types.mint_undeclared_signature_lifetime();
-        ctx.search.local_lifetimes.insert(id, fresh);
+        let lid = ctx.types.new_lid_known(fresh);
+        ctx.search.local_lifetimes.insert(id, (fresh,lid));
     }
 }
 
@@ -6384,72 +6394,36 @@ enum TypeExprCompileMode {
     Local,
 }
 
-#[inline(always)]
-fn lifetime_id_to_lifetime(id: LifeTimeId) -> LifeTime {
-    if id == LifeTimeId::STATIC {
-        LifeTime::Static
-    } else if id == LifeTimeId::RAW || id == LifeTimeId::WILDCARD {
-        LifeTime::Unknown
-    } else {
-        LifeTime::External(id.0 as u32)
-    }
-}
-
-#[inline(always)]
-fn struct_lifetime_to_lid(types: &mut TypeState, site: ValId, lt: LifeTime) -> LId {
-    if matches!(lt, LifeTime::Unknown) {
-        types.new_lid_at(site)
-    } else {
-        types.new_lid_known_at(site, lt)
-    }
-}
-
 fn compile_lifetime_specialization_arg(
     ctx: &mut InferState,
     arg: TExpId,
     mode: TypeExprCompileMode,
 ) -> LId {
     match ctx.ex.program.type_expr(arg) {
-        TypeExpr::Wildcard => match mode {
-            TypeExprCompileMode::Signature => ctx.types.new_lid_at(ValId(0)),
-            TypeExprCompileMode::Struct => ctx.types.new_lid_at(ValId(0)),
-            TypeExprCompileMode::Local => ctx.types.new_lid_at(ValId(0)),
-        },
+        TypeExpr::Wildcard => ctx.types.new_lid(),
         TypeExpr::LifeTime(lid) => {
-            let lt = ctx
+            if lid==LifeTimeId::STATIC{
+                return ctx.types.new_lid_known(LifeTime::Static);
+            }
+            ctx
                 .search
                 .local_lifetimes
                 .get(&lid)
                 .copied()
-                .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
-            struct_lifetime_to_lid(&mut ctx.types, ValId(0), lt)
+                .map(|(_,x)| x)
+                .unwrap_or_else(|| {
+                    debug_assert_eq!(lid,LifeTimeId::WILDCARD);
+                    ctx.types.new_lid()
+                })
         }
-        TypeExpr::NameRef(name) => {
-            let sid = ctx.ex.program.name_str_id(name);
-            let Some(lid) = ctx.ex.program.try_get_lifetime(sid) else {
-                let loc = ctx.ex.program.type_expr_loc(arg);
-                ctx.ex.push_error(TypeError::Simple {
-                    loc,
-                    message: "expected a lifetime argument",
-                });
-                return ctx.types.new_lid_at(ValId(0));
-            };
-            let lt = ctx
-                .search
-                .local_lifetimes
-                .get(&lid)
-                .copied()
-                .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
-            struct_lifetime_to_lid(&mut ctx.types, ValId(0), lt)
-        }
-        TypeExpr::Poison => ctx.types.new_lid_at(ValId(0)),
+
         _ => {
             let loc = ctx.ex.program.type_expr_loc(arg);
             ctx.ex.push_error(TypeError::Simple {
                 loc,
                 message: "expected a lifetime argument",
             });
-            ctx.types.new_lid_at(ValId(0))
+            ctx.types.new_lid()
         }
     }
 }
@@ -6474,18 +6448,17 @@ fn infer_elided_output_lifetime(
         return None;
     }
 
-    let inferred_output_lifetime = if undeclared_after_inputs - undeclared_before_inputs == 1 {
-        LifeTime::External(undeclared_before_inputs)
+    if undeclared_after_inputs - undeclared_before_inputs == 1 {
+        Some(LifeTime::External(undeclared_before_inputs))
     } else {
         let loc = ctx.ex.program.type_expr_loc(out_expr);
         ctx.ex.push_error(TypeError::Simple {
             loc,
             message: "elided output lifetime requires exactly one elided input lifetime",
         });
-        LifeTime::Unknown
-    };
+        None
+    }
 
-    Some(inferred_output_lifetime)
 }
 
 fn apply_signature_elided_output_lifetime_rule(
@@ -6596,7 +6569,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
-    let lifetime_generics = generics.lifetimes();
+    let lifetimes= generics.lifetimes();
     let generics = generics.generics();
     // Reject struct definitions in local scope.
     // The type inference is monomorphic (rank-1, no higher-ranked types)
@@ -6612,6 +6585,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
             message: "struct types are only allowed at the top level",
         });
     }
+    bind_lifetime_generics(ctx,lifetimes);
 
     for (i, g) in generics.ids().enumerate() {
         let gid = GenId(i);
@@ -6620,18 +6594,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         //TODO: we probably wana do something with generics that are ints here if we have them
     }
 
-    let mut lifetimes = Vec::with_capacity(lifetime_generics.len());
-    for lifetime_pat in lifetime_generics.ids() {
-        let Pattern::LifeTime(id) = ctx.ex.program.pattern(lifetime_pat) else {
-            let loc = ctx.ex.program.pattern_loc(lifetime_pat);
-            ctx.ex.push_error(TypeError::Simple {
-                loc,
-                message: "struct lifetime parameters must be lifetime names",
-            });
-            continue;
-        };
-        lifetimes.push(lifetime_id_to_lifetime(id));
-    }
+
 
     let undeclared_before_fields = ctx.types.next_undeclared_lifetime;
 
@@ -6674,22 +6637,20 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         });
     }
 
-    for lid in undeclared_before_fields..undeclared_after_fields {
-        let lt = LifeTime::External(lid);
-        if !lifetimes.contains(&lt) {
-            lifetimes.push(lt);
-        }
-    }
+    
 
     let rep = StructRep::new(
         field_info.iter().map(|(n, _)| *n),
         generics.len(),
-        lifetimes.clone(),
+        lifetimes.len(),
         layout,
     );
     let sid = ctx.ex.store.new_struct(rep);
     let generics = (0..generics.len())
         .map(|x| ctx.ex.store.intern(TypeValue::Generic(GenId(x))))
+        .collect();
+    let lifetimes = (0..lifetimes.len())
+        .map(|x| LifeTime::External(x as u32))
         .collect();
     let t = ctx.ex.store.intern(TypeValue::Struct {
         id: sid,
@@ -6802,45 +6763,41 @@ fn compile_type_expr_with_mode(
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
             } else if lifetime == Some(LifeTimeId::WILDCARD) {
                 match mode {
-                    TypeExprCompileMode::Signature => {
-                        PtrKind::RefInfer(ctx.types.new_lid_at(ValId(0)))
-                    }
                     TypeExprCompileMode::Struct => {
                         let loc = ctx.ex.program.type_expr_loc(texpr);
                         ctx.ex.push_error(TypeError::Simple {
                             loc,
                             message: "struct fields cannot use elided lifetimes; declare them in struct lifetime parameters",
                         });
-                        PtrKind::RefInfer(ctx.types.new_lid_at(ValId(0)))
+                        PtrKind::RefInfer(ctx.types.new_lid())
                     }
-                    TypeExprCompileMode::Local => {
-                        PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
+                    _ => {
+                        PtrKind::RefInfer(ctx.types.new_lid())
                     }
                 }
             } else if let Some(lid) = lifetime {
-                let lt = ctx
+                let (lt,_) = ctx
                     .search
                     .local_lifetimes
                     .get(&lid)
                     .copied()
-                    .unwrap_or_else(|| lifetime_id_to_lifetime(lid));
+                    .expect("lifetime used before mentioned");
                 PtrKind::Solved(PointerStyle::Ref(lt))
             } else {
                 match mode {
-                    TypeExprCompileMode::Signature => {
-                        PtrKind::RefInfer(ctx.types.new_lid_at(ValId(0)))
-                    }
+                    
                     TypeExprCompileMode::Struct => {
                         let loc = ctx.ex.program.type_expr_loc(texpr);
                         ctx.ex.push_error(TypeError::Simple {
                             loc,
                             message: "struct fields cannot use elided lifetimes; declare them in struct lifetime parameters",
                         });
-                        PtrKind::RefInfer(ctx.types.new_lid_at(ValId(0)))
+                        PtrKind::RefInfer(ctx.types.new_lid())
                     }
-                    TypeExprCompileMode::Local => {
-                        PtrKind::Solved(PointerStyle::Ref(LifeTime::Unknown))
+                    _ => {
+                        PtrKind::RefInfer(ctx.types.new_lid())
                     }
+                    
                 }
             };
 
@@ -6894,6 +6851,7 @@ fn compile_type_expr_with_mode(
             ctx.new_func(FuncInfer {
                 calling_convention,
                 generics: 0,
+                lifetimes: 0,
                 inputs,
                 output,
             })
@@ -7007,7 +6965,7 @@ fn compile_type_expr_with_mode(
             if lifetimes.is_empty() && !expected_lifetimes.is_empty() {
                 lifetimes = expected_lifetimes
                     .iter()
-                    .map(|_| ctx.types.new_lid_at(ValId(0)))
+                    .map(|_| ctx.types.new_lid())
                     .collect();
             }
 
@@ -7060,41 +7018,14 @@ fn type_check_func_signature(
         GenLifeNameRender::from_decl(ctx.ex.program, generics),
     );
 
-    bind_lifetime_generics(ctx, generics.lifetimes());
-    let generics = generics.generics();
-    for (i, pat) in generics.ids().enumerate() {
-        gather_generic_constraints(ctx, pat, GenId(i));
-    }
-
-    let lids_before_inputs = ctx.types.life_parent.0.len();
-    let inputs = params
-        .ids()
-        .map(|pat| gather_pattern_constraints_with_generics::<true>(ctx, pat))
-        .collect::<Vec<_>>();
-    let lids_after_inputs = ctx.types.life_parent.0.len();
-    let implicit_input_lifetimes =
-        assign_signature_implicit_input_lifetimes(ctx, lids_before_inputs, lids_after_inputs);
-    let lids_before_output = ctx.types.life_parent.0.len();
-    let output = if let Some(x) = output_type {
-        compile_type_expr_with_mode(ctx, x, TypeExprCompileMode::Signature)
-    } else {
-        ctx.new_solved(BuiltinType::Void.into())
-    };
-    let lids_after_output = ctx.types.life_parent.0.len();
-    apply_signature_elided_output_lifetime_rule(
+    let (f, _) = gather_func_signature::<true>(
         ctx,
-        output_type,
-        &implicit_input_lifetimes,
-        lids_before_output,
-        lids_after_output,
-    );
-
-    let f = ctx.new_func(FuncInfer {
+        v,
         calling_convention,
-        generics: generics.len(),
-        inputs,
-        output,
-    });
+        generics,
+        params,
+        output_type,
+    );
     ctx.bind_val(v, f);
     main_solver(ctx);
 
@@ -7233,7 +7164,6 @@ fn mark_used_struct_signature_from_type(
     store: &TypeStore,
     ty: TypeId,
     generic_count: usize,
-    lifetime_param_positions: &IdHashMap<LifeTime, usize>,
     used_generics: &mut [bool],
     used_lifetimes: &mut [bool],
 ) {
@@ -7250,7 +7180,6 @@ fn mark_used_struct_signature_from_type(
                     store,
                     item,
                     generic_count,
-                    lifetime_param_positions,
                     used_generics,
                     used_lifetimes,
                 );
@@ -7261,7 +7190,6 @@ fn mark_used_struct_signature_from_type(
                 store,
                 *inner,
                 generic_count,
-                lifetime_param_positions,
                 used_generics,
                 used_lifetimes,
             );
@@ -7272,7 +7200,6 @@ fn mark_used_struct_signature_from_type(
                     store,
                     param,
                     generic_count,
-                    lifetime_param_positions,
                     used_generics,
                     used_lifetimes,
                 );
@@ -7281,22 +7208,20 @@ fn mark_used_struct_signature_from_type(
                 store,
                 *ret,
                 generic_count,
-                lifetime_param_positions,
                 used_generics,
                 used_lifetimes,
             );
         }
         TypeValue::Ptr { tgt, style, .. } => {
-            if let PointerStyle::Ref(lt) = style
-                && let Some(i) = lifetime_param_positions.get(lt)
+            if let PointerStyle::Ref(LifeTime::External(i)) = style
+                && (*i as usize) <used_lifetimes.len()
             {
-                used_lifetimes[*i] = true;
+                used_lifetimes[*i as usize] = true;
             }
             mark_used_struct_signature_from_type(
                 store,
                 *tgt,
                 generic_count,
-                lifetime_param_positions,
                 used_generics,
                 used_lifetimes,
             );
@@ -7311,14 +7236,13 @@ fn mark_used_struct_signature_from_type(
                     store,
                     generic,
                     generic_count,
-                    lifetime_param_positions,
                     used_generics,
                     used_lifetimes,
                 );
             }
             for lt in lifetimes {
-                if let Some(i) = lifetime_param_positions.get(lt) {
-                    used_lifetimes[*i] = true;
+                if let LifeTime::External(i) = lt {
+                    used_lifetimes[*i as usize] = true;
                 }
             }
         }
@@ -7344,23 +7268,18 @@ fn check_unused_struct_signature_generics_and_lifetimes(ctx: &mut InferState, ty
     };
 
     let struct_rep = ctx.ex.store.struct_value(sid);
-    if struct_rep.gen_count != generic_count || struct_rep.lifetime_params.len() != lifetime_count {
+    if struct_rep.gen_count != generic_count || struct_rep.life_count != lifetime_count {
         return;
     }
 
     let mut used_generics = vec![false; generic_count];
     let mut used_lifetimes = vec![false; lifetime_count];
-    let mut lifetime_param_positions = IdHashMap::default();
-    for (i, lt) in struct_rep.lifetime_params.iter().enumerate() {
-        lifetime_param_positions.insert(*lt, i);
-    }
 
     for (_, field_ty) in struct_rep.fields.iter() {
         mark_used_struct_signature_from_type(
             ctx.ex.store,
             *field_ty,
             generic_count,
-            &lifetime_param_positions,
             &mut used_generics,
             &mut used_lifetimes,
         );
@@ -7393,6 +7312,7 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
+    let lifetime_before_signature = ctx.types.life_parent.0.len();
     let lifetime_generics = generics.lifetimes();
     let generics = generics.generics();
     // Reject generic functions in local scope.
@@ -7415,9 +7335,9 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         });
     }
 
+    let lids_before_inputs = ctx.types.life_parent.0.len();
     bind_lifetime_generics(ctx, lifetime_generics);
 
-    let lids_before_inputs = ctx.types.life_parent.0.len();
     for (i, pat) in generics.ids().enumerate() {
         gather_generic_constraints(ctx, pat, GenId(i));
     }
@@ -7444,9 +7364,12 @@ fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         lids_after_output,
     );
 
+    let lifetime_count = ctx.types.life_parent.0.len() - lifetime_before_signature;
+
     let f = ctx.new_func(FuncInfer {
         calling_convention,
         generics: if GLOBAL_SCOPE { generics.len() } else { 0 },
+        lifetimes: if GLOBAL_SCOPE { lifetime_count } else { 0 },
         inputs,
         output,
     });
@@ -7578,7 +7501,7 @@ fn is_named_struct_type_with_all_generics_free(
     ty: TypeId,
     struct_name: NameId,
 ) -> bool {
-    let TypeValue::Struct { id, generics, .. } = store.type_value(ty) else {
+    let TypeValue::Struct { id, generics,lifetimes } = store.type_value(ty) else {
         return false;
     };
 
@@ -7589,6 +7512,10 @@ fn is_named_struct_type_with_all_generics_free(
 
     generics.iter().enumerate().all(|(i, generic_ty)| {
         matches!(store.type_value(*generic_ty), TypeValue::Generic(gid) if *gid == GenId(i))
+    })
+    &&
+    lifetimes.iter().enumerate().all(|(i, life)| {
+        matches!(life, LifeTime::External(l) if *l == i as u32)
     })
 }
 
@@ -8240,7 +8167,7 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
 
         ResolveKind::Solved(t) => match ex.store.type_value(t) {
             TypeValue::Struct {
-                id, generics: _, ..
+                id, ..
             } => OperandKind::UserStruct(ex.store.struct_value(*id).name),
             _ => OperandKind::KnownNonUser,
         },
@@ -8474,6 +8401,7 @@ fn make_member_closure(
     Ok(types.new_func(FuncInfer {
         calling_convention: CallingConvention::Unknown,
         generics: 0,
+        lifetimes: 0,
         inputs: params,
         output: ret,
     }))
@@ -8532,6 +8460,7 @@ fn resolve_operator_site(
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
                     generics: 0,
+                    lifetimes: 0,
                     inputs: vec![rhs],
                     output: out,
                 });
@@ -8816,6 +8745,7 @@ fn resolve_unary_operator_site(
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
                     generics: 0,
+                    lifetimes: 0,
                     inputs: Vec::new(),
                     output: out,
                 });
@@ -8974,6 +8904,7 @@ fn resolve_assign_pre_post_site(
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
                     generics: 0,
+                    lifetimes: 0,
                     inputs: Vec::new(),
                     output: target,
                 });
@@ -9528,7 +9459,7 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 
         if p.lifetimes.is_empty() && expected_lifetimes != 0 {
             p.lifetimes = (0..expected_lifetimes)
-                .map(|_| types.new_lid_at(ValId(0)))
+                .map(|_| types.new_lid())
                 .collect();
         }
 
@@ -10526,6 +10457,7 @@ mod type_infer_tests {
         let TypeValue::Func {
             calling_convention,
             generics: _,
+            lifetimes: _,
             params,
             ret,
         } = store.type_value(f_ty)
@@ -10655,6 +10587,7 @@ mod type_infer_tests {
         let ty = store.intern(TypeValue::Func {
             calling_convention: CallingConvention::Unknown,
             generics: 0,
+            lifetimes: 0,
             params: vec![BuiltinType::Int.into()],
             ret: BuiltinType::Int.into(),
         });

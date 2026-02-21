@@ -4,13 +4,9 @@ use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
 // const SOURCE: &str = "Box=struct{inner:&[int;2]}; f=fn(){};";
-// const SOURCE: &str = r#"
-// Box=struct['a]{inner:&'a [int;2]};
-// Box.__deref_mut =
-//   fn['a](self:&mut Box['a])->&mut &'a [int;2]
-//     { &mut self.inner };
-// f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };
-// "#;
+const SOURCE: &str = r#"
+Inner=struct{x:int}; Box=struct{inner:Inner}; Wrap=struct{boxed:Box}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; Wrap.__deref = fn(self:&Wrap)->&Box { &self.boxed }; f=fn(w:Wrap){ let y:int = w->x; };
+"#;
 // const SOURCE: &str = r#"
 // sqrt = fn(f:float)->float;
 // Point = struct{x:float,y:float}
@@ -25,26 +21,26 @@ use expr_parser::type_inference::run_typechecker;
 // f=fn(p1:Point,p2:Point)->Point {p1+p2}
 // "#;
 
-const SOURCE: &str = r#"
-Box = struct[T]{ptr:&'raw T};
+// const SOURCE: &str = r#"
+// Box = struct[T]{ptr:&'raw T};
 
-free = cfn(p:*void);
-no_fail_alloc = cfn(s:usize)->*void;
-Box.new = fn[T](x:T)->Box[T] {
-  let p=no_fail_alloc(x.__size_of());
-  Box{p as &'raw _}
-}
-Box.__free = fn[T](b:&mut Box[T]){
-(*b.ptr).__free()
-free(b->ptr as *void)
-}
+// free = cfn(p:*void);
+// no_fail_alloc = cfn(s:usize)->*void;
+// Box.new = fn[T](x:T)->Box[T] {
+//   let p=no_fail_alloc(x.__size_of());
+//   Box{p as &'raw _}
+// }
+// Box.__free = fn[T](b:&mut Box[T]){
+// (*b.ptr).__free()
+// free(b->ptr as *void)
+// }
 
 
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+// Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+// Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
 
-f=fn(x:int)->Box[int] { Box::new(x) };
-"#;
+// f=fn(x:int)->Box[int] { Box::new(x) };
+// "#;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running debug pipeline");
