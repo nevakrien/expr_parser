@@ -3916,10 +3916,10 @@ fn write_ptr_mock_string_inner(
     let mutable = mutable.unwrap_or(false);
     let PtrKind::Solved(style) = kind else {
         if mutable {
-                let _ = out.write_str("&? mut");
+                let _ = out.write_str("&? mut ");
                 write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
             } else {
-                let _ = out.write_str("&? const");
+                let _ = out.write_str("&? const ");
                 write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
             
         }
@@ -5953,6 +5953,31 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
         }
 
         Value::Access { base, name, kind } => {
+            //special case static members like we do functions
+            if kind == AccessKind::Static {
+                let Value::NameRef(sname) = ctx.ex.program.value(base) else {
+                    let loc = ctx.ex.program.value_loc(v);
+                    ctx.push_error(TypeError::Simple{
+                        loc,
+                        message:"static methods require a struct name"
+
+                    });
+                    return ctx.new_cluster();
+                };
+
+                let Some(types) = ctx.ex.ans.member_function_types.get(&(sname,name)) else {
+                    let loc = ctx.ex.program.value_loc(v);
+                    ctx.push_error(TypeError::Simple{
+                        loc,
+                        message:"static methods require a struct name"
+
+                    });
+                    return ctx.new_cluster();
+
+                };
+                let t = types.ty;
+                return global_to_specialized_local(&mut ctx.ex,&mut ctx.search,&mut ctx.types,t,v);
+            }
             let source = gather_constraints(ctx, base, current_output);
             match try_resolve_member_access(
                 &mut ctx.ex,
@@ -10163,8 +10188,33 @@ mod type_infer_tests {
             "unexpected implicit deref chain for struct-deref indexing"
         );
     }
-
     const BOX_EXAMPLE: &str = r#"
+        Box = struct[T]{ptr:&'raw T};
+
+        free = cfn(p:*void);
+        no_fail_alloc = cfn(s:usize)->*void;
+        Box.new = fn[T](x:T)->Box[T] {
+          let p=no_fail_alloc(x.__size_of());
+          Box{p as &'raw _}
+        }
+        Box.__free = fn[T](b:&mut Box[T]){
+        (*b.ptr).__free()
+        free(b->ptr as *void)
+        }
+
+
+        Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+        Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+        f=fn(x:int)->Box[int] { Box::new(x) };
+        "#;
+
+    
+    #[test]
+
+    //currently fails over not doing places in f
+    fn generic_box_array_index_chain_includes_box_step() {
+        let source = r#"
         Box = struct[T]{ptr:&'raw T};
 
         free = cfn(p:*void);
@@ -10185,11 +10235,7 @@ mod type_infer_tests {
         f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
             
         "#;
-    #[test]
-
-    //currently fails over not doing places in f
-    fn generic_box_array_index_chain_includes_box_step() {
-        let program = gather_program(BOX_EXAMPLE);
+        let program = gather_program(source);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();

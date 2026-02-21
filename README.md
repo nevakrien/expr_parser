@@ -114,7 +114,7 @@ Box.new = fn[T](x:T)->Box[T] {
   Box{p as &'raw _}
 }
 Box.__free = fn[T](b:&mut Box[T]){
-(&*b.ptr).__free()
+(*b.ptr).__free()
 free(b->ptr as *void)
 }
 

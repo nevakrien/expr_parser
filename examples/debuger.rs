@@ -11,36 +11,40 @@ use expr_parser::type_inference::run_typechecker;
 //     { &mut self.inner };
 // f = fn['rand,'a](b:Box['a],random:&'rand int)->int { let y:int = b[1:usize]; y };
 // "#;
-const SOURCE: &str = r#"
-sqrt = fn(f:float)->float;
-Point = struct{x:float,y:float}
-Point.dist = fn(self:&Point,other:Point)->float {
-    let dx = self.x-other.x
-    let dy = self.y-other.y
-    sqrt(dx*dx+dy*dy)
-}
-__user_free = fn(self:&mut Point) {}
-Point.new = fn()->Point {Point{0.0,0.0}}
-Point.__add = fn(p1:&Point,p2:Point)->Point {Point{p1.x+p2.x,p1.y+p2.y}}
-f=fn(p1:Point,p2:Point)->Point {p1+p2}
-"#;
-
 // const SOURCE: &str = r#"
-// // type Pair = struct['a, 'b, T] {
-// //user code
-//             Box = struct[T]{ptr:*T};
-
-//             free = cfn(p:*void);
-//             Box.__free = fn[T](b:&mut Box[T]){
-//             (&*b.ptr).__free()
-//             free(b->ptr as *void)
-//             };
-
-//             Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
-//             Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
-
-//             f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
+// sqrt = fn(f:float)->float;
+// Point = struct{x:float,y:float}
+// Point.dist = fn(self:&Point,other:Point)->float {
+//     let dx = self.x-other.x
+//     let dy = self.y-other.y
+//     sqrt(dx*dx+dy*dy)
+// }
+// __user_free = fn(self:&mut Point) {}
+// Point.new = fn()->Point {Point{0.0,0.0}}
+// Point.__add = fn(p1:&Point,p2:Point)->Point {Point{p1.x+p2.x,p1.y+p2.y}}
+// f=fn(p1:Point,p2:Point)->Point {p1+p2}
 // "#;
+
+const SOURCE: &str = r#"
+Box = struct[T]{ptr:&'raw T};
+
+free = cfn(p:*void);
+no_fail_alloc = cfn(s:usize)->*void;
+Box.new = fn[T](x:T)->Box[T] {
+  let p=no_fail_alloc(x.__size_of());
+  Box{p as &'raw _}
+}
+Box.__free = fn[T](b:&mut Box[T]){
+(*b.ptr).__free()
+free(b->ptr as *void)
+}
+
+
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+f=fn(x:int)->Box[int] { Box::new(x) };
+"#;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running debug pipeline");
