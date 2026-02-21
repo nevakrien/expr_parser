@@ -834,7 +834,8 @@ pub struct SolvedTypes {
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: Vec<TypeId>,
     pub function_types: IdHashMap<NameId, SolvedFunctionTypes>,
-    pub member_method_types: IdHashMap<ValId, SolvedMemberMethodType>,
+    pub member_function_types: IdHashMap<(NameId,StrId), SolvedFunctionTypes>,
+    pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
 #[derive(Debug, Clone, Copy)]
@@ -848,7 +849,8 @@ pub struct SolvedFunctionTypes {
 // ----------------------------------------------------------
 pub fn check_and_record_function_set_types(
     ctx: &mut InferState,
-    name: Option<NameId>,
+    name: NameId,
+    method_str:Option<StrId>,
     functions: &FunctionSet,
 ) -> Option<(TypeId, ValId)> {
     let first_decl = functions.declarations.first().copied();
@@ -907,8 +909,16 @@ pub fn check_and_record_function_set_types(
             });
         }
     }
-
-    if let Some(name) = name {
+    if let Some(s) = method_str {
+        ctx.ex.ans.member_function_types.insert(
+            (name,s),
+            SolvedFunctionTypes {
+                ty: reference_type,
+                impl_site: first_impl,
+            },
+        );
+    }
+    else {
         ctx.ex.ans.function_types.insert(
             name,
             SolvedFunctionTypes {
@@ -922,7 +932,7 @@ pub fn check_and_record_function_set_types(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolvedMemberMethodType {
+pub struct SolvedMemberMethodAccessType {
     pub member: StrId,
     pub full_type: TypeId,
 }
@@ -937,6 +947,7 @@ impl SolvedTypes {
             typedef_types,
             val_types: vec![UNKNOWN_TYPE; program.values.len()],
             function_types: IdHashMap::default(),
+            member_function_types: IdHashMap::default(),
             member_method_types: IdHashMap::default(),
             implicit_derefs: IdHashMap::default(),
         }
@@ -973,7 +984,7 @@ impl SolvedTypes {
     }
 
     #[inline(always)]
-    pub fn member_method_type(&self, id: ValId) -> Option<SolvedMemberMethodType> {
+    pub fn member_method_type(&self, id: ValId) -> Option<SolvedMemberMethodAccessType> {
         self.member_method_types.get(&id).copied()
     }
 
@@ -1394,7 +1405,7 @@ pub fn infer_global_types<'a>(
         let mut overloads = StructOverloadInfo::default();
         for (method_name, method_set) in methods.iter() {
             let Some((reference_type, reference_site)) =
-                check_and_record_function_set_types(&mut ctx, None, method_set)
+                check_and_record_function_set_types(&mut ctx,*struct_name, Some(*method_name), method_set)
             else {
                 continue;
             };
@@ -1455,7 +1466,7 @@ pub fn infer_global_types<'a>(
             };
         }
 
-        check_and_record_function_set_types(&mut ctx, Some(*name), funcs);
+        check_and_record_function_set_types(&mut ctx, *name,None, funcs);
     }
 
     if ctx.ex.errors.is_empty() {
@@ -9643,7 +9654,7 @@ fn finalize(ctx: &mut InferState) {
         if let ResolveKind::Solved(full_type) = ctx.types.cluster_state(root) {
             ctx.ex.ans.member_method_types.insert(
                 entry.site,
-                SolvedMemberMethodType {
+                SolvedMemberMethodAccessType {
                     member: entry.member,
                     full_type,
                 },
