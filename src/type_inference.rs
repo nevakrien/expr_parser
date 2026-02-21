@@ -46,12 +46,12 @@ use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, FunctionSet, Program};
 
-// use std::ffi::CStr;
-// unsafe extern "C" {
-//     fn perf_init();
-//     fn perf_begin();
-//     fn perf_done(name: *const std::os::raw::c_char);
-// }
+use std::ffi::CStr;
+unsafe extern "C" {
+    fn perf_init();
+    fn perf_begin();
+    fn perf_done(name: *const std::os::raw::c_char);
+}
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -1243,11 +1243,11 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     let mut err_count = 0;
     let mut function_checked = 0;
 
-    // unsafe {
-    //     perf_init();
-    // }
+    unsafe {
+        perf_init();
+    }
 
-    // unsafe { perf_begin() }
+    unsafe { perf_begin() }
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
@@ -1258,10 +1258,10 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
 
         return Ok((Err(err_count), function_checked));
     }
-    // let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
-    // unsafe { perf_done(name.as_ptr()) };
+    let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
+    unsafe { perf_done(name.as_ptr()) };
 
-    // unsafe { perf_begin() }
+    unsafe { perf_begin() }
 
     for (_n, methods) in program.member_methods.iter() {
         for (_s, method_set) in methods.iter() {
@@ -1299,8 +1299,8 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         }
     }
 
-    // let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
-    // unsafe { perf_done(name.as_ptr()) };
+    let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
+    unsafe { perf_done(name.as_ptr()) };
 
     if err_count > 0 {
         return Ok((Err(err_count), function_checked));
@@ -2096,12 +2096,12 @@ impl<'a> GenLifeNameRender<'a> {
     }
 }
 
-#[cold]
+// #[cold]
 fn generated_generic_name(idx: usize) -> String {
     format!("T{idx}")
 }
 
-#[cold]
+// #[cold]
 fn generated_lifetime_name(idx: u32) -> String {
     format!("a{idx}")
 }
