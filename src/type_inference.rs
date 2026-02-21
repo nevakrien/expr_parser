@@ -1850,15 +1850,15 @@ impl PtrKind {
         }
     }
 
-    ///this is specifically for diagnostics
-    pub fn force_mock(&self) -> PointerStyle {
-        match self {
-            PtrKind::Solved(s) => *s,
-            PtrKind::RefInfer(_) => PointerStyle::Ref(LifeTime::Unknown),
-            PtrKind::Unknown => PointerStyle::Ref(LifeTime::Unknown),
-            PtrKind::SafeRef | PtrKind::SomeRef => PointerStyle::Ref(LifeTime::Unknown),
-        }
-    }
+    // ///this is specifically for diagnostics
+    // pub fn force_mock(&self) -> PointerStyle {
+    //     match self {
+    //         PtrKind::Solved(s) => *s,
+    //         PtrKind::RefInfer(_) => PointerStyle::Ref(LifeTime::Unknown),
+    //         PtrKind::Unknown => PointerStyle::Ref(LifeTime::Unknown),
+    //         PtrKind::SafeRef | PtrKind::SomeRef => PointerStyle::Ref(LifeTime::Unknown),
+    //     }
+    // }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3903,7 +3903,17 @@ fn write_ptr_mock_string_inner(
     limit: &mut usize,
 ) {
     let mutable = mutable.unwrap_or(false);
-    let style = kind.force_mock();
+    let PtrKind::Solved(style) = kind else {
+        if mutable {
+                let _ = out.write_str("&? mut");
+                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+            } else {
+                let _ = out.write_str("&? const");
+                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+            
+        }
+        return;
+    };
     match style {
         PointerStyle::Raw(Nullable::Yes) => {
             if mutable {
