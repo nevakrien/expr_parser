@@ -369,6 +369,10 @@ impl Program {
         self.str_intern.resolve(self.names_strs[n.0])
     }
 
+    pub fn lifetime_string(&self, id: LifeTimeId) -> &str {
+        self.str_intern.resolve(self.lifetime_strs[id.0])
+    }
+
     pub fn name_str_id(&self, n: NameId) -> StrId {
         self.names_strs[n.0]
     }

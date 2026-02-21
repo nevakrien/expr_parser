@@ -15,9 +15,9 @@
 
 ## Diagnostic Naming Follow-up
 
-- Planned improvement: print user-declared generic/lifetime names in `TypeClash`/mock-type diagnostics (instead of fallback `T{i}` / `'a{i}` / `'l{i}` labels where possible).
-- Current blocker: struct inference can currently represent multiple source names for the same generic identity in one context, so a simple inverse map from internal id -> single display name is not sound yet.
-- Required refactor (deferred): stabilize/normalize generic identity ownership for struct contexts first, then add per-scope display-name tables for diagnostic writers.
+- Function-context diagnostics now render user-declared generic/lifetime names through a per-function `GenDec`-backed name table.
+- Implicit function lifetimes in diagnostics now fall back to numeric labels (`'0`, `'1`, ...).
+- Global typedef/struct resolution still uses generated fallback names by design.
 
 ## Known Temporary Failing Tests
 

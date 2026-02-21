@@ -1324,6 +1324,11 @@ pub fn infer_global_types<'a>(
             continue;
         };
 
+        // Global typedef/struct resolution intentionally uses generated fallback names.
+        // We currently do not rely on rich clash rendering here because this flow mostly
+        // reports unresolved/simple diagnostics instead of function-context type clashes.
+        ctx.ex.name_render = GenLifeNameRender::Generate;
+
         //structs have to all resolve in the same scope so they see eachother
         //but we need to preserve them to have their own lifetime...
         //this is 100% a hack but because structs are so simple in terms of lifetimes it should work
@@ -1468,6 +1473,7 @@ pub fn infer_value_internals<'a>(
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
     let known = ans.type_of(value);
     let mut ctx = InferState::new(store, program, ans);
+    let mut restore_name_render: Option<GenLifeNameRender<'a>> = None;
 
     match ctx.ex.program.value(value) {
         Value::Func {
@@ -1477,6 +1483,12 @@ pub fn infer_value_internals<'a>(
             output_type,
             body,
         } => {
+            let previous_name_render = std::mem::replace(
+                &mut ctx.ex.name_render,
+                GenLifeNameRender::from_decl(ctx.ex.program, generics),
+            );
+            restore_name_render = Some(previous_name_render);
+
             let (found_sig, output) = gather_func_signature::<true>(
                 &mut ctx,
                 value,
@@ -1541,6 +1553,10 @@ pub fn infer_value_internals<'a>(
     };
 
     main_solver(&mut ctx);
+
+    if let Some(previous_name_render) = restore_name_render {
+        ctx.ex.name_render = previous_name_render;
+    }
 
     //this debug assert is mostly meaningless
     //it shouldnt even be SET by us in the firstplace
@@ -1666,6 +1682,7 @@ impl<'a> InferState<'a> {
             ex: ExternState {
                 store,
                 program,
+                name_render: GenLifeNameRender::Generate,
                 errors: Vec::new(),
                 ans,
             },
@@ -1737,6 +1754,7 @@ impl<'a> InferState<'a> {
         self.search.clear_local_state();
         self.types.clear_local_state();
         self.req.clear_local_state();
+        self.ex.name_render = GenLifeNameRender::Generate;
     }
 }
 
@@ -1819,6 +1837,7 @@ enum PtrKind {
     RefInfer(LId),
 
     SafeRef,
+    #[allow(dead_code)]
     SomeRef,
     Unknown,
 }
@@ -2022,9 +2041,75 @@ struct PendingIndex {
     implicit_receivers: Vec<CId>,
 }
 
+enum GenLifeNameRender<'a> {
+    TextNames {
+        _decl: GenDec,
+        generic_names: Vec<&'a str>,
+        lifetime_names: Vec<&'a str>,
+    },
+    Generate,
+}
+
+impl<'a> GenLifeNameRender<'a> {
+    fn from_decl(program: &'a Program, decl: GenDec) -> Self {
+        let mut generic_names = Vec::with_capacity(decl.generics().len());
+        for pat in decl.generics().ids() {
+            match program.pattern(pat) {
+                Pattern::Bind(name, _) => generic_names.push(program.name_string(name)),
+                _ => generic_names.push("_"),
+            }
+        }
+
+        let mut lifetime_names = Vec::with_capacity(decl.lifetimes().len());
+        for pat in decl.lifetimes().ids() {
+            match program.pattern(pat) {
+                Pattern::LifeTime(id) => lifetime_names.push(program.lifetime_string(id)),
+                _ => lifetime_names.push("_"),
+            }
+        }
+
+        Self::TextNames {
+            _decl: decl,
+            generic_names,
+            lifetime_names,
+        }
+    }
+
+    fn generic_name(&self, idx: usize) -> String {
+        match self {
+            Self::TextNames { generic_names, .. } => generic_names
+                .get(idx)
+                .map(|s| (*s).to_string())
+                .unwrap_or_else(|| generated_generic_name(idx)),
+            Self::Generate => generated_generic_name(idx),
+        }
+    }
+
+    fn external_lifetime_name(&self, idx: u32) -> String {
+        match self {
+            Self::TextNames { lifetime_names, .. } => lifetime_names
+                .get(idx as usize)
+                .map(|s| (*s).to_string())
+                .unwrap_or_else(|| idx.to_string()),
+            Self::Generate => generated_lifetime_name(idx),
+        }
+    }
+}
+
+#[cold]
+fn generated_generic_name(idx: usize) -> String {
+    format!("T{idx}")
+}
+
+#[cold]
+fn generated_lifetime_name(idx: u32) -> String {
+    format!("a{idx}")
+}
+
 struct ExternState<'a> {
     store: &'a mut TypeStore,
     program: &'a Program,
+    name_render: GenLifeNameRender<'a>,
 
     //result
     errors: Vec<TypeError>,
@@ -2097,6 +2182,7 @@ impl TypeCore {
         find_root(&mut self.parent, x)
     }
 
+    #[allow(dead_code)]
     fn new_cluster(&mut self) -> CId {
         let id = CId(self.parent.len());
         self.parent.0.push(id);
@@ -2201,6 +2287,7 @@ impl TypeState {
     }
 
     #[inline(always)]
+    #[allow(dead_code)]
     fn union_lids(&mut self, a: LId, b: LId) -> LId {
         let ra = self.find_lid_root(a);
         let rb = self.find_lid_root(b);
@@ -2356,6 +2443,7 @@ fn bind_struct_lid_to_lifetime(types: &mut TypeState, lid: LId, target: LifeTime
 
 #[inline(always)]
 fn unify_ptr_lifetimes(types: &mut TypeState, a: LifeTime, b: LifeTime) -> bool {
+    let _ = types;
     match (a, b) {
         (LifeTime::Unknown, _) | (_, LifeTime::Unknown) => true,
         (x, y) => x == y,
@@ -3467,7 +3555,154 @@ fn try_resolve_ptr_type(
 }
 
 fn type_string_from_type_id(ex: &ExternState<'_>, t: TypeId) -> String {
-    ex.store.get_type_string(ex.program, t)
+    type_string_from_type_id_nested(ex, t, 0)
+}
+
+fn type_string_from_type_id_nested(ex: &ExternState<'_>, t: TypeId, gen_count: usize) -> String {
+    if t == UNKNOWN_TYPE {
+        return "unknown".to_string();
+    }
+    if t == UNKNOWN_INT_SIZE {
+        return "int?".to_string();
+    }
+    if t == UNKNOWN_FLOAT_SIZE {
+        return "float?".to_string();
+    }
+    if t == EXPANSION_STOPED {
+        return "...".to_string();
+    }
+
+    match ex.store.type_value(t) {
+        TypeValue::Builtin(b) => match b {
+            BuiltinType::Int => "int".to_string(),
+            BuiltinType::Uint => "uint".to_string(),
+            BuiltinType::I8 => "i8".to_string(),
+            BuiltinType::I16 => "i16".to_string(),
+            BuiltinType::I32 => "i32".to_string(),
+            BuiltinType::I64 => "i64".to_string(),
+            BuiltinType::I128 => "i128".to_string(),
+            BuiltinType::Isize => "isize".to_string(),
+            BuiltinType::U8 => "u8".to_string(),
+            BuiltinType::U16 => "u16".to_string(),
+            BuiltinType::U32 => "u32".to_string(),
+            BuiltinType::U64 => "u64".to_string(),
+            BuiltinType::U128 => "u128".to_string(),
+            BuiltinType::Usize => "usize".to_string(),
+            BuiltinType::F32 => "f32".to_string(),
+            BuiltinType::F64 => "f64".to_string(),
+            BuiltinType::Bool => "bool".to_string(),
+            BuiltinType::Str => "str".to_string(),
+            BuiltinType::Void => "void".to_string(),
+            BuiltinType::Type => "Type".to_string(),
+        },
+        TypeValue::Tuple(items) => {
+            let items = items
+                .iter()
+                .map(|id| type_string_from_type_id_nested(ex, *id, gen_count))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({items})")
+        }
+        TypeValue::Func {
+            calling_convention,
+            generics,
+            params,
+            ret,
+        } => {
+            let params = params
+                .iter()
+                .map(|id| type_string_from_type_id_nested(ex, *id, gen_count + *generics))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            let generic_params = if *generics == 0 {
+                String::new()
+            } else {
+                let pars = (gen_count..(gen_count + *generics))
+                    .map(|i| ex.name_render.generic_name(i))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[{pars}]")
+            };
+
+            format!(
+                "{}{}({}) -> {}",
+                calling_convention_keyword(*calling_convention),
+                generic_params,
+                params,
+                type_string_from_type_id_nested(ex, *ret, gen_count + *generics)
+            )
+        }
+        TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } => {
+            let inner = type_string_from_type_id_nested(ex, *tgt, gen_count);
+            match style {
+                PointerStyle::Raw(Nullable::Yes) => {
+                    if *mutable {
+                        format!("*{inner}")
+                    } else {
+                        format!("*const {inner}")
+                    }
+                }
+                PointerStyle::Raw(Nullable::No) => {
+                    if *mutable {
+                        format!("&'raw {inner}")
+                    } else {
+                        format!("&'raw const {inner}")
+                    }
+                }
+                PointerStyle::Ref(lt) => {
+                    let lt = lifetime_for_display(ex, *lt);
+                    if *mutable {
+                        format!("&'{lt} mut {inner}")
+                    } else {
+                        format!("&'{lt} {inner}")
+                    }
+                }
+            }
+        }
+        TypeValue::Array(inner, ArrayType::Sized(n)) => {
+            format!(
+                "[{};{n}]",
+                type_string_from_type_id_nested(ex, *inner, gen_count)
+            )
+        }
+        TypeValue::Array(inner, ArrayType::Unsized) => {
+            format!(
+                "[{}]",
+                type_string_from_type_id_nested(ex, *inner, gen_count)
+            )
+        }
+        TypeValue::Generic(g) => ex.name_render.generic_name(g.0),
+        TypeValue::Struct {
+            id,
+            generics,
+            lifetimes,
+        } => {
+            let mut base = match ex.store.struct_value(*id).name {
+                Some(name) => ex.program.name_string(name).to_string(),
+                None => "UnamedStruct".to_string(),
+            };
+            if !lifetimes.is_empty() || !generics.is_empty() {
+                let mut args = lifetimes
+                    .iter()
+                    .map(|lt| format!("'{}", lifetime_for_display(ex, *lt)))
+                    .collect::<Vec<_>>();
+                args.extend(
+                    generics
+                        .iter()
+                        .map(|id| type_string_from_type_id_nested(ex, *id, gen_count)),
+                );
+                base.push('[');
+                base.push_str(&args.join(", "));
+                base.push(']');
+            }
+            base
+        }
+    }
 }
 
 fn simple_type_clash(ex: &ExternState<'_>, a: TypeId, b: TypeId) -> TypeClash {
@@ -3477,21 +3712,17 @@ fn simple_type_clash(ex: &ExternState<'_>, a: TypeId, b: TypeId) -> TypeClash {
     }
 }
 
-fn write_lifetime_for_display(out: &mut String, lt: LifeTime) {
+fn lifetime_for_display(ex: &ExternState<'_>, lt: LifeTime) -> String {
     match lt {
-        LifeTime::Local(id) => {
-            let _ = write!(out, "l{}", id.0);
-        }
-        LifeTime::External(i) => {
-            let _ = write!(out, "a{i}");
-        }
-        LifeTime::Static => {
-            let _ = out.write_str("static");
-        }
-        LifeTime::Unknown => {
-            let _ = out.write_str("idk");
-        }
+        LifeTime::Local(id) => format!("l{}", id.0),
+        LifeTime::External(i) => ex.name_render.external_lifetime_name(i),
+        LifeTime::Static => "static".to_string(),
+        LifeTime::Unknown => "idk".to_string(),
     }
+}
+
+fn write_lifetime_for_display(ex: &ExternState<'_>, out: &mut String, lt: LifeTime) {
+    let _ = out.write_str(&lifetime_for_display(ex, lt));
 }
 
 fn calling_convention_keyword(cc: CallingConvention) -> &'static str {
@@ -3591,15 +3822,10 @@ fn write_struct_mock_string_inner(
     let rep = ex.store.struct_value(site.sid);
     match rep.name {
         Some(name) => {
-            let _ = write!(
-                out,
-                "{}{}",
-                ex.program.name_string(name),
-                subscript_id(site.sid.0)
-            );
+            let _ = write!(out, "{}", ex.program.name_string(name));
         }
         None => {
-            let _ = write!(out, "UnamedStruct{}", subscript_id(site.sid.0));
+            let _ = out.write_str("UnamedStruct");
         }
     }
 
@@ -3615,7 +3841,7 @@ fn write_struct_mock_string_inner(
         }
         wrote_any = true;
         let _ = out.write_char('\'');
-        write_lifetime_for_display(out, LifeTime::Unknown);
+        write_lifetime_for_display(ex, out, LifeTime::Unknown);
     }
     for input in site.generics.iter().copied() {
         if wrote_any {
@@ -3701,7 +3927,7 @@ fn write_ptr_mock_string_inner(
         PointerStyle::Ref(lt) => {
             let _ = out.write_char('&');
             let _ = out.write_char('\'');
-            write_lifetime_for_display(out, lt);
+            write_lifetime_for_display(ex, out, lt);
             let _ = out.write_char(' ');
             if mutable {
                 let _ = out.write_str("mut ");
@@ -6817,6 +7043,11 @@ fn type_check_func_signature(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) {
+    let previous_name_render = std::mem::replace(
+        &mut ctx.ex.name_render,
+        GenLifeNameRender::from_decl(ctx.ex.program, generics),
+    );
+
     bind_lifetime_generics(ctx, generics.lifetimes());
     let generics = generics.generics();
     for (i, pat) in generics.ids().enumerate() {
@@ -6854,6 +7085,8 @@ fn type_check_func_signature(
     });
     ctx.bind_val(v, f);
     main_solver(ctx);
+
+    ctx.ex.name_render = previous_name_render;
 }
 
 fn check_unused_function_signature_generics_and_lifetimes(ctx: &mut InferState, function: ValId) {
@@ -6885,6 +7118,7 @@ fn check_unused_function_signature_generics_and_lifetimes(ctx: &mut InferState, 
     }
 }
 
+#[allow(dead_code)]
 fn mark_used_generics_and_lifetimes_from_type(
     store: &TypeStore,
     ty: TypeId,
@@ -7220,6 +7454,11 @@ fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
     output_type: Option<TExpId>,
     body: Option<ValId>,
 ) -> CId {
+    let previous_name_render = std::mem::replace(
+        &mut ctx.ex.name_render,
+        GenLifeNameRender::from_decl(ctx.ex.program, generics),
+    );
+
     let (f, output) = gather_func_signature::<GLOBAL_SCOPE>(
         ctx,
         v,
@@ -7230,6 +7469,7 @@ fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
     );
 
     let Some(body) = body else {
+        ctx.ex.name_render = previous_name_render;
         return f;
     };
 
@@ -7254,6 +7494,7 @@ fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
     //this might need to be done ahead of time globaly for all funcs
     //so that we can have weird type recursions
     //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
+    ctx.ex.name_render = previous_name_render;
     f
 }
 
@@ -7353,7 +7594,9 @@ fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeI
 #[derive(Debug, Clone, Copy)]
 struct StructOperatorOverload {
     method_type: TypeId,
+    #[allow(dead_code)]
     method_site: ValId,
+    #[allow(dead_code)]
     self_pointer_style: Option<PointerStyle>,
 }
 
@@ -7488,6 +7731,7 @@ fn get_ref_target_type_if_kind(store: &TypeStore, ty: TypeId, mutable: bool) -> 
 }
 
 #[inline(always)]
+#[allow(dead_code)]
 fn get_deref_method_target_type(
     store: &TypeStore,
     method_ty: TypeId,
@@ -9504,6 +9748,10 @@ mod type_infer_tests {
 
         program.check_pending_names();
 
+        if !program.lowering_errors.is_empty() {
+            panic!("lowering errors: {:?}", program.lowering_errors);
+        }
+
         program
     }
 
@@ -11004,7 +11252,7 @@ mod type_infer_tests {
 
     #[test]
     fn generic_deref_return_mismatch_uses_correct_generic_slot() {
-        let src = "Box = struct[T]{ptr:*T}; Box.__deref = fn[T](b:&Box[T])->&T{&*b.ptr}; f = fn[T1,T2](b:Box[Box[T2]])->T1 { *b };";
+        let src = "Box = struct[GenBox]{ptr:*GenBox}; Box.__deref = fn[GenBox](b:&Box[GenBox])->&GenBox{&*b.ptr}; f = fn[Output,Input](b:Box[Box[Input]])->Output { *b };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -11030,21 +11278,21 @@ mod type_infer_tests {
             .wanted()
             .unwrap_or_else(|| panic!("expected wanted side in clash: {clash:?}"));
 
-        let (ret_side, box_side) = if found_s == "T0" {
+        let (ret_side, box_side) = if found_s == "Output" {
             (found_s, wanted_s)
-        } else if wanted_s == "T0" {
+        } else if wanted_s == "Output" {
             (wanted_s, found_s)
         } else {
-            panic!("expected one side to be T0, got found={found_s}, wanted={wanted_s}");
+            panic!("expected one side to be Output, got found={found_s}, wanted={wanted_s}");
         };
 
-        assert_eq!(ret_side, "T0");
+        assert_eq!(ret_side, "Output");
         assert!(
-            box_side.contains("Box") && box_side.contains("T1"),
-            "expected box side to mention Box[T1], got {box_side}"
+            box_side.contains("Box") && box_side.contains("Input"),
+            "expected box side to mention Box[Input], got {box_side}"
         );
         assert!(
-            !box_side.contains("T0"),
+            !box_side.contains("Output"),
             "box side should not use wrong generic slot, got {box_side}"
         );
     }
@@ -11344,7 +11592,7 @@ mod type_infer_tests {
         assert_eq!(full_params.len(), 1);
         let TypeValue::Ptr {
             tgt,
-            style,
+            style: _,
             mutable,
         } = store.type_value(full_params[0])
         else {

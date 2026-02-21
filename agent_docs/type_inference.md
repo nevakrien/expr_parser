@@ -224,6 +224,13 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 
 When unresolved clusters must still be printed in errors, writers now stream best-effort type strings into `&mut String` (`write_mock_type_from_cluster` and shape-specific `write_*_mock_string_inner` helpers), instead of interning temporary mock `TypeId`s for clash payloads.
 
+User-facing clash/type strings now use a function-context name renderer when available:
+
+- During function signature/body gathering, inference installs a per-function `GenLifeNameRender::TextNames` context built from that function's `GenDec`.
+- In that context, generic/lifetime placeholders prefer user-written names (`T`, `'a`) and use numeric fallback lifetimes (`'0`, `'1`, ...) for implicit slots.
+- Outside function context (global typedef/struct flow), renderer stays `Generate` and uses fallback generated names.
+- Error-path struct display no longer appends debug subscript suffixes (typedump/debug formatting still uses existing `TypeStore` formatting paths).
+
 ## Inference Pipeline
 
 
