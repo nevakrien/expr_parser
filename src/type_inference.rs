@@ -2112,16 +2112,60 @@ struct PendingPointerLike {
     source_value: ValId,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PendingIndex {
     site: ValId,
     base_value: ValId,
     index_value: ValId,
+
     base: CId,
     index: CId,
     output: CId,
+
+    current: CId,
     implicit_receivers: Vec<CId>,
+
+    deref_chain_lid: Option<LId>,
+    deref_chain_mutability: Option<bool>,
 }
+
+impl PendingIndex {
+    #[inline(always)]
+    fn new(
+        types: &mut TypeState,
+        site: ValId,
+        base_value: ValId,
+        index_value: ValId,
+        base: CId,
+        index: CId,
+        output: CId,
+    ) -> Self {
+        // canonicalize immediately (VERY important — prevents stale path issues)
+        let base = types.root(base);
+        let index = types.root(index);
+
+        Self {
+            site,
+            base_value,
+            index_value,
+
+            base,
+            index,
+            output,
+
+            // coroutine cursor: current autoderef position
+            current: base,
+
+            // persistent autoderef prefix
+            implicit_receivers: Vec::new(),
+
+            // smart-deref tracking
+            deref_chain_lid: None,
+            deref_chain_mutability: None,
+        }
+    }
+}
+
 
 enum GenLifeNameRender<'a> {
     TextNames {
@@ -4714,12 +4758,6 @@ fn specialize_struct_field_type(
     specialize_type(ex, types, field_ty, generics, lifetimes, site)
 }
 
-fn deref_limit_error(ex: &ExternState, site: ValId, msg: &'static str) -> MemberAccessResolve {
-    MemberAccessResolve::Error(TypeError::Simple {
-        loc: ex.program.value_loc(site),
-        message: msg,
-    })
-}
 
 impl PendingMemberAccess {
     #[inline(always)]
@@ -6224,16 +6262,18 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                 return output;
             }
 
-            let mut site = PendingIndex {
-                site: v,
-                base_value: call.base,
-                index_value: pos_args[0],
+            let mut site = PendingIndex::new(
+                &mut ctx.types,
+                v,
+                call.base,
+                pos_args[0],
                 base,
-                index: pos_arg_clusters[0],
+                pos_arg_clusters[0],
                 output,
-                implicit_receivers: Vec::new(),
-            };
-            let outcome = resolve_index_site(&mut ctx.ex, &mut ctx.types, &mut site);
+            );
+
+            let outcome = site.step(&mut ctx.ex, &mut ctx.types);
+
             if outcome.retain {
                 ctx.req.pending_indexes.push(site);
             } else if !site.implicit_receivers.is_empty() {
@@ -8991,174 +9031,195 @@ fn resolve_operator_types(ctx: &mut InferState) -> bool {
     progress
 }
 
-fn resolve_index_site(
-    ex: &mut ExternState,
-    types: &mut TypeState,
-    site: &mut PendingIndex,
-) -> ResolveOutcome {
-    let mut progress = false;
+impl PendingIndex {
+    #[inline(always)]
+    fn step(
+        &mut self,
+        ex: &mut ExternState,
+        types: &mut TypeState,
+    ) -> ResolveOutcome {
+        let mut progress = false;
 
-    site.base = types.root(site.base);
-    site.index = types.root(site.index);
+        self.base = types.root(self.base);
+        self.index = types.root(self.index);
 
-    let mut current = site.base;
-    let mut used_implicit_deref_steps = 0usize;
-    let max_implicit_deref_steps = 64usize;
-    let mut implicit_receivers = Vec::new();
-    let mut deref_chain_lid = None;
-    let mut deref_chain_mutability = None;
+        // resume from cursor
+        let mut current = types.root(self.current);
 
-    let element = loop {
-        let program = &ex.program;
+        let max_implicit_deref_steps = 64usize;
 
-        match types.core.cluster[current].state {
-            ResolveKind::Nothing => {
-                site.base = current;
-                return ResolveOutcome::keep(progress);
-            }
-            ResolveKind::Array { element, .. } => break element,
-            ResolveKind::Ptr { tgt, .. } => {
-                if used_implicit_deref_steps >= max_implicit_deref_steps {
-                    ex.push_error(TypeError::Simple {
-                        loc: program.value_loc(site.site),
-                        message: "index autoderef recursion exceeded safety limit",
-                    });
-                    return ResolveOutcome::drop(progress);
+        let element: CId = loop {
+            match types.core.cluster[current].state {
+                ResolveKind::Nothing => {
+                    // pause; keep prefix
+                    self.current = current;
+                    return ResolveOutcome::keep(progress);
                 }
-                implicit_receivers.push(current);
-                current = types.root(tgt);
-                used_implicit_deref_steps += 1;
-            }
-            ResolveKind::Solved(t) => match ex.store.type_value(t).clone() {
-                TypeValue::Array(element, _) => break types.new_solved(element),
-                TypeValue::Ptr { tgt, .. } => {
-                    if used_implicit_deref_steps >= max_implicit_deref_steps {
+
+                ResolveKind::Array { element, .. } => break element,
+
+                ResolveKind::Ptr { tgt, .. } => {
+                    if self.implicit_receivers.len() >= max_implicit_deref_steps {
                         ex.push_error(TypeError::Simple {
-                            loc: program.value_loc(site.site),
+                            loc: ex.program.value_loc(self.site),
                             message: "index autoderef recursion exceeded safety limit",
                         });
                         return ResolveOutcome::drop(progress);
                     }
-                    let next = types.new_solved(tgt);
-                    implicit_receivers.push(current);
-                    current = types.root(next);
-                    used_implicit_deref_steps += 1;
+
+                    self.implicit_receivers.push(current);
+                    current = types.root(tgt);
                 }
-                TypeValue::Struct { id, .. } => {
-                    let Some(struct_name) = ex.store.struct_value(id).name else {
+
+                ResolveKind::Solved(t) => {
+                    match ex.store.type_value(t) {
+                        TypeValue::Array(element, _) => break types.new_solved(*element),
+
+                        TypeValue::Ptr { tgt, .. } => {
+                            if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                                ex.push_error(TypeError::Simple {
+                                    loc: ex.program.value_loc(self.site),
+                                    message: "index autoderef recursion exceeded safety limit",
+                                });
+                                return ResolveOutcome::drop(progress);
+                            }
+
+                            let c = types.new_solved(*tgt);
+                            let next = types.root(c);
+                            self.implicit_receivers.push(current);
+                            current = next;
+                        }
+
+                        TypeValue::Struct { id, .. } => {
+                            let Some(struct_name) = ex.store.struct_value(*id).name else {
+                                ex.push_error(TypeError::Simple {
+                                    loc: ex.program.value_loc(self.site),
+                                    message: "indexing base must be an array or pointer to array",
+                                });
+                                return ResolveOutcome::drop(progress);
+                            };
+
+                            let Some(target) = resolve_struct_deref_target(
+                                ex,
+                                types,
+                                self.site,
+                                self.base_value,
+                                current,
+                                struct_name,
+                                &mut self.deref_chain_lid,
+                                &mut self.deref_chain_mutability,
+                            ) else {
+                                ex.push_error(TypeError::Simple {
+                                    loc: ex.program.value_loc(self.site),
+                                    message: "indexing base must be an array or pointer to array",
+                                });
+                                return ResolveOutcome::drop(progress);
+                            };
+
+
+                            self.implicit_receivers.push(current);
+                            self.implicit_receivers.push(target.deref_result_ptr);
+
+                            current = types.root(target.target);
+                        }
+
+                        _ => {
+                            ex.push_error(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "indexing base must be an array or pointer to array",
+                            });
+                            return ResolveOutcome::drop(progress);
+                        }
+                    }
+                }
+
+                ResolveKind::Struct(rid) => {
+                    let sid = types.extra.struct_infers[rid.0].sid;
+                    let Some(struct_name) = ex.store.struct_value(sid).name else {
                         ex.push_error(TypeError::Simple {
-                            loc: program.value_loc(site.site),
+                            loc: ex.program.value_loc(self.site),
                             message: "indexing base must be an array or pointer to array",
                         });
                         return ResolveOutcome::drop(progress);
                     };
+
                     let Some(target) = resolve_struct_deref_target(
                         ex,
                         types,
-                        site.site,
-                        site.base_value,
+                        self.site,
+                        self.base_value,
                         current,
                         struct_name,
-                        &mut deref_chain_lid,
-                        &mut deref_chain_mutability,
+                        &mut self.deref_chain_lid,
+                        &mut self.deref_chain_mutability,
                     ) else {
                         ex.push_error(TypeError::Simple {
-                            loc: ex.program.value_loc(site.site),
+                            loc: ex.program.value_loc(self.site),
                             message: "indexing base must be an array or pointer to array",
                         });
                         return ResolveOutcome::drop(progress);
                     };
-                    implicit_receivers.push(current);
-                    implicit_receivers.push(target.deref_result_ptr);
+
+                    self.implicit_receivers.push(current);
+                    self.implicit_receivers.push(target.deref_result_ptr);
+
                     current = types.root(target.target);
-                    used_implicit_deref_steps += 1;
                 }
+
                 _ => {
                     ex.push_error(TypeError::Simple {
-                        loc: program.value_loc(site.site),
+                        loc: ex.program.value_loc(self.site),
                         message: "indexing base must be an array or pointer to array",
                     });
                     return ResolveOutcome::drop(progress);
                 }
-            },
-            ResolveKind::Struct(rid) => {
-                let sid = types.extra.struct_infers[rid.0].sid;
-                let Some(struct_name) = ex.store.struct_value(sid).name else {
-                    ex.push_error(TypeError::Simple {
-                        loc: program.value_loc(site.site),
-                        message: "indexing base must be an array or pointer to array",
-                    });
-                    return ResolveOutcome::drop(progress);
-                };
-                let Some(target) = resolve_struct_deref_target(
-                    ex,
-                    types,
-                    site.site,
-                    site.base_value,
-                    current,
-                    struct_name,
-                    &mut deref_chain_lid,
-                    &mut deref_chain_mutability,
-                ) else {
-                    ex.push_error(TypeError::Simple {
-                        loc: ex.program.value_loc(site.site),
-                        message: "indexing base must be an array or pointer to array",
-                    });
-                    return ResolveOutcome::drop(progress);
-                };
-                implicit_receivers.push(current);
-                implicit_receivers.push(target.deref_result_ptr);
-                current = types.root(target.target);
-                used_implicit_deref_steps += 1;
             }
-            _ => {
-                ex.push_error(TypeError::Simple {
-                    loc: program.value_loc(site.site),
-                    message: "indexing base must be an array or pointer to array",
+        };
+
+        // commit cursor/base now that we know where we ended
+        self.current = current;
+        self.base = current;
+
+        // finalize implicit receiver chain into the site
+        let used = self.implicit_receivers.len();
+        let receivers = std::mem::take(&mut self.implicit_receivers);
+        self.implicit_receivers = finalize_member_access_implicit_chain(receivers, used, current);
+
+        // index must be usize
+        let usize_c = types.new_solved(BuiltinType::Usize.into());
+        match unify_if_distinct(ex, types, self.index, usize_c) {
+            Ok(changed) => progress |= changed,
+            Err(clash) => {
+                ex.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "array indexing requires an index of type usize",
+                    site: self.site,
+                    found: self.index_value,
+                    expected_place: self.site,
+                    clash,
                 });
                 return ResolveOutcome::drop(progress);
             }
         }
-    };
 
-    site.base = current;
-    site.implicit_receivers = finalize_member_access_implicit_chain(
-        implicit_receivers,
-        used_implicit_deref_steps,
-        current,
-    );
-
-    let usize_c = types.new_solved(BuiltinType::Usize.into());
-    match unify_if_distinct(ex, types, site.index, usize_c) {
-        Ok(changed) => progress |= changed,
-        Err(clash) => {
-            ex.push_error(TypeError::ValuesContradict {
-                expectation_reason: "array indexing requires an index of type usize",
-                site: site.site,
-                found: site.index_value,
-                expected_place: site.site,
-                clash,
-            });
-            return ResolveOutcome::drop(progress);
+        // output element type
+        match unify_if_distinct(ex, types, element, self.output) {
+            Ok(changed) => progress |= changed,
+            Err(clash) => {
+                ex.push_error(TypeError::ValuesContradict {
+                    expectation_reason: "index expression result must match indexed element type",
+                    site: self.site,
+                    found: self.base_value,
+                    expected_place: self.site,
+                    clash,
+                });
+                return ResolveOutcome::drop(progress);
+            }
         }
-    }
 
-    match unify_if_distinct(ex, types, element, site.output) {
-        Ok(changed) => progress |= changed,
-        Err(clash) => {
-            ex.push_error(TypeError::ValuesContradict {
-                expectation_reason: "index expression result must match indexed element type",
-                site: site.site,
-                found: site.base_value,
-                expected_place: site.site,
-                clash,
-            });
-            return ResolveOutcome::drop(progress);
-        }
+        ResolveOutcome::drop(progress)
     }
-
-    ResolveOutcome::drop(progress)
 }
+
 
 #[inline(always)]
 fn resolve_deferred_types(ctx: &mut InferState) -> bool {
@@ -9284,7 +9345,7 @@ fn resolve_pending_indexes(ctx: &mut InferState) -> bool {
     let types = &mut ctx.types;
 
     ctx.req.pending_indexes.retain_mut(|site| {
-        let outcome = resolve_index_site(ex, types, site);
+        let outcome = site.step(ex, types);
         progress |= outcome.progress;
         if !outcome.retain && !site.implicit_receivers.is_empty() {
             ctx.req
