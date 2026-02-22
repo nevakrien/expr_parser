@@ -4177,20 +4177,27 @@ fn specialize_type_inner(
     ty: TypeId,
     ctx: &mut SpecializeCtx<'_>,
 ) -> CId {
-    match ex.store.type_value(ty).clone() {
+    match ex.store.type_value(ty) {
         TypeValue::Generic(id) => ctx.generics.get(id.0).copied().unwrap(),
 
         TypeValue::Func {
             calling_convention,
-            generics,
-            lifetimes,
+            generics: _,
+            lifetimes: _,
             params,
             ret,
         } => {
-            let inputs = params
-                .into_iter()
-                .map(|t| specialize_type_inner(ex, types, t, ctx))
-                .collect::<Vec<_>>();
+            let ret = *ret;
+            let calling_convention=*calling_convention;
+
+            let mut inputs = Vec::with_capacity(params.len());
+            for i in 0..params.len(){
+                let TypeValue::Func{params,..} = ex.store.type_value(ty) else{
+                    unreachable!()
+                };
+                inputs.push(specialize_type_inner(ex, types, params[i], ctx))
+            }
+
 
             let output = specialize_type_inner(ex, types, ret, ctx);
 
@@ -4214,10 +4221,11 @@ fn specialize_type_inner(
 
         TypeValue::Struct {
             id,
-            generics: parts,
-            lifetimes: life_parts,
+            generics,
+            lifetimes,
         } => {
-            if parts.is_empty() && life_parts.is_empty() {
+            let id = *id;
+            if generics.is_empty() && lifetimes.is_empty() {
                 let idc = CId(types.core.parent.len());
                 types.core.parent.0.push(idc);
                 types.core.cluster.0.push(Cluster {
@@ -4225,16 +4233,24 @@ fn specialize_type_inner(
                 });
                 return idc;
             }
+            let glen = generics.len();
+            let llen = lifetimes.len();
 
-            let resolved = parts
-                .into_iter()
-                .map(|t| specialize_type_inner(ex, types, t, ctx))
-                .collect::<Vec<_>>();
-
-            let resolved_lifetimes = life_parts
-                .into_iter()
-                .map(|lt| specialize_lifetime(types, ctx, lt))
-                .collect::<Vec<_>>();
+            let mut resolved = Vec::with_capacity(glen);
+            for i in 0..glen {
+                let TypeValue::Struct{generics,..} = ex.store.type_value(ty) else{
+                    unreachable!()
+                };
+                resolved.push(specialize_type_inner(ex, types, generics[i], ctx))
+            }
+            let mut resolved_lifetimes = Vec::with_capacity(llen);
+            for i in 0..llen {
+                let TypeValue::Struct{lifetimes,..} = ex.store.type_value(ty) else{
+                    unreachable!()
+                };
+                resolved_lifetimes.push(specialize_lifetime(types,ctx, lifetimes[i]))
+            }
+            
 
             let call_id = StructInferId(types.extra.struct_infers.len());
             types.extra.struct_infers.push(StructInfer {
@@ -4256,6 +4272,9 @@ fn specialize_type_inner(
             style,
             mutable,
         } => {
+            let tgt = *tgt;
+            let mutable = *mutable;
+            let style = *style;
             let target = specialize_type_inner(ex, types, tgt, ctx);
             let kind = match style {
                 PointerStyle::Ref(lt) => {
@@ -4278,13 +4297,17 @@ fn specialize_type_inner(
         }
 
         TypeValue::Tuple(items) => {
-            let items = items
-                .into_iter()
-                .map(|item| specialize_type_inner(ex, types, item, ctx))
-                .collect::<Vec<_>>();
+            let mut new_items = Vec::with_capacity(items.len());
+            for i in 0..items.len() {
+                let TypeValue::Tuple(items) = ex.store.type_value(ty) else{
+                    unreachable!()
+                };
+                new_items.push(specialize_type_inner(ex, types, items[i], ctx));
+            }
+            
 
             let tuple_id = TupleInferId(types.extra.tuple_infers.len());
-            types.extra.tuple_infers.push(TupleInfer { items });
+            types.extra.tuple_infers.push(TupleInfer { items:new_items });
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -4295,6 +4318,8 @@ fn specialize_type_inner(
         }
 
         TypeValue::Array(inner, len) => {
+            let inner = *inner;
+            let len = *len;
             let inner = specialize_type_inner(ex, types, inner, ctx);
 
             let id = CId(types.core.parent.len());
@@ -5122,8 +5147,7 @@ fn try_resolve_tuple_int_access(
                 current = next;
             }
             ResolveKind::Solved(t) => {
-                let solved = ex.store.type_value(t).clone();
-                match solved {
+                match ex.store.type_value(t) {
                     TypeValue::Ptr { tgt, .. } => {
                         if used_implicit_deref_steps >= max_implicit_deref_steps {
                             return IntAccessResolve::Error(TypeError::Simple {
@@ -5131,7 +5155,7 @@ fn try_resolve_tuple_int_access(
                                 message: implicit_deref_limit_message,
                             });
                         }
-                        let next = types.new_solved(tgt);
+                        let next = types.new_solved(*tgt);
                         let next = types.root(next);
                         implicit_receivers.push(current);
                         used_implicit_deref_steps += 1;
@@ -5894,7 +5918,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
                     id: _,
                     generics,
                     lifetimes,
-                } => (generics.len(), lifetimes.clone()),
+                } => (generics.len(), lifetimes),
                 _ => unreachable!("verified above"),
             };
             let llen = lifetime_generics.len();
@@ -9544,48 +9568,61 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 // #[inline(never)]
 // #[unsafe(no_mangle)]
 fn finalize(ctx: &mut InferState) {
-    let val_cluster = ctx.search.val_cluster.clone();
-    let pat_cluster = ctx.search.pat_cluster.clone();
-    let typedef_cluster = ctx.search.typedef_cluster.clone();
-    let member_method_type_sites = ctx.req.member_method_type_sites.clone();
-    let member_access_implicit_deref_sites = ctx.req.member_access_implicit_deref_sites.clone();
-    let index_implicit_deref_sites = ctx.req.index_implicit_deref_sites.clone();
-    let struct_defs = ctx
-        .types
-        .extra
-        .struct_defs
-        .iter()
-        .map(|s| (s.sid, s.loc, s.fields.clone()))
-        .collect::<Vec<_>>();
+    let InferState {
+        search,
+        req,
+        types,
+        ex,
+        ..
+    } = ctx;
+
+    let val_cluster = &search.val_cluster;
+    let pat_cluster = &search.pat_cluster;
+    let typedef_cluster = &search.typedef_cluster;
+    let member_method_type_sites = &req.member_method_type_sites;
+    let member_access_implicit_deref_sites = &req.member_access_implicit_deref_sites;
+    let index_implicit_deref_sites = &req.index_implicit_deref_sites;
+
 
     // unsafe{perf_begin();}
 
     let mut reported: IdHashMap<CId, ()> = IdHashMap::default();
     let mut member_method_by_site: IdHashMap<ValId, PendingMemberMethodType> = IdHashMap::default();
-    for entry in member_method_type_sites.iter().copied() {
+    for &entry in member_method_type_sites {
         member_method_by_site.insert(entry.site, entry);
     }
-    for (e, c) in typedef_cluster.iter() {
-        let root = ctx.types.root(*c);
-        if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
-            ctx.ex.ans.typedef_types.insert(*e, t);
+
+    for (e, c) in typedef_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            ex.ans.typedef_types.insert(*e, t);
         } else if *c == root {
-            let found = ctx.types.bad_type(&mut ctx.ex, root);
-            ctx.ex
-                .errors
-                .push(TypeError::UnresolvedTypeExpr { expr: *e, found });
+            let found = types.bad_type(ex, root);
+            ex.errors.push(TypeError::UnresolvedTypeExpr { expr: *e, found });
             reported.insert(root, ());
         }
     }
 
-    for (sid, loc_expr, fields) in struct_defs.iter() {
-        for (i, (_n, c)) in fields.iter().enumerate() {
-            let root = ctx.types.root(*c);
-            if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
-                ctx.ex.store.structs[sid.0].fields[i].1 = t;
-            } else if *c == root {
-                let loc = ctx.ex.program.type_expr_loc(*loc_expr);
-                ctx.ex.errors.push(TypeError::Simple {
+    let struct_count = types.extra.struct_defs.len();
+    for sid_i in 0..struct_count {
+        let (loc_expr, field_len) = {
+            let s = &types.extra.struct_defs[sid_i];
+            (s.loc, s.fields.len())
+        };
+
+        for i in 0..field_len {
+            let c = {
+                // borrow only long enough to read the cluster id
+                types.extra.struct_defs[sid_i].fields[i].1
+            };
+
+            let root = types.root(c);
+
+            if let ResolveKind::Solved(t) = types.cluster_state(root) {
+                ex.store.structs[sid_i].fields[i].1 = t;
+            } else if c == root {
+                let loc = ex.program.type_expr_loc(loc_expr);
+                ex.errors.push(TypeError::Simple {
                     loc,
                     message: "could not infer struct field type",
                 });
@@ -9594,40 +9631,36 @@ fn finalize(ctx: &mut InferState) {
         }
     }
 
-    for (v, c) in val_cluster.iter() {
-        let root = ctx.types.root(*c);
-        if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
-            ctx.ex.ans.set_val(*v, t);
-        } else if *c == root && !reported.contains_key(c) {
-            let found = ctx.types.bad_type(&mut ctx.ex, root);
-            ctx.ex
-                .errors
-                .push(TypeError::Unresolved { value: *v, found });
+    for (v, c) in val_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            ex.ans.set_val(*v, t);
+        } else if *c == root && !reported.contains_key(&c) {
+            let found = types.bad_type(ex, root);
+            ex.errors.push(TypeError::Unresolved { value: *v, found });
             reported.insert(root, ());
-            if let Some(entry) = member_method_by_site.get(v) {
-                let full_root = ctx.types.root(entry.full_method);
+            if let Some(entry) = member_method_by_site.get(&v) {
+                let full_root = types.root(entry.full_method);
                 reported.insert(full_root, ());
             }
         }
     }
 
-    for (p, c) in pat_cluster.iter() {
-        let root = ctx.types.root(*c);
-        if let ResolveKind::Solved(t) = ctx.types.cluster_state(root) {
-            ctx.ex.ans.set_pat(*p, t);
-        } else if *c == root && !reported.contains_key(c) {
-            let found = ctx.types.bad_type(&mut ctx.ex, root);
-            ctx.ex
-                .errors
-                .push(TypeError::UnresolvedPattern { pattern: *p, found });
+    for (p, c) in pat_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            ex.ans.set_pat(*p, t);
+        } else if *c == root && !reported.contains_key(&c) {
+            let found = types.bad_type(ex, root);
+            ex.errors.push(TypeError::UnresolvedPattern { pattern: *p, found });
             reported.insert(root, ());
         }
     }
 
-    for entry in member_method_type_sites.iter() {
-        let root = ctx.types.root(entry.full_method);
-        if let ResolveKind::Solved(full_type) = ctx.types.cluster_state(root) {
-            ctx.ex.ans.member_method_types.insert(
+    for entry in member_method_type_sites {
+        let root = types.root(entry.full_method);
+        if let ResolveKind::Solved(full_type) = types.cluster_state(root) {
+            ex.ans.member_method_types.insert(
                 entry.site,
                 SolvedMemberMethodAccessType {
                     member: entry.member,
@@ -9648,14 +9681,14 @@ fn finalize(ctx: &mut InferState) {
         //if it CAN be solved but the full signature cant that must be because of &self not being clear
         //in that case we need to report an error but its gona be a bad one...
 
-        let receiver_root = ctx.types.root(entry.receiver);
+        let receiver_root = types.root(entry.receiver);
         if !matches!(
-            ctx.types.cluster_state(receiver_root),
+            types.cluster_state(receiver_root),
             ResolveKind::Solved(_)
         ) && !reported.contains_key(&receiver_root)
         {
-            let found = ctx.types.bad_type(&mut ctx.ex, receiver_root);
-            ctx.ex.errors.push(TypeError::Unresolved {
+            let found = types.bad_type(ex, receiver_root);
+            ex.errors.push(TypeError::Unresolved {
                 value: entry.receiver_value,
                 found,
             });
@@ -9665,16 +9698,16 @@ fn finalize(ctx: &mut InferState) {
     }
 
     store_implicit_deref_chains(
-        &mut ctx.ex.ans.implicit_derefs,
-        &member_access_implicit_deref_sites,
-        &mut ctx.types.core.parent,
-        &ctx.types.core.cluster,
+        &mut ex.ans.implicit_derefs,
+        member_access_implicit_deref_sites,
+        &mut types.core.parent,
+        &types.core.cluster,
     );
     store_implicit_deref_chains(
-        &mut ctx.ex.ans.implicit_derefs,
-        &index_implicit_deref_sites,
-        &mut ctx.types.core.parent,
-        &ctx.types.core.cluster,
+        &mut ex.ans.implicit_derefs,
+        index_implicit_deref_sites,
+        &mut types.core.parent,
+        &types.core.cluster,
     );
 
     // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
