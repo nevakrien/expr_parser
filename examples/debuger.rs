@@ -5,7 +5,12 @@ use expr_parser::type_inference::run_typechecker;
 
 // const SOURCE: &str = "Box=struct{inner:&[int;2]}; f=fn(){};";
 const SOURCE: &str = r#"
-Inner=struct{x:int}; Box=struct{inner:Inner}; Wrap=struct{boxed:Box}; Box.__deref = fn(self:&Box)->&Inner { &self.inner }; Wrap.__deref = fn(self:&Wrap)->&Box { &self.boxed }; f=fn(w:Wrap){ let y:int = w->x; };
+Inner=struct[T]{x:T}; 
+Box=struct[T]{inner:Inner[T]}; 
+Wrap=struct[T]{boxed:Box[T]}; 
+Box.__deref = fn[T](self:&Box[T])->&Inner[T] { &self.inner }; 
+Wrap.__deref = fn[T](self:&Wrap[T])->&Box[T] { &self.boxed }; 
+f=fn(w:Wrap[int]){ let y:int = w->x; };
 "#;
 // const SOURCE: &str = r#"
 // sqrt = fn(f:float)->float;

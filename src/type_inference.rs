@@ -21,7 +21,7 @@
 // most constrains place some sort of pending task.
 // and then later when enough type info is present we can apply unification.
 // ================================================================
-use std::arch::asm;
+// use std::arch::asm;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -1714,6 +1714,7 @@ pub struct InferState<'a> {
 }
 impl<'a> InferState<'a> {
     pub fn new(store: &'a mut TypeStore, program: &'a Program, ans: &'a mut SolvedTypes) -> Self {
+        let mut types = TypeState::new();
         Self {
             ex: ExternState {
                 store,
@@ -1723,8 +1724,8 @@ impl<'a> InferState<'a> {
                 ans,
             },
 
-            search: SearchState::new(),
-            types: TypeState::new(),
+            search: SearchState::new(&mut types),
+            types,
             req: ReqState::new(),
         }
     }
@@ -1787,10 +1788,11 @@ impl<'a> InferState<'a> {
     }
 
     pub fn clear_local_state(&mut self) {
-        self.search.clear_local_state();
         self.types.clear_local_state();
         self.req.clear_local_state();
         self.ex.name_render = GenLifeNameRender::Generate;
+        self.search.clear_local_state(&mut self.types);
+
     }
 }
 
@@ -2170,18 +2172,20 @@ struct SearchState {
 }
 
 impl SearchState {
-    fn new() -> Self {
-        Self {
+    fn new(types:&mut TypeState) -> Self {
+        let mut ans = Self {
             val_cluster: Vec::default(),
             pat_cluster: Vec::default(),
             typedef_cluster: Vec::default(),
             local_types: IdHashMap::default(),
             names: IdHashMap::default(),
             local_lifetimes: IdHashMap::default(),
-        }
+        };
+        ans.populate_defaults(types);
+        ans
     }
 
-    fn clear_local_state(&mut self) {
+    fn clear_local_state(&mut self,types:&mut TypeState) {
         let SearchState {
             val_cluster,
             pat_cluster,
@@ -2197,6 +2201,13 @@ impl SearchState {
         local_types.clear();
         names.clear();
         local_lifetimes.clear();
+
+        self.populate_defaults(types);
+    }
+
+    fn populate_defaults(&mut self,types:&mut TypeState){
+        let lid = types.new_lid_known(LifeTime::Static);
+        self.local_lifetimes.insert(LifeTimeId::STATIC,(LifeTime::Static,lid));
     }
 
     fn bind_val(&mut self, v: ValId, c: CId) {
@@ -6406,9 +6417,9 @@ fn compile_lifetime_specialization_arg(
     match ctx.ex.program.type_expr(arg) {
         TypeExpr::Wildcard => ctx.types.new_lid(),
         TypeExpr::LifeTime(lid) => {
-            if lid==LifeTimeId::STATIC{
-                return ctx.types.new_lid_known(LifeTime::Static);
-            }
+            // if lid==LifeTimeId::STATIC{
+            //     return ctx.types.new_lid_known(LifeTime::Static);
+            // }
             ctx
                 .search
                 .local_lifetimes
@@ -6761,8 +6772,8 @@ fn compile_type_expr_with_mode(
         } => {
             let kind = if raw {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::Yes))
-            } else if lifetime == Some(LifeTimeId::STATIC) {
-                PtrKind::Solved(PointerStyle::Ref(LifeTime::Static))
+            // } else if lifetime == Some(LifeTimeId::STATIC) {
+            //     PtrKind::Solved(PointerStyle::Ref(LifeTime::Static))
             } else if lifetime == Some(LifeTimeId::RAW) {
                 PtrKind::Solved(PointerStyle::Raw(Nullable::No))
             } else if lifetime == Some(LifeTimeId::WILDCARD) {
