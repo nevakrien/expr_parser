@@ -107,8 +107,39 @@ pub enum BuiltinType {
     Bool,
     Str,
     Void,
+    ///always last
     Type,
 }
+const BUILTIN_COUNT : usize = BuiltinType::Type as u8 as usize + 1;
+
+// One place to update when adding builtin types.
+// Note: `"float"` is an alias for `f64` in this sketch.
+const BUILTINS: &[(&str, BuiltinType)] = {
+        use BuiltinType::*;
+
+&[
+    ("int", Int),
+    ("uint", Uint),
+    ("i8", I8),
+    ("i16", I16),
+    ("i32", I32),
+    ("i64", I64),
+    ("i128", I128),
+    ("isize", Isize),
+    ("u8", U8),
+    ("u16", U16),
+    ("u32", U32),
+    ("u64", U64),
+    ("u128", U128),
+    ("usize", Usize),
+    ("f32", F32),
+    ("f64", F64),
+    ("float", F64),
+    ("bool", Bool),
+    ("str", Str),
+    ("void", Void),
+    ("Type", Type),
+]};
 
 impl From<BuiltinType> for TypeId {
     #[inline(always)]
@@ -270,33 +301,7 @@ impl Program {
     //or perhaps move type expressions to use some sort of global type context
     #[inline(always)]
     pub(crate) fn insert_builtin_types(&mut self) {
-        use BuiltinType::*;
 
-        // One place to update when adding builtin types.
-        // Note: `"float"` is an alias for `f64` in this sketch.
-        const BUILTINS: &[(&str, BuiltinType)] = &[
-            ("int", Int),
-            ("uint", Uint),
-            ("i8", I8),
-            ("i16", I16),
-            ("i32", I32),
-            ("i64", I64),
-            ("i128", I128),
-            ("isize", Isize),
-            ("u8", U8),
-            ("u16", U16),
-            ("u32", U32),
-            ("u64", U64),
-            ("u128", U128),
-            ("usize", Usize),
-            ("f32", F32),
-            ("f64", F64),
-            ("float", F64),
-            ("bool", Bool),
-            ("str", Str),
-            ("void", Void),
-            ("Type", Type),
-        ];
 
         for &(name, builtin) in BUILTINS {
             let name = self.str_intern.intern(name);
@@ -2269,7 +2274,7 @@ fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
 
 impl TypeState {
     fn new() -> Self {
-        Self {
+        let mut ans = Self {
             core: TypeCore {
                 parent: ClusterVec::new(),
                 cluster: ClusterVec::new(),
@@ -2283,7 +2288,10 @@ impl TypeState {
             life_parent: LifeVec(Vec::new()),
             life_known: LifeVec(Vec::new()),
             next_undeclared_lifetime: 0,
-        }
+        };
+
+        ans.populate_defaults();
+        ans
     }
 
     fn clear_local_state(&mut self) {
@@ -2308,6 +2316,16 @@ impl TypeState {
         self.life_parent.0.clear();
         self.life_known.0.clear();
         self.next_undeclared_lifetime = 0;
+
+        self.populate_defaults();
+    }
+
+    fn populate_defaults(&mut self){
+        for _i in 0..BUILTIN_COUNT{
+            let id = self.new_cluster();
+            debug_assert_eq!(id.0,_i);
+            self.core.cluster[id].state = ResolveKind::Solved(TypeId(id.0));
+        }
     }
 
     #[inline(always)]
@@ -2350,7 +2368,11 @@ impl TypeState {
         id
     }
 
+    #[inline(always)]
     fn new_solved(&mut self, t: TypeId) -> CId {
+        if let Ok(b) = BuiltinType::try_from(t){
+            return CId(b as u8 as usize);
+        } 
         let id = self.new_cluster();
         self.core.cluster[id].state = ResolveKind::Solved(t);
         id
