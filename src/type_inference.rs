@@ -1661,7 +1661,7 @@ fn main_solver(ctx: &mut InferState) {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
         progress |= resolve_deferred_types(ctx);
-        progress |= resolve_pointer_likes(ctx);
+        progress |= resolve_pending_derefs(ctx);
         progress |= resolve_pending_indexes(ctx);
         progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_int_accesses(ctx);
@@ -2105,12 +2105,33 @@ struct PendingIntAccess {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PendingPointerLike {
+struct PendingDeref {
     site: ValId,
     source: CId,
     target: CId,
     source_value: ValId,
 }
+
+impl PendingDeref {
+    #[inline(always)]
+    fn new(
+        types: &mut TypeState,
+        site: ValId,
+        source_value: ValId,
+        source: CId,
+        target: CId,
+    ) -> Self {
+        let source = types.root(source);
+
+        Self {
+            site,
+            source_value,
+            source,
+            target,
+        }
+    }
+}
+
 
 #[derive(Debug)]
 struct PendingIndex {
@@ -2590,7 +2611,7 @@ struct ReqState {
     pending_member_accesses: Vec<PendingMemberAccess>,
     pending_int_accesses: Vec<PendingIntAccess>,
     pending_indexes: Vec<PendingIndex>,
-    pointer_likes: Vec<PendingPointerLike>,
+    pending_derefs: Vec<PendingDeref>,
 }
 
 impl ReqState {
@@ -2607,7 +2628,7 @@ impl ReqState {
             pending_member_accesses: Vec::new(),
             pending_int_accesses: Vec::new(),
             pending_indexes: Vec::new(),
-            pointer_likes: Vec::new(),
+            pending_derefs: Vec::new(),
         }
     }
 
@@ -2623,7 +2644,7 @@ impl ReqState {
             pending_member_accesses,
             pending_int_accesses,
             pending_indexes,
-            pointer_likes,
+            pending_derefs,
         } = self;
 
         bin_op_sites.clear();
@@ -2637,7 +2658,7 @@ impl ReqState {
         pending_member_accesses.clear();
         pending_int_accesses.clear();
         pending_indexes.clear();
-        pointer_likes.clear();
+        pending_derefs.clear();
     }
 }
 
@@ -5363,91 +5384,17 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             ctx.bind_val(v, output);
 
             let src = gather_constraints(ctx, base, current_output);
-            let src = ctx.types.root(src);
-            let mut deref_chain_lid = None;
-            let mut deref_chain_mutability = None;
-            let resolved_target = match ctx.types.core.cluster[src].state {
-                ResolveKind::Ptr { tgt, .. } => Some(tgt),
-                ResolveKind::Nothing => {
-                    ctx.req.pointer_likes.push(PendingPointerLike {
-                        site: v,
-                        source: src,
-                        target: output,
-                        source_value: base,
-                    });
-                    None
-                }
-                ResolveKind::Struct(rid) => {
-                    let sid = ctx.types.extra.struct_infers[rid.0].sid;
-                    let Some(struct_name) = ctx.ex.store.struct_value(sid).name else {
-                        push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
-                        return output;
-                    };
+            let mut pending = PendingDeref::new(
+                &mut ctx.types,
+                v,
+                base,
+                src,
+                output,
+            );
 
-                    let Some(target) = resolve_struct_deref_target(
-                        &mut ctx.ex,
-                        &mut ctx.types,
-                        v,
-                        base,
-                        src,
-                        struct_name,
-                        &mut deref_chain_lid,
-                        &mut deref_chain_mutability,
-                    ) else {
-                        push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
-                        return output;
-                    };
-
-                    Some(target.target)
-                }
-                ResolveKind::Solved(t) => {
-                    let solved = ctx.ex.store.type_value(t).clone();
-                    match solved {
-                        TypeValue::Ptr { tgt, .. } => Some(ctx.new_solved(tgt)),
-                        TypeValue::Struct { id, .. } => {
-                            let Some(struct_name) = ctx.ex.store.struct_value(id).name else {
-                                push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
-                                return output;
-                            };
-
-                            let Some(target) = resolve_struct_deref_target(
-                                &mut ctx.ex,
-                                &mut ctx.types,
-                                v,
-                                base,
-                                src,
-                                struct_name,
-                                &mut deref_chain_lid,
-                                &mut deref_chain_mutability,
-                            ) else {
-                                push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
-                                return output;
-                            };
-
-                            Some(target.target)
-                        }
-                        _ => {
-                            push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
-                            return output;
-                        }
-                    }
-                }
-                _ => {
-                    push_cannot_deref_error(&mut ctx.ex, &mut ctx.types, v, base, src);
-                    return output;
-                }
-            };
-
-            if let Some(tgt) = resolved_target
-                && let Err(clash) = ctx.unify(tgt, output)
-            {
-                ctx.push_error(TypeError::ValuesContradict {
-                    expectation_reason: "dereference result must match pointee type",
-                    site: v,
-                    found: base,
-                    expected_place: v,
-                    clash,
-                });
+            let outcome = pending.step(&mut ctx.ex, &mut ctx.types);
+            if outcome.retain {
+                ctx.req.pending_derefs.push(pending);
             }
 
             output
@@ -9249,31 +9196,47 @@ fn resolve_deferred_types(ctx: &mut InferState) -> bool {
     change
 }
 
-#[inline(always)]
-fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
-    let mut progress = false;
+impl PendingDeref {
+    #[inline(always)]
+    fn step(
+        &mut self,
+        ex: &mut ExternState,
+        types: &mut TypeState,
+    ) -> ResolveOutcome {
+        let mut progress = false;
 
-    ctx.req.pointer_likes.retain_mut(|pending| {
-        let types = &mut ctx.types;
-        let ex = &mut ctx.ex;
+        let source = types.root(self.source);
+        self.source = source;
+
         let mut deref_chain_lid = None;
         let mut deref_chain_mutability = None;
-        let source = types.root(pending.source);
-        pending.source = source;
 
         let result = match types.core.cluster[source].state {
-            ResolveKind::Nothing => return true,
+
+            // unknown — wait
+            ResolveKind::Nothing => {
+                return ResolveOutcome::keep(false);
+            }
+
+            // raw pointer cluster
             ResolveKind::Ptr { tgt, .. } => Some(tgt),
+
+            // solved type
             ResolveKind::Solved(t) => match ex.store.type_value(t) {
-                TypeValue::Ptr { tgt, .. } => Some(types.new_solved(*tgt)),
+
+                TypeValue::Ptr { tgt, .. } => {
+                    Some(types.new_solved(*tgt))
+                }
+
                 TypeValue::Struct { id, .. } => {
                     let struct_name = ex.store.struct_value(*id).name;
+
                     struct_name.and_then(|struct_name| {
                         resolve_struct_deref_target(
                             ex,
                             types,
-                            pending.site,
-                            pending.source_value,
+                            self.site,
+                            self.source_value,
                             source,
                             struct_name,
                             &mut deref_chain_lid,
@@ -9282,17 +9245,21 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                         .map(|resolved| resolved.target)
                     })
                 }
+
                 _ => None,
             },
+
+            // inferred struct
             ResolveKind::Struct(rid) => {
                 let sid = types.extra.struct_infers[rid.0].sid;
                 let struct_name = ex.store.struct_value(sid).name;
+
                 struct_name.and_then(|struct_name| {
                     resolve_struct_deref_target(
                         ex,
                         types,
-                        pending.site,
-                        pending.source_value,
+                        self.site,
+                        self.source_value,
                         source,
                         struct_name,
                         &mut deref_chain_lid,
@@ -9301,41 +9268,59 @@ fn resolve_pointer_likes(ctx: &mut InferState) -> bool {
                     .map(|resolved| resolved.target)
                 })
             }
+
             _ => None,
         };
 
         let Some(result) = result else {
             let source_type = types.bad_type(ex, source);
+
             ex.push_error(TypeError::CannotDeref {
-                site: pending.site,
-                operand: pending.source_value,
+                site: self.site,
+                operand: self.source_value,
                 operand_type: source_type,
             });
-            progress = true;
-            return false;
+
+            return ResolveOutcome::drop(true);
         };
 
-        match unify_if_distinct(ex, types, result, pending.target) {
+        match unify_if_distinct(ex, types, result, self.target) {
             Ok(changed) => {
                 progress |= changed;
-                false
+                ResolveOutcome::drop(progress)
             }
             Err(clash) => {
                 ex.push_error(TypeError::ValuesContradict {
                     expectation_reason: "dereference result must match pointee type",
-                    site: pending.site,
-                    found: pending.source_value,
-                    expected_place: pending.site,
+                    site: self.site,
+                    found: self.source_value,
+                    expected_place: self.site,
                     clash,
                 });
-                progress = true;
-                false
+
+                ResolveOutcome::drop(true)
             }
         }
+    }
+}
+
+
+#[inline(always)]
+fn resolve_pending_derefs(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    let ex = &mut ctx.ex;
+    let types = &mut ctx.types;
+
+    ctx.req.pending_derefs.retain_mut(|pending| {
+        let outcome = pending.step(ex, types);
+        progress |= outcome.progress;
+        outcome.retain
     });
 
     progress
 }
+
 
 #[inline(always)]
 fn resolve_pending_indexes(ctx: &mut InferState) -> bool {
