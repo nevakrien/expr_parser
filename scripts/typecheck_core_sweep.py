@@ -132,8 +132,8 @@ def main() -> None:
 
     print_human_table(rows)
 
-    print("\nCSV")
-    print(pd.DataFrame(rows).to_csv(index=False).strip())
+    # print("\nCSV")
+    # print(pd.DataFrame(rows).to_csv(index=False).strip())
 
 
 if __name__ == "__main__":

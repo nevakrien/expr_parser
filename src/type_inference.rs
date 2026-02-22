@@ -152,29 +152,25 @@ impl TryFrom<TypeId> for BuiltinType {
 
     #[inline(always)]
     fn try_from(id: TypeId) -> Result<Self, ()> {
-        match id.0 as u8 {
-            x if x == BuiltinType::Int as u8 => Ok(BuiltinType::Int),
-            x if x == BuiltinType::Uint as u8 => Ok(BuiltinType::Uint),
-            x if x == BuiltinType::I8 as u8 => Ok(BuiltinType::I8),
-            x if x == BuiltinType::I16 as u8 => Ok(BuiltinType::I16),
-            x if x == BuiltinType::I32 as u8 => Ok(BuiltinType::I32),
-            x if x == BuiltinType::I64 as u8 => Ok(BuiltinType::I64),
-            x if x == BuiltinType::I128 as u8 => Ok(BuiltinType::I128),
-            x if x == BuiltinType::Isize as u8 => Ok(BuiltinType::Isize),
-            x if x == BuiltinType::U8 as u8 => Ok(BuiltinType::U8),
-            x if x == BuiltinType::U16 as u8 => Ok(BuiltinType::U16),
-            x if x == BuiltinType::U32 as u8 => Ok(BuiltinType::U32),
-            x if x == BuiltinType::U64 as u8 => Ok(BuiltinType::U64),
-            x if x == BuiltinType::U128 as u8 => Ok(BuiltinType::U128),
-            x if x == BuiltinType::Usize as u8 => Ok(BuiltinType::Usize),
-            x if x == BuiltinType::F32 as u8 => Ok(BuiltinType::F32),
-            x if x == BuiltinType::F64 as u8 => Ok(BuiltinType::F64),
-            x if x == BuiltinType::Bool as u8 => Ok(BuiltinType::Bool),
-            x if x == BuiltinType::Str as u8 => Ok(BuiltinType::Str),
-            x if x == BuiltinType::Void as u8 => Ok(BuiltinType::Void),
-            x if x == BuiltinType::Type as u8 => Ok(BuiltinType::Type),
-            _ => Err(()),
+        let x = id.0;
+        if x < BUILTIN_COUNT {
+            // SAFETY: repr(u8) + contiguous 0..BUILTIN_COUNT-1 by invariant.
+            Ok(unsafe { core::mem::transmute::<u8, BuiltinType>(x as u8) })
+        } else {
+            Err(())
         }
+    }
+}
+
+#[test]
+fn try_from_buildin_works(){
+    for (_,t) in BUILTINS.iter(){
+        let tid:TypeId=(*t).into();
+        assert_eq!(*t, BuiltinType::try_from(tid).unwrap());
+    }
+
+    for i in BUILTIN_COUNT..BUILTIN_COUNT+10{
+        assert_eq!(Err(()), BuiltinType::try_from(TypeId(i)))
     }
 }
 
@@ -2371,7 +2367,8 @@ impl TypeState {
     #[inline(always)]
     fn new_solved(&mut self, t: TypeId) -> CId {
         if let Ok(b) = BuiltinType::try_from(t){
-            return CId(b as u8 as usize);
+            let t :TypeId= b.into();
+            return CId(t.0);
         } 
         let id = self.new_cluster();
         self.core.cluster[id].state = ResolveKind::Solved(t);
