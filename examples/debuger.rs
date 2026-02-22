@@ -40,7 +40,6 @@ f=fn(w:Wrap[int]){ let y:int = w->x; };
 // free(b->ptr as *void)
 // }
 
-
 // Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
 // Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
 

@@ -110,36 +110,37 @@ pub enum BuiltinType {
     ///always last
     Type,
 }
-const BUILTIN_COUNT : usize = BuiltinType::Type as u8 as usize + 1;
+const BUILTIN_COUNT: usize = BuiltinType::Type as u8 as usize + 1;
 
 // One place to update when adding builtin types.
 // Note: `"float"` is an alias for `f64` in this sketch.
 const BUILTINS: &[(&str, BuiltinType)] = {
-        use BuiltinType::*;
+    use BuiltinType::*;
 
-&[
-    ("int", Int),
-    ("uint", Uint),
-    ("i8", I8),
-    ("i16", I16),
-    ("i32", I32),
-    ("i64", I64),
-    ("i128", I128),
-    ("isize", Isize),
-    ("u8", U8),
-    ("u16", U16),
-    ("u32", U32),
-    ("u64", U64),
-    ("u128", U128),
-    ("usize", Usize),
-    ("f32", F32),
-    ("f64", F64),
-    ("float", F64),
-    ("bool", Bool),
-    ("str", Str),
-    ("void", Void),
-    ("Type", Type),
-]};
+    &[
+        ("int", Int),
+        ("uint", Uint),
+        ("i8", I8),
+        ("i16", I16),
+        ("i32", I32),
+        ("i64", I64),
+        ("i128", I128),
+        ("isize", Isize),
+        ("u8", U8),
+        ("u16", U16),
+        ("u32", U32),
+        ("u64", U64),
+        ("u128", U128),
+        ("usize", Usize),
+        ("f32", F32),
+        ("f64", F64),
+        ("float", F64),
+        ("bool", Bool),
+        ("str", Str),
+        ("void", Void),
+        ("Type", Type),
+    ]
+};
 
 impl From<BuiltinType> for TypeId {
     #[inline(always)]
@@ -163,13 +164,13 @@ impl TryFrom<TypeId> for BuiltinType {
 }
 
 #[test]
-fn try_from_buildin_works(){
-    for (_,t) in BUILTINS.iter(){
-        let tid:TypeId=(*t).into();
+fn try_from_buildin_works() {
+    for (_, t) in BUILTINS.iter() {
+        let tid: TypeId = (*t).into();
         assert_eq!(*t, BuiltinType::try_from(tid).unwrap());
     }
 
-    for i in BUILTIN_COUNT..BUILTIN_COUNT+10{
+    for i in BUILTIN_COUNT..BUILTIN_COUNT + 10 {
         assert_eq!(Err(()), BuiltinType::try_from(TypeId(i)))
     }
 }
@@ -297,8 +298,6 @@ impl Program {
     //or perhaps move type expressions to use some sort of global type context
     #[inline(always)]
     pub(crate) fn insert_builtin_types(&mut self) {
-
-
         for &(name, builtin) in BUILTINS {
             let name = self.str_intern.intern(name);
             let id = self.insert_value_in_current_scope(name);
@@ -791,16 +790,18 @@ impl TypeStore {
                 id,
                 generics,
                 lifetimes,
-            } => self.format_struct_display(program, *id, generics, lifetimes, gen_count, life_count),
+            } => {
+                self.format_struct_display(program, *id, generics, lifetimes, gen_count, life_count)
+            }
         }
     }
 
     fn format_lifetime(&self, lt: LifeTime) -> String {
         match lt {
-            LifeTime::Local(id) => format!("l{}", id.0), 
+            LifeTime::Local(id) => format!("l{}", id.0),
             LifeTime::External(i) => format!("a{i}"),
             LifeTime::Static => "static".into(),
-            LifeTime::Unknown(id) => format!("idk{}",id.0),
+            LifeTime::Unknown(id) => format!("idk{}", id.0),
         }
     }
 
@@ -857,7 +858,7 @@ pub struct SolvedTypes {
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub pat_types: Vec<TypeId>,
     pub function_types: IdHashMap<NameId, SolvedFunctionTypes>,
-    pub member_function_types: IdHashMap<(NameId,StrId), SolvedFunctionTypes>,
+    pub member_function_types: IdHashMap<(NameId, StrId), SolvedFunctionTypes>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
@@ -873,7 +874,7 @@ pub struct SolvedFunctionTypes {
 pub fn check_and_record_function_set_types(
     ctx: &mut InferState,
     name: NameId,
-    method_str:Option<StrId>,
+    method_str: Option<StrId>,
     functions: &FunctionSet,
 ) -> Option<(TypeId, ValId)> {
     let first_decl = functions.declarations.first().copied();
@@ -934,14 +935,13 @@ pub fn check_and_record_function_set_types(
     }
     if let Some(s) = method_str {
         ctx.ex.ans.member_function_types.insert(
-            (name,s),
+            (name, s),
             SolvedFunctionTypes {
                 ty: reference_type,
                 impl_site: first_impl,
             },
         );
-    }
-    else {
+    } else {
         ctx.ex.ans.function_types.insert(
             name,
             SolvedFunctionTypes {
@@ -1427,9 +1427,12 @@ pub fn infer_global_types<'a>(
 
         let mut overloads = StructOverloadInfo::default();
         for (method_name, method_set) in methods.iter() {
-            let Some((reference_type, reference_site)) =
-                check_and_record_function_set_types(&mut ctx,*struct_name, Some(*method_name), method_set)
-            else {
+            let Some((reference_type, reference_site)) = check_and_record_function_set_types(
+                &mut ctx,
+                *struct_name,
+                Some(*method_name),
+                method_set,
+            ) else {
                 continue;
             };
 
@@ -1489,7 +1492,7 @@ pub fn infer_global_types<'a>(
             };
         }
 
-        check_and_record_function_set_types(&mut ctx, *name,None, funcs);
+        check_and_record_function_set_types(&mut ctx, *name, None, funcs);
     }
 
     if ctx.ex.errors.is_empty() {
@@ -1669,7 +1672,7 @@ fn main_solver(ctx: &mut InferState) {
         }
         // HACK (temporary, likely not the final design): before finalize we force unresolved
         // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
-        progress |= finalize_unresolved_lifetimes_as_unknown(ctx,&mut unknown_count);
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
 
         if !progress {
             break;
@@ -1683,26 +1686,25 @@ fn main_solver(ctx: &mut InferState) {
     finalize(ctx);
 }
 
-fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState,unknown_count:&mut u32) -> bool {
+fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
     let mut progress = false;
-    //should properly increment 
-    
+    //should properly increment
+
     for lid in ctx.types.life_parent.0.iter() {
-        if *lid!=ctx.types.life_parent[*lid]{
+        if *lid != ctx.types.life_parent[*lid] {
             continue;
         }
 
         if ctx.types.life_known[*lid].is_none() {
             let hack = LifeId(*unknown_count);
             ctx.types.life_known[*lid] = Some(LifeTime::Unknown(hack));
-            *unknown_count+=1;
+            *unknown_count += 1;
             progress = true;
         }
     }
 
     progress
 }
-
 
 // ===================================
 // Inference state + unify-find clusters
@@ -1793,7 +1795,6 @@ impl<'a> InferState<'a> {
         self.req.clear_local_state();
         self.ex.name_render = GenLifeNameRender::Generate;
         self.search.clear_local_state(&mut self.types);
-
     }
 }
 
@@ -2043,15 +2044,56 @@ struct PendingMemberAccessImplicitDeref {
     receivers: Vec<CId>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct PendingMemberAccess {
     site: ValId,
     base_value: ValId,
+
+    // original base cluster
     source: CId,
+
+    // resume cursor (VERY important)
+    current: CId,
+
+    // output cluster for the expression
     output: CId,
+
     member: StrId,
     kind: AccessKind,
+
+    // autoderef state (persistent)
+    implicit_receivers: Vec<CId>,
+    deref_chain_lid: Option<LId>,
+    deref_chain_is_mut: Option<bool>,
 }
+
+impl PendingMemberAccess {
+    fn new(
+        types: &mut TypeState,
+        site: ValId,
+        base_value: ValId,
+        source: CId,
+        output: CId,
+        member: StrId,
+        kind: AccessKind,
+    ) -> Self {
+        let source = types.root(source);
+
+        Self {
+            site,
+            base_value,
+            source,
+            current: source,   // CRITICAL: start cursor here
+            output,
+            member,
+            kind,
+            implicit_receivers: Vec::new(),
+            deref_chain_lid: None,
+            deref_chain_is_mut: None,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Copy)]
 struct PendingIntAccess {
@@ -2169,11 +2211,11 @@ struct SearchState {
     typedef_cluster: Vec<(TExpId, CId)>,
     local_types: IdHashMap<NameId, CId>,
     names: IdHashMap<NameId, CId>,
-    local_lifetimes: IdHashMap<LifeTimeId, (LifeTime,LId)>,
+    local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
 }
 
 impl SearchState {
-    fn new(types:&mut TypeState) -> Self {
+    fn new(types: &mut TypeState) -> Self {
         let mut ans = Self {
             val_cluster: Vec::default(),
             pat_cluster: Vec::default(),
@@ -2186,7 +2228,7 @@ impl SearchState {
         ans
     }
 
-    fn clear_local_state(&mut self,types:&mut TypeState) {
+    fn clear_local_state(&mut self, types: &mut TypeState) {
         let SearchState {
             val_cluster,
             pat_cluster,
@@ -2206,9 +2248,10 @@ impl SearchState {
         self.populate_defaults(types);
     }
 
-    fn populate_defaults(&mut self,types:&mut TypeState){
+    fn populate_defaults(&mut self, types: &mut TypeState) {
         let lid = types.new_lid_known(LifeTime::Static);
-        self.local_lifetimes.insert(LifeTimeId::STATIC,(LifeTime::Static,lid));
+        self.local_lifetimes
+            .insert(LifeTimeId::STATIC, (LifeTime::Static, lid));
     }
 
     fn bind_val(&mut self, v: ValId, c: CId) {
@@ -2316,10 +2359,10 @@ impl TypeState {
         self.populate_defaults();
     }
 
-    fn populate_defaults(&mut self){
-        for _i in 0..BUILTIN_COUNT{
+    fn populate_defaults(&mut self) {
+        for _i in 0..BUILTIN_COUNT {
             let id = self.new_cluster();
-            debug_assert_eq!(id.0,_i);
+            debug_assert_eq!(id.0, _i);
             self.core.cluster[id].state = ResolveKind::Solved(TypeId(id.0));
         }
     }
@@ -2333,7 +2376,7 @@ impl TypeState {
     }
 
     #[inline(always)]
-    fn new_lid_known(&mut self,known: LifeTime) -> LId {
+    fn new_lid_known(&mut self, known: LifeTime) -> LId {
         let id = self.new_lid();
         self.life_known[id] = Some(known);
         id
@@ -2366,10 +2409,10 @@ impl TypeState {
 
     #[inline(always)]
     fn new_solved(&mut self, t: TypeId) -> CId {
-        if let Ok(b) = BuiltinType::try_from(t){
-            let t :TypeId= b.into();
+        if let Ok(b) = BuiltinType::try_from(t) {
+            let t: TypeId = b.into();
             return CId(t.0);
-        } 
+        }
         let id = self.new_cluster();
         self.core.cluster[id].state = ResolveKind::Solved(t);
         id
@@ -3100,12 +3143,10 @@ fn merge_ptr_kind(types: &mut TypeState, a: PtrKind, b: PtrKind) -> Option<PtrKi
         (RefInfer(lid), SomeRef) | (SomeRef, RefInfer(lid)) => Some(RefInfer(lid)),
 
         // solved vs partial
-        (Solved(style), SafeRef) | (SafeRef, Solved(style)) => {
-            match style {
-                PointerStyle::Ref(_lt)  => Some(Solved(style)),
-                PointerStyle::Raw(_) => None,
-            }
-        }
+        (Solved(style), SafeRef) | (SafeRef, Solved(style)) => match style {
+            PointerStyle::Ref(_lt) => Some(Solved(style)),
+            PointerStyle::Raw(_) => None,
+        },
 
         (Solved(style), SomeRef) | (SomeRef, Solved(style)) => {
             match style {
@@ -3679,7 +3720,9 @@ fn type_string_from_type_id_nested(
             let mut sig_parts = (life_count..(life_count + *lifetimes))
                 .map(|i| format!("'{}", ex.name_render.external_lifetime_name(i as u32)))
                 .collect::<Vec<_>>();
-            sig_parts.extend((gen_count..(gen_count + *generics)).map(|i| ex.name_render.generic_name(i)));
+            sig_parts.extend(
+                (gen_count..(gen_count + *generics)).map(|i| ex.name_render.generic_name(i)),
+            );
             let signature_params = if sig_parts.is_empty() {
                 String::new()
             } else {
@@ -3972,12 +4015,11 @@ fn write_ptr_mock_string_inner(
     let mutable = mutable.unwrap_or(false);
     let PtrKind::Solved(style) = kind else {
         if mutable {
-                let _ = out.write_str("&? mut ");
-                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
-            } else {
-                let _ = out.write_str("&? const ");
-                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
-            
+            let _ = out.write_str("&? mut ");
+            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+        } else {
+            let _ = out.write_str("&? const ");
+            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
         }
         return;
     };
@@ -4044,11 +4086,7 @@ struct SpecializeCtx<'a> {
 }
 
 impl<'a> SpecializeCtx<'a> {
-    fn new(
-        generics: &'a [CId],
-        lifetimes: &'a [LId],
-        loc: ValId,
-    ) -> Self {
+    fn new(generics: &'a [CId], lifetimes: &'a [LId], loc: ValId) -> Self {
         Self {
             generics,
             lifetimes,
@@ -4058,13 +4096,11 @@ impl<'a> SpecializeCtx<'a> {
 }
 
 fn specialize_lifetime(types: &mut TypeState, ctx: &mut SpecializeCtx<'_>, lt: LifeTime) -> LId {
-    
-
     match lt {
-        LifeTime::Static => types.new_lid_known( LifeTime::Static),
-        LifeTime::External(i)=>*ctx.lifetimes.get(i as usize).unwrap(),
+        LifeTime::Static => types.new_lid_known(LifeTime::Static),
+        LifeTime::External(i) => *ctx.lifetimes.get(i as usize).unwrap(),
         _ => {
-            debug_assert!(false,"bad lifetime");
+            debug_assert!(false, "bad lifetime");
             types.new_lid()
         }
     }
@@ -4086,8 +4122,6 @@ fn specialize_type_inner(
             params,
             ret,
         } => {
-
-
             let inputs = params
                 .into_iter()
                 .map(|t| specialize_type_inner(ex, types, t, ctx))
@@ -4244,7 +4278,12 @@ fn solved_type_to_specialized_local(
     loc: ValId,
 ) -> CId {
     //BUG
-    if let TypeValue::Func { generics, lifetimes,..} = *ex.store.type_value(t) {
+    if let TypeValue::Func {
+        generics,
+        lifetimes,
+        ..
+    } = *ex.store.type_value(t)
+    {
         let gens: Vec<_> = (0..generics).map(|_| types.new_cluster()).collect();
         let lifes: Vec<_> = (0..lifetimes).map(|_| types.new_lid()).collect();
         return specialize_type(ex, types, t, &gens, &lifes, loc);
@@ -4294,10 +4333,8 @@ fn resolve_member_method_access(
     base_value: ValId,
     base_cluster: CId,
     member_name: StrId,
-    method_ty:TypeId,
+    method_ty: TypeId,
 ) -> CId {
-    
-
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, access_site);
 
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
@@ -4674,394 +4711,318 @@ fn specialize_struct_field_type(
     generics: &[CId],
     lifetimes: &[LId],
 ) -> CId {
-    specialize_type(
-        ex,
-        types,
-        field_ty,
-        generics,
-        lifetimes,
-        site,
-    )
+    specialize_type(ex, types, field_ty, generics, lifetimes, site)
 }
 
-#[inline(always)]
-fn try_resolve_member_access(
-    ex: &mut ExternState,
-    types: &mut TypeState,
-    search: &mut SearchState,
-    member_method_type_sites: &mut Vec<PendingMemberMethodType>,
-    site: ValId,
-    base_value: ValId,
-    source: CId,
-    member_name: StrId,
-    kind: AccessKind,
-) -> MemberAccessResolve {
-    let mut current = types.root(source);
-    let mut implicit_receivers = Vec::new();
-    let max_implicit_deref_steps = match kind {
-        AccessKind::Dot => 1usize,
-        AccessKind::Ptr => 64usize,
-        AccessKind::Static => 0usize,
-    };
-    let implicit_deref_limit_message = match kind {
-        AccessKind::Dot => "`.` member access performs at most one implicit dereference",
-        AccessKind::Ptr => "member access autoderef recursion exceeded safety limit",
-        AccessKind::Static => "static member access does not support implicit dereference",
-    };
-    let mut used_implicit_deref_steps = 0usize;
-    let mut deref_chain_lid = None;
-    let mut deref_chain_mutability = None;
+fn deref_limit_error(ex: &ExternState, site: ValId, msg: &'static str) -> MemberAccessResolve {
+    MemberAccessResolve::Error(TypeError::Simple {
+        loc: ex.program.value_loc(site),
+        message: msg,
+    })
+}
 
-    loop {
-        match types.core.cluster[current].state {
-            ResolveKind::Nothing => {
-                if kind != AccessKind::Static && is_any_type_builtin_member_name(member_name) {
-                    let result = resolve_any_type_builtin_member_access(
-                        ex,
-                        types,
-                        search,
-                        member_method_type_sites,
-                        site,
-                        base_value,
-                        current,
-                        member_name,
-                    );
-                    return MemberAccessResolve::Resolved {
-                        result,
-                        implicit_receivers: finalize_member_access_implicit_chain(
-                            implicit_receivers,
-                            used_implicit_deref_steps,
-                            current,
-                        ),
-                    };
+impl PendingMemberAccess {
+    #[inline(always)]
+    fn step(
+        &mut self,
+        ex: &mut ExternState,
+        types: &mut TypeState,
+        search: &mut SearchState,
+        member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    ) -> MemberAccessResolve {
+
+        let max_implicit_deref_steps = match self.kind {
+            AccessKind::Dot => 1usize,
+            AccessKind::Ptr => 64usize,
+            AccessKind::Static => 0usize,
+        };
+
+        let implicit_deref_limit_message = match self.kind {
+            AccessKind::Dot => "`.` member access performs at most one implicit dereference",
+            AccessKind::Ptr => "member access autoderef recursion exceeded safety limit",
+            AccessKind::Static => "static member access does not support implicit dereference",
+        };
+
+        let mut current = types.root(self.current);
+
+        loop {
+            match types.core.cluster[current].state {
+
+                // ---------------- UNKNOWN ----------------
+                ResolveKind::Nothing => {
+                    self.current = current;
+                    return MemberAccessResolve::Pending { source: current };
                 }
-                return MemberAccessResolve::Pending { source: current };
-            }
-            ResolveKind::Ptr { tgt, .. } => {
-                if used_implicit_deref_steps >= max_implicit_deref_steps {
-                    return MemberAccessResolve::Error(TypeError::Simple {
-                        loc: ex.program.value_loc(site),
-                        message: implicit_deref_limit_message,
-                    });
-                }
-                let next = types.root(tgt);
-                implicit_receivers.push(current);
-                used_implicit_deref_steps += 1;
-                current = next;
-            }
-            ResolveKind::Solved(t) => {
-                let solved = ex.store.type_value(t).clone();
-                match solved {
-                    TypeValue::Ptr { tgt, .. } => {
-                        if used_implicit_deref_steps >= max_implicit_deref_steps {
-                            return MemberAccessResolve::Error(TypeError::Simple {
-                                loc: ex.program.value_loc(site),
-                                message: implicit_deref_limit_message,
-                            });
-                        }
-                        let next = types.new_solved(tgt);
-                        let next = types.root(next);
-                        implicit_receivers.push(current);
-                        used_implicit_deref_steps += 1;
-                        current = next;
+
+                // ---------------- CLUSTER PTR ----------------
+                ResolveKind::Ptr { tgt, .. } => {
+                    if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                        return MemberAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(self.site),
+                            message: implicit_deref_limit_message,
+                        });
                     }
-                    TypeValue::Struct {
-                        id: sid,
-                        generics,
-                        lifetimes,
-                    } => {
-                        let (field_ty, struct_name) = {
-                            let rep = ex.store.struct_value(sid);
-                            let field_ty = rep
-                                .fields
-                                .iter()
-                                .find(|(n, _)| ex.program.name_str_id(*n) == member_name)
-                                .map(|(_, t)| *t);
-                            (field_ty, rep.name)
-                        };
 
-                        if let Some(field_ty) = field_ty {
-                            match kind {
-                                AccessKind::Dot | AccessKind::Ptr => {}
-                                AccessKind::Static => {
+                    self.implicit_receivers.push(current);
+                    current = types.root(tgt);
+                }
+
+                // ---------------- SOLVED ----------------
+                ResolveKind::Solved(t) => {
+                    match ex.store.type_value(t) {
+
+                        // ----- solved pointer -----
+                        TypeValue::Ptr { tgt, .. } => {
+                            if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                                return MemberAccessResolve::Error(TypeError::Simple {
+                                    loc: ex.program.value_loc(self.site),
+                                    message: implicit_deref_limit_message,
+                                });
+                            }
+
+                            self.implicit_receivers.push(current);
+                            let c = types.new_solved(*tgt);
+                            current = types.root(c);
+                        }
+
+                        // ----- solved struct -----
+                        TypeValue::Struct { id: sid, generics, lifetimes } => {
+
+                            let (field_ty, struct_name) = {
+                                let rep = ex.store.struct_value(*sid);
+                                let field_ty = rep
+                                    .fields
+                                    .iter()
+                                    .find(|(n, _)| ex.program.name_str_id(*n) == self.member)
+                                    .map(|(_, t)| *t);
+                                (field_ty, rep.name)
+                            };
+
+                            // ===== FIELD =====
+                            if let Some(field_ty) = field_ty {
+                                if matches!(self.kind, AccessKind::Static) {
                                     return MemberAccessResolve::Error(TypeError::Simple {
-                                        loc: ex.program.value_loc(site),
-                                        message: "some error on it not making sense",
+                                        loc: ex.program.value_loc(self.site),
+                                        message: "static access cannot target instance field",
                                     });
+                                }
+
+                                let generic_inputs = generics
+                                    .iter()
+                                    .map(|&t| types.new_solved(t))
+                                    .collect::<Vec<_>>();
+
+                                let lifetime_inputs = lifetimes
+                                    .iter()
+                                    .map(|&lt| types.new_lid_known(lt))
+                                    .collect::<Vec<_>>();
+
+                                let result = specialize_struct_field_type(
+                                    ex,
+                                    types,
+                                    self.site,
+                                    *sid,
+                                    field_ty,
+                                    &generic_inputs,
+                                    &lifetime_inputs,
+                                );
+
+                                let used = self.implicit_receivers.len();
+                                let receivers = std::mem::take(&mut self.implicit_receivers);
+
+                                return MemberAccessResolve::Resolved {
+                                    result,
+                                    implicit_receivers: finalize_member_access_implicit_chain(
+                                        receivers,
+                                        used,
+                                        current,
+                                    ),
+                                };
+                            }
+
+                            // ===== METHOD =====
+                            if let Some(struct_name) = struct_name {
+                                if let Some(member_method) =
+                                    ex.ans.member_function_types.get(&(struct_name, self.member))
+                                {
+                                    let result = resolve_member_method_access(
+                                        ex,
+                                        types,
+                                        search,
+                                        member_method_type_sites,
+                                        self.site,
+                                        self.base_value,
+                                        current,
+                                        self.member,
+                                        member_method.ty,
+                                    );
+
+                                    let used = self.implicit_receivers.len();
+                                    let receivers = std::mem::take(&mut self.implicit_receivers);
+
+                                    return MemberAccessResolve::Resolved {
+                                        result,
+                                        implicit_receivers: finalize_member_access_implicit_chain(
+                                            receivers,
+                                            used,
+                                            current,
+                                        ),
+                                    };
+                                }
+
+                                // ===== SMART DEREF =====
+                                if self.implicit_receivers.len() < max_implicit_deref_steps {
+                                    if let Some(target) = resolve_struct_deref_target(
+                                        ex,
+                                        types,
+                                        self.site,
+                                        self.base_value,
+                                        current,
+                                        struct_name,
+                                        &mut self.deref_chain_lid,
+                                        &mut self.deref_chain_is_mut,
+                                    ) {
+                                        self.implicit_receivers.push(current);
+                                        current = types.root(target.target);
+                                        continue;
+                                    }
                                 }
                             }
 
-                            let generic_inputs = generics
-                                .iter()
-                                .map(|&t| types.new_solved(t))
-                                .collect::<Vec<_>>();
-                            let lifetime_inputs = lifetimes
-                                .iter()
-                                .map(|&lt| types.new_lid_known(lt))
-                                .collect::<Vec<_>>();
-                            let result = specialize_struct_field_type(
-                                ex,
-                                types,
-                                site,
-                                sid,
-                                field_ty,
-                                &generic_inputs,
-                                &lifetime_inputs,
-                            );
-                            return MemberAccessResolve::Resolved {
-                                result,
-                                implicit_receivers: finalize_member_access_implicit_chain(
-                                    implicit_receivers,
-                                    used_implicit_deref_steps,
-                                    current,
-                                ),
-                            };
+                            return MemberAccessResolve::Error(TypeError::UnknownField {
+                                field: self.member,
+                                site: self.site,
+                            });
                         }
 
-                        let member_method = struct_name
-                            .and_then(|sn| ex.ans.member_function_types.get(&(sn,member_name)));
-                        if let Some(struct_name) = struct_name {
-                            if let Some(member_method) = member_method {
-                                let result = resolve_member_method_access(
-                                    ex,
-                                    types,
-                                    search,
-                                    member_method_type_sites,
-                                    site,
-                                    base_value,
-                                    current,
-                                    member_name,
-                                    member_method.ty,
-                                );
-                                return MemberAccessResolve::Resolved {
-                                    result,
-                                    implicit_receivers: finalize_member_access_implicit_chain(
-                                        implicit_receivers,
-                                        used_implicit_deref_steps,
-                                        current,
-                                    ),
-                                };
-                            }
-
-                            if is_any_type_builtin_member_name(member_name) {
-                                let result = resolve_any_type_builtin_member_access(
-                                    ex,
-                                    types,
-                                    search,
-                                    member_method_type_sites,
-                                    site,
-                                    base_value,
-                                    current,
-                                    member_name,
-                                );
-                                return MemberAccessResolve::Resolved {
-                                    result,
-                                    implicit_receivers: finalize_member_access_implicit_chain(
-                                        implicit_receivers,
-                                        used_implicit_deref_steps,
-                                        current,
-                                    ),
-                                };
-                            }
-
-                            if used_implicit_deref_steps < max_implicit_deref_steps
-                                && let Some(target) = resolve_struct_deref_target(
-                                    ex,
-                                    types,
-                                    site,
-                                    base_value,
-                                    current,
-                                    struct_name,
-                                    &mut deref_chain_lid,
-                                    &mut deref_chain_mutability,
-                                )
-                            {
-                                let next = types.root(target.target);
-                                implicit_receivers.push(current);
-                                used_implicit_deref_steps += 1;
-                                current = next;
-                                continue;
-                            }
+                        _ => {
+                            return MemberAccessResolve::Error(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "member access requires a struct or pointer-like base",
+                            });
                         }
-
-                        return MemberAccessResolve::Error(TypeError::UnknownField {
-                            field: member_name,
-                            site,
-                        });
                     }
-                    _ => {
-                        if kind != AccessKind::Static
-                            && is_any_type_builtin_member_name(member_name)
+                }
+
+                // ---------------- INFER STRUCT ----------------
+                ResolveKind::Struct(rid) => {
+                    let sid = types.extra.struct_infers[rid.0].sid;
+
+                    let (field_ty, struct_name) = {
+                        let rep = ex.store.struct_value(sid);
+                        let field_ty = rep
+                            .fields
+                            .iter()
+                            .find(|(n, _)| ex.program.name_str_id(*n) == self.member)
+                            .map(|(_, t)| *t);
+                        (field_ty, rep.name)
+                    };
+
+                    // ===== FIELD =====
+                    if let Some(field_ty) = field_ty {
+                        if matches!(self.kind, AccessKind::Static) {
+                            return MemberAccessResolve::Error(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "static access cannot target instance field",
+                            });
+                        }
+
+                        let infer = &types.extra.struct_infers[rid.0];
+                        //unfortunatly yes this does require a clone at the moment
+                        //the reason is that we have to borrow struct_infers inside specilize as mut
+                        //there is some tricks we can do here with unsafe as those SHOULD... never be changed during specilize
+                        let gens = infer.generics.clone();
+                        let lifes = infer.lifetimes.clone();
+
+                        let result = specialize_struct_field_type(
+                            ex,
+                            types,
+                            self.site,
+                            sid,
+                            field_ty,
+                            &gens,
+                            &lifes,
+                        );
+
+                        let used = self.implicit_receivers.len();
+                        let receivers = std::mem::take(&mut self.implicit_receivers);
+
+                        return MemberAccessResolve::Resolved {
+                            result,
+                            implicit_receivers: finalize_member_access_implicit_chain(
+                                receivers,
+                                used,
+                                current,
+                            ),
+                        };
+                    }
+
+                    // ===== METHOD / SMART DEREF =====
+                    if let Some(struct_name) = struct_name {
+                        if let Some(member_method) =
+                            ex.ans.member_function_types.get(&(struct_name, self.member))
                         {
-                            let result = resolve_any_type_builtin_member_access(
+                            let result = resolve_member_method_access(
                                 ex,
                                 types,
                                 search,
                                 member_method_type_sites,
-                                site,
-                                base_value,
+                                self.site,
+                                self.base_value,
                                 current,
-                                member_name,
+                                self.member,
+                                member_method.ty,
                             );
+
+                            let used = self.implicit_receivers.len();
+                            let receivers = std::mem::take(&mut self.implicit_receivers);
+
                             return MemberAccessResolve::Resolved {
                                 result,
                                 implicit_receivers: finalize_member_access_implicit_chain(
-                                    implicit_receivers,
-                                    used_implicit_deref_steps,
+                                    receivers,
+                                    used,
                                     current,
                                 ),
                             };
                         }
-                        return MemberAccessResolve::Error(TypeError::Simple {
-                            loc: ex.program.value_loc(site),
-                            message: "member access requires a struct or pointer-like base",
-                        });
-                    }
-                }
-            }
-            ResolveKind::Struct(rid) => {
-                let sid = types.extra.struct_infers[rid.0].sid;
-                let (field_ty, struct_name) = {
-                    let rep = ex.store.struct_value(sid);
-                    let field_ty = rep
-                        .fields
-                        .iter()
-                        .find(|(n, _)| ex.program.name_str_id(*n) == member_name)
-                        .map(|(_, t)| *t);
-                    (field_ty, rep.name)
-                };
 
-                if let Some(field_ty) = field_ty {
-                    match kind {
-                        AccessKind::Dot | AccessKind::Ptr => {}
-                        AccessKind::Static => {
-                            return MemberAccessResolve::Error(TypeError::Simple {
-                                loc: ex.program.value_loc(site),
-                                message: "some error on it not making sense",
-                            });
+                        if self.implicit_receivers.len() < max_implicit_deref_steps {
+                            if let Some(target) = resolve_struct_deref_target(
+                                ex,
+                                types,
+                                self.site,
+                                self.base_value,
+                                current,
+                                struct_name,
+                                &mut self.deref_chain_lid,
+                                &mut self.deref_chain_is_mut,
+                            ) {
+                                self.implicit_receivers.push(current);
+                                current = types.root(target.target);
+                                continue;
+                            }
                         }
                     }
 
-                    let generic_inputs = types.extra.struct_infers[rid.0].generics.clone();
-                    let lifetime_inputs = types.extra.struct_infers[rid.0].lifetimes.clone();
-                    let result = specialize_struct_field_type(
-                        ex,
-                        types,
-                        site,
-                        sid,
-                        field_ty,
-                        &generic_inputs,
-                        &lifetime_inputs,
-                    );
-                    return MemberAccessResolve::Resolved {
-                        result,
-                        implicit_receivers: finalize_member_access_implicit_chain(
-                            implicit_receivers,
-                            used_implicit_deref_steps,
-                            current,
-                        ),
-                    };
+                    return MemberAccessResolve::Error(TypeError::UnknownField {
+                        field: self.member,
+                        site: self.site,
+                    });
                 }
 
-
-                if let Some(struct_name) = struct_name {
-                    if let Some(member_method) = ex.ans.member_function_types.get(&(struct_name,member_name)) {
-                        let result = resolve_member_method_access(
-                            ex,
-                            types,
-                            search,
-                            member_method_type_sites,
-                            site,
-                            base_value,
-                            current,
-                            member_name,
-                            member_method.ty,
-                        );
-                        return MemberAccessResolve::Resolved {
-                            result,
-                            implicit_receivers: finalize_member_access_implicit_chain(
-                                implicit_receivers,
-                                used_implicit_deref_steps,
-                                current,
-                            ),
-                        };
-                    }
-
-                    if is_any_type_builtin_member_name(member_name) {
-                        let result = resolve_any_type_builtin_member_access(
-                            ex,
-                            types,
-                            search,
-                            member_method_type_sites,
-                            site,
-                            base_value,
-                            current,
-                            member_name,
-                        );
-                        return MemberAccessResolve::Resolved {
-                            result,
-                            implicit_receivers: finalize_member_access_implicit_chain(
-                                implicit_receivers,
-                                used_implicit_deref_steps,
-                                current,
-                            ),
-                        };
-                    }
-
-                    if used_implicit_deref_steps < max_implicit_deref_steps
-                        && let Some(target) = resolve_struct_deref_target(
-                            ex,
-                            types,
-                            site,
-                            base_value,
-                            current,
-                            struct_name,
-                            &mut deref_chain_lid,
-                            &mut deref_chain_mutability,
-                        )
-                    {
-                        let next = types.root(target.target);
-                        implicit_receivers.push(current);
-                        used_implicit_deref_steps += 1;
-                        current = next;
-                        continue;
-                    }
+                _ => {
+                    return MemberAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(self.site),
+                        message: "member access requires a struct or pointer-like base",
+                    });
                 }
-
-                return MemberAccessResolve::Error(TypeError::UnknownField {
-                    field: member_name,
-                    site,
-                });
-            }
-            _ => {
-                if kind != AccessKind::Static && is_any_type_builtin_member_name(member_name) {
-                    let result = resolve_any_type_builtin_member_access(
-                        ex,
-                        types,
-                        search,
-                        member_method_type_sites,
-                        site,
-                        base_value,
-                        current,
-                        member_name,
-                    );
-                    return MemberAccessResolve::Resolved {
-                        result,
-                        implicit_receivers: finalize_member_access_implicit_chain(
-                            implicit_receivers,
-                            used_implicit_deref_steps,
-                            current,
-                        ),
-                    };
-                }
-                return MemberAccessResolve::Error(TypeError::Simple {
-                    loc: ex.program.value_loc(site),
-                    message: "member access requires a struct or pointer-like base",
-                });
             }
         }
     }
 }
+
+
 
 #[inline(always)]
 fn try_resolve_tuple_int_access(
@@ -5452,6 +5413,111 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             }
 
             output
+        }
+
+        Value::Access { base, name, kind } => {
+            //special case static members like we do functions
+            if kind == AccessKind::Static {
+                let Value::NameRef(sname) = ctx.ex.program.value(base) else {
+                    let loc = ctx.ex.program.value_loc(v);
+                    ctx.push_error(TypeError::Simple {
+                        loc,
+                        message: "static methods require a struct name",
+                    });
+                    return ctx.new_cluster();
+                };
+
+                let Some(types) = ctx.ex.ans.member_function_types.get(&(sname, name)) else {
+                    let loc = ctx.ex.program.value_loc(v);
+                    ctx.push_error(TypeError::Simple {
+                        loc,
+                        message: "static methods require a struct name",
+                    });
+                    return ctx.new_cluster();
+                };
+                let t = types.ty;
+                return global_to_specialized_local(
+                    &mut ctx.ex,
+                    &mut ctx.search,
+                    &mut ctx.types,
+                    t,
+                    v,
+                );
+            }
+
+            let source = gather_constraints(ctx, base, current_output);
+
+
+             if is_any_type_builtin_member_name(name) {
+                let result = resolve_any_type_builtin_member_access(
+                    &mut ctx.ex,
+                    &mut ctx.types,
+                    &mut ctx.search,
+                    &mut ctx.req.member_method_type_sites,
+                    v,
+                    base,
+                    source,
+                    name,
+                );
+                ctx.bind_val(v, result);
+                return result;
+            }
+
+            let out = ctx.new_cluster();
+            let mut pending = PendingMemberAccess::new(
+                &mut ctx.types,
+                v,
+                base,
+                source,
+                out,
+                name,
+                kind,
+            );
+
+            match pending.step(
+                &mut ctx.ex,
+                &mut ctx.types,
+                &mut ctx.search,
+                &mut ctx.req.member_method_type_sites,
+            ) {
+                MemberAccessResolve::Resolved {
+                    result,
+                    implicit_receivers,
+                } => {
+                    ctx.bind_val(v, result);
+
+                    if !implicit_receivers.is_empty() {
+                        ctx.req.member_access_implicit_deref_sites.push(
+                            PendingMemberAccessImplicitDeref {
+                                site: v,
+                                receivers: implicit_receivers,
+                            },
+                        );
+                    }
+
+                    result
+                }
+
+                MemberAccessResolve::Pending { .. } => {
+                    let result = pending.output;
+                    ctx.bind_val(v, result);
+
+                    // IMPORTANT: push the entire frame
+                    ctx.req.pending_member_accesses.push(pending);
+
+                    result
+                }
+
+                MemberAccessResolve::Error(err) => {
+                    ctx.push_error(err);
+
+                    let result = pending.output;
+                    ctx.bind_val(v, result);
+
+                    result
+                }
+            }
+
         }
 
         Value::Assign { op, target } => {
@@ -5849,9 +5915,7 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             let llen = lifetime_generics.len();
 
             let generic_clusters = (0..glen).map(|_| ctx.new_cluster()).collect::<Vec<_>>();
-            let lifetime_clusters = (0..llen)
-                .map(|_| ctx.types.new_lid())
-                .collect::<Vec<_>>();
+            let lifetime_clusters = (0..llen).map(|_| ctx.types.new_lid()).collect::<Vec<_>>();
 
             let mut field_type_clusters = None;
             if glen != 0 || llen != 0 {
@@ -5995,80 +6059,6 @@ fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId
             ans
         }
 
-        Value::Access { base, name, kind } => {
-            //special case static members like we do functions
-            if kind == AccessKind::Static {
-                let Value::NameRef(sname) = ctx.ex.program.value(base) else {
-                    let loc = ctx.ex.program.value_loc(v);
-                    ctx.push_error(TypeError::Simple{
-                        loc,
-                        message:"static methods require a struct name"
-
-                    });
-                    return ctx.new_cluster();
-                };
-
-                let Some(types) = ctx.ex.ans.member_function_types.get(&(sname,name)) else {
-                    let loc = ctx.ex.program.value_loc(v);
-                    ctx.push_error(TypeError::Simple{
-                        loc,
-                        message:"static methods require a struct name"
-
-                    });
-                    return ctx.new_cluster();
-
-                };
-                let t = types.ty;
-                return global_to_specialized_local(&mut ctx.ex,&mut ctx.search,&mut ctx.types,t,v);
-            }
-            let source = gather_constraints(ctx, base, current_output);
-            match try_resolve_member_access(
-                &mut ctx.ex,
-                &mut ctx.types,
-                &mut ctx.search,
-                &mut ctx.req.member_method_type_sites,
-                v,
-                base,
-                source,
-                name,
-                kind,
-            ) {
-                MemberAccessResolve::Resolved {
-                    result,
-                    implicit_receivers,
-                } => {
-                    ctx.bind_val(v, result);
-                    if !implicit_receivers.is_empty() {
-                        ctx.req.member_access_implicit_deref_sites.push(
-                            PendingMemberAccessImplicitDeref {
-                                site: v,
-                                receivers: implicit_receivers,
-                            },
-                        );
-                    }
-                    result
-                }
-                MemberAccessResolve::Pending { source } => {
-                    let result = ctx.new_cluster();
-                    ctx.bind_val(v, result);
-                    ctx.req.pending_member_accesses.push(PendingMemberAccess {
-                        site: v,
-                        base_value: base,
-                        source,
-                        output: result,
-                        member: name,
-                        kind,
-                    });
-                    result
-                }
-                MemberAccessResolve::Error(err) => {
-                    ctx.push_error(err);
-                    let result = ctx.new_cluster();
-                    ctx.bind_val(v, result);
-                    result
-                }
-            }
-        }
         Value::IntAccess { base, id, kind } => {
             let source = gather_constraints(ctx, base, current_output);
             match try_resolve_tuple_int_access(&mut ctx.ex, &mut ctx.types, v, source, id, kind) {
@@ -6417,7 +6407,7 @@ fn bind_lifetime_generics(ctx: &mut InferState, generics: PatternSpan) {
         };
         let fresh = ctx.types.mint_undeclared_signature_lifetime();
         let lid = ctx.types.new_lid_known(fresh);
-        ctx.search.local_lifetimes.insert(id, (fresh,lid));
+        ctx.search.local_lifetimes.insert(id, (fresh, lid));
     }
 }
 
@@ -6439,14 +6429,13 @@ fn compile_lifetime_specialization_arg(
             // if lid==LifeTimeId::STATIC{
             //     return ctx.types.new_lid_known(LifeTime::Static);
             // }
-            ctx
-                .search
+            ctx.search
                 .local_lifetimes
                 .get(&lid)
                 .copied()
-                .map(|(_,x)| x)
+                .map(|(_, x)| x)
                 .unwrap_or_else(|| {
-                    debug_assert_eq!(lid,LifeTimeId::WILDCARD);
+                    debug_assert_eq!(lid, LifeTimeId::WILDCARD);
                     ctx.types.new_lid()
                 })
         }
@@ -6492,7 +6481,6 @@ fn infer_elided_output_lifetime(
         });
         None
     }
-
 }
 
 fn apply_signature_elided_output_lifetime_rule(
@@ -6603,7 +6591,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
-    let lifetimes= generics.lifetimes();
+    let lifetimes = generics.lifetimes();
     let generics = generics.generics();
     // Reject struct definitions in local scope.
     // The type inference is monomorphic (rank-1, no higher-ranked types)
@@ -6619,7 +6607,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
             message: "struct types are only allowed at the top level",
         });
     }
-    bind_lifetime_generics(ctx,lifetimes);
+    bind_lifetime_generics(ctx, lifetimes);
 
     for (i, g) in generics.ids().enumerate() {
         let gid = GenId(i);
@@ -6627,8 +6615,6 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         // todo!()
         //TODO: we probably wana do something with generics that are ints here if we have them
     }
-
-
 
     let undeclared_before_fields = ctx.types.next_undeclared_lifetime;
 
@@ -6670,8 +6656,6 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
             message: "struct fields cannot use elided lifetimes; declare them in struct lifetime parameters",
         });
     }
-
-    
 
     let rep = StructRep::new(
         field_info.iter().map(|(n, _)| *n),
@@ -6805,12 +6789,10 @@ fn compile_type_expr_with_mode(
                         });
                         PtrKind::RefInfer(ctx.types.new_lid())
                     }
-                    _ => {
-                        PtrKind::RefInfer(ctx.types.new_lid())
-                    }
+                    _ => PtrKind::RefInfer(ctx.types.new_lid()),
                 }
             } else if let Some(lid) = lifetime {
-                let (lt,_) = ctx
+                let (lt, _) = ctx
                     .search
                     .local_lifetimes
                     .get(&lid)
@@ -6819,7 +6801,6 @@ fn compile_type_expr_with_mode(
                 PtrKind::Solved(PointerStyle::Ref(lt))
             } else {
                 match mode {
-                    
                     TypeExprCompileMode::Struct => {
                         let loc = ctx.ex.program.type_expr_loc(texpr);
                         ctx.ex.push_error(TypeError::Simple {
@@ -6828,10 +6809,7 @@ fn compile_type_expr_with_mode(
                         });
                         PtrKind::RefInfer(ctx.types.new_lid())
                     }
-                    _ => {
-                        PtrKind::RefInfer(ctx.types.new_lid())
-                    }
-                    
+                    _ => PtrKind::RefInfer(ctx.types.new_lid()),
                 }
             };
 
@@ -7052,14 +7030,8 @@ fn type_check_func_signature(
         GenLifeNameRender::from_decl(ctx.ex.program, generics),
     );
 
-    let (f, _) = gather_func_signature::<true>(
-        ctx,
-        v,
-        calling_convention,
-        generics,
-        params,
-        output_type,
-    );
+    let (f, _) =
+        gather_func_signature::<true>(ctx, v, calling_convention, generics, params, output_type);
     ctx.bind_val(v, f);
     main_solver(ctx);
 
@@ -7248,7 +7220,7 @@ fn mark_used_struct_signature_from_type(
         }
         TypeValue::Ptr { tgt, style, .. } => {
             if let PointerStyle::Ref(LifeTime::External(i)) = style
-                && (*i as usize) <used_lifetimes.len()
+                && (*i as usize) < used_lifetimes.len()
             {
                 used_lifetimes[*i as usize] = true;
             }
@@ -7535,7 +7507,12 @@ fn is_named_struct_type_with_all_generics_free(
     ty: TypeId,
     struct_name: NameId,
 ) -> bool {
-    let TypeValue::Struct { id, generics,lifetimes } = store.type_value(ty) else {
+    let TypeValue::Struct {
+        id,
+        generics,
+        lifetimes,
+    } = store.type_value(ty)
+    else {
         return false;
     };
 
@@ -8200,9 +8177,9 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
         | ResolveKind::Tuple(_) => OperandKind::KnownNonUser,
 
         ResolveKind::Solved(t) => match ex.store.type_value(t) {
-            TypeValue::Struct {
-                id, ..
-            } => OperandKind::UserStruct(ex.store.struct_value(*id).name),
+            TypeValue::Struct { id, .. } => {
+                OperandKind::UserStruct(ex.store.struct_value(*id).name)
+            }
             _ => OperandKind::KnownNonUser,
         },
         ResolveKind::Struct(call_id) => {
@@ -9337,16 +9314,12 @@ fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
         let source = types.root(pending.source);
         pending.source = source;
 
-        match try_resolve_member_access(
+        match pending.step(
             ex,
             types,
             search,
             member_method_type_sites,
-            pending.site,
-            pending.base_value,
-            source,
-            pending.member,
-            pending.kind,
+            
         ) {
             MemberAccessResolve::Pending { source } => {
                 pending.source = source;
@@ -9492,9 +9465,7 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
         };
 
         if p.lifetimes.is_empty() && expected_lifetimes != 0 {
-            p.lifetimes = (0..expected_lifetimes)
-                .map(|_| types.new_lid())
-                .collect();
+            p.lifetimes = (0..expected_lifetimes).map(|_| types.new_lid()).collect();
         }
 
         if p.lifetimes.len() != expected_lifetimes {
@@ -10174,7 +10145,6 @@ mod type_infer_tests {
         f=fn(x:int)->Box[int] { Box::new(x) };
         "#;
 
-    
     #[test]
 
     //currently fails over not doing places in f
