@@ -1,21 +1,17 @@
 use crate::global_type_inference::*;
-use crate::type_inference::*;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
 use crate::ir::VarKind;
-use crate::ir::{
-    AssignOp, BinOp, Dir, Literal, NameId,
-    UnOp, ValId, Value,
-};
+use crate::ir::{AssignOp, BinOp, Dir, Literal, NameId, UnOp, ValId, Value};
 use crate::string_intern::{
-    ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR,
-    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
-    NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR,
-    SUB_STR, StrId,
+    ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
+    FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
+    POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR, SUB_STR,
+    StrId,
 };
+use crate::type_inference::*;
 
 use crate::program::{Defined, Program};
-
 
 pub fn infer_value_internals<'a>(
     program: &'a Program,
@@ -23,8 +19,10 @@ pub fn infer_value_internals<'a>(
     ans: &'a mut SolvedTypes,
     value: ValId,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
-    let known = ans.type_of(value);
+    let known_function_exists = ans.function_types_by_value(value).is_some();
+    let known_function_ty = ans.function_types_by_value(value).map(|known| known.ty);
     let mut ctx = InferState::new(store, program, ans);
+    ctx.req.owner = Some(value);
     let mut restore_name_render: Option<GenLifeNameRender<'a>> = None;
 
     match ctx.ex.program.value(value) {
@@ -41,28 +39,19 @@ pub fn infer_value_internals<'a>(
             );
             restore_name_render = Some(previous_name_render);
 
-            let (found_sig, output) = gather_func_signature::<true>(
-                &mut ctx,
-                value,
-                calling_convention,
-                generics,
-                params,
-                output_type,
-            );
-
-            if let Some(known) = known {
-                let known_sig = ctx.new_solved(known);
-                if let Err(clash) = ctx.unify(found_sig, known_sig) {
-                    ctx.push_error(TypeError::ValuesContradict {
-                        expectation_reason:
-                            "function signature should match previously solved global signature",
-                        site: value,
-                        found: value,
-                        expected_place: value,
-                        clash,
-                    });
-                }
-            }
+            let output = if known_function_exists {
+                load_known_function_signature_for_value(&mut ctx, value)
+            } else {
+                let (_found_sig, output) = gather_func_signature::<true>(
+                    &mut ctx,
+                    value,
+                    calling_convention,
+                    generics,
+                    params,
+                    output_type,
+                );
+                output
+            };
 
             if let Some(body) = body {
                 let body_cluster = gather_constraints(&mut ctx, body, Some(output));
@@ -82,29 +71,16 @@ pub fn infer_value_internals<'a>(
                 }
             }
 
-            found_sig
+            ctx.new_solved(known_function_ty.unwrap_or(UNKNOWN_TYPE))
         }
         _ => {
             let found = gather_constraints(&mut ctx, value, None);
-            if let Some(known) = known {
-                let known = ctx.new_solved(known);
-
-                if let Err(clash) = ctx.unify(found, known) {
-                    ctx.push_error(TypeError::ValuesContradict{
-                        expectation_reason: "expected value signature to match global signature (this is likely ALSO an internal bug in error reporting)",
-                        site:value,
-                        found:value,
-                        expected_place:value,
-                        clash,
-                    })
-                }
-            }
 
             found
         }
     };
 
-    main_solver(&mut ctx);
+    main_solver_local(&mut ctx);
 
     if let Some(previous_name_render) = restore_name_render {
         ctx.ex.name_render = previous_name_render;
@@ -114,8 +90,8 @@ pub fn infer_value_internals<'a>(
     //it shouldnt even be SET by us in the firstplace
     //we specifically do NOT bind_val and finalize cant handle generics
     //so this trigers as soon as we fuckup and bind_val ourselvs on anything with generics
-    if let Some(known) = known {
-        debug_assert_eq!(known, ctx.ex.ans.type_of(value).unwrap())
+    if let Some(known_ty) = known_function_ty {
+        debug_assert_eq!(known_ty, ctx.ex.ans.type_of(value).unwrap())
     }
 
     if ctx.ex.errors.is_empty() {
@@ -125,9 +101,96 @@ pub fn infer_value_internals<'a>(
     }
 }
 
+fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -> CId {
+    let Some(known_ty) = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map(|known| known.ty)
+    else {
+        return ctx.new_cluster();
+    };
 
+    let ret_ty = match ctx.ex.store.type_value(known_ty) {
+        TypeValue::Func { ret, .. } => *ret,
+        _ => return ctx.new_cluster(),
+    };
 
+    let argument_count = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map_or(0, |known| known.arguments.len());
 
+    for i in 0..argument_count {
+        let Some((pat, maybe_name, ty)) = ctx
+            .ex
+            .ans
+            .function_types_by_value(value)
+            .and_then(|known| known.arguments.get(i))
+            .copied()
+        else {
+            continue;
+        };
+
+        let c = if ty == UNKNOWN_TYPE {
+            ctx.new_cluster()
+        } else {
+            ctx.new_solved(ty)
+        };
+        ctx.bind_pat(pat, c);
+        if let Some(name) = maybe_name {
+            ctx.search.names.insert(name, c);
+        }
+    }
+
+    let generic_param_count = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map_or(0, |known| known.generic_parameters.len());
+
+    for i in 0..generic_param_count {
+        let maybe_name = ctx
+            .ex
+            .ans
+            .function_types_by_value(value)
+            .and_then(|known| known.generic_parameters.get(i))
+            .and_then(|(_pat, maybe_name)| *maybe_name);
+
+        let generic_ty = ctx.ex.store.intern(TypeValue::Generic(GenId(i)));
+        let generic_cid = ctx.new_solved(generic_ty);
+        if let Some(name) = maybe_name {
+            ctx.search.local_types.insert(name, generic_cid);
+            ctx.search.names.insert(name, generic_cid);
+        }
+    }
+
+    let lifetime_param_count = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map_or(0, |known| known.lifetime_parameters.len());
+
+    for i in 0..lifetime_param_count {
+        let lid = ctx.types.new_lid_known(LifeTime::External(i as u32));
+        if let Some((pat, maybe_lt_name)) = ctx
+            .ex
+            .ans
+            .function_types_by_value(value)
+            .and_then(|known| known.lifetime_parameters.get(i))
+            .copied()
+            && let Some(lt_name) = maybe_lt_name
+        {
+            ctx.search
+                .local_lifetimes
+                .insert(lt_name, (LifeTime::External(i as u32), lid));
+            let _ = pat;
+        }
+    }
+
+    ctx.new_solved(ret_ty)
+}
 
 #[inline(always)]
 fn try_resolve_tuple_int_access(
@@ -167,52 +230,50 @@ fn try_resolve_tuple_int_access(
                 used_implicit_deref_steps += 1;
                 current = next;
             }
-            ResolveKind::Solved(t) => {
-                match ex.store.type_value(t) {
-                    TypeValue::Ptr { tgt, .. } => {
-                        if used_implicit_deref_steps >= max_implicit_deref_steps {
-                            return IntAccessResolve::Error(TypeError::Simple {
-                                loc: ex.program.value_loc(site),
-                                message: implicit_deref_limit_message,
-                            });
-                        }
-                        let next = types.new_solved(*tgt);
-                        let next = types.root(next);
-                        implicit_receivers.push(current);
-                        used_implicit_deref_steps += 1;
-                        current = next;
-                    }
-                    TypeValue::Tuple(items) => {
-                        if kind == AccessKind::Static {
-                            return IntAccessResolve::Error(TypeError::Simple {
-                                loc: ex.program.value_loc(site),
-                                message: "tuple element access does not support `::`",
-                            });
-                        }
-                        let Some(item) = items.get(id).copied() else {
-                            return IntAccessResolve::Error(TypeError::Simple {
-                                loc: ex.program.value_loc(site),
-                                message: "tuple element index is out of bounds for this tuple",
-                            });
-                        };
-                        let result = types.new_solved(item);
-                        return IntAccessResolve::Resolved {
-                            result,
-                            implicit_receivers: finalize_member_access_implicit_chain(
-                                implicit_receivers,
-                                used_implicit_deref_steps,
-                                current,
-                            ),
-                        };
-                    }
-                    _ => {
+            ResolveKind::Solved(t) => match ex.store.type_value(t) {
+                TypeValue::Ptr { tgt, .. } => {
+                    if used_implicit_deref_steps >= max_implicit_deref_steps {
                         return IntAccessResolve::Error(TypeError::Simple {
                             loc: ex.program.value_loc(site),
-                            message: "tuple element access requires a tuple or pointer-like base",
+                            message: implicit_deref_limit_message,
                         });
                     }
+                    let next = types.new_solved(*tgt);
+                    let next = types.root(next);
+                    implicit_receivers.push(current);
+                    used_implicit_deref_steps += 1;
+                    current = next;
                 }
-            }
+                TypeValue::Tuple(items) => {
+                    if kind == AccessKind::Static {
+                        return IntAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(site),
+                            message: "tuple element access does not support `::`",
+                        });
+                    }
+                    let Some(item) = items.get(id).copied() else {
+                        return IntAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(site),
+                            message: "tuple element index is out of bounds for this tuple",
+                        });
+                    };
+                    let result = types.new_solved(item);
+                    return IntAccessResolve::Resolved {
+                        result,
+                        implicit_receivers: finalize_member_access_implicit_chain(
+                            implicit_receivers,
+                            used_implicit_deref_steps,
+                            current,
+                        ),
+                    };
+                }
+                _ => {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: "tuple element access requires a tuple or pointer-like base",
+                    });
+                }
+            },
             ResolveKind::Tuple(tuple_id) => {
                 if kind == AccessKind::Static {
                     return IntAccessResolve::Error(TypeError::Simple {
@@ -246,7 +307,11 @@ fn try_resolve_tuple_int_access(
     }
 }
 
-pub (crate) fn gather_constraints(ctx: &mut InferState, v: ValId, current_output: Option<CId>) -> CId {
+pub(crate) fn gather_constraints(
+    ctx: &mut InferState,
+    v: ValId,
+    current_output: Option<CId>,
+) -> CId {
     match ctx.ex.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
             let c = ctx.new_int_like();
@@ -429,13 +494,7 @@ pub (crate) fn gather_constraints(ctx: &mut InferState, v: ValId, current_output
             ctx.bind_val(v, output);
 
             let src = gather_constraints(ctx, base, current_output);
-            let mut pending = PendingDeref::new(
-                &mut ctx.types,
-                v,
-                base,
-                src,
-                output,
-            );
+            let mut pending = PendingDeref::new(&mut ctx.types, v, base, src, output);
 
             let outcome = pending.step(&mut ctx.ex, &mut ctx.types);
             if outcome.retain {
@@ -457,7 +516,7 @@ pub (crate) fn gather_constraints(ctx: &mut InferState, v: ValId, current_output
                     return ctx.new_cluster();
                 };
 
-                let Some(types) = ctx.ex.ans.member_function_types.get(&(sname, name)) else {
+                let Some(types) = ctx.ex.ans.member_function_types_by_name(sname, name) else {
                     let loc = ctx.ex.program.value_loc(v);
                     ctx.push_error(TypeError::Simple {
                         loc,
@@ -477,8 +536,7 @@ pub (crate) fn gather_constraints(ctx: &mut InferState, v: ValId, current_output
 
             let source = gather_constraints(ctx, base, current_output);
 
-
-             if is_any_type_builtin_member_name(name) {
+            if is_any_type_builtin_member_name(name) {
                 let result = resolve_any_type_builtin_member_access(
                     &mut ctx.ex,
                     &mut ctx.types,
@@ -494,15 +552,8 @@ pub (crate) fn gather_constraints(ctx: &mut InferState, v: ValId, current_output
             }
 
             let out = ctx.new_cluster();
-            let mut pending = PendingMemberAccess::new(
-                &mut ctx.types,
-                v,
-                base,
-                source,
-                out,
-                name,
-                kind,
-            );
+            let mut pending =
+                PendingMemberAccess::new(&mut ctx.types, v, base, source, out, name, kind);
 
             match pending.step(
                 &mut ctx.ex,
@@ -547,7 +598,6 @@ pub (crate) fn gather_constraints(ctx: &mut InferState, v: ValId, current_output
                     result
                 }
             }
-
         }
 
         Value::Assign { op, target } => {
@@ -1301,7 +1351,6 @@ fn try_get_name(ctx: &mut InferState, v: ValId) -> Option<NameId> {
     }
 }
 
-
 fn solved_type_to_specialized_local(
     ex: &mut ExternState,
     types: &mut TypeState,
@@ -1327,7 +1376,6 @@ fn solved_type_to_specialized_local(
     });
     id
 }
-
 
 fn global_to_specialized_local(
     ex: &mut ExternState,
@@ -1650,7 +1698,6 @@ fn push_cannot_deref_error(
     });
 }
 
-
 #[inline(always)]
 fn finalize_member_access_implicit_chain(
     mut chain: Vec<CId>,
@@ -1675,7 +1722,6 @@ fn specialize_struct_field_type(
     specialize_type(ex, types, field_ty, generics, lifetimes, site)
 }
 
-
 impl PendingMemberAccess {
     #[inline(always)]
     fn step(
@@ -1685,7 +1731,6 @@ impl PendingMemberAccess {
         search: &mut SearchState,
         member_method_type_sites: &mut Vec<PendingMemberMethodType>,
     ) -> MemberAccessResolve {
-
         let max_implicit_deref_steps = match self.kind {
             AccessKind::Dot => 1usize,
             AccessKind::Ptr => 64usize,
@@ -1702,7 +1747,6 @@ impl PendingMemberAccess {
 
         loop {
             match types.core.cluster[current].state {
-
                 // ---------------- UNKNOWN ----------------
                 ResolveKind::Nothing => {
                     self.current = current;
@@ -1725,7 +1769,6 @@ impl PendingMemberAccess {
                 // ---------------- SOLVED ----------------
                 ResolveKind::Solved(t) => {
                     match ex.store.type_value(t) {
-
                         // ----- solved pointer -----
                         TypeValue::Ptr { tgt, .. } => {
                             if self.implicit_receivers.len() >= max_implicit_deref_steps {
@@ -1741,8 +1784,11 @@ impl PendingMemberAccess {
                         }
 
                         // ----- solved struct -----
-                        TypeValue::Struct { id: sid, generics, lifetimes } => {
-
+                        TypeValue::Struct {
+                            id: sid,
+                            generics,
+                            lifetimes,
+                        } => {
                             let (field_ty, struct_name) = {
                                 let rep = ex.store.struct_value(*sid);
                                 let field_ty = rep
@@ -1788,17 +1834,16 @@ impl PendingMemberAccess {
                                 return MemberAccessResolve::Resolved {
                                     result,
                                     implicit_receivers: finalize_member_access_implicit_chain(
-                                        receivers,
-                                        used,
-                                        current,
+                                        receivers, used, current,
                                     ),
                                 };
                             }
 
                             // ===== METHOD =====
                             if let Some(struct_name) = struct_name {
-                                if let Some(member_method) =
-                                    ex.ans.member_function_types.get(&(struct_name, self.member))
+                                if let Some(member_method) = ex
+                                    .ans
+                                    .member_function_types_by_name(struct_name, self.member)
                                 {
                                     let result = resolve_member_method_access(
                                         ex,
@@ -1818,9 +1863,7 @@ impl PendingMemberAccess {
                                     return MemberAccessResolve::Resolved {
                                         result,
                                         implicit_receivers: finalize_member_access_implicit_chain(
-                                            receivers,
-                                            used,
-                                            current,
+                                            receivers, used, current,
                                         ),
                                     };
                                 }
@@ -1890,13 +1933,7 @@ impl PendingMemberAccess {
                         let lifes = infer.lifetimes.clone();
 
                         let result = specialize_struct_field_type(
-                            ex,
-                            types,
-                            self.site,
-                            sid,
-                            field_ty,
-                            &gens,
-                            &lifes,
+                            ex, types, self.site, sid, field_ty, &gens, &lifes,
                         );
 
                         let used = self.implicit_receivers.len();
@@ -1905,17 +1942,16 @@ impl PendingMemberAccess {
                         return MemberAccessResolve::Resolved {
                             result,
                             implicit_receivers: finalize_member_access_implicit_chain(
-                                receivers,
-                                used,
-                                current,
+                                receivers, used, current,
                             ),
                         };
                     }
 
                     // ===== METHOD / SMART DEREF =====
                     if let Some(struct_name) = struct_name {
-                        if let Some(member_method) =
-                            ex.ans.member_function_types.get(&(struct_name, self.member))
+                        if let Some(member_method) = ex
+                            .ans
+                            .member_function_types_by_name(struct_name, self.member)
                         {
                             let result = resolve_member_method_access(
                                 ex,
@@ -1935,9 +1971,7 @@ impl PendingMemberAccess {
                             return MemberAccessResolve::Resolved {
                                 result,
                                 implicit_receivers: finalize_member_access_implicit_chain(
-                                    receivers,
-                                    used,
-                                    current,
+                                    receivers, used, current,
                                 ),
                             };
                         }
@@ -1976,7 +2010,6 @@ impl PendingMemberAccess {
         }
     }
 }
-
 
 #[inline(always)]
 fn bin_op_overload_not_found_error(
@@ -2670,11 +2703,7 @@ pub(crate) fn resolve_operator_types(ctx: &mut InferState) -> bool {
 
 impl PendingIndex {
     #[inline(always)]
-    fn step(
-        &mut self,
-        ex: &mut ExternState,
-        types: &mut TypeState,
-    ) -> ResolveOutcome {
+    fn step(&mut self, ex: &mut ExternState, types: &mut TypeState) -> ResolveOutcome {
         let mut progress = false;
 
         self.base = types.root(self.base);
@@ -2708,67 +2737,64 @@ impl PendingIndex {
                     current = types.root(tgt);
                 }
 
-                ResolveKind::Solved(t) => {
-                    match ex.store.type_value(t) {
-                        TypeValue::Array(element, _) => break types.new_solved(*element),
+                ResolveKind::Solved(t) => match ex.store.type_value(t) {
+                    TypeValue::Array(element, _) => break types.new_solved(*element),
 
-                        TypeValue::Ptr { tgt, .. } => {
-                            if self.implicit_receivers.len() >= max_implicit_deref_steps {
-                                ex.push_error(TypeError::Simple {
-                                    loc: ex.program.value_loc(self.site),
-                                    message: "index autoderef recursion exceeded safety limit",
-                                });
-                                return ResolveOutcome::drop(progress);
-                            }
-
-                            let c = types.new_solved(*tgt);
-                            let next = types.root(c);
-                            self.implicit_receivers.push(current);
-                            current = next;
+                    TypeValue::Ptr { tgt, .. } => {
+                        if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                            ex.push_error(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "index autoderef recursion exceeded safety limit",
+                            });
+                            return ResolveOutcome::drop(progress);
                         }
 
-                        TypeValue::Struct { id, .. } => {
-                            let Some(struct_name) = ex.store.struct_value(*id).name else {
-                                ex.push_error(TypeError::Simple {
-                                    loc: ex.program.value_loc(self.site),
-                                    message: "indexing base must be an array or pointer to array",
-                                });
-                                return ResolveOutcome::drop(progress);
-                            };
+                        let c = types.new_solved(*tgt);
+                        let next = types.root(c);
+                        self.implicit_receivers.push(current);
+                        current = next;
+                    }
 
-                            let Some(target) = resolve_struct_deref_target(
-                                ex,
-                                types,
-                                self.site,
-                                self.base_value,
-                                current,
-                                struct_name,
-                                &mut self.deref_chain_lid,
-                                &mut self.deref_chain_mutability,
-                            ) else {
-                                ex.push_error(TypeError::Simple {
-                                    loc: ex.program.value_loc(self.site),
-                                    message: "indexing base must be an array or pointer to array",
-                                });
-                                return ResolveOutcome::drop(progress);
-                            };
-
-
-                            self.implicit_receivers.push(current);
-                            self.implicit_receivers.push(target.deref_result_ptr);
-
-                            current = types.root(target.target);
-                        }
-
-                        _ => {
+                    TypeValue::Struct { id, .. } => {
+                        let Some(struct_name) = ex.store.struct_value(*id).name else {
                             ex.push_error(TypeError::Simple {
                                 loc: ex.program.value_loc(self.site),
                                 message: "indexing base must be an array or pointer to array",
                             });
                             return ResolveOutcome::drop(progress);
-                        }
+                        };
+
+                        let Some(target) = resolve_struct_deref_target(
+                            ex,
+                            types,
+                            self.site,
+                            self.base_value,
+                            current,
+                            struct_name,
+                            &mut self.deref_chain_lid,
+                            &mut self.deref_chain_mutability,
+                        ) else {
+                            ex.push_error(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "indexing base must be an array or pointer to array",
+                            });
+                            return ResolveOutcome::drop(progress);
+                        };
+
+                        self.implicit_receivers.push(current);
+                        self.implicit_receivers.push(target.deref_result_ptr);
+
+                        current = types.root(target.target);
                     }
-                }
+
+                    _ => {
+                        ex.push_error(TypeError::Simple {
+                            loc: ex.program.value_loc(self.site),
+                            message: "indexing base must be an array or pointer to array",
+                        });
+                        return ResolveOutcome::drop(progress);
+                    }
+                },
 
                 ResolveKind::Struct(rid) => {
                     let sid = types.extra.struct_infers[rid.0].sid;
@@ -2857,14 +2883,9 @@ impl PendingIndex {
     }
 }
 
-
 impl PendingDeref {
     #[inline(always)]
-    fn step(
-        &mut self,
-        ex: &mut ExternState,
-        types: &mut TypeState,
-    ) -> ResolveOutcome {
+    fn step(&mut self, ex: &mut ExternState, types: &mut TypeState) -> ResolveOutcome {
         let mut progress = false;
 
         let source = types.root(self.source);
@@ -2874,7 +2895,6 @@ impl PendingDeref {
         let mut deref_chain_mutability = None;
 
         let result = match types.core.cluster[source].state {
-
             // unknown — wait
             ResolveKind::Nothing => {
                 return ResolveOutcome::keep(false);
@@ -2885,10 +2905,7 @@ impl PendingDeref {
 
             // solved type
             ResolveKind::Solved(t) => match ex.store.type_value(t) {
-
-                TypeValue::Ptr { tgt, .. } => {
-                    Some(types.new_solved(*tgt))
-                }
+                TypeValue::Ptr { tgt, .. } => Some(types.new_solved(*tgt)),
 
                 TypeValue::Struct { id, .. } => {
                     let struct_name = ex.store.struct_value(*id).name;
@@ -2966,7 +2983,6 @@ impl PendingDeref {
     }
 }
 
-
 #[inline(always)]
 pub(crate) fn resolve_pending_derefs(ctx: &mut InferState) -> bool {
     let mut progress = false;
@@ -2982,7 +2998,6 @@ pub(crate) fn resolve_pending_derefs(ctx: &mut InferState) -> bool {
 
     progress
 }
-
 
 #[inline(always)]
 pub(crate) fn resolve_pending_indexes(ctx: &mut InferState) -> bool {
@@ -3022,13 +3037,7 @@ pub(crate) fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
         let source = types.root(pending.source);
         pending.source = source;
 
-        match pending.step(
-            ex,
-            types,
-            search,
-            member_method_type_sites,
-            
-        ) {
+        match pending.step(ex, types, search, member_method_type_sites) {
             MemberAccessResolve::Pending { source } => {
                 pending.source = source;
                 true
@@ -3130,7 +3139,6 @@ pub(crate) fn resolve_pending_int_accesses(ctx: &mut InferState) -> bool {
 
     progress
 }
-
 
 /// WARNING: this function is only intended for when lhs+rhs are not user defined
 /// we specifically do not check for user overloading

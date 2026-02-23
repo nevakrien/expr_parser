@@ -22,9 +22,8 @@
 // and then later when enough type info is present we can apply unification.
 // ================================================================
 // use std::arch::asm;
-use crate::global_type_inference::*;
-use crate::local_type_inference::*;
 use crate::ErrorReporter;
+use crate::global_type_inference::*;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
@@ -32,13 +31,11 @@ use crate::ir::LifeTimeId;
 use crate::ir::StructLayoutSpec;
 use crate::ir::VarKind;
 use crate::ir::{
-    BinOp, GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr,
-    UnOp, ValId, Value,
+    BinOp, GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, UnOp, ValId, Value,
 };
+use crate::local_type_inference::*;
 use crate::parsing::Loc;
-use crate::string_intern::{
-    StrId,
-};
+use crate::string_intern::StrId;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::ops::{Index, IndexMut};
@@ -315,33 +312,6 @@ pub struct TypeStore {
     pub(crate) structs: Vec<StructRep>,
     pub(crate) struct_overloads: IdHashMap<NameId, StructOverloadInfo>,
 }
-
-#[derive(Debug, Default, Clone)]
-pub struct StructOverloadInfo {
-    pub deref: Option<TypeId>,
-    pub deref_site: Option<ValId>,
-    pub deref_mut: Option<TypeId>,
-    pub deref_mut_site: Option<ValId>,
-    pub operators: IdHashMap<StrId, StructOperatorOverload>,
-}
-
-impl StructOverloadInfo {
-    #[inline(always)]
-    pub fn has_any(&self) -> bool {
-        self.deref.is_some() || self.deref_mut.is_some() || !self.operators.is_empty()
-    }
-}
-
-///todo add actual fields
-#[derive(Debug)]
-pub struct StructRep {
-    pub name: Option<NameId>,
-    pub fields: Vec<(NameId, TypeId)>,
-    pub gen_count: usize,
-    pub life_count: usize,
-    pub layout: StructLayoutSpec,
-}
-
 
 impl Default for TypeStore {
     fn default() -> Self {
@@ -814,42 +784,11 @@ impl TypeStore {
     }
 }
 
-fn subscript_id(id: usize) -> String {
-    const SUBS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
-    if id == 0 {
-        return SUBS[0].to_string();
-    }
-    let mut digits = Vec::new();
-    let mut n = id;
-    while n > 0 {
-        digits.push(SUBS[n % 10]);
-        n /= 10;
-    }
-    digits.reverse();
-    digits.into_iter().collect()
-}
-
 pub struct SolvedTypes {
-    pub val_types: Vec<TypeId>,
     pub typedef_types: IdHashMap<TExpId, TypeId>,
-    pub pat_types: Vec<TypeId>,
-    pub function_types: IdHashMap<NameId, SolvedFunctionTypes>,
-    pub member_function_types: IdHashMap<(NameId, StrId), SolvedFunctionTypes>,
-    pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
-    pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
-}
-#[derive(Debug, Clone, Copy)]
-pub struct SolvedFunctionTypes {
-    pub ty: TypeId,
-    pub impl_site: Option<ValId>,
-}
-
-
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SolvedMemberMethodAccessType {
-    pub member: StrId,
-    pub full_type: TypeId,
+    pub function_values: IdHashMap<ValId, SolvedFunctionTypes>,
+    pub function_types: IdHashMap<NameId, ValId>,
+    pub member_function_types: IdHashMap<(NameId, StrId), ValId>,
 }
 
 impl SolvedTypes {
@@ -858,59 +797,130 @@ impl SolvedTypes {
         typedef_types.reserve(program.definitions.len());
 
         Self {
-            pat_types: vec![UNKNOWN_TYPE; program.patterns.len()],
             typedef_types,
-            val_types: vec![UNKNOWN_TYPE; program.values.len()],
+            function_values: IdHashMap::default(),
             function_types: IdHashMap::default(),
             member_function_types: IdHashMap::default(),
-            member_method_types: IdHashMap::default(),
-            implicit_derefs: IdHashMap::default(),
         }
     }
 
     #[inline]
-    pub fn set_val(&mut self, id: ValId, t: TypeId) {
-        if self.val_types.len() <= id.0 {
-            self.val_types.resize(id.0, UNKNOWN_TYPE);
-        }
-
-        self.val_types[id.0] = t;
+    pub fn set_function_signature(&mut self, site: ValId, solved: SolvedFunctionTypes) {
+        self.function_values.insert(site, solved);
     }
 
     #[inline]
-    pub fn set_pat(&mut self, id: PatId, t: TypeId) {
-        if self.pat_types.len() <= id.0 {
-            self.pat_types.resize(id.0, UNKNOWN_TYPE);
+    pub fn set_function_inner(&mut self, site: ValId, inner: InnerFunctionTypes) {
+        if let Some(solved) = self.function_values.get_mut(&site) {
+            solved.inner = Some(inner);
         }
-
-        self.pat_types[id.0] = t;
     }
 
     #[inline(always)]
     pub fn type_of(&self, id: ValId) -> Option<TypeId> {
-        let ans = *self.val_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        self.function_values
+            .get(&id)
+            .map(|f| f.ty)
+            .filter(|ty| *ty != UNKNOWN_TYPE)
     }
 
     #[inline(always)]
     pub fn pat_type(&self, id: PatId) -> Option<TypeId> {
-        let ans = *self.pat_types.get(id.0)?;
-        if ans == UNKNOWN_TYPE { None } else { Some(ans) }
+        self.function_values
+            .values()
+            .find_map(|f| {
+                f.arguments
+                    .iter()
+                    .find_map(|(p, _, t)| (*p == id).then_some(*t))
+            })
+            .filter(|ty| *ty != UNKNOWN_TYPE)
     }
 
     #[inline(always)]
     pub fn member_method_type(&self, id: ValId) -> Option<SolvedMemberMethodAccessType> {
-        self.member_method_types.get(&id).copied()
+        self.function_values.values().find_map(|f| {
+            f.inner
+                .as_ref()
+                .and_then(|inner| inner.member_method_types.get(&id).copied())
+        })
+    }
+
+    #[inline(always)]
+    pub fn member_method_type_in_function(
+        &self,
+        function: ValId,
+        id: ValId,
+    ) -> Option<SolvedMemberMethodAccessType> {
+        self.inner_types_of_function(function)
+            .and_then(|inner| inner.member_method_types.get(&id).copied())
+    }
+
+    #[inline(always)]
+    pub fn inner_types_of_function(&self, function: ValId) -> Option<&InnerFunctionTypes> {
+        self.function_values
+            .get(&function)
+            .and_then(|f| f.inner.as_ref())
+    }
+
+    #[inline(always)]
+    pub fn inner_value_type(&self, function: ValId, value: ValId) -> Option<TypeId> {
+        self.inner_types_of_function(function)
+            .and_then(|inner| inner.val_types.get(&value).copied())
+            .filter(|ty| *ty != UNKNOWN_TYPE)
+    }
+
+    #[inline(always)]
+    pub fn inner_pattern_type(&self, function: ValId, pattern: PatId) -> Option<TypeId> {
+        self.inner_types_of_function(function)
+            .and_then(|inner| inner.pat_types.get(&pattern).copied())
+            .filter(|ty| *ty != UNKNOWN_TYPE)
     }
 
     #[inline(always)]
     pub fn function_types_by_name(&self, id: NameId) -> Option<&SolvedFunctionTypes> {
-        self.function_types.get(&id)
+        self.function_types
+            .get(&id)
+            .and_then(|site| self.function_values.get(site))
+    }
+
+    #[inline(always)]
+    pub fn member_function_types_by_name(
+        &self,
+        struct_name: NameId,
+        member: StrId,
+    ) -> Option<&SolvedFunctionTypes> {
+        self.member_function_types
+            .get(&(struct_name, member))
+            .and_then(|site| self.function_values.get(site))
+    }
+
+    #[inline(always)]
+    pub fn function_types_by_value(&self, id: ValId) -> Option<&SolvedFunctionTypes> {
+        self.function_values.get(&id)
+    }
+
+    #[inline(always)]
+    pub fn function_types_by_value_mut(&mut self, id: ValId) -> Option<&mut SolvedFunctionTypes> {
+        self.function_values.get_mut(&id)
     }
 
     #[inline(always)]
     pub fn implicit_deref_chain(&self, id: ValId) -> Option<&[TypeId]> {
-        self.implicit_derefs.get(&id).map(Vec::as_slice)
+        self.function_values.values().find_map(|f| {
+            f.inner
+                .as_ref()
+                .and_then(|inner| inner.implicit_derefs.get(&id).map(Vec::as_slice))
+        })
+    }
+
+    #[inline(always)]
+    pub fn implicit_deref_chain_in_function(
+        &self,
+        function: ValId,
+        id: ValId,
+    ) -> Option<&[TypeId]> {
+        self.inner_types_of_function(function)
+            .and_then(|inner| inner.implicit_derefs.get(&id).map(Vec::as_slice))
     }
 
     #[inline(always)]
@@ -929,6 +939,16 @@ impl SolvedTypes {
     }
 
     #[inline(always)]
+    pub fn member_access_implicit_deref_count_in_function(
+        &self,
+        function: ValId,
+        id: ValId,
+    ) -> Option<usize> {
+        self.implicit_deref_chain_in_function(function, id)
+            .map(|chain| chain.len())
+    }
+
+    #[inline(always)]
     pub fn index_implicit_deref_chain(&self, id: ValId) -> Option<&[TypeId]> {
         self.implicit_deref_chain(id)
     }
@@ -937,6 +957,72 @@ impl SolvedTypes {
     pub fn index_implicit_deref_count(&self, id: ValId) -> Option<usize> {
         self.implicit_deref_count(id)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SolvedFunctionTypes {
+    pub ty: TypeId,
+    pub impl_site: Option<ValId>,
+    pub declaration_sites: Vec<ValId>,
+    pub arguments: Vec<(PatId, Option<NameId>, TypeId)>,
+    pub generic_parameters: Vec<(PatId, Option<NameId>)>,
+    pub lifetime_parameters: Vec<(PatId, Option<LifeTimeId>)>,
+    pub inner: Option<InnerFunctionTypes>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InnerFunctionTypes {
+    pub val_types: IdHashMap<ValId, TypeId>,
+    pub pat_types: IdHashMap<PatId, TypeId>,
+    pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
+    pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolvedMemberMethodAccessType {
+    pub member: StrId,
+    pub full_type: TypeId,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct StructOverloadInfo {
+    pub deref: Option<TypeId>,
+    pub deref_site: Option<ValId>,
+    pub deref_mut: Option<TypeId>,
+    pub deref_mut_site: Option<ValId>,
+    pub operators: IdHashMap<StrId, StructOperatorOverload>,
+}
+
+impl StructOverloadInfo {
+    #[inline(always)]
+    pub fn has_any(&self) -> bool {
+        self.deref.is_some() || self.deref_mut.is_some() || !self.operators.is_empty()
+    }
+}
+
+///todo add actual fields
+#[derive(Debug)]
+pub struct StructRep {
+    pub name: Option<NameId>,
+    pub fields: Vec<(NameId, TypeId)>,
+    pub gen_count: usize,
+    pub life_count: usize,
+    pub layout: StructLayoutSpec,
+}
+
+fn subscript_id(id: usize) -> String {
+    const SUBS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
+    if id == 0 {
+        return SUBS[0].to_string();
+    }
+    let mut digits = Vec::new();
+    let mut n = id;
+    while n > 0 {
+        digits.push(SUBS[n % 10]);
+        n /= 10;
+    }
+    digits.reverse();
+    digits.into_iter().collect()
 }
 
 // ==============================
@@ -1235,9 +1321,6 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     Ok((Ok((types, solved_types)), function_checked))
 }
 
-
-
-
 ///this is just for tests we PURPOSFULLY ignore the global sig resolution
 fn _infer_value_hacky<'a>(
     program: &'a Program,
@@ -1246,7 +1329,23 @@ fn _infer_value_hacky<'a>(
 
     value: ValId,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
+    if !matches!(ans.function_values.get(&value), Some(_)) {
+        ans.set_function_signature(
+            value,
+            SolvedFunctionTypes {
+                ty: UNKNOWN_TYPE,
+                impl_site: Some(value),
+                declaration_sites: Vec::new(),
+                arguments: Vec::new(),
+                generic_parameters: Vec::new(),
+                lifetime_parameters: Vec::new(),
+                inner: None,
+            },
+        );
+    }
+
     let mut ctx = InferState::new(store, program, ans);
+    ctx.req.owner = Some(value);
 
     match ctx.ex.program.value(value) {
         Value::Func {
@@ -1267,11 +1366,12 @@ fn _infer_value_hacky<'a>(
             );
         }
         _ => {
-            gather_constraints(&mut ctx, value, None);
+            let c = gather_constraints(&mut ctx, value, None);
+            ctx.bind_val(value, c);
         }
     }
 
-    main_solver(&mut ctx);
+    main_solver_local(&mut ctx);
     if ctx.ex.errors.is_empty() {
         Ok(ctx.ex.ans)
     } else {
@@ -1279,7 +1379,32 @@ fn _infer_value_hacky<'a>(
     }
 }
 
-pub fn main_solver(ctx: &mut InferState) {
+pub fn main_solver_global(ctx: &mut InferState) {
+    let mut unknown_count = 0;
+
+    loop {
+        let mut progress = false;
+        progress |= resolve_deferred_types(ctx);
+        progress |= resolve_pending_specializations(ctx);
+
+        if progress {
+            continue;
+        }
+
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
+        if !progress {
+            break;
+        }
+    }
+
+    if !ctx.ex.errors.is_empty() {
+        return;
+    }
+
+    finalize_global(ctx);
+}
+
+pub fn main_solver_local(ctx: &mut InferState) {
     //this loop only exists once ALL requirments have checked and didnt complain
     //on the state we are gona release. since there was no change
     //this is SUPER important because they are not just progressions
@@ -1317,7 +1442,11 @@ pub fn main_solver(ctx: &mut InferState) {
         return;
     }
 
-    finalize(ctx);
+    finalize_local(ctx);
+}
+
+pub fn main_solver(ctx: &mut InferState) {
+    main_solver_local(ctx);
 }
 
 fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
@@ -1339,7 +1468,6 @@ fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count:
 
     progress
 }
-
 
 // ===================================
 // Inference state + unify-find clusters
@@ -1718,7 +1846,7 @@ impl PendingMemberAccess {
             site,
             base_value,
             source,
-            current: source,   // CRITICAL: start cursor here
+            current: source, // CRITICAL: start cursor here
             output,
             member,
             kind,
@@ -1728,7 +1856,6 @@ impl PendingMemberAccess {
         }
     }
 }
-
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PendingIntAccess {
@@ -1766,7 +1893,6 @@ impl PendingDeref {
         }
     }
 }
-
 
 #[derive(Debug)]
 pub(crate) struct PendingIndex {
@@ -1821,7 +1947,6 @@ impl PendingIndex {
         }
     }
 }
-
 
 pub(crate) enum GenLifeNameRender<'a> {
     TextNames {
@@ -1902,6 +2027,15 @@ impl<'a> ExternState<'a> {
     pub(crate) fn push_error(&mut self, err: TypeError) {
         self.errors.push(err);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlaceId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueKind {
+    LValue(PlaceId),
+    RValue,
 }
 
 pub(crate) struct SearchState {
@@ -2176,11 +2310,21 @@ impl TypeState {
     // union-find operations
     // =========================================================
 
-    pub(crate) fn unify(&mut self, ex: &mut ExternState<'_>, a: CId, b: CId) -> Result<CId, TypeClash> {
+    pub(crate) fn unify(
+        &mut self,
+        ex: &mut ExternState<'_>,
+        a: CId,
+        b: CId,
+    ) -> Result<CId, TypeClash> {
         unify_clusters(ex, self, a, b)
     }
 
-    pub(crate) fn force_type(&mut self, ex: &mut ExternState<'_>, a: CId, t: TypeId) -> Result<(), TypeClash> {
+    pub(crate) fn force_type(
+        &mut self,
+        ex: &mut ExternState<'_>,
+        a: CId,
+        t: TypeId,
+    ) -> Result<(), TypeClash> {
         // thin wrapper over old function until we migrate it
         force_type(ex, self, a, t)
     }
@@ -2218,7 +2362,11 @@ pub(crate) fn unify_struct_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
 }
 
 #[inline(always)]
-pub(crate) fn bind_struct_lid_to_lifetime(types: &mut TypeState, lid: LId, target: LifeTime) -> bool {
+pub(crate) fn bind_struct_lid_to_lifetime(
+    types: &mut TypeState,
+    lid: LId,
+    target: LifeTime,
+) -> bool {
     let root = types.find_lid_root(lid);
     let Some(merged) = merge_lifetime_known_strict(types.life_known[root], Some(target)) else {
         return false;
@@ -2233,6 +2381,7 @@ pub(crate) fn unify_ptr_lifetimes(_types: &mut TypeState, a: LifeTime, b: LifeTi
 }
 
 pub(crate) struct ReqState {
+    pub(crate) owner: Option<ValId>,
     //requirments
     pub(crate) bin_op_sites: Vec<BinOpSite>,
     pub(crate) un_op_sites: Vec<UnOpSite>,
@@ -2252,6 +2401,7 @@ pub(crate) struct ReqState {
 impl ReqState {
     fn new() -> Self {
         Self {
+            owner: None,
             bin_op_sites: Vec::new(),
             un_op_sites: Vec::new(),
             assign_pre_post_sites: Vec::new(),
@@ -2269,6 +2419,7 @@ impl ReqState {
 
     fn clear_local_state(&mut self) {
         let ReqState {
+            owner,
             bin_op_sites,
             un_op_sites,
             assign_pre_post_sites,
@@ -2282,6 +2433,7 @@ impl ReqState {
             pending_derefs,
         } = self;
 
+        *owner = None;
         bin_op_sites.clear();
         un_op_sites.clear();
         assign_pre_post_sites.clear();
@@ -3823,16 +3975,15 @@ fn specialize_type_inner(
             ret,
         } => {
             let ret = *ret;
-            let calling_convention=*calling_convention;
+            let calling_convention = *calling_convention;
 
             let mut inputs = Vec::with_capacity(params.len());
-            for i in 0..params.len(){
-                let TypeValue::Func{params,..} = ex.store.type_value(ty) else{
+            for i in 0..params.len() {
+                let TypeValue::Func { params, .. } = ex.store.type_value(ty) else {
                     unreachable!()
                 };
                 inputs.push(specialize_type_inner(ex, types, params[i], ctx))
             }
-
 
             let output = specialize_type_inner(ex, types, ret, ctx);
 
@@ -3873,19 +4024,18 @@ fn specialize_type_inner(
 
             let mut resolved = Vec::with_capacity(glen);
             for i in 0..glen {
-                let TypeValue::Struct{generics,..} = ex.store.type_value(ty) else{
+                let TypeValue::Struct { generics, .. } = ex.store.type_value(ty) else {
                     unreachable!()
                 };
                 resolved.push(specialize_type_inner(ex, types, generics[i], ctx))
             }
             let mut resolved_lifetimes = Vec::with_capacity(llen);
             for i in 0..llen {
-                let TypeValue::Struct{lifetimes,..} = ex.store.type_value(ty) else{
+                let TypeValue::Struct { lifetimes, .. } = ex.store.type_value(ty) else {
                     unreachable!()
                 };
-                resolved_lifetimes.push(specialize_lifetime(types,ctx, lifetimes[i]))
+                resolved_lifetimes.push(specialize_lifetime(types, ctx, lifetimes[i]))
             }
-            
 
             let call_id = StructInferId(types.extra.struct_infers.len());
             types.extra.struct_infers.push(StructInfer {
@@ -3934,15 +4084,17 @@ fn specialize_type_inner(
         TypeValue::Tuple(items) => {
             let mut new_items = Vec::with_capacity(items.len());
             for i in 0..items.len() {
-                let TypeValue::Tuple(items) = ex.store.type_value(ty) else{
+                let TypeValue::Tuple(items) = ex.store.type_value(ty) else {
                     unreachable!()
                 };
                 new_items.push(specialize_type_inner(ex, types, items[i], ctx));
             }
-            
 
             let tuple_id = TupleInferId(types.extra.tuple_infers.len());
-            types.extra.tuple_infers.push(TupleInfer { items:new_items });
+            types
+                .extra
+                .tuple_infers
+                .push(TupleInfer { items: new_items });
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
@@ -3996,7 +4148,6 @@ pub(crate) fn specialize_type(
 // Constraint gathering (alias where possible)
 // ===================================
 
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedStructDerefMethod {
     pub(crate) self_param: CId,
@@ -4007,16 +4158,11 @@ pub(crate) struct ResolvedStructDerefMethod {
     pub(crate) ret_mutable: Option<bool>,
 }
 
-
-
-
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedStructDerefTarget {
     pub(crate) target: CId,
     pub(crate) deref_result_ptr: CId,
 }
-
 
 #[derive(Debug)]
 pub(crate) enum MemberAccessResolve {
@@ -4041,10 +4187,6 @@ pub(crate) enum IntAccessResolve {
     },
     Error(TypeError),
 }
-
-
-
-
 
 // ///this tries to resolve specifically a from a module.
 // ///if what we have is a member of a struct it wont give a name
@@ -4115,8 +4257,19 @@ pub(crate) fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId 
 }
 
 #[inline(always)]
-pub(crate) fn gather_pattern_constraints_and_name(ctx: &mut InferState, p: PatId) -> (CId, Option<NameId>) {
+pub(crate) fn gather_pattern_constraints_and_name(
+    ctx: &mut InferState,
+    p: PatId,
+) -> (CId, Option<NameId>) {
     gather_pattern_constraints_and_name_with_generics::<false>(ctx, p)
+}
+
+pub(crate) fn pattern_bind_name(program: &Program, p: PatId) -> Option<NameId> {
+    match program.pattern(p) {
+        Pattern::Bind(n, _) => Some(n),
+        Pattern::TypeAnnotation { pat, .. } => pattern_bind_name(program, pat),
+        _ => None,
+    }
 }
 
 #[inline(always)]
@@ -4193,7 +4346,6 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         _ => todo!(),
     }
 }
-
 
 #[inline(always)]
 pub(crate) fn compile_type_expr(ctx: &mut InferState, texpr: TExpId) -> CId {
@@ -4307,8 +4459,6 @@ pub(crate) fn unify_if_distinct(
     Ok(true)
 }
 
-
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolveOutcome {
     pub(crate) progress: bool,
@@ -4342,7 +4492,6 @@ pub(crate) struct ResolvedMemberOverload {
     pub(crate) ret: CId,
     pub(crate) full_method: CId,
 }
-
 
 #[inline(always)]
 fn resolve_deferred_types(ctx: &mut InferState) -> bool {
@@ -4446,38 +4595,21 @@ fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 #[inline(always)]
 // #[inline(never)]
 // #[unsafe(no_mangle)]
-fn finalize(ctx: &mut InferState) {
+fn finalize_global(ctx: &mut InferState) {
     let InferState {
-        search,
-        req,
-        types,
-        ex,
-        ..
+        search, types, ex, ..
     } = ctx;
 
-    let val_cluster = &search.val_cluster;
-    let pat_cluster = &search.pat_cluster;
-    let typedef_cluster = &search.typedef_cluster;
-    let member_method_type_sites = &req.member_method_type_sites;
-    let member_access_implicit_deref_sites = &req.member_access_implicit_deref_sites;
-    let index_implicit_deref_sites = &req.index_implicit_deref_sites;
-
-
-    // unsafe{perf_begin();}
-
     let mut reported: IdHashMap<CId, ()> = IdHashMap::default();
-    let mut member_method_by_site: IdHashMap<ValId, PendingMemberMethodType> = IdHashMap::default();
-    for &entry in member_method_type_sites {
-        member_method_by_site.insert(entry.site, entry);
-    }
 
-    for (e, c) in typedef_cluster {
+    for (e, c) in &search.typedef_cluster {
         let root = types.root(*c);
         if let ResolveKind::Solved(t) = types.cluster_state(root) {
             ex.ans.typedef_types.insert(*e, t);
         } else if *c == root {
             let found = types.bad_type(ex, root);
-            ex.errors.push(TypeError::UnresolvedTypeExpr { expr: *e, found });
+            ex.errors
+                .push(TypeError::UnresolvedTypeExpr { expr: *e, found });
             reported.insert(root, ());
         }
     }
@@ -4490,11 +4622,7 @@ fn finalize(ctx: &mut InferState) {
         };
 
         for i in 0..field_len {
-            let c = {
-                // borrow only long enough to read the cluster id
-                types.extra.struct_defs[sid_i].fields[i].1
-            };
-
+            let c = types.extra.struct_defs[sid_i].fields[i].1;
             let root = types.root(c);
 
             if let ResolveKind::Solved(t) = types.cluster_state(root) {
@@ -4510,10 +4638,112 @@ fn finalize(ctx: &mut InferState) {
         }
     }
 
+    let mut pat_type_by_id: IdHashMap<PatId, TypeId> = IdHashMap::default();
+    for (p, c) in &search.pat_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            pat_type_by_id.insert(*p, t);
+        } else if *c == root && !reported.contains_key(c) {
+            let found = types.bad_type(ex, root);
+            ex.errors
+                .push(TypeError::UnresolvedPattern { pattern: *p, found });
+            reported.insert(root, ());
+        }
+    }
+
+    for (v, c) in &search.val_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            let Value::Func {
+                generics,
+                params,
+                body,
+                ..
+            } = ex.program.value(*v)
+            else {
+                continue;
+            };
+
+            let arguments = params
+                .ids()
+                .map(|pat| {
+                    (
+                        pat,
+                        pattern_bind_name(ex.program, pat),
+                        pat_type_by_id.get(&pat).copied().unwrap_or(UNKNOWN_TYPE),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let generic_parameters = generics
+                .generics()
+                .ids()
+                .map(|pat| (pat, pattern_bind_name(ex.program, pat)))
+                .collect::<Vec<_>>();
+
+            let lifetime_parameters = generics
+                .lifetimes()
+                .ids()
+                .map(|pat| {
+                    (
+                        pat,
+                        match ex.program.pattern(pat) {
+                            Pattern::LifeTime(lt) => Some(lt),
+                            _ => None,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            ex.ans.set_function_signature(
+                *v,
+                SolvedFunctionTypes {
+                    ty: t,
+                    impl_site: body.map(|_| *v),
+                    declaration_sites: body.is_none().then_some(*v).into_iter().collect(),
+                    arguments,
+                    generic_parameters,
+                    lifetime_parameters,
+                    inner: None,
+                },
+            );
+        } else if *c == root && !reported.contains_key(c) {
+            let found = types.bad_type(ex, root);
+            ex.errors.push(TypeError::Unresolved { value: *v, found });
+            reported.insert(root, ());
+        }
+    }
+}
+
+fn finalize_local(ctx: &mut InferState) {
+    let InferState {
+        search,
+        req,
+        types,
+        ex,
+        ..
+    } = ctx;
+
+    let val_cluster = &search.val_cluster;
+    let pat_cluster = &search.pat_cluster;
+    let member_method_type_sites = &req.member_method_type_sites;
+    let member_access_implicit_deref_sites = &req.member_access_implicit_deref_sites;
+    let index_implicit_deref_sites = &req.index_implicit_deref_sites;
+
+    // unsafe{perf_begin();}
+
+    let mut reported: IdHashMap<CId, ()> = IdHashMap::default();
+    let mut member_method_by_site: IdHashMap<ValId, PendingMemberMethodType> = IdHashMap::default();
+    for &entry in member_method_type_sites {
+        member_method_by_site.insert(entry.site, entry);
+    }
+
+    let mut inner = InnerFunctionTypes::default();
+
     for (v, c) in val_cluster {
         let root = types.root(*c);
         if let ResolveKind::Solved(t) = types.cluster_state(root) {
-            ex.ans.set_val(*v, t);
+            inner.val_types.insert(*v, t);
         } else if *c == root && !reported.contains_key(&c) {
             let found = types.bad_type(ex, root);
             ex.errors.push(TypeError::Unresolved { value: *v, found });
@@ -4528,10 +4758,11 @@ fn finalize(ctx: &mut InferState) {
     for (p, c) in pat_cluster {
         let root = types.root(*c);
         if let ResolveKind::Solved(t) = types.cluster_state(root) {
-            ex.ans.set_pat(*p, t);
+            inner.pat_types.insert(*p, t);
         } else if *c == root && !reported.contains_key(&c) {
             let found = types.bad_type(ex, root);
-            ex.errors.push(TypeError::UnresolvedPattern { pattern: *p, found });
+            ex.errors
+                .push(TypeError::UnresolvedPattern { pattern: *p, found });
             reported.insert(root, ());
         }
     }
@@ -4539,7 +4770,7 @@ fn finalize(ctx: &mut InferState) {
     for entry in member_method_type_sites {
         let root = types.root(entry.full_method);
         if let ResolveKind::Solved(full_type) = types.cluster_state(root) {
-            ex.ans.member_method_types.insert(
+            inner.member_method_types.insert(
                 entry.site,
                 SolvedMemberMethodAccessType {
                     member: entry.member,
@@ -4561,10 +4792,8 @@ fn finalize(ctx: &mut InferState) {
         //in that case we need to report an error but its gona be a bad one...
 
         let receiver_root = types.root(entry.receiver);
-        if !matches!(
-            types.cluster_state(receiver_root),
-            ResolveKind::Solved(_)
-        ) && !reported.contains_key(&receiver_root)
+        if !matches!(types.cluster_state(receiver_root), ResolveKind::Solved(_))
+            && !reported.contains_key(&receiver_root)
         {
             let found = types.bad_type(ex, receiver_root);
             ex.errors.push(TypeError::Unresolved {
@@ -4577,17 +4806,28 @@ fn finalize(ctx: &mut InferState) {
     }
 
     store_implicit_deref_chains(
-        &mut ex.ans.implicit_derefs,
+        &mut inner.implicit_derefs,
         member_access_implicit_deref_sites,
         &mut types.core.parent,
         &types.core.cluster,
     );
     store_implicit_deref_chains(
-        &mut ex.ans.implicit_derefs,
+        &mut inner.implicit_derefs,
         index_implicit_deref_sites,
         &mut types.core.parent,
         &types.core.cluster,
     );
+
+    let owner = req.owner.or_else(|| {
+        val_cluster
+            .iter()
+            .find_map(|(v, _)| matches!(ex.program.value(*v), Value::Func { .. }).then_some(*v))
+            .or_else(|| val_cluster.first().map(|(v, _)| *v))
+    });
+
+    if let Some(owner) = owner {
+        ex.ans.set_function_inner(owner, inner);
+    }
 
     // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
     // unsafe { perf_done(name.as_ptr()); }
@@ -4734,7 +4974,7 @@ mod type_infer_tests {
             };
             if program.name_string(n) == name {
                 return solved
-                    .type_of(stmt)
+                    .inner_value_type(func, stmt)
                     .unwrap_or_else(|| panic!("missing type for let `{}`", name));
             }
         }
@@ -4786,6 +5026,17 @@ mod type_infer_tests {
             .unwrap_or_else(|| panic!("type `{}` did not resolve", name))
     }
 
+    fn find_signature_param_type(solved: &SolvedTypes, function: ValId, pat: PatId) -> TypeId {
+        solved
+            .function_types_by_value(function)
+            .and_then(|f| {
+                f.arguments
+                    .iter()
+                    .find_map(|(param_pat, _, ty)| (*param_pat == pat).then_some(*ty))
+            })
+            .unwrap_or_else(|| panic!("missing signature parameter type for pattern {:?}", pat))
+    }
+
     fn find_member_access_and_result_types(
         program: &Program,
         solved: &SolvedTypes,
@@ -4823,10 +5074,10 @@ mod type_infer_tests {
             };
 
             let access_ty = solved
-                .type_of(call.base)
+                .inner_value_type(func, call.base)
                 .unwrap_or_else(|| panic!("missing type for member access in `{}`", name));
             let result_ty = solved
-                .type_of(stmt)
+                .inner_value_type(func, stmt)
                 .unwrap_or_else(|| panic!("missing type for let statement `{}`", name));
             return (call.base, access_ty, result_ty);
         }
@@ -4838,10 +5089,11 @@ mod type_infer_tests {
         program: &Program,
         store: &TypeStore,
         solved: &SolvedTypes,
+        function: ValId,
         site: ValId,
     ) -> Option<Vec<String>> {
         solved
-            .member_access_implicit_deref_chain(site)
+            .implicit_deref_chain_in_function(function, site)
             .map(|chain| {
                 chain
                     .iter()
@@ -4862,7 +5114,7 @@ mod type_infer_tests {
         };
 
         let solved_types = infer_value_internals(&program, store, &mut solved_types, f)?;
-        Ok(solved_types.type_of(body).unwrap())
+        Ok(solved_types.inner_value_type(f, body).unwrap())
     }
 
     //this is a hack for just testing
@@ -4878,7 +5130,7 @@ mod type_infer_tests {
         };
 
         let solved_types = _infer_value_hacky(&program, store, &mut solved_types, body)?;
-        Ok(solved_types.type_of(body).unwrap())
+        Ok(solved_types.inner_value_type(body, body).unwrap())
     }
 
     fn infer_global_errs(src: &str) -> Vec<TypeError> {
@@ -6442,16 +6694,18 @@ mod type_infer_tests {
         let Value::Func { params, .. } = program.value(f) else {
             panic!("expected function value");
         };
-        let x_ty = solved_types
-            .pat_type(params.at(0))
-            .expect("missing parameter type for x");
+        let x_ty = find_signature_param_type(&solved_types, f, params.at(0));
         let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
         assert_eq!(x_ty, s_ty);
         let call_site = find_let_stmt_value(&program, f, "y");
         let (access_site, access_ty, call_ty) =
             find_member_access_and_result_types(&program, &solved_types, f, "y");
         assert_ne!(access_site, call_site);
-        assert!(solved_types.member_method_type(call_site).is_none());
+        assert!(
+            solved_types
+                .member_method_type_in_function(f, call_site)
+                .is_none()
+        );
 
         let TypeValue::Func { params, ret, .. } = store.type_value(access_ty) else {
             panic!("expected member access to be curried function")
@@ -6461,7 +6715,7 @@ mod type_infer_tests {
         assert_eq!(call_ty, x_ty);
 
         let called = solved_types
-            .member_method_type(access_site)
+            .member_method_type_in_function(f, access_site)
             .expect("missing solved member method signature for access site");
         assert_eq!(program.str_intern.resolve(called.member), "add_5");
         let TypeValue::Func { params, ret, .. } = store.type_value(called.full_type) else {
@@ -6486,16 +6740,18 @@ mod type_infer_tests {
         let Value::Func { params, .. } = program.value(f) else {
             panic!("expected function value");
         };
-        let x_ty = solved_types
-            .pat_type(params.at(0))
-            .expect("missing parameter type for x");
+        let x_ty = find_signature_param_type(&solved_types, f, params.at(0));
         let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
         assert_eq!(x_ty, s_ty);
         let call_site = find_let_stmt_value(&program, f, "y");
         let (access_site, access_ty, call_ty) =
             find_member_access_and_result_types(&program, &solved_types, f, "y");
         assert_ne!(access_site, call_site);
-        assert!(solved_types.member_method_type(call_site).is_none());
+        assert!(
+            solved_types
+                .member_method_type_in_function(f, call_site)
+                .is_none()
+        );
 
         let TypeValue::Func { params, ret, .. } = store.type_value(access_ty) else {
             panic!("expected member access to be curried function")
@@ -6511,7 +6767,7 @@ mod type_infer_tests {
         ));
 
         let called = solved_types
-            .member_method_type(access_site)
+            .member_method_type_in_function(f, access_site)
             .expect("missing solved member method signature for access site");
         assert_eq!(program.str_intern.resolve(called.member), "add_5");
         let TypeValue::Func {
@@ -6568,12 +6824,13 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             Some(2),
             "plain pointer-like implicit deref should be tracked"
         );
-        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
-            .expect("expected implicit deref chain");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
         assert_eq!(chain.len(), 2);
         assert!(chain[0].contains("S"));
         assert!(chain[1].contains("S"));
@@ -6598,11 +6855,12 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             Some(2)
         );
-        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
-            .expect("expected implicit deref chain");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
         assert_eq!(chain.len(), 2);
         assert!(chain[0].contains("Box"));
         assert!(chain[1].contains("Inner"));
@@ -6627,7 +6885,7 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             None
         );
     }
@@ -6676,11 +6934,12 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             Some(3)
         );
-        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
-            .expect("expected implicit deref chain");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
         assert_eq!(chain.len(), 3);
         assert!(chain[0].contains("Wrap"));
         assert!(chain[1].contains("Box"));
@@ -6763,7 +7022,7 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "a");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             None
         );
     }
@@ -6787,7 +7046,7 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "a");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             Some(3)
         );
     }
@@ -6834,11 +7093,12 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             Some(2)
         );
-        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
-            .expect("expected implicit deref chain");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
         assert_eq!(chain.len(), 2);
         assert!(chain[0].contains("Box"));
         assert!(chain[1].contains("Inner"));
@@ -6857,12 +7117,13 @@ mod type_infer_tests {
 
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
-            solved_types.member_access_implicit_deref_count(access_site),
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
             Some(4)
         );
 
-        let chain = implicit_deref_chain_type_strings(&program, &store, &solved_types, access_site)
-            .expect("expected implicit deref chain");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
         assert_eq!(chain.len(), 4);
         assert!(chain[0].contains("Wrap"));
         assert!(chain.iter().any(|t| t.contains("&")));
@@ -7042,7 +7303,7 @@ mod type_infer_tests {
         };
         let body = body.expect("expected function body");
         let ty = solved_types
-            .type_of(body)
+            .inner_value_type(f, body)
             .expect("missing inferred body type");
         assert!(matches!(
             store.type_value(ty),
@@ -7089,7 +7350,7 @@ mod type_infer_tests {
         };
         let body = body.expect("expected function body");
         let ty = solved_types
-            .type_of(body)
+            .inner_value_type(f, body)
             .expect("missing inferred body type");
         assert!(matches!(
             store.type_value(ty),
@@ -7215,7 +7476,7 @@ mod type_infer_tests {
         };
         let body = body.expect("expected function body");
         let body_ty = solved_types
-            .type_of(body)
+            .inner_value_type(f, body)
             .unwrap_or_else(|| panic!("missing body type for `f`"));
 
         assert!(matches!(

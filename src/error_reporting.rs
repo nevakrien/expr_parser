@@ -1,4 +1,4 @@
-use crate::ir::{BinOp, PatId, UnOp, ValId};
+use crate::ir::{BinOp, UnOp};
 use crate::parsing::{Loc, OTok, ParseError};
 use crate::program::{CompileError, Program};
 use crate::type_inference::{SolvedTypes, TypeClash, TypeError, TypeStore, UNKNOWN_TYPE};
@@ -945,26 +945,48 @@ impl ErrorReporter {
         let mut labels_by_file: HashMap<usize, Vec<(std::ops::Range<usize>, String, Color)>> =
             HashMap::new();
 
-        for index in 0..solved.val_types.len() {
-            let Some(t) = solved.type_of(ValId(index)) else {
+        let mut typedef_entries = solved
+            .typedef_types
+            .iter()
+            .map(|(texp, t)| (*texp, *t))
+            .collect::<Vec<_>>();
+        typedef_entries.sort_unstable_by_key(|(texp, _)| texp.0);
+
+        for (texp, t) in typedef_entries {
+            if t == UNKNOWN_TYPE {
                 continue;
-            };
-            let loc = program.value_loc(ValId(index));
+            }
+            let loc = program.type_expr_loc(texp);
             if !loc_in_region(&loc, region) {
                 continue;
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("value: {}", store.get_type_string(program, t)),
-                Color::Yellow,
+                format!("type expr: {}", store.get_type_string(program, t)),
+                Color::Green,
             ));
         }
 
-        for index in 0..solved.pat_types.len() {
-            let Some(t) = solved.pat_type(PatId(index)) else {
-                continue;
-            };
-            let loc = program.pattern_loc(PatId(index));
+        let mut pattern_entries = solved
+            .function_values
+            .values()
+            .flat_map(|f| {
+                f.arguments
+                    .iter()
+                    .map(|(pat, _name, ty)| (*pat, *ty))
+                    .chain(
+                        f.inner
+                            .as_ref()
+                            .into_iter()
+                            .flat_map(|inner| inner.pat_types.iter().map(|(pat, ty)| (*pat, *ty))),
+                    )
+            })
+            .collect::<Vec<_>>();
+        pattern_entries.sort_unstable_by_key(|(pat, _)| pat.0);
+        pattern_entries.dedup_by_key(|(pat, _)| *pat);
+
+        for (pat, t) in pattern_entries {
+            let loc = program.pattern_loc(pat);
             if !loc_in_region(&loc, region) {
                 continue;
             }
@@ -975,24 +997,63 @@ impl ErrorReporter {
             ));
         }
 
-        for (texp, t) in solved.typedef_types.iter() {
-            if *t == UNKNOWN_TYPE {
-                continue;
-            }
+        let mut value_entries = solved
+            .function_values
+            .iter()
+            .flat_map(|(function, f)| {
+                std::iter::once((*function, f.ty)).chain(
+                    f.inner
+                        .as_ref()
+                        .into_iter()
+                        .flat_map(|inner| inner.val_types.iter().map(|(val, ty)| (*val, *ty))),
+                )
+            })
+            .collect::<Vec<_>>();
+        value_entries.sort_unstable_by_key(|(site, _)| site.0);
+        value_entries.dedup_by_key(|(site, _)| *site);
 
-            let loc = program.type_expr_loc(*texp);
+        let mut member_entries = solved
+            .function_values
+            .values()
+            .flat_map(|f| {
+                f.inner.as_ref().into_iter().flat_map(|inner| {
+                    inner
+                        .member_method_types
+                        .iter()
+                        .map(|(site, member)| (*site, *member))
+                })
+            })
+            .collect::<Vec<_>>();
+        member_entries.sort_unstable_by_key(|(site, _)| site.0);
+
+        let mut deref_entries = solved
+            .function_values
+            .values()
+            .flat_map(|f| {
+                f.inner.as_ref().into_iter().flat_map(|inner| {
+                    inner
+                        .implicit_derefs
+                        .iter()
+                        .map(|(site, chain)| (*site, chain.as_slice()))
+                })
+            })
+            .collect::<Vec<_>>();
+        deref_entries.sort_unstable_by_key(|(site, _)| site.0);
+
+        for (site, t) in value_entries {
+            let loc = program.value_loc(site);
             if !loc_in_region(&loc, region) {
                 continue;
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("type expr: {}", store.get_type_string(program, *t)),
-                Color::Green,
+                format!("value: {}", store.get_type_string(program, t)),
+                Color::Yellow,
             ));
         }
 
-        for (site, member) in solved.member_method_types.iter() {
-            let loc = program.value_loc(*site);
+        for (site, member) in member_entries {
+            let loc = program.value_loc(site);
             if !loc_in_region(&loc, region) {
                 continue;
             }
@@ -1008,8 +1069,8 @@ impl ErrorReporter {
             ));
         }
 
-        for (site, chain) in solved.implicit_derefs.iter() {
-            let loc = program.value_loc(*site);
+        for (site, chain) in deref_entries {
+            let loc = program.value_loc(site);
             if !loc_in_region(&loc, region) {
                 continue;
             }

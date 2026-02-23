@@ -1,4 +1,14 @@
-# Type Inference System Summary (`src/type_inference.rs`)
+# Type Inference System Summary (`src/type_inference.rs`, `src/global_type_inference.rs`, `src/local_type_inference.rs`)
+
+## File Layout Update
+
+Type inference is no longer a single monolithic file. The implementation is now split by phase:
+
+- `src/global_type_inference.rs`: global typedef + function signature solving.
+- `src/local_type_inference.rs`: function body / local value inference.
+- `src/type_inference.rs`: shared type model, union-find machinery, common helpers, error types, and orchestration.
+
+When reading call paths, prefer starting from `infer_global_types` (global pass) and `infer_value_internals` (local pass), then jump into shared helpers in `type_inference.rs`.
 
 ## High-Level Philosophy
 
@@ -360,7 +370,12 @@ Maintenance note: this whole gather layer is intentionally unfinished in places.
 
 ## Middle Solver and Finalization
 
-`main_solver` iterates until fixpoint:
+There are now two solver entrypoints:
+
+- `main_solver_global`: used in global signature/type-def solving; runs only global-safe deferred steps, then `finalize_global`.
+- `main_solver_local`: used for function internals/value solving; runs operator/member/index/deref local queues, then `finalize_local`.
+
+`main_solver_local` iterates until fixpoint:
 
 1. `resolve_operator_types`
 2. `resolve_deferred_types`
@@ -372,15 +387,37 @@ Maintenance note: this whole gather layer is intentionally unfinished in places.
 It's important that these updates remain order-independent.
 Errors emitted can be order-dependent, but whether or not a solve is reached must be independent.
 
-Then `finalize`:
+Then `finalize_local`:
 
-- commits solved typedef/value/pattern types into `SolvedTypes`,
+- commits solved local value/pattern/member-access data into per-function `InnerFunctionTypes`,
 - writes finalized struct field types,
 - keeps generic function values as `TypeValue::Func` with a non-zero `generics` count,
 - emits unresolved errors once per unresolved root (to reduce duplicate noise),
-- finalizes `SolvedTypes.member_method_types` from deferred member/operator call sites,
-- finalizes `SolvedTypes.implicit_derefs` for value sites that used implicit dereference hops (member access + index),
+- finalizes member/operator call-site method metadata and implicit deref chains into `InnerFunctionTypes`,
 - suppresses duplicate unresolved reporting between curried call-site values and unresolved full member signatures, preferring unresolved receiver/reference value sites when only the full member signature remains unresolved.
+
+`finalize_global` is separate and only commits global products (typedefs, struct field types, solved function signatures and signature metadata).
+
+## SolvedTypes Shape Update
+
+`SolvedTypes` is now split by scope:
+
+- Global data stays global (`typedef_types`, named function/member function signature maps).
+- Function internals (`val_types`, `pat_types`, member method call-site types, implicit deref chains) live in `InnerFunctionTypes`, attached to `SolvedFunctionTypes.inner` for each function.
+
+`SolvedFunctionTypes` now carries signature metadata captured during global resolution, including:
+
+- solved function type id,
+- impl site,
+- declaration sites,
+- argument tuples `(PatId, Option<NameId>, TypeId)`,
+- generic parameter list,
+- lifetime parameter list,
+- optional `inner` local-inference results.
+
+This enables local inference to load pre-solved signature info directly instead of re-gathering signatures from syntax.
+
+Named function-set maps now store canonical `ValId` links (not duplicated full solved payloads). The canonical entry in `function_values` is updated with function-set metadata (`impl_site` + `declaration_sites`), and name/member lookups resolve through that id.
 
 ## Operator Resolution Notes
 

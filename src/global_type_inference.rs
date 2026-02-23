@@ -3,10 +3,7 @@ use crate::ir::LifeTimeId;
 use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
-use crate::ir::{
-    GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr,
-    ValId, Value,
-};
+use crate::ir::{GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, ValId, Value};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
     DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
@@ -14,7 +11,8 @@ use crate::string_intern::{
     SUB_STR, StrId, USER_FREE_STR,
 };
 
-use crate::program::{Defined, FunctionSet, Program};///this function gathers global typedefs/structs
+use crate::program::{Defined, FunctionSet, Program};
+///this function gathers global typedefs/structs
 use crate::type_inference::*;
 
 ///and just the signature part of global functions
@@ -57,7 +55,7 @@ pub fn infer_global_types<'a>(
         }
     }
 
-    main_solver(&mut ctx);
+    main_solver_global(&mut ctx);
 
     for (_n, def) in program.definitions.iter() {
         let Defined::Type(texp) = def else {
@@ -188,12 +186,12 @@ fn check_and_record_function_set_types(
     let first_impl = functions.implementations.first().copied();
 
     let (reference_site, reference_type, first_decl_site) = if let Some(decl) = first_decl {
-        let Some(reference_type) = ctx.ex.ans.type_of(decl) else {
+        let Some(reference_type) = ctx.ex.ans.function_types_by_value(decl).map(|f| f.ty) else {
             return Some((UNKNOWN_TYPE, decl));
         };
         (decl, reference_type, Some(decl))
     } else if let Some(imp) = first_impl {
-        let Some(reference_type) = ctx.ex.ans.type_of(imp) else {
+        let Some(reference_type) = ctx.ex.ans.function_types_by_value(imp).map(|f| f.ty) else {
             return Some((UNKNOWN_TYPE, imp));
         };
         (imp, reference_type, None)
@@ -202,7 +200,7 @@ fn check_and_record_function_set_types(
     };
 
     for &decl in &functions.declarations {
-        let Some(ty) = ctx.ex.ans.type_of(decl) else {
+        let Some(ty) = ctx.ex.ans.function_types_by_value(decl).map(|f| f.ty) else {
             return Some((UNKNOWN_TYPE, reference_site));
         };
         if ty != reference_type {
@@ -225,7 +223,7 @@ fn check_and_record_function_set_types(
             });
         }
 
-        let Some(impl_type) = ctx.ex.ans.type_of(first_impl) else {
+        let Some(impl_type) = ctx.ex.ans.function_types_by_value(first_impl).map(|f| f.ty) else {
             return Some((UNKNOWN_TYPE, reference_site));
         };
         if impl_type != reference_type {
@@ -240,22 +238,21 @@ fn check_and_record_function_set_types(
             });
         }
     }
+    if let Some(reference) = ctx.ex.ans.function_types_by_value_mut(reference_site) {
+        reference.impl_site = first_impl;
+        reference.declaration_sites.clear();
+        reference
+            .declaration_sites
+            .extend(functions.declarations.iter().copied());
+    }
+
     if let Some(s) = method_str {
-        ctx.ex.ans.member_function_types.insert(
-            (name, s),
-            SolvedFunctionTypes {
-                ty: reference_type,
-                impl_site: first_impl,
-            },
-        );
+        ctx.ex
+            .ans
+            .member_function_types
+            .insert((name, s), reference_site);
     } else {
-        ctx.ex.ans.function_types.insert(
-            name,
-            SolvedFunctionTypes {
-                ty: reference_type,
-                impl_site: first_impl,
-            },
-        );
+        ctx.ex.ans.function_types.insert(name, reference_site);
     }
 
     Some((reference_type, reference_site))
@@ -614,7 +611,7 @@ pub(crate) fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
     }
 }
 
-pub(crate)  fn compile_type_expr_with_mode(
+pub(crate) fn compile_type_expr_with_mode(
     ctx: &mut InferState,
     texpr: TExpId,
     mode: TypeExprCompileMode,
@@ -895,7 +892,6 @@ pub(crate)  fn compile_type_expr_with_mode(
     }
 }
 
-
 fn type_check_func_signature(
     ctx: &mut InferState,
     v: ValId,
@@ -912,13 +908,13 @@ fn type_check_func_signature(
     let (f, _) =
         gather_func_signature::<true>(ctx, v, calling_convention, generics, params, output_type);
     ctx.bind_val(v, f);
-    main_solver(ctx);
+    main_solver_global(ctx);
 
     ctx.ex.name_render = previous_name_render;
 }
 
 fn check_unused_function_signature_generics_and_lifetimes(ctx: &mut InferState, function: ValId) {
-    let Some(ty) = ctx.ex.ans.type_of(function) else {
+    let Some(ty) = ctx.ex.ans.function_types_by_value(function).map(|f| f.ty) else {
         return;
     };
 
@@ -1265,8 +1261,6 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     (f, output)
 }
 
-
-
 #[inline(always)]
 fn is_binary_operator_overload_name(name: StrId) -> bool {
     matches!(
@@ -1368,7 +1362,6 @@ fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeI
         _ => None,
     }
 }
-
 
 #[inline(always)]
 fn get_member_self_pointer_style(
@@ -1838,7 +1831,6 @@ fn check_special_member_method_signature(
         method_name,
     });
 }
-
 
 impl StructRep {
     fn new(
