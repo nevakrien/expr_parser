@@ -1805,9 +1805,9 @@ impl<'a> InferState<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CId(usize);
+pub(crate) struct CId(usize);
 
-struct ClusterVec<T>(Vec<T>);
+pub(crate) struct ClusterVec<T>(Vec<T>);
 impl<T> ClusterVec<T> {
     fn new() -> Self {
         Self(Vec::new())
@@ -1834,9 +1834,9 @@ impl<T> IndexMut<CId> for ClusterVec<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct LId(usize);
+pub(crate) struct LId(usize);
 
-struct LifeVec<T>(Vec<T>);
+pub(crate) struct LifeVec<T>(Vec<T>);
 #[allow(dead_code)]
 impl<T> LifeVec<T> {
     fn new() -> Self {
@@ -1864,21 +1864,21 @@ impl<T> IndexMut<LId> for LifeVec<T> {
 }
 
 #[derive(Debug)]
-struct Cluster {
-    state: ResolveKind,
+pub(crate) struct Cluster {
+    pub(crate) state: ResolveKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct FuncInferId(usize);
+pub(crate) struct FuncInferId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct StructInferId(usize);
+pub(crate) struct StructInferId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct TupleInferId(usize);
+pub(crate) struct TupleInferId(usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum PtrKind {
+pub(crate) enum PtrKind {
     Solved(PointerStyle),
     RefInfer(LId),
 
@@ -1909,8 +1909,8 @@ impl PtrKind {
     // }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ResolveKind {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ResolveKind {
     Solved(TypeId),
     Nothing,
 
@@ -1937,89 +1937,89 @@ enum ResolveKind {
 }
 
 #[derive(Debug)]
-struct FuncInfer {
-    calling_convention: CallingConvention,
-    generics: usize,
-    lifetimes: usize,
-    inputs: Vec<CId>,
-    output: CId,
+pub(crate) struct FuncInfer {
+    pub(crate) calling_convention: CallingConvention,
+    pub(crate) generics: usize,
+    pub(crate) lifetimes: usize,
+    pub(crate) inputs: Vec<CId>,
+    pub(crate) output: CId,
 }
 
 #[derive(Debug)]
-struct StructInfer {
-    sid: StructId,
-    generics: Vec<CId>,
-    lifetimes: Vec<LId>,
+pub(crate) struct StructInfer {
+    pub(crate) sid: StructId,
+    pub(crate) generics: Vec<CId>,
+    pub(crate) lifetimes: Vec<LId>,
 }
 
 #[derive(Debug)]
-struct TupleInfer {
-    items: Vec<CId>,
+pub(crate) struct TupleInfer {
+    pub(crate) items: Vec<CId>,
 }
 
 #[derive(Debug)]
-struct StructDef {
+pub(crate) struct StructDef {
     #[allow(dead_code)]
-    loc: TExpId,
-    fields: Vec<(NameId, CId)>,
-    sid: StructId,
+    pub(crate) loc: TExpId,
+    pub(crate) fields: Vec<(NameId, CId)>,
+    pub(crate) sid: StructId,
 }
 
 #[allow(dead_code)]
 #[derive(Debug)]
-struct Specialized {
-    loc: Loc,
-    base: CId,
-    fields: Vec<CId>,
-    output: CId,
+pub(crate) struct Specialized {
+    pub(crate) loc: Loc,
+    pub(crate) base: CId,
+    pub(crate) fields: Vec<CId>,
+    pub(crate) output: CId,
 }
 
 #[derive(Debug)]
-struct PendingSpecialization {
-    name: NameId,
-    global: TExpId,
-    generics: Vec<CId>,
-    lifetimes: Vec<LId>,
-    output: CId,
+pub(crate) struct PendingSpecialization {
+    pub(crate) name: NameId,
+    pub(crate) global: TExpId,
+    pub(crate) generics: Vec<CId>,
+    pub(crate) lifetimes: Vec<LId>,
+    pub(crate) output: CId,
 }
 
 #[allow(dead_code)]
 #[derive(Debug)]
-struct ComplexCallSite {
-    loc: ValId,
-    loc_called: ValId,
+pub(crate) struct ComplexCallSite {
+    pub(crate) loc: ValId,
+    pub(crate) loc_called: ValId,
 
-    called: CId,
-    position_args: Vec<CId>,
+    pub(crate) called: CId,
+    pub(crate) position_args: Vec<CId>,
     ///the strid can only be resolved once we know what we call;
     /// for structs thats just the type extra info
     /// for functions we need to know the actual specific one (which is a dependent type)
-    named_args: Vec<(StrId, CId)>,
-    output: CId,
+    pub(crate) named_args: Vec<(StrId, CId)>,
+    pub(crate) output: CId,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct BinOpSite {
-    loc: ValId,
-    op: BinOp,
-    lhs_val: ValId,
-    rhs_val: ValId,
-    lhs: CId,
-    rhs: CId,
-    output: CId,
+pub(crate) struct BinOpSite {
+    pub(crate) loc: ValId,
+    pub(crate) op: BinOp,
+    pub(crate) lhs_val: ValId,
+    pub(crate) rhs_val: ValId,
+    pub(crate) lhs: CId,
+    pub(crate) rhs: CId,
+    pub(crate) output: CId,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct UnOpSite {
-    loc: ValId,
-    op: UnOp,
-    val: ValId,
-    input: CId,
-    output: CId,
+pub(crate) struct UnOpSite {
+    pub(crate) loc: ValId,
+    pub(crate) op: UnOp,
+    pub(crate) val: ValId,
+    pub(crate) input: CId,
+    pub(crate) output: CId,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AssignIncDecFlavor {
+pub(crate) enum AssignIncDecFlavor {
     PreInc,
     PostInc,
     PreDec,
@@ -2027,50 +2027,50 @@ enum AssignIncDecFlavor {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AssignPrePostSite {
-    loc: ValId,
-    target_val: ValId,
-    target: CId,
-    implicit_rhs: CId,
-    flavor: AssignIncDecFlavor,
+pub(crate) struct AssignPrePostSite {
+    pub(crate) loc: ValId,
+    pub(crate) target_val: ValId,
+    pub(crate) target: CId,
+    pub(crate) implicit_rhs: CId,
+    pub(crate) flavor: AssignIncDecFlavor,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PendingMemberMethodType {
-    site: ValId,
-    member: StrId,
-    full_method: CId,
-    receiver: CId,
-    receiver_value: ValId,
+pub(crate) struct PendingMemberMethodType {
+    pub(crate) site: ValId,
+    pub(crate) member: StrId,
+    pub(crate) full_method: CId,
+    pub(crate) receiver: CId,
+    pub(crate) receiver_value: ValId,
 }
 
 #[derive(Debug, Clone)]
-struct PendingMemberAccessImplicitDeref {
-    site: ValId,
-    receivers: Vec<CId>,
+pub(crate) struct PendingMemberAccessImplicitDeref {
+    pub(crate) site: ValId,
+    pub(crate) receivers: Vec<CId>,
 }
 
 #[derive(Debug)]
-struct PendingMemberAccess {
-    site: ValId,
-    base_value: ValId,
+pub(crate) struct PendingMemberAccess {
+    pub(crate) site: ValId,
+    pub(crate) base_value: ValId,
 
     // original base cluster
-    source: CId,
+    pub(crate) source: CId,
 
     // resume cursor (VERY important)
-    current: CId,
+    pub(crate) current: CId,
 
     // output cluster for the expression
-    output: CId,
+    pub(crate) output: CId,
 
-    member: StrId,
-    kind: AccessKind,
+    pub(crate) member: StrId,
+    pub(crate) kind: AccessKind,
 
     // autoderef state (persistent)
-    implicit_receivers: Vec<CId>,
-    deref_chain_lid: Option<LId>,
-    deref_chain_is_mut: Option<bool>,
+    pub(crate) implicit_receivers: Vec<CId>,
+    pub(crate) deref_chain_lid: Option<LId>,
+    pub(crate) deref_chain_is_mut: Option<bool>,
 }
 
 impl PendingMemberAccess {
@@ -2102,20 +2102,20 @@ impl PendingMemberAccess {
 
 
 #[derive(Debug, Clone, Copy)]
-struct PendingIntAccess {
-    site: ValId,
-    source: CId,
-    output: CId,
-    id: usize,
-    kind: AccessKind,
+pub(crate) struct PendingIntAccess {
+    pub(crate) site: ValId,
+    pub(crate) source: CId,
+    pub(crate) output: CId,
+    pub(crate) id: usize,
+    pub(crate) kind: AccessKind,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PendingDeref {
-    site: ValId,
-    source: CId,
-    target: CId,
-    source_value: ValId,
+pub(crate) struct PendingDeref {
+    pub(crate) site: ValId,
+    pub(crate) source: CId,
+    pub(crate) target: CId,
+    pub(crate) source_value: ValId,
 }
 
 impl PendingDeref {
@@ -2140,20 +2140,20 @@ impl PendingDeref {
 
 
 #[derive(Debug)]
-struct PendingIndex {
-    site: ValId,
-    base_value: ValId,
-    index_value: ValId,
+pub(crate) struct PendingIndex {
+    pub(crate) site: ValId,
+    pub(crate) base_value: ValId,
+    pub(crate) index_value: ValId,
 
-    base: CId,
-    index: CId,
-    output: CId,
+    pub(crate) base: CId,
+    pub(crate) index: CId,
+    pub(crate) output: CId,
 
-    current: CId,
-    implicit_receivers: Vec<CId>,
+    pub(crate) current: CId,
+    pub(crate) implicit_receivers: Vec<CId>,
 
-    deref_chain_lid: Option<LId>,
-    deref_chain_mutability: Option<bool>,
+    pub(crate) deref_chain_lid: Option<LId>,
+    pub(crate) deref_chain_mutability: Option<bool>,
 }
 
 impl PendingIndex {
@@ -2194,7 +2194,7 @@ impl PendingIndex {
 }
 
 
-enum GenLifeNameRender<'a> {
+pub(crate) enum GenLifeNameRender<'a> {
     TextNames {
         _decl: GenDec,
         generic_names: Vec<&'a str>,
@@ -2259,14 +2259,14 @@ fn generated_lifetime_name(idx: u32) -> String {
     format!("a{idx}")
 }
 
-struct ExternState<'a> {
-    store: &'a mut TypeStore,
-    program: &'a Program,
-    name_render: GenLifeNameRender<'a>,
+pub(crate) struct ExternState<'a> {
+    pub(crate) store: &'a mut TypeStore,
+    pub(crate) program: &'a Program,
+    pub(crate) name_render: GenLifeNameRender<'a>,
 
     //result
-    errors: Vec<TypeError>,
-    ans: &'a mut SolvedTypes,
+    pub(crate) errors: Vec<TypeError>,
+    pub(crate) ans: &'a mut SolvedTypes,
 }
 
 impl<'a> ExternState<'a> {
@@ -2275,14 +2275,14 @@ impl<'a> ExternState<'a> {
     }
 }
 
-struct SearchState {
+pub(crate) struct SearchState {
     //ir -> cid
-    val_cluster: Vec<(ValId, CId)>,
-    pat_cluster: Vec<(PatId, CId)>,
-    typedef_cluster: Vec<(TExpId, CId)>,
-    local_types: IdHashMap<NameId, CId>,
-    names: IdHashMap<NameId, CId>,
-    local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
+    pub(crate) val_cluster: Vec<(ValId, CId)>,
+    pub(crate) pat_cluster: Vec<(PatId, CId)>,
+    pub(crate) typedef_cluster: Vec<(TExpId, CId)>,
+    pub(crate) local_types: IdHashMap<NameId, CId>,
+    pub(crate) names: IdHashMap<NameId, CId>,
+    pub(crate) local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
 }
 
 impl SearchState {
@@ -2334,10 +2334,10 @@ impl SearchState {
     }
 }
 
-struct TypeCore {
+pub(crate) struct TypeCore {
     // unify-find
-    parent: ClusterVec<CId>,
-    cluster: ClusterVec<Cluster>,
+    pub(crate) parent: ClusterVec<CId>,
+    pub(crate) cluster: ClusterVec<Cluster>,
 }
 
 impl TypeCore {
@@ -2356,19 +2356,19 @@ impl TypeCore {
     }
 }
 
-struct TypeExtra {
-    func_defs: Vec<FuncInfer>,
-    struct_defs: Vec<StructDef>,
-    struct_infers: Vec<StructInfer>,
-    tuple_infers: Vec<TupleInfer>,
+pub(crate) struct TypeExtra {
+    pub(crate) func_defs: Vec<FuncInfer>,
+    pub(crate) struct_defs: Vec<StructDef>,
+    pub(crate) struct_infers: Vec<StructInfer>,
+    pub(crate) tuple_infers: Vec<TupleInfer>,
 }
 
-struct TypeState {
-    core: TypeCore,
-    extra: TypeExtra,
-    life_parent: LifeVec<LId>,
-    life_known: LifeVec<Option<LifeTime>>,
-    next_undeclared_lifetime: u32,
+pub(crate) struct TypeState {
+    pub(crate) core: TypeCore,
+    pub(crate) extra: TypeExtra,
+    pub(crate) life_parent: LifeVec<LId>,
+    pub(crate) life_known: LifeVec<Option<LifeTime>>,
+    pub(crate) next_undeclared_lifetime: u32,
 }
 
 #[inline(always)]
@@ -2603,21 +2603,21 @@ fn unify_ptr_lifetimes(_types: &mut TypeState, a: LifeTime, b: LifeTime) -> bool
     a == b
 }
 
-struct ReqState {
+pub(crate) struct ReqState {
     //requirments
-    bin_op_sites: Vec<BinOpSite>,
-    un_op_sites: Vec<UnOpSite>,
-    assign_pre_post_sites: Vec<AssignPrePostSite>,
+    pub(crate) bin_op_sites: Vec<BinOpSite>,
+    pub(crate) un_op_sites: Vec<UnOpSite>,
+    pub(crate) assign_pre_post_sites: Vec<AssignPrePostSite>,
 
     //generic_func_values: Vec<(ValId, usize)>,
-    pending_specializations: Vec<PendingSpecialization>,
-    member_method_type_sites: Vec<PendingMemberMethodType>,
-    member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
-    index_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
-    pending_member_accesses: Vec<PendingMemberAccess>,
-    pending_int_accesses: Vec<PendingIntAccess>,
-    pending_indexes: Vec<PendingIndex>,
-    pending_derefs: Vec<PendingDeref>,
+    pub(crate) pending_specializations: Vec<PendingSpecialization>,
+    pub(crate) member_method_type_sites: Vec<PendingMemberMethodType>,
+    pub(crate) member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
+    pub(crate) index_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
+    pub(crate) pending_member_accesses: Vec<PendingMemberAccess>,
+    pub(crate) pending_int_accesses: Vec<PendingIntAccess>,
+    pub(crate) pending_indexes: Vec<PendingIndex>,
+    pub(crate) pending_derefs: Vec<PendingDeref>,
 }
 
 impl ReqState {
@@ -4150,10 +4150,10 @@ fn extract_clash_type_string(
 // Specialization (monomorphisation into local clusters)
 // ============================================================
 
-struct SpecializeCtx<'a> {
-    generics: &'a [CId],
-    lifetimes: &'a [LId],
-    loc: ValId,
+pub(crate) struct SpecializeCtx<'a> {
+    pub(crate) generics: &'a [CId],
+    pub(crate) lifetimes: &'a [LId],
+    pub(crate) loc: ValId,
 }
 
 impl<'a> SpecializeCtx<'a> {
@@ -4569,13 +4569,13 @@ fn resolve_any_type_builtin_member_access(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ResolvedStructDerefMethod {
-    self_param: CId,
-    self_kind: PtrKind,
-    self_mutable: Option<bool>,
-    target: CId,
-    ret_kind: PtrKind,
-    ret_mutable: Option<bool>,
+pub(crate) struct ResolvedStructDerefMethod {
+    pub(crate) self_param: CId,
+    pub(crate) self_kind: PtrKind,
+    pub(crate) self_mutable: Option<bool>,
+    pub(crate) target: CId,
+    pub(crate) ret_kind: PtrKind,
+    pub(crate) ret_mutable: Option<bool>,
 }
 
 #[inline(always)]
@@ -4646,9 +4646,9 @@ fn resolve_struct_deref_method(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ResolvedStructDerefTarget {
-    target: CId,
-    deref_result_ptr: CId,
+pub(crate) struct ResolvedStructDerefTarget {
+    pub(crate) target: CId,
+    pub(crate) deref_result_ptr: CId,
 }
 fn resolve_struct_deref_target(
     ex: &mut ExternState,
@@ -4763,7 +4763,7 @@ fn push_cannot_deref_error(
 }
 
 #[derive(Debug)]
-enum MemberAccessResolve {
+pub(crate) enum MemberAccessResolve {
     Resolved {
         result: CId,
         implicit_receivers: Vec<CId>,
@@ -4775,7 +4775,7 @@ enum MemberAccessResolve {
 }
 
 #[derive(Debug)]
-enum IntAccessResolve {
+pub(crate) enum IntAccessResolve {
     Resolved {
         result: CId,
         implicit_receivers: Vec<CId>,
@@ -6429,7 +6429,7 @@ fn bind_lifetime_generics(ctx: &mut InferState, generics: PatternSpan) {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TypeExprCompileMode {
+pub(crate) enum TypeExprCompileMode {
     Signature,
     Struct,
     Local,
@@ -7559,12 +7559,12 @@ fn method_signature_type_parts(store: &TypeStore, ty: TypeId) -> Option<(&[TypeI
 }
 
 #[derive(Debug, Clone, Copy)]
-struct StructOperatorOverload {
-    method_type: TypeId,
+pub(crate) struct StructOperatorOverload {
+    pub(crate) method_type: TypeId,
     #[allow(dead_code)]
-    method_site: ValId,
+    pub(crate) method_site: ValId,
     #[allow(dead_code)]
-    self_pointer_style: Option<PointerStyle>,
+    pub(crate) self_pointer_style: Option<PointerStyle>,
 }
 
 #[inline(always)]
@@ -8141,14 +8141,14 @@ fn system_types_operator_applicable(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OperandKind {
+pub(crate) enum OperandKind {
     KnownNonUser,
     UserStruct(Option<NameId>),
     Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RawPointerOperandKind {
+pub(crate) enum RawPointerOperandKind {
     RawPointer(CId),
     UnknownRawPointer(CId),
     NonRawPointer,
@@ -8321,9 +8321,9 @@ fn function_parts_from_cluster(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ResolveOutcome {
-    progress: bool,
-    retain: bool,
+pub(crate) struct ResolveOutcome {
+    pub(crate) progress: bool,
+    pub(crate) retain: bool,
 }
 
 impl ResolveOutcome {
@@ -8348,10 +8348,10 @@ const OP_OVERLOAD_SIGNATURE_MISMATCH: &str =
     "operator overload arguments and result must match overload signature";
 
 #[derive(Debug)]
-struct ResolvedMemberOverload {
-    params: Vec<CId>,
-    ret: CId,
-    full_method: CId,
+pub(crate) struct ResolvedMemberOverload {
+    pub(crate) params: Vec<CId>,
+    pub(crate) ret: CId,
+    pub(crate) full_method: CId,
 }
 
 #[inline(always)]
