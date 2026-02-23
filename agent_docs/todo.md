@@ -1,5 +1,17 @@
 # Agent TODO Notes
 
+## Nice To Have
+currently TypeValue is expensive to clone making it not usable with .iter().map
+
+causing a lot of explicit vec construction and pushing with
+```
+if let SomePattern{vars,..} = ex.store.type_value(ty) else {
+	unreachble!()
+}
+```
+in id based loops to avoid the issue.
+if we moved all the expensive fields to be Rc<[]> that would allow us to fixup this code to be more readble
+
 ## Active Type-Inference Work
 
 - Specialization must always include lifetime specialization, not just generic type substitution.
@@ -13,15 +25,3 @@
 - Function body inference may be able to stay gather-only for many cases.
 - This is a design follow-up note only; no behavior change is implied by this note.
 
-## Diagnostic Naming Follow-up
-
-- Function-context diagnostics now render user-declared generic/lifetime names through a per-function `GenDec`-backed name table.
-- Implicit function lifetimes in diagnostics now fall back to numeric labels (`'0`, `'1`, ...).
-- Global typedef/struct resolution still uses generated fallback names by design.
-
-## Known Temporary Failing Tests
-
-- `type_inference::type_infer_tests::generic_box_array_index_chain_includes_box_step`
-- `type_inference::type_infer_tests::struct_deref_to_array_index_expression_typechecks`
-
-These currently fail during the specialization/lifetime refactor because assertions still expect pre-refactor lifetime display/resolution behavior.

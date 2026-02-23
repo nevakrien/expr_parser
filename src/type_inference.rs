@@ -871,7 +871,7 @@ pub struct SolvedFunctionTypes {
 // ----------------------------------------------------------
 // Function Set Recording
 // ----------------------------------------------------------
-pub fn check_and_record_function_set_types(
+fn check_and_record_function_set_types(
     ctx: &mut InferState,
     name: NameId,
     method_str: Option<StrId>,
@@ -1661,7 +1661,6 @@ fn main_solver(ctx: &mut InferState) {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
         progress |= resolve_deferred_types(ctx);
-        progress |= resolve_pending_derefs(ctx);
         progress |= resolve_pending_indexes(ctx);
         progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_int_accesses(ctx);
@@ -1670,6 +1669,13 @@ fn main_solver(ctx: &mut InferState) {
         if progress {
             continue;
         }
+
+        progress |= resolve_pending_derefs(ctx);
+
+        if progress {
+            continue;
+        }
+
         // HACK (temporary, likely not the final design): before finalize we force unresolved
         // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
         progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
