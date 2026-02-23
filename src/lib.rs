@@ -7,6 +7,7 @@ pub mod program;
 pub mod string_intern;
 pub mod struct_layout;
 pub mod type_inference;
+pub mod global_type_inference;
 
 pub use error_reporting::ErrorReporter;
 pub use parsing::{Expr, LExpr, Parser, Token};
