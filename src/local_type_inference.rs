@@ -1667,7 +1667,7 @@ fn specialize_struct_field_type(
     ex: &mut ExternState,
     types: &mut TypeState,
     site: ValId,
-    sid: StructId,
+    _sid: StructId,
     field_ty: TypeId,
     generics: &[CId],
     lifetimes: &[LId],

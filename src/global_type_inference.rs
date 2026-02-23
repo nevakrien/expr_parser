@@ -4,8 +4,8 @@ use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{
-    AssignOp, BinOp, Dir, GenDec, Literal, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr,
-    UnOp, ValId, Value,
+    GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr,
+    ValId, Value,
 };
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
@@ -316,7 +316,7 @@ pub(crate) enum TypeExprCompileMode {
 fn compile_lifetime_specialization_arg(
     ctx: &mut InferState,
     arg: TExpId,
-    mode: TypeExprCompileMode,
+    _mode: TypeExprCompileMode,
 ) -> LId {
     match ctx.ex.program.type_expr(arg) {
         TypeExpr::Wildcard => ctx.types.new_lid(),
