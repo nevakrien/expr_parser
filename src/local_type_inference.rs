@@ -1,11 +1,16 @@
+use crate::global_type_inference::{
+    do_typedef, gather_func_signature, is_any_type_builtin_member_name,
+    receiver_cluster_for_self_param,
+};
 use crate::identity_hasher::IdHashMap;
+use crate::ir::AccessKind;
+use crate::ir::CallingConvention;
 use crate::ir::GenDec;
 use crate::ir::PatternSpan;
 use crate::ir::TExpId;
-use crate::ir::AccessKind;
-use crate::ir::CallingConvention;
 use crate::ir::VarKind;
 use crate::ir::{AssignOp, BinOp, Dir, Literal, NameId, UnOp, ValId, Value};
+use crate::program::{Defined, Program};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
     FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
@@ -13,8 +18,6 @@ use crate::string_intern::{
     StrId,
 };
 use crate::type_inference::*;
-use crate::global_type_inference::{gather_func_signature,receiver_cluster_for_self_param,is_any_type_builtin_member_name,do_typedef};
-use crate::program::{Defined, Program};
 
 pub fn infer_value_internals<'a>(
     program: &'a Program,
@@ -123,7 +126,6 @@ pub fn local_solver(ctx: &mut InferState) {
             continue;
         }
 
-
         if resolve_pending_derefs(ctx) {
             continue;
         }
@@ -131,8 +133,8 @@ pub fn local_solver(ctx: &mut InferState) {
         //ORDER SENSATIVE semi hacks
         //these are all assuming defualts on the type system
         //so they are mostly last resorts for that exact reason
-        
-        if finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count){
+
+        if finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count) {
             continue;
         }
 
@@ -140,7 +142,7 @@ pub fn local_solver(ctx: &mut InferState) {
             continue;
         }
 
-        if force_unresolved_ptr_mutability_to_immut(ctx){
+        if force_unresolved_ptr_mutability_to_immut(ctx) {
             continue;
         }
 
@@ -366,7 +368,6 @@ fn finalize_local(ctx: &mut InferState) {
     // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
     // unsafe { perf_done(name.as_ptr()); }
 }
-
 
 fn store_implicit_deref_chains(
     out: &mut IdHashMap<ValId, Vec<TypeId>>,
@@ -1681,8 +1682,6 @@ fn try_resolve_tuple_int_access(
     }
 }
 
-
-
 ///this tries to resolve specifically a from a module.
 ///if what we have is a member of a struct it wont give a name
 fn try_get_name(ctx: &mut InferState, v: ValId) -> Option<NameId> {
@@ -1961,33 +1960,11 @@ fn resolve_struct_deref_target(
     };
 
     let self_kind = resolved.self_kind;
-    let mut ret_kind = resolved.ret_kind;
-    let mut self_mutable = resolved.self_mutable;
-    let mut ret_mutable = resolved.ret_mutable;
-
-    if let Some(chain_m) = *chain_mutability {
-        self_mutable = Some(chain_m);
-        ret_mutable = Some(chain_m);
-    } else if let Some(step_m) = self_mutable.or(ret_mutable) {
-        *chain_mutability = Some(step_m);
-        self_mutable = Some(step_m);
-        ret_mutable = Some(step_m);
-    }
-
-    if ptr_kind_is_safe_ref(self_kind)
-        && matches!(ret_kind, PtrKind::Solved(PointerStyle::Raw(Nullable::No)))
-    {
-        let lid = match *shared_lid {
-            Some(lid) => lid,
-            None => {
-                let lid = types.new_lid();
-                *shared_lid = Some(lid);
-                lid
-            }
-        };
-        ret_kind = PtrKind::RefInfer(lid);
-        ret_mutable = Some(false);
-    }
+    let ret_kind = resolved.ret_kind;
+    let self_mutable = resolved.self_mutable;
+    let ret_mutable = resolved.ret_mutable;
+    let _ = shared_lid;
+    let _ = chain_mutability;
 
     let receiver_input = types.new_cluster();
     types.set_cluster_state(
@@ -2022,6 +1999,7 @@ fn resolve_struct_deref_target(
 
     Some(ResolvedStructDerefTarget {
         target: resolved.target,
+        deref_receiver_ptr: receiver_input,
         deref_result_ptr,
     })
 }
@@ -2209,6 +2187,8 @@ impl PendingMemberAccess {
                                         &mut self.deref_chain_is_mut,
                                     ) {
                                         self.implicit_receivers.push(current);
+                                        self.implicit_receivers.push(target.deref_receiver_ptr);
+                                        self.implicit_receivers.push(target.deref_result_ptr);
                                         current = types.root(target.target);
                                         continue;
                                     }
@@ -2316,6 +2296,8 @@ impl PendingMemberAccess {
                                 &mut self.deref_chain_is_mut,
                             ) {
                                 self.implicit_receivers.push(current);
+                                self.implicit_receivers.push(target.deref_receiver_ptr);
+                                self.implicit_receivers.push(target.deref_result_ptr);
                                 current = types.root(target.target);
                                 continue;
                             }
@@ -3110,6 +3092,7 @@ impl PendingIndex {
                         };
 
                         self.implicit_receivers.push(current);
+                        self.implicit_receivers.push(target.deref_receiver_ptr);
                         self.implicit_receivers.push(target.deref_result_ptr);
 
                         current = types.root(target.target);
@@ -3152,6 +3135,7 @@ impl PendingIndex {
                     };
 
                     self.implicit_receivers.push(current);
+                    self.implicit_receivers.push(target.deref_receiver_ptr);
                     self.implicit_receivers.push(target.deref_result_ptr);
 
                     current = types.root(target.target);
@@ -3628,14 +3612,6 @@ fn assign_inc_dec_fallback_bin_op(flavor: AssignIncDecFlavor) -> BinOp {
         AssignIncDecFlavor::PreInc | AssignIncDecFlavor::PostInc => BinOp::Add,
         AssignIncDecFlavor::PreDec | AssignIncDecFlavor::PostDec => BinOp::Sub,
     }
-}
-
-#[inline(always)]
-fn ptr_kind_is_safe_ref(kind: PtrKind) -> bool {
-    matches!(
-        kind,
-        PtrKind::SafeRef | PtrKind::RefInfer(_) | PtrKind::Solved(PointerStyle::Ref(_))
-    )
 }
 
 fn ptr_parts_from_cluster(

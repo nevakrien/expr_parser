@@ -180,7 +180,6 @@ fn global_solver(ctx: &mut InferState) {
         progress |= resolve_deferred_types(ctx);
         progress |= resolve_pending_specializations(ctx);
 
-
         if !progress {
             break;
         }
@@ -192,7 +191,6 @@ fn global_solver(ctx: &mut InferState) {
 
     finalize_global(ctx);
 }
-
 
 #[inline(always)]
 // #[inline(never)]
@@ -316,7 +314,6 @@ fn finalize_global(ctx: &mut InferState) {
         }
     }
 }
-
 
 // ----------------------------------------------------------
 // Function Set Recording

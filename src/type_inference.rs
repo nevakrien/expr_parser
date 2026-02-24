@@ -22,15 +22,14 @@
 // and then later when enough type info is present we can apply unification.
 // ================================================================
 // use std::arch::asm;
-use crate::local_type_inference::local_solver;
 use crate::global_type_inference::TypeExprCompileMode;
 use crate::global_type_inference::compile_type_expr_with_mode;
+use crate::global_type_inference::infer_global_types;
 use crate::local_type_inference::gather_constraints;
 use crate::local_type_inference::gather_func_constraints;
 use crate::local_type_inference::infer_value_internals;
-use crate::global_type_inference::infer_global_types;
+use crate::local_type_inference::local_solver;
 
-use foldhash::HashMapExt;
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -38,9 +37,8 @@ use crate::ir::CallingConvention;
 use crate::ir::LifeTimeId;
 use crate::ir::StructLayoutSpec;
 use crate::ir::VarKind;
-use crate::ir::{
-    BinOp, GenDec, NameId, PatId, Pattern, TExpId, TypeExpr, UnOp, ValId, Value,
-};
+use crate::ir::{BinOp, GenDec, NameId, PatId, Pattern, TExpId, TypeExpr, UnOp, ValId, Value};
+use foldhash::HashMapExt;
 
 // use crate::global_type_inference::*;
 // use crate::local_type_inference::*;
@@ -774,7 +772,7 @@ impl TypeStore {
             Some(name) => program.name_string(name),
             None => "UnamedStruct",
         };
-        let mut base = format!("{}{}", base, subscript_id(sid.0));
+        let mut base = base.to_string();
         if !lifetimes.is_empty() || !generics.is_empty() {
             let mut args = lifetimes
                 .iter()
@@ -999,7 +997,6 @@ pub enum ValueKind {
     RValue,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SolvedMemberMethodAccessType {
     pub member: StrId,
@@ -1030,21 +1027,6 @@ pub struct StructRep {
     pub gen_count: usize,
     pub life_count: usize,
     pub layout: StructLayoutSpec,
-}
-
-fn subscript_id(id: usize) -> String {
-    const SUBS: [char; 10] = ['₀', '₁', '₂', '₃', '₄', '₅', '₆', '₇', '₈', '₉'];
-    if id == 0 {
-        return SUBS[0].to_string();
-    }
-    let mut digits = Vec::new();
-    let mut n = id;
-    while n > 0 {
-        digits.push(SUBS[n % 10]);
-        n /= 10;
-    }
-    digits.reverse();
-    digits.into_iter().collect()
 }
 
 // ==============================
@@ -1401,14 +1383,9 @@ fn _infer_value_hacky<'a>(
     }
 }
 
-
-
-
 pub fn main_solver(ctx: &mut InferState) {
     local_solver(ctx);
 }
-
-
 
 // ===================================
 // Inference state + unify-find clusters
@@ -3800,9 +3777,15 @@ fn write_ptr_mock_string_inner(
         let _ = out.write_str("&? ");
 
         match mutable {
-            Some(true) => { let _ = out.write_str("mut "); }
-            Some(false) => { let _ = out.write_str("const "); }
-            None => { let _ = out.write_str("mut? "); }
+            Some(true) => {
+                let _ = out.write_str("mut ");
+            }
+            Some(false) => {
+                let _ = out.write_str("const ");
+            }
+            None => {
+                let _ = out.write_str("mut? ");
+            }
         }
 
         write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
@@ -3813,9 +3796,15 @@ fn write_ptr_mock_string_inner(
         // raw nullable pointer (*const / *mut)
         PointerStyle::Raw(Nullable::Yes) => {
             match mutable {
-                Some(true) => { let _ = out.write_str("* "); }
-                Some(false) => { let _ = out.write_str("*const "); }
-                None => { let _ = out.write_str("*mut? "); }
+                Some(true) => {
+                    let _ = out.write_str("* ");
+                }
+                Some(false) => {
+                    let _ = out.write_str("*const ");
+                }
+                None => {
+                    let _ = out.write_str("*mut? ");
+                }
             }
             write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
         }
@@ -3825,9 +3814,15 @@ fn write_ptr_mock_string_inner(
             let _ = out.write_str("&'raw ");
 
             match mutable {
-                Some(true) => { let _ = out.write_str(""); }
-                Some(false) => { let _ = out.write_str("const "); }
-                None => { let _ = out.write_str("mut? "); }
+                Some(true) => {
+                    let _ = out.write_str("");
+                }
+                Some(false) => {
+                    let _ = out.write_str("const ");
+                }
+                None => {
+                    let _ = out.write_str("mut? ");
+                }
             }
 
             write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
@@ -3841,9 +3836,13 @@ fn write_ptr_mock_string_inner(
             let _ = out.write_char(' ');
 
             match mutable {
-                Some(true) => { let _ = out.write_str("mut "); }
+                Some(true) => {
+                    let _ = out.write_str("mut ");
+                }
                 Some(false) => { /* shared ref, print nothing */ }
-                None => { let _ = out.write_str("const? "); }
+                None => {
+                    let _ = out.write_str("const? ");
+                }
             }
 
             write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
@@ -4106,6 +4105,7 @@ pub(crate) struct ResolvedStructDerefMethod {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedStructDerefTarget {
     pub(crate) target: CId,
+    pub(crate) deref_receiver_ptr: CId,
     pub(crate) deref_result_ptr: CId,
 }
 
@@ -4484,7 +4484,6 @@ pub(crate) fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
     change
 }
 
-
 // fn report_unresolved(ctx: &mut InferState){
 //     let mut roots = Vec::with_capacity(ctx.cluster.len());
 //     for i in 0..ctx.cluster.len(){
@@ -4497,9 +4496,9 @@ pub(crate) fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
 
 #[cfg(test)]
 mod type_infer_tests {
-    use crate::string_intern::*;
-use super::*;
+    use super::*;
     use crate::parsing::Parser;
+    use crate::string_intern::*;
     use std::collections::HashSet;
 
     /// Parse + lower + gather definitions,
@@ -4954,7 +4953,8 @@ use super::*;
         assert_eq!(
             chain,
             vec![
-                "Box₀['a1]".to_string(),
+                "Box['a1]".to_string(),
+                "&'idk0 mut Box['a1]".to_string(),
                 "&'idk0 mut &'a1 [int;2]".to_string(),
                 "&'a1 [int;2]".to_string(),
                 "[int;2]".to_string(),
@@ -5029,7 +5029,8 @@ use super::*;
         assert_eq!(
             chain,
             vec![
-                "Box₀[[int]]".to_string(),
+                "Box[[int]]".to_string(),
+                "&'idk0 Box[[int]]".to_string(),
                 "&'idk0 [int]".to_string(),
                 "[int]".to_string(),
             ],
@@ -5584,7 +5585,7 @@ use super::*;
         let f_ty = solved_types.type_of(f).unwrap();
         assert_eq!(
             store.get_type_string(&program, f_ty),
-            "fn['a0, 'a1](&'a0 int, &'a1 int) -> Pair₀['a0, 'a1, int]"
+            "fn['a0, 'a1](&'a0 int, &'a1 int) -> Pair['a0, 'a1, int]"
         );
     }
 
@@ -6459,9 +6460,11 @@ use super::*;
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
-        assert_eq!(chain.len(), 2);
-        assert!(chain[0].contains("S"));
-        assert!(chain[1].contains("S"));
+        assert_eq!(
+            chain,
+            vec!["&'a0 S".to_string(), "S".to_string()],
+            "unexpected implicit deref chain for plain pointer-like base"
+        );
     }
 
     #[test]
@@ -6484,14 +6487,59 @@ use super::*;
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
             solved_types.member_access_implicit_deref_count_in_function(f, access_site),
-            Some(2)
+            Some(4)
         );
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
-        assert_eq!(chain.len(), 2);
-        assert!(chain[0].contains("Box"));
-        assert!(chain[1].contains("Inner"));
+        assert_eq!(
+            chain,
+            vec![
+                "Box".to_string(),
+                "&'idk0 Box".to_string(),
+                "&'idk0 Inner".to_string(),
+                "Inner".to_string(),
+            ],
+            "unexpected smart-deref chain for member access"
+        );
+    }
+
+    #[test]
+    fn ptr_member_access_single_smart_deref_chain_tracks_ref_steps() {
+        let src = "S=struct{x:int}; Box=struct{inner:S}; Box.__deref = fn(self:&Box)->&S { &self.inner }; f=fn(b:Box){ let y:int = b->x; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        assert_eq!(
+            solved_types.member_access_implicit_deref_count_in_function(f, access_site),
+            Some(4)
+        );
+
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
+        assert_eq!(
+            chain,
+            vec![
+                "Box".to_string(),
+                "&'idk0 Box".to_string(),
+                "&'idk0 S".to_string(),
+                "S".to_string(),
+            ],
+            "unexpected single smart-deref chain for `->` member access"
+        );
     }
 
     #[test]
@@ -6563,15 +6611,24 @@ use super::*;
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
             solved_types.member_access_implicit_deref_count_in_function(f, access_site),
-            Some(3)
+            Some(7)
         );
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
-        assert_eq!(chain.len(), 3);
-        assert!(chain[0].contains("Wrap"));
-        assert!(chain[1].contains("Box"));
-        assert!(chain[2].contains("Inner"));
+        assert_eq!(
+            chain,
+            vec![
+                "Wrap".to_string(),
+                "&'idk0 Wrap".to_string(),
+                "&'idk0 Box".to_string(),
+                "Box".to_string(),
+                "&'idk1 Box".to_string(),
+                "&'idk1 Inner".to_string(),
+                "Inner".to_string(),
+            ],
+            "unexpected multi-hop smart-deref chain for `->` member access"
+        );
     }
 
     //breaks because we dont wait our turn enough in derefs resolution
@@ -6605,10 +6662,9 @@ use super::*;
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
 
         let f = find_value_by_name(&program, "f");
-        let solved_types =
-            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
 
-        let body_ty = find_let_stmt_type(&program, solved_types, f, "out");
+        let body_ty = find_let_stmt_type(&program, &solved_types, f, "out");
 
         let TypeValue::Ptr {
             tgt,
@@ -6624,6 +6680,62 @@ use super::*;
             store.type_value(*tgt),
             TypeValue::Builtin(BuiltinType::Int)
         ));
+
+        let (access_site, _, _) =
+            find_member_access_and_result_types(&program, &solved_types, f, "out");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
+        assert_eq!(
+            chain,
+            vec![
+                "&'a0 mut Safe".to_string(),
+                "&'idk1 mut Safe".to_string(),
+                "&'idk1 mut Raw".to_string(),
+                "&'raw RawCalc".to_string(),
+                "&'raw RawCalc".to_string(),
+                "&'raw Unsafe".to_string(),
+                "&'raw Unsafe".to_string(),
+                "&'idk3 mut Wrapper".to_string(),
+                "Wrapper".to_string(),
+            ],
+            "unexpected full deref chain for four-style transition case"
+        );
+    }
+
+    #[test]
+    fn smart_deref_chain_can_drop_mutability_through_nested_ref_targets() {
+        let src = "S=struct{x:int}; Box=struct[T]{inner:T}; Box.__deref_mut = fn[T](self:&mut Box[T])->&mut T { &mut self.inner }; f=fn['a](b:Box[&'raw const &'a S])->int { let y:int = b->x; y };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let _ = infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let y_ty = find_let_stmt_type(&program, &solved_types, f, "y");
+        assert!(matches!(
+            store.type_value(y_ty),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+
+        let access_site = find_let_stmt_value(&program, f, "y");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
+        assert_eq!(
+            chain,
+            vec![
+                "Box[&'raw const &'a0 S]".to_string(),
+                "&'idk0 mut Box[&'raw const &'a0 S]".to_string(),
+                "&'idk0 mut &'raw const &'a0 S".to_string(),
+                "&'raw const &'a0 S".to_string(),
+                "&'a0 S".to_string(),
+                "S".to_string(),
+            ],
+            "unexpected smart-deref chain through nested references"
+        );
     }
 
     #[test]
@@ -6722,14 +6834,21 @@ use super::*;
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
             solved_types.member_access_implicit_deref_count_in_function(f, access_site),
-            Some(2)
+            Some(4)
         );
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
-        assert_eq!(chain.len(), 2);
-        assert!(chain[0].contains("Box"));
-        assert!(chain[1].contains("Inner"));
+        assert_eq!(
+            chain,
+            vec![
+                "Box".to_string(),
+                "&'idk0 Box".to_string(),
+                "&'idk0 Inner".to_string(),
+                "Inner".to_string(),
+            ],
+            "unexpected deferred-source smart-deref chain"
+        );
     }
 
     #[test]
@@ -6746,18 +6865,25 @@ use super::*;
         let access_site = find_let_stmt_value(&program, f, "y");
         assert_eq!(
             solved_types.member_access_implicit_deref_count_in_function(f, access_site),
-            Some(4)
+            Some(8)
         );
 
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
-        assert_eq!(chain.len(), 4);
-        assert!(chain[0].contains("Wrap"));
-        assert!(chain.iter().any(|t| t.contains("&")));
-        assert!(chain.iter().any(|t| t.contains("Box")));
-        assert!(chain[2].contains("Box"));
-        assert!(chain[3].contains("Inner"));
+        assert_eq!(chain.len(), 8);
+        assert_eq!(chain[0], "Wrap");
+        assert_eq!(chain[1], "&'idk0 Wrap");
+        assert!(
+            chain[2].starts_with("&'idk0 &") && chain[2].contains("Box"),
+            "expected nested reference output from first smart deref, got {:?}",
+            chain[2]
+        );
+        assert!(chain[3].starts_with("&") && chain[3].contains("Box"));
+        assert_eq!(chain[4], "Box");
+        assert_eq!(chain[5], "&'idk1 Box");
+        assert_eq!(chain[6], "&'idk1 Inner");
+        assert_eq!(chain[7], "Inner");
     }
 
     #[test]

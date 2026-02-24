@@ -317,7 +317,7 @@ Important fragile/unfinished expression areas:
   - `->` member access can chain implicit pointer-like dereference steps (with a safety cap) until lookup resolves,
   - smart-pointer access tries direct member lookup on the current struct first, and only falls back to `__deref`/`__deref_mut` target lookup when direct lookup misses,
   - all implicit deref hops used by member access and indexing are tracked in `SolvedTypes.implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
-  - for smart-deref struct hops, the chain records both the pre-deref receiver type and the deref-method result pointer/reference type (before the pointee target),
+- for smart-deref struct hops, the chain records the full step path: pre-deref value type, synthesized self-reference input type (`&self`/`&mut self` shape), deref-method result pointer/reference type, then the pointee target,
   - if a field is not found, member methods are resolved from `program.member_methods`,
   - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),
   - important binding detail: inference binds the `Value::Access` node to the **curried** callable type used by the call site, while tracking the full called method signature (`self` still present) in `SolvedTypes.member_method_types`.

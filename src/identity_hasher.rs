@@ -75,4 +75,4 @@
 
 // type IdBuildHasher = BuildHasherDefault<IdentityHasher>;
 // pub type IdHashMap<K, V> = HashMap<K, V, IdBuildHasher>;
-pub type IdHashMap<K, V> = foldhash::HashMap<K,V>;
+pub type IdHashMap<K, V> = foldhash::HashMap<K, V>;
