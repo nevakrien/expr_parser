@@ -1,11 +1,23 @@
+Box = struct[T]{ptr:&'raw T};
+
 free = cfn(p:*void);
-Box = struct[T]{ptr:*T};
-
+no_fail_alloc = cfn(s:usize)->*void;
+Box.new = fn[T](x:T)->Box[T] {
+  let p=no_fail_alloc(x.__size_of());
+  Box{p as &'raw _}
+}
 Box.__free = fn[T](b:&mut Box[T]){
-(&*b.ptr).__free()
+(*b.ptr).__free()
 free(b->ptr as *void)
-};
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
+}
 
-f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
+
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+some_function_that_wont_colide=fn(x:int)->Box[int] { Box::new(x) };
+
+S=struct{x:int}
+f=fn(b:Box[Box[Box[Box[S]]]])->int{
+	*&(b->x)
+}

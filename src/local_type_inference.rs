@@ -123,19 +123,28 @@ pub fn local_solver(ctx: &mut InferState) {
             continue;
         }
 
-        progress |= resolve_pending_derefs(ctx);
 
-        if progress {
+        if resolve_pending_derefs(ctx) {
             continue;
         }
 
-        // HACK (temporary, likely not the final design): before finalize we force unresolved
-        // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
-        progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
-
-        if !progress {
-            break;
+        //ORDER SENSATIVE semi hacks
+        //these are all assuming defualts on the type system
+        //so they are mostly last resorts for that exact reason
+        
+        if finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count){
+            continue;
         }
+
+        if force_unresolved_refs_to_safe(ctx, &mut unknown_count) {
+            continue;
+        }
+
+        if force_unresolved_ptr_mutability_to_immut(ctx){
+            continue;
+        }
+
+        break;
     }
 
     if !ctx.ex.errors.is_empty() {
@@ -144,6 +153,102 @@ pub fn local_solver(ctx: &mut InferState) {
 
     finalize_local(ctx);
 }
+
+#[inline(always)]
+fn force_unresolved_refs_to_safe(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
+    let mut progress = false;
+
+    for i in 0..ctx.types.core.cluster.len() {
+        let cid = CId(i);
+
+        if ctx.types.core.parent[cid] != cid {
+            continue;
+        }
+
+        let ResolveKind::Ptr { tgt, kind, mutable } = ctx.types.cluster_state(cid) else {
+            continue;
+        };
+
+        let should_force = matches!(kind, PtrKind::SafeRef | PtrKind::SomeRef | PtrKind::Unknown);
+        if !should_force {
+            continue;
+        }
+
+        // mint an unknown lifetime for display/model completion
+        let lt = LifeTime::Unknown(LifeId(*unknown_count));
+        *unknown_count += 1;
+
+        ctx.types.set_cluster_state(
+            cid,
+            ResolveKind::Ptr {
+                tgt,
+                kind: PtrKind::Solved(PointerStyle::Ref(lt)),
+                mutable,
+            },
+        );
+
+        progress = true;
+    }
+
+    progress
+}
+
+#[inline(always)]
+fn force_unresolved_ptr_mutability_to_immut(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    for i in 0..ctx.types.core.cluster.len() {
+        let cid = CId(i);
+
+        // only roots
+        if ctx.types.core.parent[cid] != cid {
+            continue;
+        }
+
+        let ResolveKind::Ptr { tgt, kind, mutable } = ctx.types.cluster_state(cid) else {
+            continue;
+        };
+
+        if mutable.is_some() {
+            continue;
+        }
+
+        ctx.types.set_cluster_state(
+            cid,
+            ResolveKind::Ptr {
+                tgt,
+                kind,
+                mutable: Some(false),
+            },
+        );
+
+        progress = true;
+    }
+
+    progress
+}
+
+#[inline(always)]
+fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
+    let mut progress = false;
+    //should properly increment
+
+    for lid in ctx.types.life_parent.0.iter() {
+        if *lid != ctx.types.life_parent[*lid] {
+            continue;
+        }
+
+        if ctx.types.life_known[*lid].is_none() {
+            let hack = LifeId(*unknown_count);
+            ctx.types.life_known[*lid] = Some(LifeTime::Unknown(hack));
+            *unknown_count += 1;
+            progress = true;
+        }
+    }
+
+    progress
+}
+
 fn finalize_local(ctx: &mut InferState) {
     let InferState {
         search,

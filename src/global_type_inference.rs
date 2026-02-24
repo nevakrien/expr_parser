@@ -175,18 +175,12 @@ pub fn infer_global_types<'a>(
 }
 
 fn global_solver(ctx: &mut InferState) {
-    let mut unknown_count = 0;
-
     loop {
         let mut progress = false;
         progress |= resolve_deferred_types(ctx);
         progress |= resolve_pending_specializations(ctx);
 
-        if progress {
-            continue;
-        }
 
-        progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
         if !progress {
             break;
         }

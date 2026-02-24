@@ -983,10 +983,22 @@ pub struct SolvedFunctionTypes {
 #[derive(Debug, Clone, Default)]
 pub struct InnerFunctionTypes {
     pub val_types: IdHashMap<ValId, TypeId>,
+    // pub val_types: IdHashMap<ValId, (TypeId,ValueKind)>,
+    // pub places: Vec<somestruct(Option<NameId>,some other info)>,
     pub pat_types: IdHashMap<PatId, TypeId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlaceId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueKind {
+    LValue(PlaceId),
+    RValue,
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SolvedMemberMethodAccessType {
@@ -1396,25 +1408,7 @@ pub fn main_solver(ctx: &mut InferState) {
     local_solver(ctx);
 }
 
-pub(crate) fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
-    let mut progress = false;
-    //should properly increment
 
-    for lid in ctx.types.life_parent.0.iter() {
-        if *lid != ctx.types.life_parent[*lid] {
-            continue;
-        }
-
-        if ctx.types.life_known[*lid].is_none() {
-            let hack = LifeId(*unknown_count);
-            ctx.types.life_known[*lid] = Some(LifeTime::Unknown(hack));
-            *unknown_count += 1;
-            progress = true;
-        }
-    }
-
-    progress
-}
 
 // ===================================
 // Inference state + unify-find clusters
@@ -1974,15 +1968,6 @@ impl<'a> ExternState<'a> {
     pub(crate) fn push_error(&mut self, err: TypeError) {
         self.errors.push(err);
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct PlaceId(pub usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ValueKind {
-    LValue(PlaceId),
-    RValue,
 }
 
 pub(crate) struct SearchState {
@@ -3811,43 +3796,56 @@ fn write_ptr_mock_string_inner(
     out: &mut String,
     limit: &mut usize,
 ) {
-    let mutable = mutable.unwrap_or(false);
     let PtrKind::Solved(style) = kind else {
-        if mutable {
-            let _ = out.write_str("&? mut ");
-            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
-        } else {
-            let _ = out.write_str("&? const ");
-            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+        let _ = out.write_str("&? ");
+
+        match mutable {
+            Some(true) => { let _ = out.write_str("mut "); }
+            Some(false) => { let _ = out.write_str("const "); }
+            None => { let _ = out.write_str("mut? "); }
         }
+
+        write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
         return;
     };
+
     match style {
+        // raw nullable pointer (*const / *mut)
         PointerStyle::Raw(Nullable::Yes) => {
-            if mutable {
-                let _ = out.write_char('*');
-                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
-            } else {
-                let _ = out.write_str("*const ");
-                write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
-            }
-        }
-        PointerStyle::Raw(Nullable::No) => {
-            if mutable {
-                let _ = out.write_str("&'raw ");
-            } else {
-                let _ = out.write_str("&'raw const ");
+            match mutable {
+                Some(true) => { let _ = out.write_str("* "); }
+                Some(false) => { let _ = out.write_str("*const "); }
+                None => { let _ = out.write_str("*mut? "); }
             }
             write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
         }
+
+        // non-null raw reference (&'raw)
+        PointerStyle::Raw(Nullable::No) => {
+            let _ = out.write_str("&'raw ");
+
+            match mutable {
+                Some(true) => { let _ = out.write_str(""); }
+                Some(false) => { let _ = out.write_str("const "); }
+                None => { let _ = out.write_str("mut? "); }
+            }
+
+            write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
+        }
+
+        // normal reference (&'a)
         PointerStyle::Ref(lt) => {
             let _ = out.write_char('&');
             let _ = out.write_char('\'');
             write_lifetime_for_display(ex, out, lt);
             let _ = out.write_char(' ');
-            if mutable {
-                let _ = out.write_str("mut ");
+
+            match mutable {
+                Some(true) => { let _ = out.write_str("mut "); }
+                Some(false) => { /* shared ref, print nothing */ }
+                None => { let _ = out.write_str("const? "); }
             }
+
             write_mock_type_from_cluster(ex, core, extra, tgt, out, limit);
         }
     }
