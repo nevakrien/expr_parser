@@ -1457,12 +1457,12 @@ pub(crate) fn gather_constraints(
 
             if outcome.retain {
                 ctx.req.pending_indexes.push(site);
-            } else if !site.implicit_receivers.is_empty() {
+            } else if !site.implicit_deref.implicit_receivers.is_empty() {
                 ctx.req
                     .index_implicit_deref_sites
                     .push(PendingMemberAccessImplicitDeref {
                         site: v,
-                        receivers: site.implicit_receivers,
+                        receivers: site.implicit_deref.implicit_receivers,
                     });
             }
 
@@ -2004,6 +2004,135 @@ fn resolve_struct_deref_target(
     })
 }
 
+impl PendingImplicitDeref {
+    #[inline(always)]
+    fn sync_roots(&mut self, types: &mut TypeState) -> CId {
+        self.source = types.root(self.source);
+        self.current = types.root(self.current);
+        self.current
+    }
+
+    #[inline(always)]
+    fn step(
+        &mut self,
+        ex: &mut ExternState,
+        types: &mut TypeState,
+        max_implicit_deref_steps: usize,
+        implicit_deref_limit_message: &'static str,
+    ) -> Result<ImplicitDerefStep, TypeError> {
+        let current = self.sync_roots(types);
+
+        match types.core.cluster[current].state {
+            ResolveKind::Nothing => Ok(ImplicitDerefStep::Pending),
+
+            ResolveKind::Ptr { tgt, .. } => {
+                if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                    return Err(TypeError::Simple {
+                        loc: ex.program.value_loc(self.site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+
+                self.implicit_receivers.push(current);
+                self.current = types.root(tgt);
+                Ok(ImplicitDerefStep::Stepped)
+            }
+
+            ResolveKind::Solved(t) => match ex.store.type_value(t) {
+                TypeValue::Ptr { tgt, .. } => {
+                    if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                        return Err(TypeError::Simple {
+                            loc: ex.program.value_loc(self.site),
+                            message: implicit_deref_limit_message,
+                        });
+                    }
+
+                    self.implicit_receivers.push(current);
+                    let c = types.new_solved(*tgt);
+                    self.current = types.root(c);
+                    Ok(ImplicitDerefStep::Stepped)
+                }
+
+                TypeValue::Struct { id, .. } => {
+                    if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                        return Err(TypeError::Simple {
+                            loc: ex.program.value_loc(self.site),
+                            message: implicit_deref_limit_message,
+                        });
+                    }
+
+                    let Some(struct_name) = ex.store.struct_value(*id).name else {
+                        return Ok(ImplicitDerefStep::Done);
+                    };
+
+                    let Some(target) = resolve_struct_deref_target(
+                        ex,
+                        types,
+                        self.site,
+                        self.base_value,
+                        current,
+                        struct_name,
+                        &mut self.deref_chain_lid,
+                        &mut self.deref_chain_mutability,
+                    ) else {
+                        return Ok(ImplicitDerefStep::Done);
+                    };
+
+                    self.implicit_receivers.push(current);
+                    self.implicit_receivers.push(target.deref_receiver_ptr);
+                    self.implicit_receivers.push(target.deref_result_ptr);
+                    self.current = types.root(target.target);
+                    Ok(ImplicitDerefStep::Stepped)
+                }
+
+                _ => Ok(ImplicitDerefStep::Done),
+            },
+
+            ResolveKind::Struct(rid) => {
+                if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                    return Err(TypeError::Simple {
+                        loc: ex.program.value_loc(self.site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+
+                let sid = types.extra.struct_infers[rid.0].sid;
+                let Some(struct_name) = ex.store.struct_value(sid).name else {
+                    return Ok(ImplicitDerefStep::Done);
+                };
+
+                let Some(target) = resolve_struct_deref_target(
+                    ex,
+                    types,
+                    self.site,
+                    self.base_value,
+                    current,
+                    struct_name,
+                    &mut self.deref_chain_lid,
+                    &mut self.deref_chain_mutability,
+                ) else {
+                    return Ok(ImplicitDerefStep::Done);
+                };
+
+                self.implicit_receivers.push(current);
+                self.implicit_receivers.push(target.deref_receiver_ptr);
+                self.implicit_receivers.push(target.deref_result_ptr);
+                self.current = types.root(target.target);
+                Ok(ImplicitDerefStep::Stepped)
+            }
+
+            _ => Ok(ImplicitDerefStep::Done),
+        }
+    }
+
+    #[inline(always)]
+    fn finalize_chain(&mut self, resolved_base: CId) -> Vec<CId> {
+        let used = self.implicit_receivers.len();
+        let receivers = std::mem::take(&mut self.implicit_receivers);
+        finalize_member_access_implicit_chain(receivers, used, resolved_base)
+    }
+}
+
 #[inline(always)]
 fn finalize_member_access_implicit_chain(
     mut chain: Vec<CId>,
@@ -2049,168 +2178,114 @@ impl PendingMemberAccess {
             AccessKind::Static => "static member access does not support implicit dereference",
         };
 
-        let mut current = types.root(self.current);
-
         loop {
+            let current = self.implicit_deref.sync_roots(types);
+
             match types.core.cluster[current].state {
-                // ---------------- UNKNOWN ----------------
-                ResolveKind::Nothing => {
-                    self.current = current;
-                    return MemberAccessResolve::Pending { source: current };
-                }
-
-                // ---------------- CLUSTER PTR ----------------
-                ResolveKind::Ptr { tgt, .. } => {
-                    if self.implicit_receivers.len() >= max_implicit_deref_steps {
-                        return MemberAccessResolve::Error(TypeError::Simple {
-                            loc: ex.program.value_loc(self.site),
-                            message: implicit_deref_limit_message,
-                        });
-                    }
-
-                    self.implicit_receivers.push(current);
-                    current = types.root(tgt);
-                }
-
-                // ---------------- SOLVED ----------------
                 ResolveKind::Solved(t) => {
-                    match ex.store.type_value(t) {
-                        // ----- solved pointer -----
-                        TypeValue::Ptr { tgt, .. } => {
-                            if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                    if let TypeValue::Struct {
+                        id: sid,
+                        generics,
+                        lifetimes,
+                    } = ex.store.type_value(t)
+                    {
+                        let (field_ty, struct_name) = {
+                            let rep = ex.store.struct_value(*sid);
+                            let field_ty = rep
+                                .fields
+                                .iter()
+                                .find(|(n, _)| ex.program.name_str_id(*n) == self.member)
+                                .map(|(_, t)| *t);
+                            (field_ty, rep.name)
+                        };
+
+                        if let Some(field_ty) = field_ty {
+                            if matches!(self.kind, AccessKind::Static) {
                                 return MemberAccessResolve::Error(TypeError::Simple {
                                     loc: ex.program.value_loc(self.site),
-                                    message: implicit_deref_limit_message,
+                                    message: "static access cannot target instance field",
                                 });
                             }
 
-                            self.implicit_receivers.push(current);
-                            let c = types.new_solved(*tgt);
-                            current = types.root(c);
+                            let generic_inputs = generics
+                                .iter()
+                                .map(|&t| types.new_solved(t))
+                                .collect::<Vec<_>>();
+
+                            let lifetime_inputs = lifetimes
+                                .iter()
+                                .map(|&lt| types.new_lid_known(lt))
+                                .collect::<Vec<_>>();
+
+                            let result = specialize_struct_field_type(
+                                ex,
+                                types,
+                                self.site,
+                                *sid,
+                                field_ty,
+                                &generic_inputs,
+                                &lifetime_inputs,
+                            );
+
+                            return MemberAccessResolve::Resolved {
+                                result,
+                                implicit_receivers: self.implicit_deref.finalize_chain(current),
+                            };
                         }
 
-                        // ----- solved struct -----
-                        TypeValue::Struct {
-                            id: sid,
-                            generics,
-                            lifetimes,
-                        } => {
-                            let (field_ty, struct_name) = {
-                                let rep = ex.store.struct_value(*sid);
-                                let field_ty = rep
-                                    .fields
-                                    .iter()
-                                    .find(|(n, _)| ex.program.name_str_id(*n) == self.member)
-                                    .map(|(_, t)| *t);
-                                (field_ty, rep.name)
+                        if let Some(struct_name) = struct_name
+                            && let Some(member_method) = ex
+                                .ans
+                                .member_function_types_by_name(struct_name, self.member)
+                        {
+                            let result = resolve_member_method_access(
+                                ex,
+                                types,
+                                search,
+                                member_method_type_sites,
+                                self.site,
+                                self.implicit_deref.base_value,
+                                current,
+                                self.member,
+                                member_method.ty,
+                            );
+
+                            return MemberAccessResolve::Resolved {
+                                result,
+                                implicit_receivers: self.implicit_deref.finalize_chain(current),
                             };
+                        }
 
-                            // ===== FIELD =====
-                            if let Some(field_ty) = field_ty {
-                                if matches!(self.kind, AccessKind::Static) {
-                                    return MemberAccessResolve::Error(TypeError::Simple {
-                                        loc: ex.program.value_loc(self.site),
-                                        message: "static access cannot target instance field",
-                                    });
-                                }
-
-                                let generic_inputs = generics
-                                    .iter()
-                                    .map(|&t| types.new_solved(t))
-                                    .collect::<Vec<_>>();
-
-                                let lifetime_inputs = lifetimes
-                                    .iter()
-                                    .map(|&lt| types.new_lid_known(lt))
-                                    .collect::<Vec<_>>();
-
-                                let result = specialize_struct_field_type(
-                                    ex,
-                                    types,
-                                    self.site,
-                                    *sid,
-                                    field_ty,
-                                    &generic_inputs,
-                                    &lifetime_inputs,
-                                );
-
-                                let used = self.implicit_receivers.len();
-                                let receivers = std::mem::take(&mut self.implicit_receivers);
-
-                                return MemberAccessResolve::Resolved {
-                                    result,
-                                    implicit_receivers: finalize_member_access_implicit_chain(
-                                        receivers, used, current,
-                                    ),
-                                };
-                            }
-
-                            // ===== METHOD =====
-                            if let Some(struct_name) = struct_name {
-                                if let Some(member_method) = ex
-                                    .ans
-                                    .member_function_types_by_name(struct_name, self.member)
-                                {
-                                    let result = resolve_member_method_access(
-                                        ex,
-                                        types,
-                                        search,
-                                        member_method_type_sites,
-                                        self.site,
-                                        self.base_value,
-                                        current,
-                                        self.member,
-                                        member_method.ty,
-                                    );
-
-                                    let used = self.implicit_receivers.len();
-                                    let receivers = std::mem::take(&mut self.implicit_receivers);
-
-                                    return MemberAccessResolve::Resolved {
-                                        result,
-                                        implicit_receivers: finalize_member_access_implicit_chain(
-                                            receivers, used, current,
-                                        ),
+                        if self.implicit_deref.implicit_receivers.len() < max_implicit_deref_steps {
+                            match self.implicit_deref.step(
+                                ex,
+                                types,
+                                max_implicit_deref_steps,
+                                implicit_deref_limit_message,
+                            ) {
+                                Ok(ImplicitDerefStep::Stepped) => continue,
+                                Ok(ImplicitDerefStep::Pending) => {
+                                    return MemberAccessResolve::Pending {
+                                        source: self.implicit_deref.source,
                                     };
                                 }
-
-                                // ===== SMART DEREF =====
-                                if self.implicit_receivers.len() < max_implicit_deref_steps {
-                                    if let Some(target) = resolve_struct_deref_target(
-                                        ex,
-                                        types,
-                                        self.site,
-                                        self.base_value,
-                                        current,
-                                        struct_name,
-                                        &mut self.deref_chain_lid,
-                                        &mut self.deref_chain_is_mut,
-                                    ) {
-                                        self.implicit_receivers.push(current);
-                                        self.implicit_receivers.push(target.deref_receiver_ptr);
-                                        self.implicit_receivers.push(target.deref_result_ptr);
-                                        current = types.root(target.target);
-                                        continue;
-                                    }
+                                Ok(ImplicitDerefStep::Done) => {
+                                    return MemberAccessResolve::Error(TypeError::UnknownField {
+                                        field: self.member,
+                                        site: self.site,
+                                    });
                                 }
+                                Err(err) => return MemberAccessResolve::Error(err),
                             }
-
-                            return MemberAccessResolve::Error(TypeError::UnknownField {
-                                field: self.member,
-                                site: self.site,
-                            });
                         }
 
-                        _ => {
-                            return MemberAccessResolve::Error(TypeError::Simple {
-                                loc: ex.program.value_loc(self.site),
-                                message: "member access requires a struct or pointer-like base",
-                            });
-                        }
+                        return MemberAccessResolve::Error(TypeError::UnknownField {
+                            field: self.member,
+                            site: self.site,
+                        });
                     }
                 }
 
-                // ---------------- INFER STRUCT ----------------
                 ResolveKind::Struct(rid) => {
                     let sid = types.extra.struct_infers[rid.0].sid;
 
@@ -2224,7 +2299,6 @@ impl PendingMemberAccess {
                         (field_ty, rep.name)
                     };
 
-                    // ===== FIELD =====
                     if let Some(field_ty) = field_ty {
                         if matches!(self.kind, AccessKind::Static) {
                             return MemberAccessResolve::Error(TypeError::Simple {
@@ -2244,63 +2318,55 @@ impl PendingMemberAccess {
                             ex, types, self.site, sid, field_ty, &gens, &lifes,
                         );
 
-                        let used = self.implicit_receivers.len();
-                        let receivers = std::mem::take(&mut self.implicit_receivers);
-
                         return MemberAccessResolve::Resolved {
                             result,
-                            implicit_receivers: finalize_member_access_implicit_chain(
-                                receivers, used, current,
-                            ),
+                            implicit_receivers: self.implicit_deref.finalize_chain(current),
                         };
                     }
 
-                    // ===== METHOD / SMART DEREF =====
-                    if let Some(struct_name) = struct_name {
-                        if let Some(member_method) = ex
+                    if let Some(struct_name) = struct_name
+                        && let Some(member_method) = ex
                             .ans
                             .member_function_types_by_name(struct_name, self.member)
-                        {
-                            let result = resolve_member_method_access(
-                                ex,
-                                types,
-                                search,
-                                member_method_type_sites,
-                                self.site,
-                                self.base_value,
-                                current,
-                                self.member,
-                                member_method.ty,
-                            );
+                    {
+                        let result = resolve_member_method_access(
+                            ex,
+                            types,
+                            search,
+                            member_method_type_sites,
+                            self.site,
+                            self.implicit_deref.base_value,
+                            current,
+                            self.member,
+                            member_method.ty,
+                        );
 
-                            let used = self.implicit_receivers.len();
-                            let receivers = std::mem::take(&mut self.implicit_receivers);
+                        return MemberAccessResolve::Resolved {
+                            result,
+                            implicit_receivers: self.implicit_deref.finalize_chain(current),
+                        };
+                    }
 
-                            return MemberAccessResolve::Resolved {
-                                result,
-                                implicit_receivers: finalize_member_access_implicit_chain(
-                                    receivers, used, current,
-                                ),
-                            };
-                        }
-
-                        if self.implicit_receivers.len() < max_implicit_deref_steps {
-                            if let Some(target) = resolve_struct_deref_target(
-                                ex,
-                                types,
-                                self.site,
-                                self.base_value,
-                                current,
-                                struct_name,
-                                &mut self.deref_chain_lid,
-                                &mut self.deref_chain_is_mut,
-                            ) {
-                                self.implicit_receivers.push(current);
-                                self.implicit_receivers.push(target.deref_receiver_ptr);
-                                self.implicit_receivers.push(target.deref_result_ptr);
-                                current = types.root(target.target);
-                                continue;
+                    if self.implicit_deref.implicit_receivers.len() < max_implicit_deref_steps {
+                        match self.implicit_deref.step(
+                            ex,
+                            types,
+                            max_implicit_deref_steps,
+                            implicit_deref_limit_message,
+                        ) {
+                            Ok(ImplicitDerefStep::Stepped) => continue,
+                            Ok(ImplicitDerefStep::Pending) => {
+                                return MemberAccessResolve::Pending {
+                                    source: self.implicit_deref.source,
+                                };
                             }
+                            Ok(ImplicitDerefStep::Done) => {
+                                return MemberAccessResolve::Error(TypeError::UnknownField {
+                                    field: self.member,
+                                    site: self.site,
+                                });
+                            }
+                            Err(err) => return MemberAccessResolve::Error(err),
                         }
                     }
 
@@ -2310,12 +2376,28 @@ impl PendingMemberAccess {
                     });
                 }
 
-                _ => {
+                _ => {}
+            }
+
+            match self.implicit_deref.step(
+                ex,
+                types,
+                max_implicit_deref_steps,
+                implicit_deref_limit_message,
+            ) {
+                Ok(ImplicitDerefStep::Stepped) => continue,
+                Ok(ImplicitDerefStep::Pending) => {
+                    return MemberAccessResolve::Pending {
+                        source: self.implicit_deref.source,
+                    };
+                }
+                Ok(ImplicitDerefStep::Done) => {
                     return MemberAccessResolve::Error(TypeError::Simple {
                         loc: ex.program.value_loc(self.site),
                         message: "member access requires a struct or pointer-like base",
                     });
                 }
+                Err(err) => return MemberAccessResolve::Error(err),
             }
         }
     }
@@ -3016,149 +3098,73 @@ impl PendingIndex {
     fn step(&mut self, ex: &mut ExternState, types: &mut TypeState) -> ResolveOutcome {
         let mut progress = false;
 
-        self.base = types.root(self.base);
         self.index = types.root(self.index);
 
-        // resume from cursor
-        let mut current = types.root(self.current);
-
         let max_implicit_deref_steps = 64usize;
+        let implicit_deref_limit_message = "index autoderef recursion exceeded safety limit";
 
         let element: CId = loop {
+            let current = self.implicit_deref.sync_roots(types);
+
             match types.core.cluster[current].state {
                 ResolveKind::Nothing => {
-                    // pause; keep prefix
-                    self.current = current;
                     return ResolveOutcome::keep(progress);
                 }
 
                 ResolveKind::Array { element, .. } => break element,
 
-                ResolveKind::Ptr { tgt, .. } => {
-                    if self.implicit_receivers.len() >= max_implicit_deref_steps {
-                        ex.push_error(TypeError::Simple {
-                            loc: ex.program.value_loc(self.site),
-                            message: "index autoderef recursion exceeded safety limit",
-                        });
-                        return ResolveOutcome::drop(progress);
-                    }
-
-                    self.implicit_receivers.push(current);
-                    current = types.root(tgt);
-                }
-
                 ResolveKind::Solved(t) => match ex.store.type_value(t) {
                     TypeValue::Array(element, _) => break types.new_solved(*element),
 
-                    TypeValue::Ptr { tgt, .. } => {
-                        if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                    _ => match self.implicit_deref.step(
+                        ex,
+                        types,
+                        max_implicit_deref_steps,
+                        implicit_deref_limit_message,
+                    ) {
+                        Ok(ImplicitDerefStep::Stepped) => continue,
+                        Ok(ImplicitDerefStep::Pending) => return ResolveOutcome::keep(progress),
+                        Ok(ImplicitDerefStep::Done) => {
                             ex.push_error(TypeError::Simple {
                                 loc: ex.program.value_loc(self.site),
-                                message: "index autoderef recursion exceeded safety limit",
+                                message: "indexing base must be an array or pointer to array",
                             });
                             return ResolveOutcome::drop(progress);
                         }
-
-                        let c = types.new_solved(*tgt);
-                        let next = types.root(c);
-                        self.implicit_receivers.push(current);
-                        current = next;
-                    }
-
-                    TypeValue::Struct { id, .. } => {
-                        let Some(struct_name) = ex.store.struct_value(*id).name else {
-                            ex.push_error(TypeError::Simple {
-                                loc: ex.program.value_loc(self.site),
-                                message: "indexing base must be an array or pointer to array",
-                            });
+                        Err(err) => {
+                            ex.push_error(err);
                             return ResolveOutcome::drop(progress);
-                        };
-
-                        let Some(target) = resolve_struct_deref_target(
-                            ex,
-                            types,
-                            self.site,
-                            self.base_value,
-                            current,
-                            struct_name,
-                            &mut self.deref_chain_lid,
-                            &mut self.deref_chain_mutability,
-                        ) else {
-                            ex.push_error(TypeError::Simple {
-                                loc: ex.program.value_loc(self.site),
-                                message: "indexing base must be an array or pointer to array",
-                            });
-                            return ResolveOutcome::drop(progress);
-                        };
-
-                        self.implicit_receivers.push(current);
-                        self.implicit_receivers.push(target.deref_receiver_ptr);
-                        self.implicit_receivers.push(target.deref_result_ptr);
-
-                        current = types.root(target.target);
-                    }
-
-                    _ => {
-                        ex.push_error(TypeError::Simple {
-                            loc: ex.program.value_loc(self.site),
-                            message: "indexing base must be an array or pointer to array",
-                        });
-                        return ResolveOutcome::drop(progress);
-                    }
+                        }
+                    },
                 },
 
-                ResolveKind::Struct(rid) => {
-                    let sid = types.extra.struct_infers[rid.0].sid;
-                    let Some(struct_name) = ex.store.struct_value(sid).name else {
-                        ex.push_error(TypeError::Simple {
-                            loc: ex.program.value_loc(self.site),
-                            message: "indexing base must be an array or pointer to array",
-                        });
-                        return ResolveOutcome::drop(progress);
-                    };
-
-                    let Some(target) = resolve_struct_deref_target(
+                _ => {
+                    match self.implicit_deref.step(
                         ex,
                         types,
-                        self.site,
-                        self.base_value,
-                        current,
-                        struct_name,
-                        &mut self.deref_chain_lid,
-                        &mut self.deref_chain_mutability,
-                    ) else {
-                        ex.push_error(TypeError::Simple {
-                            loc: ex.program.value_loc(self.site),
-                            message: "indexing base must be an array or pointer to array",
-                        });
-                        return ResolveOutcome::drop(progress);
-                    };
-
-                    self.implicit_receivers.push(current);
-                    self.implicit_receivers.push(target.deref_receiver_ptr);
-                    self.implicit_receivers.push(target.deref_result_ptr);
-
-                    current = types.root(target.target);
-                }
-
-                _ => {
-                    ex.push_error(TypeError::Simple {
-                        loc: ex.program.value_loc(self.site),
-                        message: "indexing base must be an array or pointer to array",
-                    });
-                    return ResolveOutcome::drop(progress);
+                        max_implicit_deref_steps,
+                        implicit_deref_limit_message,
+                    ) {
+                        Ok(ImplicitDerefStep::Stepped) => continue,
+                        Ok(ImplicitDerefStep::Pending) => return ResolveOutcome::keep(progress),
+                        Ok(ImplicitDerefStep::Done) => {
+                            ex.push_error(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "indexing base must be an array or pointer to array",
+                            });
+                            return ResolveOutcome::drop(progress);
+                        }
+                        Err(err) => {
+                            ex.push_error(err);
+                            return ResolveOutcome::drop(progress);
+                        }
+                    }
                 }
             }
         };
 
-        // commit cursor/base now that we know where we ended
-        self.current = current;
-        self.base = current;
-
-        // finalize implicit receiver chain into the site
-        let used = self.implicit_receivers.len();
-        let receivers = std::mem::take(&mut self.implicit_receivers);
-        self.implicit_receivers = finalize_member_access_implicit_chain(receivers, used, current);
+        let current = self.implicit_deref.current;
+        self.implicit_deref.implicit_receivers = self.implicit_deref.finalize_chain(current);
 
         // index must be usize
         let usize_c = types.new_solved(BuiltinType::Usize.into());
@@ -3319,14 +3325,15 @@ pub(crate) fn resolve_pending_indexes(ctx: &mut InferState) -> bool {
     let types = &mut ctx.types;
 
     ctx.req.pending_indexes.retain_mut(|site| {
+        site.implicit_deref.sync_roots(types);
         let outcome = site.step(ex, types);
         progress |= outcome.progress;
-        if !outcome.retain && !site.implicit_receivers.is_empty() {
+        if !outcome.retain && !site.implicit_deref.implicit_receivers.is_empty() {
             ctx.req
                 .index_implicit_deref_sites
                 .push(PendingMemberAccessImplicitDeref {
                     site: site.site,
-                    receivers: std::mem::take(&mut site.implicit_receivers),
+                    receivers: std::mem::take(&mut site.implicit_deref.implicit_receivers),
                 });
         }
         outcome.retain
@@ -3346,12 +3353,11 @@ pub(crate) fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
     let member_access_implicit_deref_sites = &mut ctx.req.member_access_implicit_deref_sites;
 
     ctx.req.pending_member_accesses.retain_mut(|pending| {
-        let source = types.root(pending.source);
-        pending.source = source;
+        pending.implicit_deref.sync_roots(types);
 
         match pending.step(ex, types, search, member_method_type_sites) {
             MemberAccessResolve::Pending { source } => {
-                pending.source = source;
+                pending.implicit_deref.source = source;
                 true
             }
             MemberAccessResolve::Resolved {

@@ -1728,24 +1728,13 @@ pub(crate) struct PendingMemberAccessImplicitDeref {
 #[derive(Debug)]
 pub(crate) struct PendingMemberAccess {
     pub(crate) site: ValId,
-    pub(crate) base_value: ValId,
-
-    // original base cluster
-    pub(crate) source: CId,
-
-    // resume cursor (VERY important)
-    pub(crate) current: CId,
+    pub(crate) implicit_deref: PendingImplicitDeref,
 
     // output cluster for the expression
     pub(crate) output: CId,
 
     pub(crate) member: StrId,
     pub(crate) kind: AccessKind,
-
-    // autoderef state (persistent)
-    pub(crate) implicit_receivers: Vec<CId>,
-    pub(crate) deref_chain_lid: Option<LId>,
-    pub(crate) deref_chain_is_mut: Option<bool>,
 }
 
 impl PendingMemberAccess {
@@ -1758,19 +1747,41 @@ impl PendingMemberAccess {
         member: StrId,
         kind: AccessKind,
     ) -> Self {
-        let source = types.root(source);
+        Self {
+            site,
+            implicit_deref: PendingImplicitDeref::new(types, site, base_value, source),
+            output,
+            member,
+            kind,
+        }
+    }
+}
 
+#[derive(Debug)]
+pub(crate) struct PendingImplicitDeref {
+    pub(crate) site: ValId,
+    pub(crate) base_value: ValId,
+    pub(crate) source: CId,
+    pub(crate) current: CId,
+    pub(crate) implicit_receivers: Vec<CId>,
+    pub(crate) deref_chain_lid: Option<LId>,
+    pub(crate) deref_chain_mutability: Option<bool>,
+}
+
+impl PendingImplicitDeref {
+    #[inline(always)]
+    pub(crate) fn new(types: &mut TypeState, site: ValId, base_value: ValId, source: CId) -> Self {
+        // canonicalize immediately (VERY important - prevents stale path issues)
+        let source = types.root(source);
         Self {
             site,
             base_value,
             source,
-            current: source, // CRITICAL: start cursor here
-            output,
-            member,
-            kind,
+            // CRITICAL: start cursor here
+            current: source,
             implicit_receivers: Vec::new(),
             deref_chain_lid: None,
-            deref_chain_is_mut: None,
+            deref_chain_mutability: None,
         }
     }
 }
@@ -1818,15 +1829,10 @@ pub(crate) struct PendingIndex {
     pub(crate) base_value: ValId,
     pub(crate) index_value: ValId,
 
-    pub(crate) base: CId,
     pub(crate) index: CId,
     pub(crate) output: CId,
 
-    pub(crate) current: CId,
-    pub(crate) implicit_receivers: Vec<CId>,
-
-    pub(crate) deref_chain_lid: Option<LId>,
-    pub(crate) deref_chain_mutability: Option<bool>,
+    pub(crate) implicit_deref: PendingImplicitDeref,
 }
 
 impl PendingIndex {
@@ -1840,28 +1846,15 @@ impl PendingIndex {
         index: CId,
         output: CId,
     ) -> Self {
-        // canonicalize immediately (VERY important — prevents stale path issues)
-        let base = types.root(base);
         let index = types.root(index);
 
         Self {
             site,
             base_value,
             index_value,
-
-            base,
             index,
             output,
-
-            // coroutine cursor: current autoderef position
-            current: base,
-
-            // persistent autoderef prefix
-            implicit_receivers: Vec::new(),
-
-            // smart-deref tracking
-            deref_chain_lid: None,
-            deref_chain_mutability: None,
+            implicit_deref: PendingImplicitDeref::new(types, site, base_value, base),
         }
     }
 }
@@ -4131,6 +4124,13 @@ pub(crate) enum IntAccessResolve {
         source: CId,
     },
     Error(TypeError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImplicitDerefStep {
+    Pending,
+    Stepped,
+    Done,
 }
 
 // ///this tries to resolve specifically a from a module.
@@ -6635,8 +6635,8 @@ mod type_infer_tests {
     #[test]
     fn deref_chain_supports_all_four_style_transitions_with_raw_links() {
         let src = "
-            Wrapper = struct {inner:int};
-            Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner}
+            Wrapper = struct {inner:[int;1]};
+            Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner[0]}
 
             Unsafe = struct { inner: &'raw Wrapper };
             Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
@@ -6652,6 +6652,7 @@ mod type_infer_tests {
 
             f = fn(s: &mut Safe) {
                 let out : &mut int = s->get();
+                let arr : &mut [int;1] = s->inner;
             };
 
         ";
@@ -6681,6 +6682,8 @@ mod type_infer_tests {
             TypeValue::Builtin(BuiltinType::Int)
         ));
 
+        //the 1 and 3 asserted here may be too much
+
         let (access_site, _, _) =
             find_member_access_and_result_types(&program, &solved_types, f, "out");
         let chain =
@@ -6697,12 +6700,31 @@ mod type_infer_tests {
                 "&'raw Unsafe".to_string(),
                 "&'raw Unsafe".to_string(),
                 "&'idk3 mut Wrapper".to_string(),
-                "Wrapper".to_string(),
+            ],
+            "unexpected full deref chain for four-style transition case"
+        );
+
+        let (access_site, _, _) =
+            find_member_access_and_result_types(&program, &solved_types, f, "arr");
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain");
+        assert_eq!(
+            chain,
+            vec![
+                "&'a0 mut Safe".to_string(),
+                "&'idk1 mut Safe".to_string(),
+                "&'idk1 mut Raw".to_string(),
+                "&'raw RawCalc".to_string(),
+                "&'raw RawCalc".to_string(),
+                "&'raw Unsafe".to_string(),
+                "&'raw Unsafe".to_string(),
+                "&'idk3 mut Wrapper".to_string(),
+                "&'idk3 mut [int;1]".to_string(),
             ],
             "unexpected full deref chain for four-style transition case"
         );
     }
-
     #[test]
     fn smart_deref_chain_can_drop_mutability_through_nested_ref_targets() {
         let src = "S=struct{x:int}; Box=struct[T]{inner:T}; Box.__deref_mut = fn[T](self:&mut Box[T])->&mut T { &mut self.inner }; f=fn['a](b:Box[&'raw const &'a S])->int { let y:int = b->x; y };";
