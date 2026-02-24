@@ -22,6 +22,7 @@
 // and then later when enough type info is present we can apply unification.
 // ================================================================
 // use std::arch::asm;
+use foldhash::HashMapExt;
 use crate::ErrorReporter;
 use crate::global_type_inference::*;
 use crate::identity_hasher::IdHashMap;
@@ -31,12 +32,12 @@ use crate::ir::LifeTimeId;
 use crate::ir::StructLayoutSpec;
 use crate::ir::VarKind;
 use crate::ir::{
-    BinOp, GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, UnOp, ValId, Value,
+    BinOp, GenDec, NameId, PatId, Pattern, TExpId, TypeExpr, UnOp, ValId, Value,
 };
 use crate::local_type_inference::*;
 use crate::parsing::Loc;
 use crate::string_intern::StrId;
-use std::collections::HashMap;
+use foldhash::HashMap;
 use std::fmt::Write as _;
 use std::ops::{Index, IndexMut};
 
@@ -788,7 +789,7 @@ pub struct SolvedTypes {
     pub typedef_types: IdHashMap<TExpId, TypeId>,
     pub function_values: IdHashMap<ValId, SolvedFunctionTypes>,
     pub function_types: IdHashMap<NameId, ValId>,
-    pub member_function_types: IdHashMap<(NameId, StrId), ValId>,
+    pub member_function_types: HashMap<(NameId, StrId), ValId>,
 }
 
 impl SolvedTypes {
@@ -800,7 +801,7 @@ impl SolvedTypes {
             typedef_types,
             function_values: IdHashMap::default(),
             function_types: IdHashMap::default(),
-            member_function_types: IdHashMap::default(),
+            member_function_types: HashMap::default(),
         }
     }
 
@@ -4199,58 +4200,7 @@ pub(crate) enum IntAccessResolve {
 //         }
 //     }
 // }
-pub(crate) fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
-    ctx: &mut InferState,
-    v: ValId,
-    calling_convention: CallingConvention,
-    generics: GenDec,
-    params: PatternSpan,
-    output_type: Option<TExpId>,
-    body: Option<ValId>,
-) -> CId {
-    let previous_name_render = std::mem::replace(
-        &mut ctx.ex.name_render,
-        GenLifeNameRender::from_decl(ctx.ex.program, generics),
-    );
 
-    let (f, output) = gather_func_signature::<GLOBAL_SCOPE>(
-        ctx,
-        v,
-        calling_convention,
-        generics,
-        params,
-        output_type,
-    );
-
-    let Some(body) = body else {
-        ctx.ex.name_render = previous_name_render;
-        return f;
-    };
-
-    let body_cluster = gather_constraints(ctx, body, Some(output));
-
-    if let Err(clash) = ctx.unify(body_cluster, output) {
-        let found = match ctx.ex.program.value(body) {
-            Value::Block {
-                statements: _,
-                return_value: Some(x),
-            } => x,
-            _ => body,
-        };
-        ctx.push_error(TypeError::FunctionOutputAnnotationMismatch {
-            output_type,
-            constrained: found,
-            clash,
-        });
-    }
-
-    //TODO limit f on params and out somehow
-    //this might need to be done ahead of time globaly for all funcs
-    //so that we can have weird type recursions
-    //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
-    ctx.ex.name_render = previous_name_render;
-    f
-}
 #[inline(always)]
 pub(crate) fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
     gather_pattern_constraints_with_generics::<false>(ctx, p)

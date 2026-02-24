@@ -1,3 +1,6 @@
+use crate::ir::GenDec;
+use crate::ir::PatternSpan;
+use crate::ir::TExpId;
 use crate::global_type_inference::*;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
@@ -101,212 +104,58 @@ pub fn infer_value_internals<'a>(
     }
 }
 
-fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -> CId {
-    let Some(known_ty) = ctx
-        .ex
-        .ans
-        .function_types_by_value(value)
-        .map(|known| known.ty)
-    else {
-        return ctx.new_cluster();
+pub(crate) fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
+    ctx: &mut InferState,
+    v: ValId,
+    calling_convention: CallingConvention,
+    generics: GenDec,
+    params: PatternSpan,
+    output_type: Option<TExpId>,
+    body: Option<ValId>,
+) -> CId {
+    let previous_name_render = std::mem::replace(
+        &mut ctx.ex.name_render,
+        GenLifeNameRender::from_decl(ctx.ex.program, generics),
+    );
+
+    let (f, output) = gather_func_signature::<GLOBAL_SCOPE>(
+        ctx,
+        v,
+        calling_convention,
+        generics,
+        params,
+        output_type,
+    );
+
+    let Some(body) = body else {
+        ctx.ex.name_render = previous_name_render;
+        return f;
     };
 
-    let ret_ty = match ctx.ex.store.type_value(known_ty) {
-        TypeValue::Func { ret, .. } => *ret,
-        _ => return ctx.new_cluster(),
-    };
+    let body_cluster = gather_constraints(ctx, body, Some(output));
 
-    let argument_count = ctx
-        .ex
-        .ans
-        .function_types_by_value(value)
-        .map_or(0, |known| known.arguments.len());
-
-    for i in 0..argument_count {
-        let Some((pat, maybe_name, ty)) = ctx
-            .ex
-            .ans
-            .function_types_by_value(value)
-            .and_then(|known| known.arguments.get(i))
-            .copied()
-        else {
-            continue;
+    if let Err(clash) = ctx.unify(body_cluster, output) {
+        let found = match ctx.ex.program.value(body) {
+            Value::Block {
+                statements: _,
+                return_value: Some(x),
+            } => x,
+            _ => body,
         };
-
-        let c = if ty == UNKNOWN_TYPE {
-            ctx.new_cluster()
-        } else {
-            ctx.new_solved(ty)
-        };
-        ctx.bind_pat(pat, c);
-        if let Some(name) = maybe_name {
-            ctx.search.names.insert(name, c);
-        }
+        ctx.push_error(TypeError::FunctionOutputAnnotationMismatch {
+            output_type,
+            constrained: found,
+            clash,
+        });
     }
 
-    let generic_param_count = ctx
-        .ex
-        .ans
-        .function_types_by_value(value)
-        .map_or(0, |known| known.generic_parameters.len());
-
-    for i in 0..generic_param_count {
-        let maybe_name = ctx
-            .ex
-            .ans
-            .function_types_by_value(value)
-            .and_then(|known| known.generic_parameters.get(i))
-            .and_then(|(_pat, maybe_name)| *maybe_name);
-
-        let generic_ty = ctx.ex.store.intern(TypeValue::Generic(GenId(i)));
-        let generic_cid = ctx.new_solved(generic_ty);
-        if let Some(name) = maybe_name {
-            ctx.search.local_types.insert(name, generic_cid);
-            ctx.search.names.insert(name, generic_cid);
-        }
-    }
-
-    let lifetime_param_count = ctx
-        .ex
-        .ans
-        .function_types_by_value(value)
-        .map_or(0, |known| known.lifetime_parameters.len());
-
-    for i in 0..lifetime_param_count {
-        let lid = ctx.types.new_lid_known(LifeTime::External(i as u32));
-        if let Some((pat, maybe_lt_name)) = ctx
-            .ex
-            .ans
-            .function_types_by_value(value)
-            .and_then(|known| known.lifetime_parameters.get(i))
-            .copied()
-            && let Some(lt_name) = maybe_lt_name
-        {
-            ctx.search
-                .local_lifetimes
-                .insert(lt_name, (LifeTime::External(i as u32), lid));
-            let _ = pat;
-        }
-    }
-
-    ctx.new_solved(ret_ty)
+    //TODO limit f on params and out somehow
+    //this might need to be done ahead of time globaly for all funcs
+    //so that we can have weird type recursions
+    //if thats the case this part might be just compiling cluster,(params need to be gathered so we get them in as vars we can use)
+    ctx.ex.name_render = previous_name_render;
+    f
 }
-
-#[inline(always)]
-fn try_resolve_tuple_int_access(
-    ex: &mut ExternState,
-    types: &mut TypeState,
-    site: ValId,
-    source: CId,
-    id: usize,
-    kind: AccessKind,
-) -> IntAccessResolve {
-    let mut current = types.root(source);
-    let mut implicit_receivers = Vec::new();
-    let max_implicit_deref_steps = match kind {
-        AccessKind::Dot => 1usize,
-        AccessKind::Ptr => 64usize,
-        AccessKind::Static => 0usize,
-    };
-    let implicit_deref_limit_message = match kind {
-        AccessKind::Dot => "`.` tuple access performs at most one implicit dereference",
-        AccessKind::Ptr => "tuple access autoderef recursion exceeded safety limit",
-        AccessKind::Static => "static tuple access does not support implicit dereference",
-    };
-    let mut used_implicit_deref_steps = 0usize;
-
-    loop {
-        match types.core.cluster[current].state {
-            ResolveKind::Nothing => return IntAccessResolve::Pending { source: current },
-            ResolveKind::Ptr { tgt, .. } => {
-                if used_implicit_deref_steps >= max_implicit_deref_steps {
-                    return IntAccessResolve::Error(TypeError::Simple {
-                        loc: ex.program.value_loc(site),
-                        message: implicit_deref_limit_message,
-                    });
-                }
-                let next = types.root(tgt);
-                implicit_receivers.push(current);
-                used_implicit_deref_steps += 1;
-                current = next;
-            }
-            ResolveKind::Solved(t) => match ex.store.type_value(t) {
-                TypeValue::Ptr { tgt, .. } => {
-                    if used_implicit_deref_steps >= max_implicit_deref_steps {
-                        return IntAccessResolve::Error(TypeError::Simple {
-                            loc: ex.program.value_loc(site),
-                            message: implicit_deref_limit_message,
-                        });
-                    }
-                    let next = types.new_solved(*tgt);
-                    let next = types.root(next);
-                    implicit_receivers.push(current);
-                    used_implicit_deref_steps += 1;
-                    current = next;
-                }
-                TypeValue::Tuple(items) => {
-                    if kind == AccessKind::Static {
-                        return IntAccessResolve::Error(TypeError::Simple {
-                            loc: ex.program.value_loc(site),
-                            message: "tuple element access does not support `::`",
-                        });
-                    }
-                    let Some(item) = items.get(id).copied() else {
-                        return IntAccessResolve::Error(TypeError::Simple {
-                            loc: ex.program.value_loc(site),
-                            message: "tuple element index is out of bounds for this tuple",
-                        });
-                    };
-                    let result = types.new_solved(item);
-                    return IntAccessResolve::Resolved {
-                        result,
-                        implicit_receivers: finalize_member_access_implicit_chain(
-                            implicit_receivers,
-                            used_implicit_deref_steps,
-                            current,
-                        ),
-                    };
-                }
-                _ => {
-                    return IntAccessResolve::Error(TypeError::Simple {
-                        loc: ex.program.value_loc(site),
-                        message: "tuple element access requires a tuple or pointer-like base",
-                    });
-                }
-            },
-            ResolveKind::Tuple(tuple_id) => {
-                if kind == AccessKind::Static {
-                    return IntAccessResolve::Error(TypeError::Simple {
-                        loc: ex.program.value_loc(site),
-                        message: "tuple element access does not support `::`",
-                    });
-                }
-                let Some(result) = types.extra.tuple_infers[tuple_id.0].items.get(id).copied()
-                else {
-                    return IntAccessResolve::Error(TypeError::Simple {
-                        loc: ex.program.value_loc(site),
-                        message: "tuple element index is out of bounds for this tuple",
-                    });
-                };
-                return IntAccessResolve::Resolved {
-                    result,
-                    implicit_receivers: finalize_member_access_implicit_chain(
-                        implicit_receivers,
-                        used_implicit_deref_steps,
-                        current,
-                    ),
-                };
-            }
-            _ => {
-                return IntAccessResolve::Error(TypeError::Simple {
-                    loc: ex.program.value_loc(site),
-                    message: "tuple element access requires a tuple or pointer-like base",
-                });
-            }
-        }
-    }
-}
-
 pub(crate) fn gather_constraints(
     ctx: &mut InferState,
     v: ValId,
@@ -1336,6 +1185,214 @@ pub(crate) fn gather_constraints(
         // Value::LifeTime(_) => todo!("some sort of error? maybe we actualy have a type for lifetime"),
     }
 }
+
+fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -> CId {
+    let Some(known_ty) = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map(|known| known.ty)
+    else {
+        return ctx.new_cluster();
+    };
+
+    let ret_ty = match ctx.ex.store.type_value(known_ty) {
+        TypeValue::Func { ret, .. } => *ret,
+        _ => return ctx.new_cluster(),
+    };
+
+    let argument_count = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map_or(0, |known| known.arguments.len());
+
+    for i in 0..argument_count {
+        let Some((pat, maybe_name, ty)) = ctx
+            .ex
+            .ans
+            .function_types_by_value(value)
+            .and_then(|known| known.arguments.get(i))
+            .copied()
+        else {
+            continue;
+        };
+
+        let c = if ty == UNKNOWN_TYPE {
+            ctx.new_cluster()
+        } else {
+            ctx.new_solved(ty)
+        };
+        ctx.bind_pat(pat, c);
+        if let Some(name) = maybe_name {
+            ctx.search.names.insert(name, c);
+        }
+    }
+
+    let generic_param_count = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map_or(0, |known| known.generic_parameters.len());
+
+    for i in 0..generic_param_count {
+        let maybe_name = ctx
+            .ex
+            .ans
+            .function_types_by_value(value)
+            .and_then(|known| known.generic_parameters.get(i))
+            .and_then(|(_pat, maybe_name)| *maybe_name);
+
+        let generic_ty = ctx.ex.store.intern(TypeValue::Generic(GenId(i)));
+        let generic_cid = ctx.new_solved(generic_ty);
+        if let Some(name) = maybe_name {
+            ctx.search.local_types.insert(name, generic_cid);
+            ctx.search.names.insert(name, generic_cid);
+        }
+    }
+
+    let lifetime_param_count = ctx
+        .ex
+        .ans
+        .function_types_by_value(value)
+        .map_or(0, |known| known.lifetime_parameters.len());
+
+    for i in 0..lifetime_param_count {
+        let lid = ctx.types.new_lid_known(LifeTime::External(i as u32));
+        if let Some((pat, maybe_lt_name)) = ctx
+            .ex
+            .ans
+            .function_types_by_value(value)
+            .and_then(|known| known.lifetime_parameters.get(i))
+            .copied()
+            && let Some(lt_name) = maybe_lt_name
+        {
+            ctx.search
+                .local_lifetimes
+                .insert(lt_name, (LifeTime::External(i as u32), lid));
+            let _ = pat;
+        }
+    }
+
+    ctx.new_solved(ret_ty)
+}
+
+#[inline(always)]
+fn try_resolve_tuple_int_access(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    site: ValId,
+    source: CId,
+    id: usize,
+    kind: AccessKind,
+) -> IntAccessResolve {
+    let mut current = types.root(source);
+    let mut implicit_receivers = Vec::new();
+    let max_implicit_deref_steps = match kind {
+        AccessKind::Dot => 1usize,
+        AccessKind::Ptr => 64usize,
+        AccessKind::Static => 0usize,
+    };
+    let implicit_deref_limit_message = match kind {
+        AccessKind::Dot => "`.` tuple access performs at most one implicit dereference",
+        AccessKind::Ptr => "tuple access autoderef recursion exceeded safety limit",
+        AccessKind::Static => "static tuple access does not support implicit dereference",
+    };
+    let mut used_implicit_deref_steps = 0usize;
+
+    loop {
+        match types.core.cluster[current].state {
+            ResolveKind::Nothing => return IntAccessResolve::Pending { source: current },
+            ResolveKind::Ptr { tgt, .. } => {
+                if used_implicit_deref_steps >= max_implicit_deref_steps {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+                let next = types.root(tgt);
+                implicit_receivers.push(current);
+                used_implicit_deref_steps += 1;
+                current = next;
+            }
+            ResolveKind::Solved(t) => match ex.store.type_value(t) {
+                TypeValue::Ptr { tgt, .. } => {
+                    if used_implicit_deref_steps >= max_implicit_deref_steps {
+                        return IntAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(site),
+                            message: implicit_deref_limit_message,
+                        });
+                    }
+                    let next = types.new_solved(*tgt);
+                    let next = types.root(next);
+                    implicit_receivers.push(current);
+                    used_implicit_deref_steps += 1;
+                    current = next;
+                }
+                TypeValue::Tuple(items) => {
+                    if kind == AccessKind::Static {
+                        return IntAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(site),
+                            message: "tuple element access does not support `::`",
+                        });
+                    }
+                    let Some(item) = items.get(id).copied() else {
+                        return IntAccessResolve::Error(TypeError::Simple {
+                            loc: ex.program.value_loc(site),
+                            message: "tuple element index is out of bounds for this tuple",
+                        });
+                    };
+                    let result = types.new_solved(item);
+                    return IntAccessResolve::Resolved {
+                        result,
+                        implicit_receivers: finalize_member_access_implicit_chain(
+                            implicit_receivers,
+                            used_implicit_deref_steps,
+                            current,
+                        ),
+                    };
+                }
+                _ => {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: "tuple element access requires a tuple or pointer-like base",
+                    });
+                }
+            },
+            ResolveKind::Tuple(tuple_id) => {
+                if kind == AccessKind::Static {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: "tuple element access does not support `::`",
+                    });
+                }
+                let Some(result) = types.extra.tuple_infers[tuple_id.0].items.get(id).copied()
+                else {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: "tuple element index is out of bounds for this tuple",
+                    });
+                };
+                return IntAccessResolve::Resolved {
+                    result,
+                    implicit_receivers: finalize_member_access_implicit_chain(
+                        implicit_receivers,
+                        used_implicit_deref_steps,
+                        current,
+                    ),
+                };
+            }
+            _ => {
+                return IntAccessResolve::Error(TypeError::Simple {
+                    loc: ex.program.value_loc(site),
+                    message: "tuple element access requires a tuple or pointer-like base",
+                });
+            }
+        }
+    }
+}
+
+
 
 ///this tries to resolve specifically a from a module.
 ///if what we have is a member of a struct it wont give a name

@@ -90,7 +90,7 @@ def print_human_table(rows: list[dict[str, float | int | str]]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sweep file_typecheck_benchmark across CPUs")
     parser.add_argument("--binary", default="./target/release/examples/file_typecheck_benchmark")
-    parser.add_argument("--input", default="typecheck_benchmark_data.txt")
+    parser.add_argument("--input", default="typecheck_benchmark_data_small.txt")
     parser.add_argument("--cpus", default="0-31")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--spin-ms", type=int, default=0)
