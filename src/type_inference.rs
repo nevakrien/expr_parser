@@ -4664,7 +4664,52 @@ mod type_infer_tests {
             .unwrap_or_else(|| panic!("missing signature parameter type for pattern {:?}", pat))
     }
 
-    fn find_member_access_and_result_types(
+    fn find_member_normal_access_and_result_types(
+        program: &Program,
+        solved: &SolvedTypes,
+        func: ValId,
+        name: &str,
+    ) -> (ValId, TypeId, TypeId) {
+        let Value::Func { body, .. } = program.value(func) else {
+            panic!("expected function value")
+        };
+        let body = body.expect("expected function body");
+        let Value::Block {
+            statements,
+            return_value: _,
+        } = program.value(body)
+        else {
+            panic!("expected block body")
+        };
+
+        for stmt in statements.ids() {
+            let Value::Let { pat, value, .. } = program.value(stmt) else {
+                continue;
+            };
+            let Some(n) = extract_bind_name(program, pat) else {
+                continue;
+            };
+            if program.name_string(n) != name {
+                continue;
+            }
+
+            let Value::Access { .. } = program.value(value) else {
+                panic!("expected call base to be member access")
+            };
+
+            let access_ty = solved
+                .inner_value_type(func, value)
+                .unwrap_or_else(|| panic!("missing type for member access in `{}`", name));
+            let result_ty = solved
+                .inner_value_type(func, stmt)
+                .unwrap_or_else(|| panic!("missing type for let statement `{}`", name));
+            return (value, access_ty, result_ty);
+        }
+
+        panic!("let binding `{}` not found", name)
+    }
+
+    fn find_member_method_access_and_result_types(
         program: &Program,
         solved: &SolvedTypes,
         func: ValId,
@@ -6328,7 +6373,7 @@ mod type_infer_tests {
         assert_eq!(x_ty, s_ty);
         let call_site = find_let_stmt_value(&program, f, "y");
         let (access_site, access_ty, call_ty) =
-            find_member_access_and_result_types(&program, &solved_types, f, "y");
+            find_member_method_access_and_result_types(&program, &solved_types, f, "y");
         assert_ne!(access_site, call_site);
         assert!(
             solved_types
@@ -6374,7 +6419,7 @@ mod type_infer_tests {
         assert_eq!(x_ty, s_ty);
         let call_site = find_let_stmt_value(&program, f, "y");
         let (access_site, access_ty, call_ty) =
-            find_member_access_and_result_types(&program, &solved_types, f, "y");
+            find_member_method_access_and_result_types(&program, &solved_types, f, "y");
         assert_ne!(access_site, call_site);
         assert!(
             solved_types
@@ -6685,7 +6730,7 @@ mod type_infer_tests {
         //the 1 and 3 asserted here may be too much
 
         let (access_site, _, _) =
-            find_member_access_and_result_types(&program, &solved_types, f, "out");
+            find_member_method_access_and_result_types(&program, &solved_types, f, "out");
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
@@ -6693,19 +6738,25 @@ mod type_infer_tests {
             chain,
             vec![
                 "&'a0 mut Safe".to_string(),
+                "Safe".to_string(),
                 "&'idk1 mut Safe".to_string(),
                 "&'idk1 mut Raw".to_string(),
+                "Raw".to_string(),
+                "&'idk2 mut Raw".to_string(),
                 "&'raw RawCalc".to_string(),
+                "RawCalc".to_string(),
                 "&'raw RawCalc".to_string(),
                 "&'raw Unsafe".to_string(),
+                "Unsafe".to_string(),
                 "&'raw Unsafe".to_string(),
                 "&'idk3 mut Wrapper".to_string(),
+                "Wrapper".to_string(),
             ],
             "unexpected full deref chain for four-style transition case"
         );
 
         let (access_site, _, _) =
-            find_member_access_and_result_types(&program, &solved_types, f, "arr");
+            find_member_normal_access_and_result_types(&program, &solved_types, f, "arr");
         let chain =
             implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
                 .expect("expected implicit deref chain");
@@ -6713,14 +6764,19 @@ mod type_infer_tests {
             chain,
             vec![
                 "&'a0 mut Safe".to_string(),
-                "&'idk1 mut Safe".to_string(),
-                "&'idk1 mut Raw".to_string(),
+                "Safe".to_string(),
+                "&'idk4 mut Safe".to_string(),
+                "&'idk4 mut Raw".to_string(),
+                "Raw".to_string(),
+                "&'idk5 mut Raw".to_string(),
                 "&'raw RawCalc".to_string(),
+                "RawCalc".to_string(),
                 "&'raw RawCalc".to_string(),
                 "&'raw Unsafe".to_string(),
+                "Unsafe".to_string(),
                 "&'raw Unsafe".to_string(),
-                "&'idk3 mut Wrapper".to_string(),
-                "&'idk3 mut [int;1]".to_string(),
+                "&'idk6 mut Wrapper".to_string(),
+                "Wrapper".to_string(),
             ],
             "unexpected full deref chain for four-style transition case"
         );
