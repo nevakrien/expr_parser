@@ -83,7 +83,7 @@ pub fn infer_value_internals<'a>(
         }
     };
 
-    main_solver_local(&mut ctx);
+    local_solver(&mut ctx);
 
     if let Some(previous_name_render) = restore_name_render {
         ctx.ex.name_render = previous_name_render;
@@ -104,7 +104,7 @@ pub fn infer_value_internals<'a>(
     }
 }
 
-pub fn main_solver_local(ctx: &mut InferState) {
+pub fn local_solver(ctx: &mut InferState) {
     //this loop only exists once ALL requirments have checked and didnt complain
     //on the state we are gona release. since there was no change
     //this is SUPER important because they are not just progressions

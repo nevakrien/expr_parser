@@ -20,8 +20,7 @@ if we moved all the expensive fields to be Rc<[]> that would allow us to fixup t
 
 ## Type Inference Architecture Follow-up
 
-- Future direction (requested by user): consider splitting current `main_solver` usage by context.
+- `main_solver` splitting is done: global uses `global_solver`, locals use `local_solver`.
 - Struct global-range resolution likely needs a mostly gather-first path with only a narrow loop over selected resolve passes (instead of full solver behavior).
 - Function body inference may be able to stay gather-only for many cases.
 - This is a design follow-up note only; no behavior change is implied by this note.
-

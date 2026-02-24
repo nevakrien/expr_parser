@@ -60,9 +60,10 @@ Closure support:
 - Type expressions accept bracket array forms:
   - `[T; N]` for sized arrays.
   - `[T]` parses as an unsized array form.
-- Current typechecking support is intentionally limited:
-  - only `[T; N]` is accepted as a concrete type and maps to the existing sized `Array` type shape,
-  - `[T]` currently reports a type error (`unsized array types are not supported yet`) and is reserved for future work.
+- Current typechecking support:
+  - `[T; N]` resolves to `TypeValue::Array(T, ArrayType::Sized(N))`.
+  - `[T]` resolves in type expressions to `TypeValue::Array(T, ArrayType::Unsized)`.
+  - Value/index semantics are still array-focused and evolving; unsized arrays are currently a type-level form, not a fully general runtime container model.
 
 ## Lifetimes and Reference Kinds (Planned Contract)
 

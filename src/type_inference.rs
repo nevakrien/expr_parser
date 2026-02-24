@@ -22,7 +22,7 @@
 // and then later when enough type info is present we can apply unification.
 // ================================================================
 // use std::arch::asm;
-use crate::local_type_inference::main_solver_local;
+use crate::local_type_inference::local_solver;
 use crate::global_type_inference::TypeExprCompileMode;
 use crate::global_type_inference::compile_type_expr_with_mode;
 use crate::local_type_inference::gather_constraints;
@@ -1381,7 +1381,7 @@ fn _infer_value_hacky<'a>(
         }
     }
 
-    main_solver_local(&mut ctx);
+    local_solver(&mut ctx);
     if ctx.ex.errors.is_empty() {
         Ok(ctx.ex.ans)
     } else {
@@ -1393,7 +1393,7 @@ fn _infer_value_hacky<'a>(
 
 
 pub fn main_solver(ctx: &mut InferState) {
-    main_solver_local(ctx);
+    local_solver(ctx);
 }
 
 pub(crate) fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count: &mut u32) -> bool {

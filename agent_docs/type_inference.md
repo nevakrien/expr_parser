@@ -366,23 +366,25 @@ Critical type-expression fragility points:
   - implementation detail: struct-field type compilation now uses a dedicated `TypeExprCompileMode::Struct` branch so `&T`/`&'_ T` in struct fields emit a direct hard error instead of silently acting like function-signature elision.
 - pointer type expressions (`TypeExpr::Ptr`) feed directly into deferred pointer cluster states, so pointer semantics changes usually require touching both gather and deferred resolution helpers.
 
-Maintenance note: this whole gather layer is intentionally unfinished in places. Treat `NameRef`, `Call`, `Construct`, `TypeExpr::Index`, `AddrOf` (and future `Deref`) as priority review zones whenever adding type-system features, implicit conversions, or dispatch behavior.
+Maintenance note: this whole gather layer is intentionally unfinished in places. Treat `NameRef`, `Call`, `Construct`, `TypeExpr::Index`, `AddrOf`, and `Deref` paths as priority review zones whenever adding type-system features, implicit conversions, or dispatch behavior.
 
 ## Middle Solver and Finalization
 
 There are now two solver entrypoints:
 
-- `main_solver_global`: used in global signature/type-def solving; runs only global-safe deferred steps, then `finalize_global`.
-- `main_solver_local`: used for function internals/value solving; runs operator/member/index/deref local queues, then `finalize_local`.
+- `global_solver`: used in global signature/type-def solving; runs only global-safe deferred steps, then `finalize_global`.
+- `local_solver`: used for function internals/value solving; runs operator/member/index/deref local queues, then `finalize_local`.
 
-`main_solver_local` iterates until fixpoint:
+`local_solver` iterates until fixpoint:
 
 1. `resolve_operator_types`
 2. `resolve_deferred_types`
-3. `resolve_pointer_likes`
-4. `resolve_pending_indexes`
-5. `resolve_pending_member_accesses`
+3. `resolve_pending_indexes`
+4. `resolve_pending_member_accesses`
+5. `resolve_pending_int_accesses`
 6. `resolve_pending_specializations`
+7. `resolve_pending_derefs` (only after the previous passes stop making progress)
+8. `finalize_unresolved_lifetimes_as_unknown` (only after deferred queues stall)
 
 It's important that these updates remain order-independent.
 Errors emitted can be order-dependent, but whether or not a solve is reached must be independent.

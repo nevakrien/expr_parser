@@ -56,7 +56,7 @@ pub fn infer_global_types<'a>(
         }
     }
 
-    main_solver_global(&mut ctx);
+    global_solver(&mut ctx);
 
     for (_n, def) in program.definitions.iter() {
         let Defined::Type(texp) = def else {
@@ -174,7 +174,7 @@ pub fn infer_global_types<'a>(
     }
 }
 
-fn main_solver_global(ctx: &mut InferState) {
+fn global_solver(ctx: &mut InferState) {
     let mut unknown_count = 0;
 
     loop {
@@ -1059,7 +1059,7 @@ fn type_check_func_signature(
     let (f, _) =
         gather_func_signature::<true>(ctx, v, calling_convention, generics, params, output_type);
     ctx.bind_val(v, f);
-    main_solver_global(ctx);
+    global_solver(ctx);
 
     ctx.ex.name_render = previous_name_render;
 }
