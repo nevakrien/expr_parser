@@ -6381,6 +6381,43 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn null_and_nil_literals_unify_with_raw_pointers() {
+        let src = "f = fn(){ let p:*int = null; let q:*const int = nil; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let p_ty = find_let_stmt_type(&program, solved_types, f, "p");
+        let q_ty = find_let_stmt_type(&program, solved_types, f, "q");
+
+        let TypeValue::Ptr {
+            style: p_style,
+            mutable: p_mut,
+            ..
+        } = *store.type_value(p_ty)
+        else {
+            panic!("expected p to be raw pointer")
+        };
+        assert_eq!(p_style, PointerStyle::Raw(Nullable::Yes));
+        assert!(p_mut);
+
+        let TypeValue::Ptr {
+            style: q_style,
+            mutable: q_mut,
+            ..
+        } = *store.type_value(q_ty)
+        else {
+            panic!("expected q to be raw pointer")
+        };
+        assert_eq!(q_style, PointerStyle::Raw(Nullable::Yes));
+        assert!(!q_mut);
+    }
+
+    #[test]
     fn binary_member_overload_specializes_generic_signature() {
         let src = "type S = struct{}; S.__add = fn[T](s:S, y:T)->T { y }; f=fn(){ let s = S{}; let x:int = s + 2; };";
         let program = gather_program(src);

@@ -184,6 +184,7 @@ pub enum Literal {
     Float(f64),
     Bool(bool),
     Str(StrId),
+    Null,
     Void,
 }
 
@@ -761,6 +762,7 @@ impl Program {
             Token::Operator("(") => Value::Literal(Literal::Void),
             Token::Operator("true") => Value::Literal(Literal::Bool(true)),
             Token::Operator("false") => Value::Literal(Literal::Bool(false)),
+            Token::Operator("null") | Token::Operator("nil") => Value::Literal(Literal::Null),
 
             Token::Ident(name) if name == "_" => Value::Wildcard,
             Token::Ident(name) => {
@@ -2339,6 +2341,20 @@ mod lowering_tests {
         };
         let var_kinds = tuple_bind_kinds(&program, var_pat);
         assert_eq!(var_kinds, vec![VarKind::Const, VarKind::Mut, VarKind::Mut]);
+    }
+
+    #[test]
+    fn lowers_null_and_nil_literals() {
+        let src = "{ null; nil; }";
+        let (program, ir) = lower_block(src);
+
+        let statements = match program.value(ir) {
+            Value::Block { statements, .. } => statements.ids().collect::<Vec<_>>(),
+            _ => panic!("expected block"),
+        };
+        assert_eq!(statements.len(), 2);
+        assert_eq!(program.value(statements[0]), Value::Literal(Literal::Null));
+        assert_eq!(program.value(statements[1]), Value::Literal(Literal::Null));
     }
 
     #[test]

@@ -63,7 +63,13 @@ Closure support:
 - Current typechecking support:
   - `[T; N]` resolves to `TypeValue::Array(T, ArrayType::Sized(N))`.
   - `[T]` resolves in type expressions to `TypeValue::Array(T, ArrayType::Unsized)`.
-  - Value/index semantics are still array-focused and evolving; unsized arrays are currently a type-level form, not a fully general runtime container model.
+- Value/index semantics are still array-focused and evolving; unsized arrays are currently a type-level form, not a fully general runtime container model.
+
+## Null/Nil Pointer Literals
+
+- `null` and `nil` are aliases and lower to the same literal.
+- Their inferred type is a nullable raw pointer (`*T`) with unknown pointee type until constrained by context.
+- They unify with raw pointer types (`*T`, `*const T`) but do not represent reference borrows (`&T`, `&mut T`).
 
 ## Lifetimes and Reference Kinds (Planned Contract)
 

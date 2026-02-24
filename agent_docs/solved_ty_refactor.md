@@ -39,63 +39,36 @@ The entries below are all old solved-semantic references from `HEAD` in
 
 ### A) Solved reads (`if let ResolveKind::Solved(...)` etc.)
 
-- `HEAD:src/global_type_inference.rs:52` -> `cluster_solved_type(...)` check.
-- `HEAD:src/global_type_inference.rs:207` -> `cluster_solved_type(...)` check.
-- `HEAD:src/global_type_inference.rs:228` -> `cluster_solved_type(...)` check.
-- `HEAD:src/global_type_inference.rs:244` -> `cluster_solved_type(...)` check.
-- `HEAD:src/global_type_inference.rs:256` -> `cluster_solved_type(...)` check.
-- `HEAD:src/global_type_inference.rs:732` -> solved pre-check + concrete type inspection.
-- `HEAD:src/global_type_inference.rs:1542` -> solved pre-check moved before `match cluster_state`.
-
-- `HEAD:src/local_type_inference.rs:281` -> `cluster_solved_type(...)` check.
-- `HEAD:src/local_type_inference.rs:296` -> `cluster_solved_type(...)` check.
-- `HEAD:src/local_type_inference.rs:308` -> `cluster_solved_type(...)` check.
-- `HEAD:src/local_type_inference.rs:331` -> `cluster_solved_type(...).is_none()`.
-- `HEAD:src/local_type_inference.rs:384` -> read `cluster[root].solved_ty`.
-- `HEAD:src/local_type_inference.rs:1608` -> solved pre-check branch (outside state-match).
-- `HEAD:src/local_type_inference.rs:2041` -> solved pre-check branch (outside state-match).
-- `HEAD:src/local_type_inference.rs:2185` -> solved pre-check branch.
-- `HEAD:src/local_type_inference.rs:2504` -> solved pre-check branch.
-- `HEAD:src/local_type_inference.rs:3116` -> solved pre-check branch (outside state-match).
-- `HEAD:src/local_type_inference.rs:3225` -> solved pre-check branch (outside state-match).
-- `HEAD:src/local_type_inference.rs:3522` -> solved pre-check before classification match.
-- `HEAD:src/local_type_inference.rs:3551` -> solved pre-check before classification match.
-- `HEAD:src/local_type_inference.rs:3631` -> solved pre-check before ptr-parts match.
-
-- `HEAD:src/type_inference.rs:2767` -> `cluster_solved_type(root)` fast path.
-- `HEAD:src/type_inference.rs:2792` + `:2794` -> replaced by solved fast path before `match state`.
-- `HEAD:src/type_inference.rs:3269` -> read `solved_ty` for func params.
-- `HEAD:src/type_inference.rs:3279` -> read `solved_ty` for func return.
-- `HEAD:src/type_inference.rs:3306` -> read `solved_ty` for struct generics.
-- `HEAD:src/type_inference.rs:3344` -> read `solved_ty` for tuple items.
-- `HEAD:src/type_inference.rs:3361` -> `cluster_solved_type` for array element.
-- `HEAD:src/type_inference.rs:3389` -> `cluster_solved_type` for ptr target.
-- `HEAD:src/type_inference.rs:3615` -> solved pre-check in type display.
-- `HEAD:src/type_inference.rs:4283` -> solved pre-check in `cluster_is_int_like`.
-- `HEAD:src/type_inference.rs:4304` -> solved pre-check in `cluster_is_float_like`.
-- `HEAD:src/type_inference.rs:4325` -> solved pre-check in `cluster_is_bool`.
+- `src/global_type_inference.rs`:
+  - all old solved checks were migrated to `cluster_solved_type(...)` pre-checks,
+  - solved-sensitive branches now do solved checks before unresolved-state `match` paths.
+- `src/local_type_inference.rs`:
+  - old solved checks were replaced by `cluster_solved_type(...)` / `cluster[root].solved_ty` reads,
+  - sites that classify pointers/operands now do solved pre-checks before state-based classification.
+- `src/type_inference.rs`:
+  - fast solved-path checks now use `cluster_solved_type(root)`,
+  - readers for func params/return, struct generics, tuple items, array element, and ptr target now pull from `solved_ty`,
+  - solved pre-checks were added to type-display and class helpers (`cluster_is_int_like`, `cluster_is_float_like`, `cluster_is_bool`).
 
 ### B) Solved writes (`state = ResolveKind::Solved(...)`)
 
-- `HEAD:src/type_inference.rs:2102` builtin defaults -> `set_cluster_solved(store, id, builtin_ty)`.
-- `HEAD:src/type_inference.rs:2153` `new_solved` -> `set_cluster_solved(store, id, t)`.
-- `HEAD:src/type_inference.rs:2596`/`:2645`/`:2708`/`:2741` post-try-resolve promotion -> `set_cluster_solved(...)`.
-- `HEAD:src/type_inference.rs:2788`/`:2803`/`:2814`/`:2820`/`:2826`/`:2832`/`:2838`/`:2844` force-type writes -> `set_cluster_solved(...)`.
-- `HEAD:src/type_inference.rs:3955` specialization solved cluster creation -> `new_solved(ex.store, ty)`.
-- `HEAD:src/type_inference.rs:4064` specialization builtin solved creation -> `new_solved(ex.store, ty)`.
-- `HEAD:src/type_inference.rs:4410` deferred resolver write -> `set_cluster_solved(...)` and progress only if newly solved.
-- `HEAD:src/local_type_inference.rs:1720` solved cluster creation -> `new_solved(ex.store, t)`.
+- All solved writes now go through `set_cluster_solved(...)` or `new_solved(...)`.
+- `src/type_inference.rs` updates:
+  - builtin defaults,
+  - `new_solved` implementation,
+  - post-resolve promotions,
+  - force-type solved writes,
+  - specialization solved cluster construction,
+  - deferred resolver solved writes (progress only when newly solved).
+- `src/local_type_inference.rs` updates:
+  - local solved cluster creation paths use `new_solved(ex.store, ...)`.
 
 ### C) `__try_absorb` branch merge (old explicit solved pattern arms)
 
-- `HEAD:src/type_inference.rs:2518` `(Solved, Solved)` -> solved/solved pre-check compare.
-- `HEAD:src/type_inference.rs:2532` `(Solved, IntLike)` -> solved-dst + unresolved-src compatibility check.
-- `HEAD:src/type_inference.rs:2542` `(Solved, FloatLike)` -> same.
-- `HEAD:src/type_inference.rs:2602` `(Solved, Func(call))` -> solved-dst + unify-with-type path.
-- `HEAD:src/type_inference.rs:2651` `(Solved, Struct(call))` -> same.
-- `HEAD:src/type_inference.rs:2659` `(Solved, Ptr {..})` -> same.
-- `HEAD:src/type_inference.rs:2714` `(Solved, Tuple(...))` -> same.
-- `HEAD:src/type_inference.rs:2747` `(Solved, Array {..})` -> same.
+- In `src/type_inference.rs`, explicit solved-pattern arms were consolidated into solved-first pre-checks that preserve prior behavior for:
+  - solved-vs-solved compare,
+  - solved-vs-`IntLike`/`FloatLike` compatibility,
+  - solved-vs-`Func`/`Struct`/`Ptr`/`Tuple`/`Array` via unify-with-type paths.
 
 And explicitly added the symmetric solved-source path:
 

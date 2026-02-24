@@ -87,7 +87,7 @@ impl fmt::Display for Token {
 pub const KEYWORDS: &[&str] = &[
     "let", "var", "const", "mut", "type", "struct", "cstruct", "union", "enum", "fn", "cfn",
     "macro", "if", "else", "while", "for", "match", "return", "break", "continue", "goto", "as",
-    "true", "false",
+    "true", "false", "null", "nil",
 ];
 
 ///greedy match
@@ -204,6 +204,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"mut" => Some("mut"),
             b"for" => Some("for"),
             b"cfn" => Some("cfn"),
+            b"nil" => Some("nil"),
             _ => None,
         },
 
@@ -213,6 +214,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"enum" => Some("enum"),
             b"true" => Some("true"),
             b"goto" => Some("goto"),
+            b"null" => Some("null"),
             _ => None,
         },
 
@@ -1080,7 +1082,7 @@ impl<'a> Parser<'a> {
                 //its actually slower hence why we do this
                 let op_s = tok.with(op);
 
-                if op == "true" || op == "false" {
+                if op == "true" || op == "false" || op == "null" || op == "nil" {
                     let tok = self.next_token()?.unwrap();
                     return Ok(Some(Located {
                         loc: self.produce_loc(start),
@@ -1496,8 +1498,8 @@ mod lex_tests {
     }
 
     #[test]
-    fn bool_keywords_are_operators() {
-        let src = "true false";
+    fn bool_and_null_keywords_are_operators() {
+        let src = "true false null nil";
         let mut lex = Parser::new(src, 0);
 
         let t0 = lex.next_token().unwrap().unwrap();
@@ -1505,6 +1507,12 @@ mod lex_tests {
 
         let t1 = lex.next_token().unwrap().unwrap();
         assert_eq!(t1.value, Token::Operator("false"));
+
+        let t2 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t2.value, Token::Operator("null"));
+
+        let t3 = lex.next_token().unwrap().unwrap();
+        assert_eq!(t3.value, Token::Operator("nil"));
 
         assert_eq!(lex.next_token().unwrap(), None);
     }
