@@ -278,7 +278,7 @@ fn finalize_local(ctx: &mut InferState) {
 
     for (v, c) in val_cluster {
         let root = types.root(*c);
-        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+        if let Some(t) = types.cluster_solved_type(root) {
             inner.val_types.insert(*v, t);
         } else if *c == root && !reported.contains_key(&c) {
             let found = types.bad_type(ex, root);
@@ -293,7 +293,7 @@ fn finalize_local(ctx: &mut InferState) {
 
     for (p, c) in pat_cluster {
         let root = types.root(*c);
-        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+        if let Some(t) = types.cluster_solved_type(root) {
             inner.pat_types.insert(*p, t);
         } else if *c == root && !reported.contains_key(&c) {
             let found = types.bad_type(ex, root);
@@ -305,7 +305,7 @@ fn finalize_local(ctx: &mut InferState) {
 
     for entry in member_method_type_sites {
         let root = types.root(entry.full_method);
-        if let ResolveKind::Solved(full_type) = types.cluster_state(root) {
+        if let Some(full_type) = types.cluster_solved_type(root) {
             inner.member_method_types.insert(
                 entry.site,
                 SolvedMemberMethodAccessType {
@@ -328,7 +328,7 @@ fn finalize_local(ctx: &mut InferState) {
         //in that case we need to report an error but its gona be a bad one...
 
         let receiver_root = types.root(entry.receiver);
-        if !matches!(types.cluster_state(receiver_root), ResolveKind::Solved(_))
+        if types.cluster_solved_type(receiver_root).is_none()
             && !reported.contains_key(&receiver_root)
         {
             let found = types.bad_type(ex, receiver_root);
@@ -380,12 +380,11 @@ fn store_implicit_deref_chains(
         let mut all_solved = true;
         for receiver in entry.receivers.iter() {
             let root = find_root(parent, *receiver);
-            match cluster[root].state {
-                ResolveKind::Solved(t) => chain.push(t),
-                _ => {
-                    all_solved = false;
-                    break;
-                }
+            if let Some(t) = cluster[root].solved_ty {
+                chain.push(t);
+            } else {
+                all_solved = false;
+                break;
             }
         }
         if all_solved {
@@ -1591,21 +1590,8 @@ fn try_resolve_tuple_int_access(
     let mut used_implicit_deref_steps = 0usize;
 
     loop {
-        match types.core.cluster[current].state {
-            ResolveKind::Nothing => return IntAccessResolve::Pending { source: current },
-            ResolveKind::Ptr { tgt, .. } => {
-                if used_implicit_deref_steps >= max_implicit_deref_steps {
-                    return IntAccessResolve::Error(TypeError::Simple {
-                        loc: ex.program.value_loc(site),
-                        message: implicit_deref_limit_message,
-                    });
-                }
-                let next = types.root(tgt);
-                implicit_receivers.push(current);
-                used_implicit_deref_steps += 1;
-                current = next;
-            }
-            ResolveKind::Solved(t) => match ex.store.type_value(t) {
+        if let Some(t) = types.cluster_solved_type(current) {
+            match ex.store.type_value(t) {
                 TypeValue::Ptr { tgt, .. } => {
                     if used_implicit_deref_steps >= max_implicit_deref_steps {
                         return IntAccessResolve::Error(TypeError::Simple {
@@ -1613,11 +1599,12 @@ fn try_resolve_tuple_int_access(
                             message: implicit_deref_limit_message,
                         });
                     }
-                    let next = types.new_solved(*tgt);
+                    let next = types.new_solved(ex.store, *tgt);
                     let next = types.root(next);
                     implicit_receivers.push(current);
                     used_implicit_deref_steps += 1;
                     current = next;
+                    continue;
                 }
                 TypeValue::Tuple(items) => {
                     if kind == AccessKind::Static {
@@ -1632,7 +1619,7 @@ fn try_resolve_tuple_int_access(
                             message: "tuple element index is out of bounds for this tuple",
                         });
                     };
-                    let result = types.new_solved(item);
+                    let result = types.new_solved(ex.store, item);
                     return IntAccessResolve::Resolved {
                         result,
                         implicit_receivers: finalize_member_access_implicit_chain(
@@ -1648,7 +1635,23 @@ fn try_resolve_tuple_int_access(
                         message: "tuple element access requires a tuple or pointer-like base",
                     });
                 }
-            },
+            }
+        }
+
+        match types.core.cluster[current].state {
+            ResolveKind::Nothing => return IntAccessResolve::Pending { source: current },
+            ResolveKind::Ptr { tgt, .. } => {
+                if used_implicit_deref_steps >= max_implicit_deref_steps {
+                    return IntAccessResolve::Error(TypeError::Simple {
+                        loc: ex.program.value_loc(site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+                let next = types.root(tgt);
+                implicit_receivers.push(current);
+                used_implicit_deref_steps += 1;
+                current = next;
+            }
             ResolveKind::Tuple(tuple_id) => {
                 if kind == AccessKind::Static {
                     return IntAccessResolve::Error(TypeError::Simple {
@@ -1714,12 +1717,7 @@ fn solved_type_to_specialized_local(
         return specialize_type(ex, types, t, &gens, &lifes, loc);
     }
 
-    let id = CId(types.core.parent.len());
-    types.core.parent.0.push(id);
-    types.core.cluster.0.push(Cluster {
-        state: ResolveKind::Solved(t),
-    });
-    id
+    types.new_solved(ex.store, t)
 }
 
 fn global_to_specialized_local(
@@ -1833,7 +1831,7 @@ fn resolve_any_type_builtin_member_access(
             kind: PtrKind::SafeRef,
             mutable: Some(true),
         };
-        (self_param, types.new_solved(BuiltinType::Void.into()))
+        (self_param, types.new_solved(ex.store, BuiltinType::Void.into()))
     } else if matches!(member_name, SIZE_OF_STR | ALIGN_OF_STR) {
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
@@ -1841,7 +1839,7 @@ fn resolve_any_type_builtin_member_access(
             kind: PtrKind::Solved(PointerStyle::Raw(Nullable::No)),
             mutable: Some(false),
         };
-        (self_param, types.new_solved(BuiltinType::Usize.into()))
+        (self_param, types.new_solved(ex.store, BuiltinType::Usize.into()))
     } else {
         ex.push_error(TypeError::IlegalMethod {
             member_name,
@@ -2022,23 +2020,8 @@ impl PendingImplicitDeref {
     ) -> Result<ImplicitDerefStep, TypeError> {
         let current = self.sync_roots(types);
 
-        match types.core.cluster[current].state {
-            ResolveKind::Nothing => Ok(ImplicitDerefStep::Pending),
-
-            ResolveKind::Ptr { tgt, .. } => {
-                if self.implicit_receivers.len() >= max_implicit_deref_steps {
-                    return Err(TypeError::Simple {
-                        loc: ex.program.value_loc(self.site),
-                        message: implicit_deref_limit_message,
-                    });
-                }
-
-                self.implicit_receivers.push(current);
-                self.current = types.root(tgt);
-                Ok(ImplicitDerefStep::Stepped)
-            }
-
-            ResolveKind::Solved(t) => match ex.store.type_value(t) {
+        if let Some(t) = types.cluster_solved_type(current) {
+            return match ex.store.type_value(t) {
                 TypeValue::Ptr { tgt, .. } => {
                     if self.implicit_receivers.len() >= max_implicit_deref_steps {
                         return Err(TypeError::Simple {
@@ -2048,7 +2031,7 @@ impl PendingImplicitDeref {
                     }
 
                     self.implicit_receivers.push(current);
-                    let c = types.new_solved(*tgt);
+                    let c = types.new_solved(ex.store, *tgt);
                     self.current = types.root(c);
                     Ok(ImplicitDerefStep::Stepped)
                 }
@@ -2086,7 +2069,24 @@ impl PendingImplicitDeref {
                 }
 
                 _ => Ok(ImplicitDerefStep::Done),
-            },
+            };
+        }
+
+        match types.core.cluster[current].state {
+            ResolveKind::Nothing => Ok(ImplicitDerefStep::Pending),
+
+            ResolveKind::Ptr { tgt, .. } => {
+                if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                    return Err(TypeError::Simple {
+                        loc: ex.program.value_loc(self.site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+
+                self.implicit_receivers.push(current);
+                self.current = types.root(tgt);
+                Ok(ImplicitDerefStep::Stepped)
+            }
 
             ResolveKind::Struct(rid) => {
                 if self.implicit_receivers.len() >= max_implicit_deref_steps {
@@ -2182,7 +2182,8 @@ impl PendingMemberAccess {
             let current = self.implicit_deref.sync_roots(types);
 
             match types.core.cluster[current].state {
-                ResolveKind::Solved(t) => {
+                _ if types.cluster_solved_type(current).is_some() => {
+                    let t = types.cluster_solved_type(current).unwrap();
                     if let TypeValue::Struct {
                         id: sid,
                         generics,
@@ -2209,7 +2210,7 @@ impl PendingMemberAccess {
 
                             let generic_inputs = generics
                                 .iter()
-                                .map(|&t| types.new_solved(t))
+                                .map(|&t| types.new_solved(ex.store, t))
                                 .collect::<Vec<_>>();
 
                             let lifetime_inputs = lifetimes
@@ -2501,7 +2502,8 @@ fn function_parts_from_cluster(
             Some((inputs, output))
         }
 
-        ResolveKind::Solved(t) => {
+        _ if types.cluster_solved_type(root).is_some() => {
+            let t = types.cluster_solved_type(root).unwrap();
             let TypeValue::Func { params, ret, .. } = ex.store.type_value(t) else {
                 return None;
             };
@@ -2509,10 +2511,10 @@ fn function_parts_from_cluster(
             // Reify solved function type into fresh local clusters
             let inputs = params
                 .iter()
-                .map(|p| types.new_solved(*p))
+                .map(|p| types.new_solved(ex.store, *p))
                 .collect::<Vec<_>>();
 
-            let output = types.new_solved(*ret);
+            let output = types.new_solved(ex.store, *ret);
             Some((inputs, output))
         }
 
@@ -3106,15 +3108,9 @@ impl PendingIndex {
         let element: CId = loop {
             let current = self.implicit_deref.sync_roots(types);
 
-            match types.core.cluster[current].state {
-                ResolveKind::Nothing => {
-                    return ResolveOutcome::keep(progress);
-                }
-
-                ResolveKind::Array { element, .. } => break element,
-
-                ResolveKind::Solved(t) => match ex.store.type_value(t) {
-                    TypeValue::Array(element, _) => break types.new_solved(*element),
+            if let Some(t) = types.cluster_solved_type(current) {
+                match ex.store.type_value(t) {
+                    TypeValue::Array(element, _) => break types.new_solved(ex.store, *element),
 
                     _ => match self.implicit_deref.step(
                         ex,
@@ -3136,7 +3132,15 @@ impl PendingIndex {
                             return ResolveOutcome::drop(progress);
                         }
                     },
-                },
+                }
+            }
+
+            match types.core.cluster[current].state {
+                ResolveKind::Nothing => {
+                    return ResolveOutcome::keep(progress);
+                }
+
+                ResolveKind::Array { element, .. } => break element,
 
                 _ => {
                     match self.implicit_deref.step(
@@ -3167,7 +3171,7 @@ impl PendingIndex {
         self.implicit_deref.implicit_receivers = self.implicit_deref.finalize_chain(current);
 
         // index must be usize
-        let usize_c = types.new_solved(BuiltinType::Usize.into());
+        let usize_c = types.new_solved(ex.store, BuiltinType::Usize.into());
         match unify_if_distinct(ex, types, self.index, usize_c) {
             Ok(changed) => progress |= changed,
             Err(clash) => {
@@ -3212,18 +3216,9 @@ impl PendingDeref {
         let mut deref_chain_lid = None;
         let mut deref_chain_mutability = None;
 
-        let result = match types.core.cluster[source].state {
-            // unknown — wait
-            ResolveKind::Nothing => {
-                return ResolveOutcome::keep(false);
-            }
-
-            // raw pointer cluster
-            ResolveKind::Ptr { tgt, .. } => Some(tgt),
-
-            // solved type
-            ResolveKind::Solved(t) => match ex.store.type_value(t) {
-                TypeValue::Ptr { tgt, .. } => Some(types.new_solved(*tgt)),
+        if let Some(t) = types.cluster_solved_type(source) {
+            let result = match ex.store.type_value(t) {
+                TypeValue::Ptr { tgt, .. } => Some(types.new_solved(ex.store, *tgt)),
 
                 TypeValue::Struct { id, .. } => {
                     let struct_name = ex.store.struct_value(*id).name;
@@ -3244,7 +3239,47 @@ impl PendingDeref {
                 }
 
                 _ => None,
-            },
+            };
+
+            let Some(result) = result else {
+                let source_type = types.bad_type(ex, source);
+
+                ex.push_error(TypeError::CannotDeref {
+                    site: self.site,
+                    operand: self.source_value,
+                    operand_type: source_type,
+                });
+
+                return ResolveOutcome::drop(true);
+            };
+
+            return match unify_if_distinct(ex, types, result, self.target) {
+                Ok(changed) => {
+                    progress |= changed;
+                    ResolveOutcome::drop(progress)
+                }
+                Err(clash) => {
+                    ex.push_error(TypeError::ValuesContradict {
+                        expectation_reason: "dereference result must match pointee type",
+                        site: self.site,
+                        found: self.source_value,
+                        expected_place: self.site,
+                        clash,
+                    });
+
+                    ResolveOutcome::drop(true)
+                }
+            };
+        }
+
+        let result = match types.core.cluster[source].state {
+            // unknown — wait
+            ResolveKind::Nothing => {
+                return ResolveOutcome::keep(false);
+            }
+
+            // raw pointer cluster
+            ResolveKind::Ptr { tgt, .. } => Some(tgt),
 
             // inferred struct
             ResolveKind::Struct(rid) => {
@@ -3518,15 +3553,18 @@ fn classify_raw_pointer_operand(
     cid: CId,
 ) -> RawPointerOperandKind {
     let root = core.find_root(cid);
-    match core.cluster[root].state {
-        ResolveKind::Solved(t) => match ex.store.type_value(t) {
+    if let Some(t) = core.cluster[root].solved_ty {
+        return match ex.store.type_value(t) {
             TypeValue::Ptr {
                 style: PointerStyle::Raw(Nullable::Yes),
                 ..
             } => RawPointerOperandKind::RawPointer(root),
             TypeValue::Ptr { .. } => RawPointerOperandKind::NonRawPointer,
             _ => RawPointerOperandKind::NotPointer,
-        },
+        };
+    }
+
+    match core.cluster[root].state {
         ResolveKind::Ptr { kind, .. } => match kind.is_fancy() {
             Some(false) => RawPointerOperandKind::RawPointer(root),
             Some(true) => RawPointerOperandKind::NonRawPointer,
@@ -3541,19 +3579,21 @@ fn classify_raw_pointer_operand(
 #[inline(always)]
 fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> OperandKind {
     let root = types.root(cid);
+    if let Some(t) = types.core.cluster[root].solved_ty {
+        return match ex.store.type_value(t) {
+            TypeValue::Struct { id, .. } => {
+                OperandKind::UserStruct(ex.store.struct_value(*id).name)
+            }
+            _ => OperandKind::KnownNonUser,
+        };
+    }
+
     match types.core.cluster[root].state {
         ResolveKind::IntLike
         | ResolveKind::FloatLike
         | ResolveKind::Func(_)
         | ResolveKind::Array { .. }
         | ResolveKind::Tuple(_) => OperandKind::KnownNonUser,
-
-        ResolveKind::Solved(t) => match ex.store.type_value(t) {
-            TypeValue::Struct { id, .. } => {
-                OperandKind::UserStruct(ex.store.struct_value(*id).name)
-            }
-            _ => OperandKind::KnownNonUser,
-        },
         ResolveKind::Struct(call_id) => {
             let sid = types.extra.struct_infers[call_id.0].sid;
             OperandKind::UserStruct(ex.store.struct_value(sid).name)
@@ -3626,20 +3666,23 @@ fn ptr_parts_from_cluster(
     cid: CId,
 ) -> Option<(CId, PtrKind, Option<bool>)> {
     let root = types.root(cid);
-    match types.cluster_state(root) {
-        ResolveKind::Ptr { tgt, kind, mutable } => Some((tgt, kind, mutable)),
-        ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
+    if let Some(ty) = types.cluster_solved_type(root) {
+        return match ex.store.type_value(ty) {
             TypeValue::Ptr {
                 tgt,
                 style,
                 mutable,
             } => Some((
-                types.new_solved(*tgt),
+                types.new_solved(ex.store, *tgt),
                 PtrKind::Solved(*style),
                 Some(*mutable),
             )),
             _ => None,
-        },
+        };
+    }
+
+    match types.cluster_state(root) {
+        ResolveKind::Ptr { tgt, kind, mutable } => Some((tgt, kind, mutable)),
         _ => None,
     }
 }

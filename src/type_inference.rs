@@ -1398,7 +1398,7 @@ pub struct InferState<'a> {
 }
 impl<'a> InferState<'a> {
     pub fn new(store: &'a mut TypeStore, program: &'a Program, ans: &'a mut SolvedTypes) -> Self {
-        let mut types = TypeState::new();
+        let mut types = TypeState::new(store);
         Self {
             ex: ExternState {
                 store,
@@ -1419,7 +1419,7 @@ impl<'a> InferState<'a> {
     }
 
     pub(crate) fn new_solved(&mut self, t: TypeId) -> CId {
-        self.types.new_solved(t)
+        self.types.new_solved(self.ex.store, t)
     }
 
     pub(crate) fn new_int_like(&mut self) -> CId {
@@ -1472,7 +1472,7 @@ impl<'a> InferState<'a> {
     }
 
     pub fn clear_local_state(&mut self) {
-        self.types.clear_local_state();
+        self.types.clear_local_state(self.ex.store);
         self.req.clear_local_state();
         self.ex.name_render = GenLifeNameRender::Generate;
         self.search.clear_local_state(&mut self.types);
@@ -1541,6 +1541,7 @@ impl<T> IndexMut<LId> for LifeVec<T> {
 #[derive(Debug)]
 pub(crate) struct Cluster {
     pub(crate) state: ResolveKind,
+    pub(crate) solved_ty: Option<TypeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1586,7 +1587,6 @@ impl PtrKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ResolveKind {
-    Solved(TypeId),
     Nothing,
 
     // Specialized(SpecilizeId),
@@ -2016,6 +2016,7 @@ impl TypeCore {
         self.parent.0.push(id);
         self.cluster.0.push(Cluster {
             state: ResolveKind::Nothing,
+            solved_ty: None,
         });
         id
     }
@@ -2047,8 +2048,83 @@ pub(crate) fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
     root
 }
 
+pub(crate) fn make_resolve_kind(types: &mut TypeState, store: &TypeStore, ty: TypeId) -> ResolveKind {
+    match store.type_value(ty) {
+        TypeValue::Builtin(_) | TypeValue::Generic(_) => ResolveKind::Nothing,
+        TypeValue::Func {
+            calling_convention,
+            generics,
+            lifetimes,
+            params,
+            ret,
+        } => {
+            let inputs = params
+                .iter()
+                .copied()
+                .map(|param| types.new_solved(store, param))
+                .collect();
+            let output = types.new_solved(store, *ret);
+            let call_id = FuncInferId(types.extra.func_defs.len());
+            types.extra.func_defs.push(FuncInfer {
+                calling_convention: *calling_convention,
+                generics: *generics,
+                lifetimes: *lifetimes,
+                inputs,
+                output,
+            });
+            ResolveKind::Func(call_id)
+        }
+        TypeValue::Struct {
+            id,
+            generics,
+            lifetimes,
+        } => {
+            let generics = generics
+                .iter()
+                .copied()
+                .map(|g| types.new_solved(store, g))
+                .collect();
+            let lifetimes = lifetimes
+                .iter()
+                .copied()
+                .map(|lt| types.new_lid_known(lt))
+                .collect();
+            let call_id = StructInferId(types.extra.struct_infers.len());
+            types.extra.struct_infers.push(StructInfer {
+                sid: *id,
+                generics,
+                lifetimes,
+            });
+            ResolveKind::Struct(call_id)
+        }
+        TypeValue::Tuple(items) => {
+            let items = items
+                .iter()
+                .copied()
+                .map(|item| types.new_solved(store, item))
+                .collect();
+            let tuple_id = TupleInferId(types.extra.tuple_infers.len());
+            types.extra.tuple_infers.push(TupleInfer { items });
+            ResolveKind::Tuple(tuple_id)
+        }
+        TypeValue::Array(element, size) => ResolveKind::Array {
+            element: types.new_solved(store, *element),
+            size: *size,
+        },
+        TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } => ResolveKind::Ptr {
+            tgt: types.new_solved(store, *tgt),
+            kind: PtrKind::Solved(*style),
+            mutable: Some(*mutable),
+        },
+    }
+}
+
 impl TypeState {
-    fn new() -> Self {
+    fn new(store: &TypeStore) -> Self {
         let mut ans = Self {
             core: TypeCore {
                 parent: ClusterVec::new(),
@@ -2065,11 +2141,11 @@ impl TypeState {
             next_undeclared_lifetime: 0,
         };
 
-        ans.populate_defaults();
+        ans.populate_defaults(store);
         ans
     }
 
-    fn clear_local_state(&mut self) {
+    fn clear_local_state(&mut self, store: &TypeStore) {
         let TypeCore { parent, cluster } = &mut self.core;
 
         let TypeExtra {
@@ -2092,14 +2168,14 @@ impl TypeState {
         self.life_known.0.clear();
         self.next_undeclared_lifetime = 0;
 
-        self.populate_defaults();
+        self.populate_defaults(store);
     }
 
-    fn populate_defaults(&mut self) {
+    fn populate_defaults(&mut self, store: &TypeStore) {
         for _i in 0..BUILTIN_COUNT {
             let id = self.new_cluster();
             debug_assert_eq!(id.0, _i);
-            self.core.cluster[id].state = ResolveKind::Solved(TypeId(id.0));
+            let _ = self.set_cluster_solved(store, id, TypeId(id.0));
         }
     }
 
@@ -2139,18 +2215,19 @@ impl TypeState {
         self.core.parent.0.push(id);
         self.core.cluster.0.push(Cluster {
             state: ResolveKind::Nothing,
+            solved_ty: None,
         });
         id
     }
 
     #[inline(always)]
-    pub(crate) fn new_solved(&mut self, t: TypeId) -> CId {
+    pub(crate) fn new_solved(&mut self, store: &TypeStore, t: TypeId) -> CId {
         if let Ok(b) = BuiltinType::try_from(t) {
             let t: TypeId = b.into();
             return CId(t.0);
         }
         let id = self.new_cluster();
-        self.core.cluster[id].state = ResolveKind::Solved(t);
+        self.set_cluster_solved(store, id, t);
         id
     }
 
@@ -2404,13 +2481,51 @@ impl TypeState {
     }
 
     #[inline(always)]
+    pub fn cluster_solved_type(&self, c: CId) -> Option<TypeId> {
+        self.core.cluster[c].solved_ty
+    }
+
+    #[inline(always)]
+    pub fn is_cluster_solved(&self, c: CId) -> bool {
+        self.core.cluster[c].solved_ty.is_some()
+    }
+
+    #[inline(always)]
     pub fn set_cluster_state(&mut self, c: CId, s: ResolveKind) {
+        if self.core.cluster[c].solved_ty.is_some() {
+            debug_assert_eq!(self.core.cluster[c].state, s);
+            return;
+        }
         self.core.cluster[c].state = s;
     }
 
     #[inline(always)]
+    pub fn set_cluster_solved(&mut self, store: &TypeStore, c: CId, ty: TypeId) -> bool {
+        if let Some(existing) = self.core.cluster[c].solved_ty {
+            debug_assert_eq!(existing, ty);
+            return false;
+        }
+
+        let state = make_resolve_kind(self, store, ty);
+        self.core.cluster[c].state = state;
+        self.core.cluster[c].solved_ty = Some(ty);
+        true
+    }
+
+    #[inline(always)]
     pub fn copy_cluster_state(&mut self, dst: CId, src: CId) {
-        self.core.cluster[dst].state = self.core.cluster[src].state;
+        if self.core.cluster[dst].solved_ty.is_some() {
+            debug_assert_eq!(self.core.cluster[dst].state, self.core.cluster[src].state);
+            debug_assert_eq!(
+                self.core.cluster[dst].solved_ty,
+                self.core.cluster[src].solved_ty
+            );
+            return;
+        }
+        self.core.cluster[dst] = Cluster {
+            state: self.core.cluster[src].state,
+            solved_ty: self.core.cluster[src].solved_ty,
+        };
     }
 
     // =========================================================
@@ -2497,6 +2612,68 @@ fn __try_absorb(
 
     let dst_state = types.cluster_state(dst);
     let src_state = types.cluster_state(src);
+    let dst_solved = types.cluster_solved_type(dst);
+    let src_solved = types.cluster_solved_type(src);
+
+    if let (Some(t1), Some(t2)) = (dst_solved, src_solved) {
+        return if t1 == t2 {
+            Ok(true)
+        } else {
+            Err(TypeClash {
+                found: Some(type_string_from_type_id(ex, t2)),
+                wanted: Some(type_string_from_type_id(ex, t1)),
+            })
+        };
+    }
+
+    if let Some(t) = dst_solved {
+        return match src_state {
+            Nothing => Ok(true),
+            IntLike => {
+                if !ex.store.is_int_like(t) {
+                    return Err(TypeClash {
+                        found: Some(type_string_from_type_id(ex, UNKNOWN_INT_SIZE)),
+                        wanted: Some(type_string_from_type_id(ex, t)),
+                    });
+                }
+                Ok(true)
+            }
+            FloatLike => {
+                if !ex.store.is_float_like(t) {
+                    return Err(TypeClash {
+                        found: Some(type_string_from_type_id(ex, UNKNOWN_FLOAT_SIZE)),
+                        wanted: Some(type_string_from_type_id(ex, t)),
+                    });
+                }
+                Ok(true)
+            }
+            Func(call) => {
+                unify_func_with_type(ex, types, call, t)?;
+                Ok(true)
+            }
+            Struct(call) => {
+                unify_struct_with_type(ex, types, call, t)?;
+                Ok(true)
+            }
+            Ptr { tgt, kind, mutable } => {
+                unify_ptr_with_type(ex, types, tgt, kind, mutable, t)?;
+                Ok(true)
+            }
+            Tuple(tuple_id) => {
+                unify_tuple_with_type(ex, types, tuple_id, t)?;
+                Ok(true)
+            }
+            Array { element, size } => {
+                unify_array_with_type(ex, types, element, size, t)?;
+                Ok(true)
+            }
+        };
+    }
+
+    if let Some(t) = src_solved {
+        force_type(ex, types, dst, t)?;
+        return Ok(true);
+    }
 
     match (dst_state, src_state) {
         // =====================================================
@@ -2511,43 +2688,6 @@ fn __try_absorb(
         // src has no information → always safe to absorb
         // =====================================================
         (_, Nothing) => Ok(true),
-
-        // =====================================================
-        // Solved types
-        // =====================================================
-        (Solved(t1), Solved(t2)) => {
-            if t1 == t2 {
-                Ok(true)
-            } else {
-                Err(TypeClash {
-                    found: Some(type_string_from_type_id(ex, t2)),
-                    wanted: Some(type_string_from_type_id(ex, t1)),
-                })
-            }
-        }
-
-        // =====================================================
-        // Solved absorbs literals if compatible
-        // =====================================================
-        (Solved(t), IntLike) => {
-            if !ex.store.is_int_like(t) {
-                return Err(TypeClash {
-                    found: Some(type_string_from_type_id(ex, UNKNOWN_INT_SIZE)),
-                    wanted: Some(type_string_from_type_id(ex, t)),
-                });
-            }
-            Ok(true)
-        }
-
-        (Solved(t), FloatLike) => {
-            if !ex.store.is_float_like(t) {
-                return Err(TypeClash {
-                    found: Some(type_string_from_type_id(ex, UNKNOWN_FLOAT_SIZE)),
-                    wanted: Some(type_string_from_type_id(ex, t)),
-                });
-            }
-            Ok(true)
-        }
 
         // =====================================================
         // Same-kind weak info: merge
@@ -2593,14 +2733,9 @@ fn __try_absorb(
             types.func_mut(src_call).calling_convention = merged_cc;
 
             if let Some(t) = try_resolve_func_type(ex, types, dst_call) {
-                types.set_cluster_state(dst, Solved(t));
+                let _ = types.set_cluster_solved(ex.store, dst, t);
             }
 
-            Ok(true)
-        }
-
-        (Solved(t), Func(call)) => {
-            unify_func_with_type(ex, types, call, t)?;
             Ok(true)
         }
 
@@ -2642,25 +2777,15 @@ fn __try_absorb(
             }
 
             if let Some(t) = try_resolve_struct_type(ex, types, dst_call) {
-                types.set_cluster_state(dst, Solved(t));
+                let _ = types.set_cluster_solved(ex.store, dst, t);
             }
 
-            Ok(true)
-        }
-
-        (Solved(t), Struct(call)) => {
-            unify_struct_with_type(ex, types, call, t)?;
             Ok(true)
         }
 
         // =====================================================
         // Ptr
         // =====================================================
-        (Solved(t), Ptr { tgt, kind, mutable }) => {
-            unify_ptr_with_type(ex, types, tgt, kind, mutable, t)?;
-            Ok(true)
-        }
-
         (
             Ptr {
                 tgt: dst_tgt,
@@ -2705,14 +2830,9 @@ fn __try_absorb(
             }
 
             if let Some(t) = try_resolve_tuple_type(ex, types, dst_tuple) {
-                types.set_cluster_state(dst, Solved(t));
+                let _ = types.set_cluster_solved(ex.store, dst, t);
             }
 
-            Ok(true)
-        }
-
-        (Solved(t), Tuple(tuple_id)) => {
-            unify_tuple_with_type(ex, types, tuple_id, t)?;
             Ok(true)
         }
 
@@ -2738,14 +2858,9 @@ fn __try_absorb(
             }
 
             if let Some(t) = try_resolve_array_type(ex, types, dst_element, dst_len) {
-                types.set_cluster_state(dst, Solved(t));
+                let _ = types.set_cluster_solved(ex.store, dst, t);
             }
 
-            Ok(true)
-        }
-
-        (Solved(t), Array { element, size }) => {
-            unify_array_with_type(ex, types, element, size, t)?;
             Ok(true)
         }
 
@@ -2764,7 +2879,7 @@ pub(crate) fn force_type_if_distinct(
 ) -> Result<bool, TypeClash> {
     let root = types.root(target);
 
-    if let ResolveKind::Solved(t) = types.cluster_state(root)
+    if let Some(t) = types.cluster_solved_type(root)
         && t == ty
     {
         return Ok(false);
@@ -2782,16 +2897,19 @@ pub(crate) fn force_type(
 ) -> Result<(), TypeClash> {
     let root = types.root(target);
     let state = types.cluster_state(root);
+    if let Some(t) = types.cluster_solved_type(root) {
+        return if t == ty {
+            Ok(())
+        } else {
+            Err(simple_type_clash(ex, t, ty))
+        };
+    }
 
     match state {
         ResolveKind::Nothing => {
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
-
-        ResolveKind::Solved(t) if t == ty => Ok(()),
-
-        ResolveKind::Solved(t) => Err(simple_type_clash(ex, t, ty)),
 
         ResolveKind::IntLike => {
             if !ex.store.is_int_like(ty) {
@@ -2800,7 +2918,7 @@ pub(crate) fn force_type(
                     wanted: Some(type_string_from_type_id(ex, ty)),
                 });
             }
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
 
@@ -2811,37 +2929,37 @@ pub(crate) fn force_type(
                     wanted: Some(type_string_from_type_id(ex, ty)),
                 });
             }
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
 
         ResolveKind::Func(call) => {
             unify_func_with_type(ex, types, call, ty)?;
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
 
         ResolveKind::Struct(call) => {
             unify_struct_with_type(ex, types, call, ty)?;
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
 
         ResolveKind::Tuple(call) => {
             unify_tuple_with_type(ex, types, call, ty)?;
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
 
         ResolveKind::Array { element, size } => {
             unify_array_with_type(ex, types, element, size, ty)?;
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
 
         ResolveKind::Ptr { tgt, kind, mutable } => {
             unify_ptr_with_type(ex, types, tgt, kind, mutable, ty)?;
-            types.set_cluster_state(root, ResolveKind::Solved(ty));
+            let _ = types.set_cluster_solved(ex.store, root, ty);
             Ok(())
         }
     }
@@ -3265,20 +3383,17 @@ fn try_resolve_func_type(
         let root = find_root(&mut types.core.parent, input);
         func.inputs[i] = root; // canonicalize
 
-        match types.core.cluster[root].state {
-            ResolveKind::Solved(t) => params.push(t),
-            _ => return None,
-        }
+        let Some(t) = types.core.cluster[root].solved_ty else {
+            return None;
+        };
+        params.push(t);
     }
 
     let output = func.output;
     let root = find_root(&mut types.core.parent, output);
     func.output = root; // canonicalize
 
-    let ret = match types.core.cluster[root].state {
-        ResolveKind::Solved(t) => t,
-        _ => return None,
-    };
+    let ret = types.core.cluster[root].solved_ty?;
 
     Some(ex.store.intern(TypeValue::Func {
         calling_convention: func.calling_convention,
@@ -3302,10 +3417,10 @@ fn try_resolve_struct_type(
         let root = find_root(&mut types.core.parent, *input);
         *input = root;
 
-        match types.core.cluster[root].state {
-            ResolveKind::Solved(t) => generics.push(t),
-            _ => return None,
-        }
+        let Some(t) = types.core.cluster[root].solved_ty else {
+            return None;
+        };
+        generics.push(t);
     }
 
     let mut lifetimes = Vec::with_capacity(site.lifetimes.len());
@@ -3340,10 +3455,10 @@ fn try_resolve_tuple_type(
         let root = find_root(&mut types.core.parent, input);
         site.items[i] = root; // canonicalize
 
-        match types.core.cluster[root].state {
-            ResolveKind::Solved(t) => items.push(t),
-            _ => return None,
-        }
+        let Some(t) = types.core.cluster[root].solved_ty else {
+            return None;
+        };
+        items.push(t);
     }
 
     Some(ex.store.intern(TypeValue::Tuple(items)))
@@ -3357,10 +3472,7 @@ fn try_resolve_array_type(
 ) -> Option<TypeId> {
     let root = types.root(element);
 
-    let element = match types.cluster_state(root) {
-        ResolveKind::Solved(t) => t,
-        _ => return None,
-    };
+    let element = types.cluster_solved_type(root)?;
 
     Some(ex.store.intern(TypeValue::Array(element, size)))
 }
@@ -3385,10 +3497,7 @@ fn try_resolve_ptr_type(
 
     let root = types.root(tgt);
 
-    let tgt = match types.cluster_state(root) {
-        ResolveKind::Solved(t) => t,
-        _ => return None,
-    };
+    let tgt = types.cluster_solved_type(root)?;
 
     Some(ex.store.intern(TypeValue::Ptr {
         tgt,
@@ -3611,10 +3720,10 @@ fn write_mock_type_from_cluster(
     *limit -= 1;
 
     let root = find_root(&mut core.parent, cid);
-    match core.cluster[root].state {
-        ResolveKind::Solved(t) => {
-            let _ = out.write_str(&type_string_from_type_id(ex, t));
-        }
+    if let Some(t) = core.cluster[root].solved_ty {
+        let _ = out.write_str(&type_string_from_type_id(ex, t));
+    } else {
+        match core.cluster[root].state {
         ResolveKind::IntLike => {
             let _ = out.write_str("int?");
         }
@@ -3636,6 +3745,7 @@ fn write_mock_type_from_cluster(
         }
         ResolveKind::Nothing => {
             let _ = out.write_char('_');
+        }
         }
     }
 
@@ -3855,7 +3965,7 @@ pub(crate) fn extract_clash_type_string(
     }
 
     let root = find_root(&mut core.parent, cid);
-    if matches!(core.cluster[root].state, ResolveKind::Nothing) {
+    if core.cluster[root].solved_ty.is_none() && matches!(core.cluster[root].state, ResolveKind::Nothing) {
         return None;
     }
 
@@ -3936,9 +4046,10 @@ fn specialize_type_inner(
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
-                state: ResolveKind::Func(call_id),
-            });
+                types.core.cluster.0.push(Cluster {
+                    state: ResolveKind::Func(call_id),
+                    solved_ty: None,
+                });
             id
         }
 
@@ -3949,12 +4060,7 @@ fn specialize_type_inner(
         } => {
             let id = *id;
             if generics.is_empty() && lifetimes.is_empty() {
-                let idc = CId(types.core.parent.len());
-                types.core.parent.0.push(idc);
-                types.core.cluster.0.push(Cluster {
-                    state: ResolveKind::Solved(ty),
-                });
-                return idc;
+                return types.new_solved(ex.store, ty);
             }
             let glen = generics.len();
             let llen = lifetimes.len();
@@ -3985,6 +4091,7 @@ fn specialize_type_inner(
             types.core.parent.0.push(idc);
             types.core.cluster.0.push(Cluster {
                 state: ResolveKind::Struct(call_id),
+                solved_ty: None,
             });
             idc
         }
@@ -4014,6 +4121,7 @@ fn specialize_type_inner(
                     kind,
                     mutable: Some(mutable),
                 },
+                solved_ty: None,
             });
             id
         }
@@ -4037,6 +4145,7 @@ fn specialize_type_inner(
             types.core.parent.0.push(id);
             types.core.cluster.0.push(Cluster {
                 state: ResolveKind::Tuple(tuple_id),
+                solved_ty: None,
             });
             id
         }
@@ -4053,17 +4162,13 @@ fn specialize_type_inner(
                     element: inner,
                     size: len,
                 },
+                solved_ty: None,
             });
             id
         }
 
         TypeValue::Builtin(_) => {
-            let id = CId(types.core.parent.len());
-            types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
-                state: ResolveKind::Solved(ty),
-            });
-            id
+            types.new_solved(ex.store, ty)
         }
     }
 }
@@ -4279,8 +4384,10 @@ pub(crate) fn cluster_is_int_like(
     cid: CId,
 ) -> Option<bool> {
     let root = find_root(parent, cid);
+    if let Some(t) = cluster[root].solved_ty {
+        return Some(store.is_int_like(t));
+    }
     match cluster[root].state {
-        ResolveKind::Solved(t) => Some(store.is_int_like(t)),
         ResolveKind::IntLike => Some(true),
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
@@ -4300,8 +4407,10 @@ pub(crate) fn cluster_is_float_like(
     cid: CId,
 ) -> Option<bool> {
     let root = find_root(parent, cid);
+    if let Some(t) = cluster[root].solved_ty {
+        return Some(store.is_float_like(t));
+    }
     match cluster[root].state {
-        ResolveKind::Solved(t) => Some(store.is_float_like(t)),
         ResolveKind::FloatLike => Some(true),
         ResolveKind::IntLike => Some(false),
         ResolveKind::Func(_) => Some(false),
@@ -4321,8 +4430,10 @@ pub(crate) fn cluster_is_bool(
     cid: CId,
 ) -> Option<bool> {
     let root = find_root(parent, cid);
+    if let Some(t) = cluster[root].solved_ty {
+        return Some(store.as_builtin(t) == Some(BuiltinType::Bool));
+    }
     match cluster[root].state {
-        ResolveKind::Solved(t) => Some(store.as_builtin(t) == Some(BuiltinType::Bool)),
         ResolveKind::IntLike => Some(false),
         ResolveKind::FloatLike => Some(false),
         ResolveKind::Func(_) => Some(false),
@@ -4407,8 +4518,8 @@ pub(crate) fn resolve_deferred_types(ctx: &mut InferState) -> bool {
         };
 
         if let Some(t) = resolved {
-            ctx.types.core.cluster[cid].state = ResolveKind::Solved(t);
-            change = true;
+            let changed = ctx.types.set_cluster_solved(ctx.ex.store, cid, t);
+            change |= changed;
         }
     }
     change

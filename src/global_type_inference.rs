@@ -49,7 +49,7 @@ pub fn infer_global_types<'a>(
                 clash,
             });
         }
-        if let ResolveKind::Solved(ty) = ctx.types.core.cluster[t].state {
+        if let Some(ty) = ctx.types.cluster_solved_type(t) {
             ctx.ex.ans.typedef_types.insert(*texp, ty);
         } else {
             ctx.search.typedef_cluster.push((*texp, t));
@@ -204,7 +204,7 @@ fn finalize_global(ctx: &mut InferState) {
 
     for (e, c) in &search.typedef_cluster {
         let root = types.root(*c);
-        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+        if let Some(t) = types.cluster_solved_type(root) {
             ex.ans.typedef_types.insert(*e, t);
         } else if *c == root {
             let found = types.bad_type(ex, root);
@@ -225,7 +225,7 @@ fn finalize_global(ctx: &mut InferState) {
             let c = types.extra.struct_defs[sid_i].fields[i].1;
             let root = types.root(c);
 
-            if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            if let Some(t) = types.cluster_solved_type(root) {
                 ex.store.structs[sid_i].fields[i].1 = t;
             } else if c == root {
                 let loc = ex.program.type_expr_loc(loc_expr);
@@ -241,7 +241,7 @@ fn finalize_global(ctx: &mut InferState) {
     let mut pat_type_by_id: IdHashMap<PatId, TypeId> = IdHashMap::default();
     for (p, c) in &search.pat_cluster {
         let root = types.root(*c);
-        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+        if let Some(t) = types.cluster_solved_type(root) {
             pat_type_by_id.insert(*p, t);
         } else if *c == root && !reported.contains_key(c) {
             let found = types.bad_type(ex, root);
@@ -253,7 +253,7 @@ fn finalize_global(ctx: &mut InferState) {
 
     for (v, c) in &search.val_cluster {
         let root = types.root(*c);
-        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+        if let Some(t) = types.cluster_solved_type(root) {
             let Value::Func {
                 generics,
                 params,
@@ -729,10 +729,13 @@ pub(crate) fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
             let cid = compile_struct_type::<ALLOW_STRUCT_GENERICS>(ctx, texpr, def);
             let sid = match ctx.types.core.cluster[cid].state {
                 ResolveKind::Struct(rid) => ctx.types.extra.struct_infers[rid.0].sid,
-                ResolveKind::Solved(t) => match ctx.ex.store.type_value(t) {
+                _ if ctx.types.cluster_solved_type(cid).is_some() => {
+                    let t = ctx.types.cluster_solved_type(cid).unwrap();
+                    match ctx.ex.store.type_value(t) {
                     TypeValue::Struct { id, .. } => *id,
                     _ => unreachable!("struct def didnt return struct"),
-                },
+                    }
+                }
                 _ => unreachable!("struct def didnt return struct"),
             };
 
@@ -1537,9 +1540,8 @@ pub(crate) fn receiver_cluster_for_self_param(
     self_param: CId,
 ) -> Option<CId> {
     let self_root = types.root(self_param);
-    match types.cluster_state(self_root) {
-        ResolveKind::Struct(_) => Some(receiver),
-        ResolveKind::Solved(t) => match ex.store.type_value(t) {
+    if let Some(t) = types.cluster_solved_type(self_root) {
+        return match ex.store.type_value(t) {
             TypeValue::Struct { .. } => Some(receiver),
             TypeValue::Ptr { style, mutable, .. } => {
                 let adapted = types.new_cluster();
@@ -1554,7 +1556,11 @@ pub(crate) fn receiver_cluster_for_self_param(
                 Some(adapted)
             }
             _ => Some(receiver),
-        },
+        };
+    }
+
+    match types.cluster_state(self_root) {
+        ResolveKind::Struct(_) => Some(receiver),
         ResolveKind::Ptr { kind, mutable, .. } => {
             let adapted = types.new_cluster();
             types.set_cluster_state(
