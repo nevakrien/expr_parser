@@ -1,7 +1,7 @@
+use crate::identity_hasher::IdHashMap;
 use crate::ir::GenDec;
 use crate::ir::PatternSpan;
 use crate::ir::TExpId;
-use crate::global_type_inference::*;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
 use crate::ir::VarKind;
@@ -13,7 +13,7 @@ use crate::string_intern::{
     StrId,
 };
 use crate::type_inference::*;
-
+use crate::global_type_inference::{gather_func_signature,receiver_cluster_for_self_param,is_any_type_builtin_member_name,do_typedef};
 use crate::program::{Defined, Program};
 
 pub fn infer_value_internals<'a>(
@@ -101,6 +101,190 @@ pub fn infer_value_internals<'a>(
         Ok(ctx.ex.ans)
     } else {
         Err(ctx.ex.errors)
+    }
+}
+
+pub fn main_solver_local(ctx: &mut InferState) {
+    //this loop only exists once ALL requirments have checked and didnt complain
+    //on the state we are gona release. since there was no change
+    //this is SUPER important because they are not just progressions
+    let mut unknown_count = 0;
+
+    loop {
+        let mut progress = false;
+        progress |= resolve_operator_types(ctx);
+        progress |= resolve_deferred_types(ctx);
+        progress |= resolve_pending_indexes(ctx);
+        progress |= resolve_pending_member_accesses(ctx);
+        progress |= resolve_pending_int_accesses(ctx);
+        progress |= resolve_pending_specializations(ctx);
+
+        if progress {
+            continue;
+        }
+
+        progress |= resolve_pending_derefs(ctx);
+
+        if progress {
+            continue;
+        }
+
+        // HACK (temporary, likely not the final design): before finalize we force unresolved
+        // lifetime roots to `Unknown` so `RefInfer(lid)` pointers can resolve.
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
+
+        if !progress {
+            break;
+        }
+    }
+
+    if !ctx.ex.errors.is_empty() {
+        return;
+    }
+
+    finalize_local(ctx);
+}
+fn finalize_local(ctx: &mut InferState) {
+    let InferState {
+        search,
+        req,
+        types,
+        ex,
+        ..
+    } = ctx;
+
+    let val_cluster = &search.val_cluster;
+    let pat_cluster = &search.pat_cluster;
+    let member_method_type_sites = &req.member_method_type_sites;
+    let member_access_implicit_deref_sites = &req.member_access_implicit_deref_sites;
+    let index_implicit_deref_sites = &req.index_implicit_deref_sites;
+
+    // unsafe{perf_begin();}
+
+    let mut reported: IdHashMap<CId, ()> = IdHashMap::default();
+    let mut member_method_by_site: IdHashMap<ValId, PendingMemberMethodType> = IdHashMap::default();
+    for &entry in member_method_type_sites {
+        member_method_by_site.insert(entry.site, entry);
+    }
+
+    let mut inner = InnerFunctionTypes::default();
+
+    for (v, c) in val_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            inner.val_types.insert(*v, t);
+        } else if *c == root && !reported.contains_key(&c) {
+            let found = types.bad_type(ex, root);
+            ex.errors.push(TypeError::Unresolved { value: *v, found });
+            reported.insert(root, ());
+            if let Some(entry) = member_method_by_site.get(&v) {
+                let full_root = types.root(entry.full_method);
+                reported.insert(full_root, ());
+            }
+        }
+    }
+
+    for (p, c) in pat_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            inner.pat_types.insert(*p, t);
+        } else if *c == root && !reported.contains_key(&c) {
+            let found = types.bad_type(ex, root);
+            ex.errors
+                .push(TypeError::UnresolvedPattern { pattern: *p, found });
+            reported.insert(root, ());
+        }
+    }
+
+    for entry in member_method_type_sites {
+        let root = types.root(entry.full_method);
+        if let ResolveKind::Solved(full_type) = types.cluster_state(root) {
+            inner.member_method_types.insert(
+                entry.site,
+                SolvedMemberMethodAccessType {
+                    member: entry.member,
+                    full_type,
+                },
+            );
+            continue;
+        }
+
+        if reported.contains_key(&root) {
+            continue;
+        }
+
+        //these are tricky to report because there isnt TECHNICALLY a value
+        //its an implicit value we added because of a cast.
+
+        //if the output isnt resolved then fundementally this cant be solved so we are good
+        //if it CAN be solved but the full signature cant that must be because of &self not being clear
+        //in that case we need to report an error but its gona be a bad one...
+
+        let receiver_root = types.root(entry.receiver);
+        if !matches!(types.cluster_state(receiver_root), ResolveKind::Solved(_))
+            && !reported.contains_key(&receiver_root)
+        {
+            let found = types.bad_type(ex, receiver_root);
+            ex.errors.push(TypeError::Unresolved {
+                value: entry.receiver_value,
+                found,
+            });
+            reported.insert(receiver_root, ());
+            reported.insert(root, ());
+        }
+    }
+
+    store_implicit_deref_chains(
+        &mut inner.implicit_derefs,
+        member_access_implicit_deref_sites,
+        &mut types.core.parent,
+        &types.core.cluster,
+    );
+    store_implicit_deref_chains(
+        &mut inner.implicit_derefs,
+        index_implicit_deref_sites,
+        &mut types.core.parent,
+        &types.core.cluster,
+    );
+
+    let owner = req.owner.or_else(|| {
+        val_cluster
+            .iter()
+            .find_map(|(v, _)| matches!(ex.program.value(*v), Value::Func { .. }).then_some(*v))
+            .or_else(|| val_cluster.first().map(|(v, _)| *v))
+    });
+
+    if let Some(owner) = owner {
+        ex.ans.set_function_inner(owner, inner);
+    }
+
+    // let name = CStr::from_bytes_with_nul(b"finalize\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()); }
+}
+
+
+fn store_implicit_deref_chains(
+    out: &mut IdHashMap<ValId, Vec<TypeId>>,
+    entries: &[PendingMemberAccessImplicitDeref],
+    parent: &mut ClusterVec<CId>,
+    cluster: &ClusterVec<Cluster>,
+) {
+    for entry in entries.iter() {
+        let mut chain = Vec::with_capacity(entry.receivers.len());
+        let mut all_solved = true;
+        for receiver in entry.receivers.iter() {
+            let root = find_root(parent, *receiver);
+            match cluster[root].state {
+                ResolveKind::Solved(t) => chain.push(t),
+                _ => {
+                    all_solved = false;
+                    break;
+                }
+            }
+        }
+        if all_solved {
+            out.insert(entry.site, chain);
+        }
     }
 }
 
@@ -1735,24 +1919,6 @@ fn resolve_struct_deref_target(
         target: resolved.target,
         deref_result_ptr,
     })
-}
-
-fn push_cannot_deref_error(
-    ex: &mut ExternState,
-    types: &mut TypeState,
-    site: ValId,
-    source_value: ValId,
-    source: CId,
-) {
-    let mut limit = EXPANSION_LIMIT;
-    let source_type =
-        extract_clash_type_string(ex, &mut types.core, &types.extra, source, &mut limit);
-
-    ex.push_error(TypeError::CannotDeref {
-        site,
-        operand: source_value,
-        operand_type: source_type,
-    });
 }
 
 #[inline(always)]

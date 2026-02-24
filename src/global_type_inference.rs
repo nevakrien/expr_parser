@@ -1,3 +1,4 @@
+use crate::identity_hasher::IdHashMap;
 use crate::ir::CallingConvention;
 use crate::ir::LifeTimeId;
 use crate::ir::StructLayoutSpec;
@@ -172,6 +173,156 @@ pub fn infer_global_types<'a>(
         Err(ctx.ex.errors)
     }
 }
+
+fn main_solver_global(ctx: &mut InferState) {
+    let mut unknown_count = 0;
+
+    loop {
+        let mut progress = false;
+        progress |= resolve_deferred_types(ctx);
+        progress |= resolve_pending_specializations(ctx);
+
+        if progress {
+            continue;
+        }
+
+        progress |= finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
+        if !progress {
+            break;
+        }
+    }
+
+    if !ctx.ex.errors.is_empty() {
+        return;
+    }
+
+    finalize_global(ctx);
+}
+
+
+#[inline(always)]
+// #[inline(never)]
+// #[unsafe(no_mangle)]
+fn finalize_global(ctx: &mut InferState) {
+    let InferState {
+        search, types, ex, ..
+    } = ctx;
+
+    let mut reported: IdHashMap<CId, ()> = IdHashMap::default();
+
+    for (e, c) in &search.typedef_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            ex.ans.typedef_types.insert(*e, t);
+        } else if *c == root {
+            let found = types.bad_type(ex, root);
+            ex.errors
+                .push(TypeError::UnresolvedTypeExpr { expr: *e, found });
+            reported.insert(root, ());
+        }
+    }
+
+    let struct_count = types.extra.struct_defs.len();
+    for sid_i in 0..struct_count {
+        let (loc_expr, field_len) = {
+            let s = &types.extra.struct_defs[sid_i];
+            (s.loc, s.fields.len())
+        };
+
+        for i in 0..field_len {
+            let c = types.extra.struct_defs[sid_i].fields[i].1;
+            let root = types.root(c);
+
+            if let ResolveKind::Solved(t) = types.cluster_state(root) {
+                ex.store.structs[sid_i].fields[i].1 = t;
+            } else if c == root {
+                let loc = ex.program.type_expr_loc(loc_expr);
+                ex.errors.push(TypeError::Simple {
+                    loc,
+                    message: "could not infer struct field type",
+                });
+                reported.insert(root, ());
+            }
+        }
+    }
+
+    let mut pat_type_by_id: IdHashMap<PatId, TypeId> = IdHashMap::default();
+    for (p, c) in &search.pat_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            pat_type_by_id.insert(*p, t);
+        } else if *c == root && !reported.contains_key(c) {
+            let found = types.bad_type(ex, root);
+            ex.errors
+                .push(TypeError::UnresolvedPattern { pattern: *p, found });
+            reported.insert(root, ());
+        }
+    }
+
+    for (v, c) in &search.val_cluster {
+        let root = types.root(*c);
+        if let ResolveKind::Solved(t) = types.cluster_state(root) {
+            let Value::Func {
+                generics,
+                params,
+                body,
+                ..
+            } = ex.program.value(*v)
+            else {
+                continue;
+            };
+
+            let arguments = params
+                .ids()
+                .map(|pat| {
+                    (
+                        pat,
+                        pattern_bind_name(ex.program, pat),
+                        pat_type_by_id.get(&pat).copied().unwrap_or(UNKNOWN_TYPE),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let generic_parameters = generics
+                .generics()
+                .ids()
+                .map(|pat| (pat, pattern_bind_name(ex.program, pat)))
+                .collect::<Vec<_>>();
+
+            let lifetime_parameters = generics
+                .lifetimes()
+                .ids()
+                .map(|pat| {
+                    (
+                        pat,
+                        match ex.program.pattern(pat) {
+                            Pattern::LifeTime(lt) => Some(lt),
+                            _ => None,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            ex.ans.set_function_signature(
+                *v,
+                SolvedFunctionTypes {
+                    ty: t,
+                    impl_site: body.map(|_| *v),
+                    declaration_sites: body.is_none().then_some(*v).into_iter().collect(),
+                    arguments,
+                    generic_parameters,
+                    lifetime_parameters,
+                    inner: None,
+                },
+            );
+        } else if *c == root && !reported.contains_key(c) {
+            let found = types.bad_type(ex, root);
+            ex.errors.push(TypeError::Unresolved { value: *v, found });
+            reported.insert(root, ());
+        }
+    }
+}
+
 
 // ----------------------------------------------------------
 // Function Set Recording
