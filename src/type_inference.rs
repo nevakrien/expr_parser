@@ -2048,7 +2048,11 @@ pub(crate) fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
     root
 }
 
-pub(crate) fn make_resolve_kind(types: &mut TypeState, store: &TypeStore, ty: TypeId) -> ResolveKind {
+pub(crate) fn make_resolve_kind(
+    types: &mut TypeState,
+    store: &TypeStore,
+    ty: TypeId,
+) -> ResolveKind {
     match store.type_value(ty) {
         TypeValue::Builtin(_) | TypeValue::Generic(_) => ResolveKind::Nothing,
         TypeValue::Func {
@@ -3724,28 +3728,30 @@ fn write_mock_type_from_cluster(
         let _ = out.write_str(&type_string_from_type_id(ex, t));
     } else {
         match core.cluster[root].state {
-        ResolveKind::IntLike => {
-            let _ = out.write_str("int?");
-        }
-        ResolveKind::FloatLike => {
-            let _ = out.write_str("float?");
-        }
-        ResolveKind::Func(call) => write_func_mock_string_inner(ex, core, extra, call, out, limit),
-        ResolveKind::Struct(call) => {
-            write_struct_mock_string_inner(ex, core, extra, call, out, limit)
-        }
-        ResolveKind::Tuple(tuple) => {
-            write_tuple_mock_string_inner(ex, core, extra, tuple, out, limit)
-        }
-        ResolveKind::Array { element, size } => {
-            write_array_mock_string_inner(ex, core, extra, element, size, out, limit)
-        }
-        ResolveKind::Ptr { tgt, kind, mutable } => {
-            write_ptr_mock_string_inner(ex, core, extra, tgt, kind, mutable, out, limit)
-        }
-        ResolveKind::Nothing => {
-            let _ = out.write_char('_');
-        }
+            ResolveKind::IntLike => {
+                let _ = out.write_str("int?");
+            }
+            ResolveKind::FloatLike => {
+                let _ = out.write_str("float?");
+            }
+            ResolveKind::Func(call) => {
+                write_func_mock_string_inner(ex, core, extra, call, out, limit)
+            }
+            ResolveKind::Struct(call) => {
+                write_struct_mock_string_inner(ex, core, extra, call, out, limit)
+            }
+            ResolveKind::Tuple(tuple) => {
+                write_tuple_mock_string_inner(ex, core, extra, tuple, out, limit)
+            }
+            ResolveKind::Array { element, size } => {
+                write_array_mock_string_inner(ex, core, extra, element, size, out, limit)
+            }
+            ResolveKind::Ptr { tgt, kind, mutable } => {
+                write_ptr_mock_string_inner(ex, core, extra, tgt, kind, mutable, out, limit)
+            }
+            ResolveKind::Nothing => {
+                let _ = out.write_char('_');
+            }
         }
     }
 
@@ -3965,7 +3971,9 @@ pub(crate) fn extract_clash_type_string(
     }
 
     let root = find_root(&mut core.parent, cid);
-    if core.cluster[root].solved_ty.is_none() && matches!(core.cluster[root].state, ResolveKind::Nothing) {
+    if core.cluster[root].solved_ty.is_none()
+        && matches!(core.cluster[root].state, ResolveKind::Nothing)
+    {
         return None;
     }
 
@@ -4046,10 +4054,10 @@ fn specialize_type_inner(
 
             let id = CId(types.core.parent.len());
             types.core.parent.0.push(id);
-                types.core.cluster.0.push(Cluster {
-                    state: ResolveKind::Func(call_id),
-                    solved_ty: None,
-                });
+            types.core.cluster.0.push(Cluster {
+                state: ResolveKind::Func(call_id),
+                solved_ty: None,
+            });
             id
         }
 
@@ -4167,9 +4175,7 @@ fn specialize_type_inner(
             id
         }
 
-        TypeValue::Builtin(_) => {
-            types.new_solved(ex.store, ty)
-        }
+        TypeValue::Builtin(_) => types.new_solved(ex.store, ty),
     }
 }
 

@@ -727,16 +727,16 @@ pub(crate) fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
     match ctx.ex.program.type_expr(texpr) {
         TypeExpr::Struct(def) => {
             let cid = compile_struct_type::<ALLOW_STRUCT_GENERICS>(ctx, texpr, def);
-            let sid = match ctx.types.core.cluster[cid].state {
-                ResolveKind::Struct(rid) => ctx.types.extra.struct_infers[rid.0].sid,
-                _ if ctx.types.cluster_solved_type(cid).is_some() => {
-                    let t = ctx.types.cluster_solved_type(cid).unwrap();
-                    match ctx.ex.store.type_value(t) {
+            let sid = if let Some(t) = ctx.types.cluster_solved_type(cid) {
+                match ctx.ex.store.type_value(t) {
                     TypeValue::Struct { id, .. } => *id,
                     _ => unreachable!("struct def didnt return struct"),
-                    }
                 }
-                _ => unreachable!("struct def didnt return struct"),
+            } else {
+                match ctx.types.core.cluster[cid].state {
+                    ResolveKind::Struct(rid) => ctx.types.extra.struct_infers[rid.0].sid,
+                    _ => unreachable!("struct def didnt return struct"),
+                }
             };
 
             debug_assert_eq!(ctx.ex.store.structs[sid.0].name, None);
@@ -1790,7 +1790,7 @@ fn check_struct_deref_targets_compatible(
         };
 
     if deref_target != deref_mut_target
-        || deref_self_style!= deref_mut_self_style
+        || deref_self_style != deref_mut_self_style
         || deref_out_style != deref_mut_out_style
         || deref_self_mut
         || !deref_mut_self_mut

@@ -61,8 +61,10 @@ These functions are the center of the entire file and appear all over inference:
 `unify_clusters` tries merge in two directions (`found <- wanted`, then reversed). Internally `_try_absorb` handles cases like:
 
 - `Nothing` can absorb most things.
-- `Solved(t1)` with `Solved(t2)` succeeds only if `t1 == t2`.
-- `Solved` with `IntLike`/`FloatLike` succeeds only if builtin category matches.
+- When either cluster is solved (`cluster.solved_ty.is_some()`), the logic branches:
+  - Both solved: compare concrete types, succeed only if equal.
+  - Destination solved, source unsolved: validate/absorb unresolved shape into known concrete type.
+  - Source solved, destination unsolved: force destination to source type.
 - `Func` with `Func` unifies each param/output cluster pair.
 - `Struct` with `Struct` requires same struct id + same generic arity, then unifies generic clusters.
 - pointer states merge only when `raw`/`mutable` flags are compatible and targets unify.
@@ -218,10 +220,11 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 ### Union-find state
 
 - Cluster id: `CId`.
-- `ResolveKind` cluster states:
-  - `Solved(TypeId)`, `Nothing`, `Never`,
+- `ResolveKind` cluster states (used when cluster is not solved):
+  - `Nothing`, `Never`,
   - weak literals: `IntLike`, `FloatLike`,
   - deferred structures: `Func(FuncInferId)`, `Struct(StructInferId)`, `Tuple(TupleInferId)`, `Array { element, len }`, `Ptr { ... }`.
+- Solved clusters: `cluster.solved_ty = Some(TypeId)`, with `cluster.state` containing the structural shape from `make_resolve_kind(...)`.
 - `InferState` holds:
   - IR-node -> cluster bindings,
   - union-find arrays (`parent`, `cluster`),

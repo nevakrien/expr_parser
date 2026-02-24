@@ -1831,7 +1831,10 @@ fn resolve_any_type_builtin_member_access(
             kind: PtrKind::SafeRef,
             mutable: Some(true),
         };
-        (self_param, types.new_solved(ex.store, BuiltinType::Void.into()))
+        (
+            self_param,
+            types.new_solved(ex.store, BuiltinType::Void.into()),
+        )
     } else if matches!(member_name, SIZE_OF_STR | ALIGN_OF_STR) {
         let self_param = types.new_cluster();
         types.core.cluster[self_param].state = ResolveKind::Ptr {
@@ -1839,7 +1842,10 @@ fn resolve_any_type_builtin_member_access(
             kind: PtrKind::Solved(PointerStyle::Raw(Nullable::No)),
             mutable: Some(false),
         };
-        (self_param, types.new_solved(ex.store, BuiltinType::Usize.into()))
+        (
+            self_param,
+            types.new_solved(ex.store, BuiltinType::Usize.into()),
+        )
     } else {
         ex.push_error(TypeError::IlegalMethod {
             member_name,
@@ -2180,10 +2186,10 @@ impl PendingMemberAccess {
 
         loop {
             let current = self.implicit_deref.sync_roots(types);
+            let solved = types.cluster_solved_type(current);
 
-            match types.core.cluster[current].state {
-                _ if types.cluster_solved_type(current).is_some() => {
-                    let t = types.cluster_solved_type(current).unwrap();
+            match (solved, types.core.cluster[current].state) {
+                (Some(t), _) => {
                     if let TypeValue::Struct {
                         id: sid,
                         generics,
@@ -2287,7 +2293,7 @@ impl PendingMemberAccess {
                     }
                 }
 
-                ResolveKind::Struct(rid) => {
+                (None, ResolveKind::Struct(rid)) => {
                     let sid = types.extra.struct_infers[rid.0].sid;
 
                     let (field_ty, struct_name) = {
@@ -2309,12 +2315,12 @@ impl PendingMemberAccess {
                         }
 
                         let infer = &types.extra.struct_infers[rid.0];
+
                         //unfortunatly yes this does require a clone at the moment
                         //the reason is that we have to borrow struct_infers inside specilize as mut
                         //there is some tricks we can do here with unsafe as those SHOULD... never be changed during specilize
                         let gens = infer.generics.clone();
                         let lifes = infer.lifetimes.clone();
-
                         let result = specialize_struct_field_type(
                             ex, types, self.site, sid, field_ty, &gens, &lifes,
                         );
@@ -2493,28 +2499,27 @@ fn function_parts_from_cluster(
 ) -> Option<(Vec<CId>, CId)> {
     let root = types.root(cid);
 
+    if let Some(t) = types.cluster_solved_type(root) {
+        let TypeValue::Func { params, ret, .. } = ex.store.type_value(t) else {
+            return None;
+        };
+
+        // Reify solved function type into fresh local clusters
+        let inputs = params
+            .iter()
+            .map(|p| types.new_solved(ex.store, *p))
+            .collect::<Vec<_>>();
+
+        let output = types.new_solved(ex.store, *ret);
+        return Some((inputs, output));
+    }
+
     match types.cluster_state(root) {
         ResolveKind::Func(call) => {
             // IMPORTANT:
             // clone inputs because unify may mutate graph later
             let inputs = types.func(call).inputs.clone();
             let output = types.func(call).output;
-            Some((inputs, output))
-        }
-
-        _ if types.cluster_solved_type(root).is_some() => {
-            let t = types.cluster_solved_type(root).unwrap();
-            let TypeValue::Func { params, ret, .. } = ex.store.type_value(t) else {
-                return None;
-            };
-
-            // Reify solved function type into fresh local clusters
-            let inputs = params
-                .iter()
-                .map(|p| types.new_solved(ex.store, *p))
-                .collect::<Vec<_>>();
-
-            let output = types.new_solved(ex.store, *ret);
             Some((inputs, output))
         }
 
