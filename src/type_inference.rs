@@ -6635,7 +6635,7 @@ mod type_infer_tests {
     #[test]
     fn deref_chain_supports_all_four_style_transitions_with_raw_links() {
         let src = "
-            Wrapper = struct {inner:[int;1]};
+            Wrapper = struct {baba:[int;1]};
             Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.inner[0]}
 
             Unsafe = struct { inner: &'raw Wrapper };
@@ -6652,7 +6652,7 @@ mod type_infer_tests {
 
             f = fn(s: &mut Safe) {
                 let out : &mut int = s->get();
-                let arr : &mut [int;1] = s->inner;
+                let arr : [int;1] = s->baba;
             };
 
         ";

@@ -3,15 +3,32 @@ use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
-// const SOURCE: &str = "Box=struct{inner:&[int;2]}; f=fn(){};";
 const SOURCE: &str = r#"
-Inner=struct[T]{x:T}; 
-Box=struct[T]{inner:Inner[T]}; 
-Wrap=struct[T]{boxed:Box[T]}; 
-Box.__deref = fn[T](self:&Box[T])->&Inner[T] { &self.inner }; 
-Wrap.__deref = fn[T](self:&Wrap[T])->&Box[T] { &self.boxed }; 
-f=fn(w:Wrap[int]){ let y:int = w->x; };
+S=struct{x:int}
+S.__deref_mut = fn(s:&mut S)-> &'raw int {&s.x}
+S.__deref = fn(s:&S)-> &int {&s.x}
 "#;
+// const SOURCE: &str = r#"
+// Wrapper = struct {baba:[int;1]};
+// Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.baba[0]}
+
+// Unsafe = struct { inner: &'raw Wrapper };
+// Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
+
+// RawCalc = struct { inner: &'raw Unsafe };
+// RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
+
+// Raw = struct { inner: &'static mut RawCalc };
+// Raw.__deref_mut = fn(self: &mut Raw) -> &'static mut RawCalc { self.inner };
+
+// Safe = struct { inner: &'raw Raw };
+// Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
+
+// f = fn(s: &mut Safe) {
+//     let out : &mut int = s->get();
+//     let arr : [int;1] = s->baba;
+// };
+// "#;
 // const SOURCE: &str = r#"
 // sqrt = fn(f:float)->float;
 // Point = struct{x:float,y:float}
