@@ -215,6 +215,49 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 - `UNKNOWN_TYPE`, `UNKNOWN_INT_SIZE`, `UNKNOWN_FLOAT_SIZE`: unresolved/weak placeholders for diagnostics.
 - `BadTypeId`: legacy wrapper still used by some non-clash diagnostics; clash payloads now use strings directly.
 
+## Staged Plan: Place Requirements and Mutability
+
+This is the active plan for replacing the current ad-hoc place mutability checks.
+It is intentionally staged so multiple agents can continue safely.
+
+### Stage 1 (current)
+
+- Introduce one shared writable-place requirement path used by both:
+  - assignment targets (`x = ...`, `*p = ...`, `a->x = ...`), and
+  - mutable address-of (`&mut place`).
+- Add a shared pending queue for unresolved writable place checks.
+- While checking writable places, if a pointer cluster is known pointer-shape with unresolved mutability (`ResolveKind::Ptr { mutable: None, .. }`), force it to `Some(true)` instead of waiting for fallback default-to-immutable.
+- Keep `&const` / plain `&` as addressability-only semantics (do not require mutable target).
+- Writable-place checks now return a small `PlaceKind` record (`access_kind + mutable: Option<bool>`) instead of carrying ad-hoc message strings:
+  - `Some(true)` => writable,
+  - `Some(false)` => known immutable,
+  - `None` => unresolved/pending.
+- Error text selection for assign vs `&mut` is now keyed by `(WritablePlaceContext, PlaceAccessKind)`; there is no string matching on intermediate check results.
+
+### Stage 2
+
+- Replace origin-based short-circuit (`Origin::Local`, `Origin::DerefOf`) with explicit place-walk artifacts (`PlaceInfo`) gathered from expression shape.
+- Route all place-relevant operations through one checker API:
+  - addressability requirement,
+  - writable requirement.
+
+### Stage 3
+
+- Add explicit pending addressability checks for unresolved member/index chains (not just writable checks).
+- Improve error orientation and wording per context (`assign` vs `&mut` vs `&`).
+
+### Stage 4 (lifetime-aware places)
+
+- During address-of and implicit/explicit reborrow (`&*x` and compiler-synthesized equivalents), record lifetime ordering constraints between source and produced references.
+- Keep stable local lifetime ids for these edges so borrow checking can validate outlives relations.
+
+### Known pitfalls
+
+- Do not rely on `ResolveKind::Nothing` as evidence of immutable/non-place; it only means unresolved.
+- Solver pass order matters: pending place checks must run before fallback `force_unresolved_ptr_mutability_to_immut`.
+- Implicit deref receiver chains carry synthetic pointer clusters; mutability constraints must be applied there too, not only on final target origin.
+- Keep behavior order-independent: delayed errors can vary by schedule, but solvability must not.
+
 ### Type shapes and storage
 
 - `BuiltinType`: primitive set (`int`, sized ints, floats, `bool`, `str`, `void`, `Type`).
@@ -345,6 +388,8 @@ Important fragile/unfinished expression areas:
 - smart-deref steps now track an optional "source" pointer provenance (`PendingImplicitDeref.source: Option<CId>`): pointer-like hops keep/update it, while struct-smart-deref hops may clear it and rely on recorded receiver-chain pointers,
 - when a smart-deref hop needs `__deref_mut`, local inference now checks pointer mutability provenance (source pointer or most recent pointer-like chain receiver) and emits a hard error if the chain would require upgrading immutable to mutable,
 - all implicit deref hops used by member access and indexing are tracked in `SolvedTypes.implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
+- writable-place checks for `.` member/tuple writes now also consult those recorded implicit-deref receiver chains (and pending member/int-access queues), so `&mut` / `&'raw mut` bases reached via one implicit dot deref are accepted while immutable bases still produce the dedicated member-access diagnostics,
+- local pending metadata now stores implicit-deref receiver chains keyed by expression site id (`ValId -> Vec<CId>`) rather than append-only vectors, so writable-place checks and finalize lookup do O(1)-ish site lookup without reverse linear scans,
 - for smart-deref struct hops, the chain records the full step path: pre-deref value type, synthesized self-reference input type (`&self`/`&mut self` shape), deref-method result pointer/reference type, then the pointee target,
   - if a field is not found, member methods are resolved from `program.member_methods`,
   - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),

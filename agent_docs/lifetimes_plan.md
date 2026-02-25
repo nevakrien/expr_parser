@@ -91,3 +91,11 @@ Function bodies:
 - Implicit receiver transformations currently happen in several places; missing one can make borrow checking unsound.
 - Generic specialization must duplicate lifetime params per use site just like type generics, or constraints will leak between calls.
 - Error orientation (`found` vs `wanted`) should stay consistent for lifetime clashes too.
+
+## Follow-up idea: place walk emits lifetime edges
+
+- `AddrOf` (`&...`, especially `&mut` and explicit `&*x`) should eventually emit both:
+  - mutability requirements on place steps, and
+  - lifetime ordering edges between source and produced references.
+- Example target relation to encode later: reborrow-like `&*a` introduces an ordering constraint from the produced reference lifetime to the source reference lifetime.
+- Prefer stable local lifetime ids (not just terminal `LifeTime::Unknown`) in local inference artifacts so downstream borrow checking can validate these ordering requirements deterministically.

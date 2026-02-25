@@ -1256,11 +1256,11 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
     let mut err_count = 0;
     let mut function_checked = 0;
 
-    unsafe {
-        perf_init();
-    }
+    // unsafe {
+    //     perf_init();
+    // }
 
-    unsafe { perf_begin() }
+    // unsafe { perf_begin() }
 
     if let Err(errs) = infer_global_types(program, &mut types, &mut solved_types) {
         err_count += errs.len();
@@ -1271,10 +1271,10 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
 
         return Ok((Err(err_count), function_checked));
     }
-    let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
-    unsafe { perf_done(name.as_ptr()) };
+    // let name = CStr::from_bytes_with_nul(b"globals\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()) };
 
-    unsafe { perf_begin() }
+    // unsafe { perf_begin() }
 
     for (_n, methods) in program.member_methods.iter() {
         for (_s, method_set) in methods.iter() {
@@ -1312,8 +1312,8 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         }
     }
 
-    let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
-    unsafe { perf_done(name.as_ptr()) };
+    // let name = CStr::from_bytes_with_nul(b"bodies\0").unwrap();
+    // unsafe { perf_done(name.as_ptr()) };
 
     if err_count > 0 {
         return Ok((Err(err_count), function_checked));
@@ -1722,9 +1722,32 @@ pub(crate) struct AssignPrePostSite {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingAssignTargetMutability {
+pub(crate) enum WritablePlaceContext {
+    Assign,
+    AddrOfMut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaceAccessKind {
+    Local,
+    Deref,
+    MemberAccessDot,
+    MemberAccessPtr,
+    Index,
+    NonPlace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PlaceKind {
+    pub(crate) access_kind: PlaceAccessKind,
+    pub(crate) mutable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingWritablePlaceRequirement {
     pub(crate) site: ValId,
     pub(crate) target: ValId,
+    pub(crate) context: WritablePlaceContext,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1734,12 +1757,6 @@ pub(crate) struct PendingMemberMethodType {
     pub(crate) full_method: CId,
     pub(crate) receiver: CId,
     pub(crate) receiver_value: ValId,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct PendingMemberAccessImplicitDeref {
-    pub(crate) site: ValId,
-    pub(crate) receivers: Vec<CId>,
 }
 
 #[derive(Debug)]
@@ -2330,13 +2347,12 @@ pub(crate) struct ReqState {
     //generic_func_values: Vec<(ValId, usize)>,
     pub(crate) pending_specializations: Vec<PendingSpecialization>,
     pub(crate) member_method_type_sites: Vec<PendingMemberMethodType>,
-    pub(crate) member_access_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
-    pub(crate) index_implicit_deref_sites: Vec<PendingMemberAccessImplicitDeref>,
+    pub(crate) implicit_deref_sites: IdHashMap<ValId, Vec<CId>>,
     pub(crate) pending_member_accesses: Vec<PendingMemberAccess>,
     pub(crate) pending_int_accesses: Vec<PendingIntAccess>,
     pub(crate) pending_indexes: Vec<PendingIndex>,
     pub(crate) pending_derefs: Vec<PendingDeref>,
-    pub(crate) pending_assign_target_mutabilities: Vec<PendingAssignTargetMutability>,
+    pub(crate) pending_writable_place_requirements: Vec<PendingWritablePlaceRequirement>,
 }
 
 impl ReqState {
@@ -2349,13 +2365,12 @@ impl ReqState {
 
             pending_specializations: Vec::new(),
             member_method_type_sites: Vec::new(),
-            member_access_implicit_deref_sites: Vec::new(),
-            index_implicit_deref_sites: Vec::new(),
+            implicit_deref_sites: IdHashMap::default(),
             pending_member_accesses: Vec::new(),
             pending_int_accesses: Vec::new(),
             pending_indexes: Vec::new(),
             pending_derefs: Vec::new(),
-            pending_assign_target_mutabilities: Vec::new(),
+            pending_writable_place_requirements: Vec::new(),
         }
     }
 
@@ -2367,13 +2382,12 @@ impl ReqState {
             assign_pre_post_sites,
             pending_specializations,
             member_method_type_sites,
-            member_access_implicit_deref_sites,
-            index_implicit_deref_sites,
+            implicit_deref_sites,
             pending_member_accesses,
             pending_int_accesses,
             pending_indexes,
             pending_derefs,
-            pending_assign_target_mutabilities,
+            pending_writable_place_requirements,
         } = self;
 
         *owner = None;
@@ -2383,13 +2397,12 @@ impl ReqState {
 
         pending_specializations.clear();
         member_method_type_sites.clear();
-        member_access_implicit_deref_sites.clear();
-        index_implicit_deref_sites.clear();
+        implicit_deref_sites.clear();
         pending_member_accesses.clear();
         pending_int_accesses.clear();
         pending_indexes.clear();
         pending_derefs.clear();
-        pending_assign_target_mutabilities.clear();
+        pending_writable_place_requirements.clear();
     }
 }
 
@@ -7069,6 +7082,30 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn tuple_int_assignment_to_immutable_local_is_rejected() {
+        assert_fn_body_simple_error(
+            "f=fn(){ let t = (1:int, false); t.0 = 2:int; }",
+            "cannot assign through immutable member access",
+        );
+    }
+
+    #[test]
+    fn tuple_int_assignment_to_mutable_local_typechecks() {
+        assert_fn_type!(
+            "f=fn(){ var t = (1:int, false); t.0 = 2:int; t.0 }",
+            BuiltinType::Int
+        );
+    }
+
+    #[test]
+    fn ptr_tuple_int_assignment_through_nested_mut_refs_typechecks() {
+        assert_fn_type!(
+            "f=fn()->int { var t = (1:int, false); var p = &mut t; var pp = &mut p; pp->0 = 2:int; t.0 }",
+            BuiltinType::Int
+        );
+    }
+
+    #[test]
     fn ptr_tuple_int_access_can_chain_derefs() {
         let src = "f=fn(pp:& &(int,bool)){ let a:int = pp->0; };";
         let program = gather_program(src);
@@ -7549,6 +7586,125 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn dot_member_and_tuple_writes_on_mut_and_raw_mut_refs_typecheck() {
+        let src = r#"
+            S=struct{x:int,y:bool};
+
+            mut_struct_assign = fn(self:&mut S){ self.x |= 1; self.x++; };
+            mut_struct_borrow = fn(self:&mut S)->&mut int { &mut self.x };
+            mut_tuple_assign = fn(self:&mut (int,bool)){ self.0 = 1; };
+            mut_tuple_borrow = fn(self:&mut (int,bool))->&mut int { &mut self.0 };
+
+            raw_mut_struct_assign = fn(self:&'raw mut S){ self.x = 1; };
+            raw_mut_struct_borrow = fn(self:&'raw mut S)->&'raw mut int { &mut self.x };
+            raw_mut_tuple_assign = fn(self:&'raw mut (int,bool)){ self.0 = 1; };
+            raw_mut_tuple_borrow = fn(self:&'raw mut (int,bool))->&'raw mut int { &mut self.0 };
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        for name in [
+            "mut_struct_assign",
+            "mut_struct_borrow",
+            "mut_tuple_assign",
+            "mut_tuple_borrow",
+            "raw_mut_struct_assign",
+            "raw_mut_struct_borrow",
+            "raw_mut_tuple_assign",
+            "raw_mut_tuple_borrow",
+        ] {
+            let f = find_value_by_name(&program, name);
+            infer_value_internals(&program, &mut store, &mut solved_types, f)
+                .unwrap_or_else(|errs| panic!("expected `{name}` to typecheck, got {errs:?}"));
+        }
+    }
+
+    #[test]
+    fn dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_one_error_per_function() {
+        let src = r#"
+            S=struct{x:int,y:bool};
+
+            const_struct_assign = fn(self:&const S){ self.x |= 1; };
+            const_struct_borrow = fn(self:&const S)->&mut int { &mut self.x };
+            const_tuple_assign = fn(self:&const (int,bool)){ self.0 = 1; };
+            const_tuple_borrow = fn(self:&const (int,bool))->&mut int { &mut self.0 };
+
+            raw_const_struct_assign = fn(self:&'raw const S){ self.x = 1; };
+            raw_const_struct_borrow = fn(self:&'raw const S)->&'raw mut int { &mut self.x };
+            raw_const_tuple_assign = fn(self:&'raw const (int,bool)){ self.0 = 1; };
+            raw_const_tuple_borrow = fn(self:&'raw const (int,bool))->&'raw mut int { &mut self.0 };
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let mut total_errors = 0;
+        for (name, expected) in [
+            (
+                "const_struct_assign",
+                "cannot assign through immutable member access",
+            ),
+            (
+                "const_struct_borrow",
+                "cannot take mutable reference through immutable member access",
+            ),
+            (
+                "const_tuple_assign",
+                "cannot assign through immutable member access",
+            ),
+            (
+                "const_tuple_borrow",
+                "cannot take mutable reference through immutable member access",
+            ),
+            (
+                "raw_const_struct_assign",
+                "cannot assign through immutable member access",
+            ),
+            (
+                "raw_const_struct_borrow",
+                "cannot take mutable reference through immutable member access",
+            ),
+            (
+                "raw_const_tuple_assign",
+                "cannot assign through immutable member access",
+            ),
+            (
+                "raw_const_tuple_borrow",
+                "cannot take mutable reference through immutable member access",
+            ),
+        ] {
+            let f = find_value_by_name(&program, name);
+            let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+                Ok(_) => panic!("expected `{name}` to fail"),
+                Err(errs) => errs,
+            };
+            assert_eq!(
+                errs.len(),
+                1,
+                "expected exactly one error for `{name}`, got {errs:?}"
+            );
+            total_errors += errs.len();
+            assert!(
+                errs.iter().any(|err| {
+                    matches!(
+                        err,
+                        TypeError::Simple { message, .. }
+                        if *message == expected
+                    )
+                }),
+                "expected `{name}` to report `{expected}`, got {errs:?}`"
+            );
+        }
+
+        assert_eq!(total_errors, 8);
+    }
+
+    #[test]
     fn ptr_member_assignment_allows_chain_with_mutable_deref_hop() {
         let src = "C=struct{x:int}; B=struct{c:C}; A=struct{b:B}; A.__deref_mut = fn(self:&mut A)->&mut B; B.__deref_mut = fn(self:&mut B)->&mut C; f=fn(a:A){ a->x = 2:int; };";
         let program = gather_program(src);
@@ -7627,6 +7783,70 @@ mod type_infer_tests {
                 if *message == "implicit `__deref_mut` step requires mutable source"
             )
         }));
+    }
+
+    #[test]
+    fn nested_box_ptr_member_assignment_through_mut_chain_typechecks() {
+        let src = r#"
+            Box = struct[T]{ptr:&'raw T};
+            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
+            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
+
+            S=struct{x:bool};
+
+            f=fn(b:&mut Box[Box[S]]){
+                b->x=false;
+            };
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn nested_box_mut_addr_of_member_uses_mut_deref_chain() {
+        let src = r#"
+            Box = struct[T]{ptr:&'raw T};
+            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
+            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
+
+            S=struct{x:bool};
+
+            f=fn(b:&mut Box[Box[S]])->&mut bool {
+                let ans = &mut b->x;
+                *ans=true;
+                ans
+            };
+        "#;
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let ans_value = find_let_stmt_value(&program, f, "ans");
+        let Value::AddrOf(access_site, Some(VarKind::Mut)) = program.value(ans_value) else {
+            panic!("expected `ans` to be `&mut` of member access")
+        };
+
+        let chain =
+            implicit_deref_chain_type_strings(&program, &store, &solved_types, f, access_site)
+                .expect("expected implicit deref chain for `&mut b->x`");
+
+        for ty in chain.iter().skip(2) {
+            if ty.starts_with('&') {
+                assert!(
+                    ty.contains(" mut "),
+                    "expected mutable reference step in `&mut` autoderef chain, got `{ty}` in {chain:?}`"
+                );
+            }
+        }
     }
 
     #[test]
