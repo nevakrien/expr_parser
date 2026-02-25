@@ -139,7 +139,7 @@ fn local_solver_fuzz(ctx: &mut InferState) {
             continue;
         }
 
-        if order_planner.resolve_deferred_on_stall() && resolve_deferred_types(ctx) {
+        if order_planner.use_main_loop_deferred_mode() && resolve_deferred_types(ctx) {
             continue;
         }
 
@@ -147,7 +147,8 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         //these are all assuming defualts on the type system
         //so they are mostly last resorts for that exact reason
 
-        if finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count) {
+        if order_planner.use_main_loop_deferred_mode()
+        && finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count) {
             continue;
         }
 
@@ -162,9 +163,8 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         break;
     }
 
-    if order_planner.use_iterative_deferred_finalize() {
-        while resolve_deferred_types(ctx) {}
-    } else {
+    if !order_planner.use_main_loop_deferred_mode() {
+        finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
         full_resolve_deferred_types(ctx);
     }
 
@@ -200,10 +200,6 @@ fn local_solver_stable(ctx: &mut InferState) {
         //these are all assuming defualts on the type system
         //so they are mostly last resorts for that exact reason
 
-        if finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count) {
-            continue;
-        }
-
         if force_unresolved_refs_to_safe(ctx, &mut unknown_count) {
             continue;
         }
@@ -214,6 +210,8 @@ fn local_solver_stable(ctx: &mut InferState) {
 
         break;
     }
+
+    finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
 
     full_resolve_deferred_types(ctx);
 

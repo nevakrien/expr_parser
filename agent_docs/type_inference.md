@@ -68,9 +68,9 @@ These functions are the center of the entire file and appear all over inference:
   - if unset, a random seed is generated via `rand::random::<u64>()` and printed to stderr as `[solver-order-fuzz] seed=...`.
 - The fuzzing schedule randomizes:
   - pass order among `resolve_operator_types`, pending-index/member/int access, specializations, derefs,
-  - whether deferred type resolution is mixed into the main loop,
-  - whether deferred type resolution gets an extra stall-continue pass,
-  - finalize strategy: either iterative `resolve_deferred_types` fixpoint or `full_resolve_deferred_types` (never both in one run).
+  - a two-mode deferred strategy switch:
+    - mode A: include `resolve_deferred_types` in the main loop (including stall retry), and skip `full_resolve_deferred_types` at the end,
+    - mode B: do not run `resolve_deferred_types` in the main loop, and run `full_resolve_deferred_types` at finalize.
 - Invariant goal: successful resolution should remain solver-order independent; this mode is intended to expose hidden order dependencies.
 
 ## Unification and Clash Semantics

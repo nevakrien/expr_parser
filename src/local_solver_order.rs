@@ -15,9 +15,7 @@ pub(crate) enum LocalSolverPass {
 
 pub(crate) struct SolverOrderPlanner {
     rng: StdRng,
-    include_deferred_in_main_loop: bool,
-    deferred_on_stall: bool,
-    use_iterative_deferred_finalize: bool,
+    use_main_loop_deferred_mode: bool,
 }
 
 impl SolverOrderPlanner {
@@ -36,7 +34,7 @@ impl SolverOrderPlanner {
             LocalSolverPass::PendingDerefs,
         ];
 
-        if self.include_deferred_in_main_loop {
+        if self.use_main_loop_deferred_mode {
             order.push(LocalSolverPass::Deferred);
         }
 
@@ -46,30 +44,21 @@ impl SolverOrderPlanner {
     }
 
     #[inline(always)]
-    pub(crate) fn resolve_deferred_on_stall(&self) -> bool {
-        self.deferred_on_stall
-    }
-
-    #[inline(always)]
-    pub(crate) fn use_iterative_deferred_finalize(&self) -> bool {
-        self.use_iterative_deferred_finalize
+    pub(crate) fn use_main_loop_deferred_mode(&self) -> bool {
+        self.use_main_loop_deferred_mode
     }
 
     fn from_seed(seed: u64) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
-        let include_deferred_in_main_loop = rng.random();
-        let deferred_on_stall = rng.random();
-        let use_iterative_deferred_finalize = rng.random();
+        let use_main_loop_deferred_mode = rng.random();
 
         eprintln!(
-            "[solver-order-fuzz] seed={seed} include_deferred_in_main_loop={include_deferred_in_main_loop} deferred_on_stall={deferred_on_stall} use_iterative_deferred_finalize={use_iterative_deferred_finalize}"
+            "[solver-order-fuzz] seed={seed} use_main_loop_deferred_mode={use_main_loop_deferred_mode}"
         );
 
         Self {
             rng,
-            include_deferred_in_main_loop,
-            deferred_on_stall,
-            use_iterative_deferred_finalize,
+            use_main_loop_deferred_mode,
         }
     }
 }
@@ -94,14 +83,6 @@ mod tests {
         let a = SolverOrderPlanner::from_seed(123456789);
         let b = SolverOrderPlanner::from_seed(123456789);
 
-        assert_eq!(
-            a.include_deferred_in_main_loop,
-            b.include_deferred_in_main_loop
-        );
-        assert_eq!(a.deferred_on_stall, b.deferred_on_stall);
-        assert_eq!(
-            a.use_iterative_deferred_finalize,
-            b.use_iterative_deferred_finalize
-        );
+        assert_eq!(a.use_main_loop_deferred_mode, b.use_main_loop_deferred_mode);
     }
 }
