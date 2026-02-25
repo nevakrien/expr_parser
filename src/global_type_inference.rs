@@ -177,13 +177,15 @@ pub fn infer_global_types<'a>(
 fn global_solver(ctx: &mut InferState) {
     loop {
         let mut progress = false;
-        progress |= resolve_deferred_types(ctx);
+        // progress |= resolve_deferred_types(ctx);
         progress |= resolve_pending_specializations(ctx);
 
         if !progress {
             break;
         }
     }
+
+    full_resolve_defered_types(ctx);
 
     if !ctx.ex.errors.is_empty() {
         return;

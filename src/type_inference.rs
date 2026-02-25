@@ -2592,9 +2592,9 @@ fn __try_absorb(
             types.func_mut(dst_call).calling_convention = merged_cc;
             types.func_mut(src_call).calling_convention = merged_cc;
 
-            if let Some(t) = try_resolve_func_type(ex, types, dst_call) {
-                types.set_cluster_state(dst, Solved(t));
-            }
+            // if let Some(t) = try_resolve_func_type(ex, types, dst_call) {
+            //     types.set_cluster_state(dst, Solved(t));
+            // }
 
             Ok(true)
         }
@@ -2641,9 +2641,9 @@ fn __try_absorb(
                 }
             }
 
-            if let Some(t) = try_resolve_struct_type(ex, types, dst_call) {
-                types.set_cluster_state(dst, Solved(t));
-            }
+            // if let Some(t) = try_resolve_struct_type(ex, types, dst_call) {
+            //     types.set_cluster_state(dst, Solved(t));
+            // }
 
             Ok(true)
         }
@@ -2704,9 +2704,9 @@ fn __try_absorb(
                 }
             }
 
-            if let Some(t) = try_resolve_tuple_type(ex, types, dst_tuple) {
-                types.set_cluster_state(dst, Solved(t));
-            }
+            // if let Some(t) = try_resolve_tuple_type(ex, types, dst_tuple) {
+            //     types.set_cluster_state(dst, Solved(t));
+            // }
 
             Ok(true)
         }
@@ -2737,9 +2737,9 @@ fn __try_absorb(
                 return Err(types.clash(ex, dst, src));
             }
 
-            if let Some(t) = try_resolve_array_type(ex, types, dst_element, dst_len) {
-                types.set_cluster_state(dst, Solved(t));
-            }
+            // if let Some(t) = try_resolve_array_type(ex, types, dst_element, dst_len) {
+            //     types.set_cluster_state(dst, Solved(t));
+            // }
 
             Ok(true)
         }
@@ -4412,6 +4412,122 @@ pub(crate) fn resolve_deferred_types(ctx: &mut InferState) -> bool {
         }
     }
     change
+}
+
+pub(crate) fn full_resolve_defered_types(ctx: &mut InferState) {
+    for raw in 0..ctx.types.core.cluster.len() {
+        let cid = CId(raw);
+        if ctx.types.core.parent[cid] != cid {
+            continue; // only DSU roots
+        }
+        let _ = resolve_cluster_to_typeid(ctx, cid);
+    }
+
+    fn resolve_cluster_to_typeid(ctx: &mut InferState, cid: CId) -> Option<TypeId> {
+        let root = ctx.types.root(cid);
+
+        if let ResolveKind::Solved(t) = ctx.types.core.cluster[root].state {
+            return Some(t);
+        }
+
+        let state = ctx.types.core.cluster[root].state;
+        let solved = match state {
+            ResolveKind::Func(call) => {
+                let n = ctx.types.extra.func_defs[call.0].inputs.len();
+
+                let mut params = Vec::with_capacity(n);
+                for i in 0..n {
+                    let cid = ctx.types.extra.func_defs[call.0].inputs[i];
+                    let cid = ctx.types.root(cid);
+                    params.push(resolve_cluster_to_typeid(ctx, cid)?);
+                }
+
+                let cid = ctx.types.extra.func_defs[call.0].output;
+                let cid = ctx.types.root(cid);
+                let ret = resolve_cluster_to_typeid(ctx, cid)?;
+
+                let func = &ctx.types.extra.func_defs[call.0];
+                ctx.ex.store.intern(TypeValue::Func {
+                    calling_convention: func.calling_convention,
+                    generics: func.generics,
+                    lifetimes: func.lifetimes,
+                    params,
+                    ret,
+                })
+            }
+
+            ResolveKind::Struct(call) => {
+                let n = ctx.types.extra.struct_infers[call.0].generics.len();
+                let mut generics = Vec::with_capacity(n);
+                for i in 0..n {
+                    let cid = ctx.types.extra.struct_infers[call.0].generics[i];
+                    let cid = ctx.types.root(cid);
+                    generics.push(resolve_cluster_to_typeid(ctx, cid)?);
+                }
+
+                let m = ctx.types.extra.struct_infers[call.0].lifetimes.len();
+                let mut lifetimes = Vec::with_capacity(m);
+                for i in 0..m {
+                    let lid = ctx.types.extra.struct_infers[call.0].lifetimes[i];
+                    let lid = find_lid_root(&mut ctx.types.life_parent, lid);
+                    lifetimes.push(ctx.types.life_known[lid]?);
+                }
+
+                let sid = ctx.types.extra.struct_infers[call.0].sid;
+                ctx.ex.store.intern(TypeValue::Struct {
+                    id: sid,
+                    generics,
+                    lifetimes,
+                })
+            }
+
+            ResolveKind::Tuple(call) => {
+                let n = ctx.types.extra.tuple_infers[call.0].items.len();
+
+                let mut items = Vec::with_capacity(n);
+                for i in 0..n {
+                    let cid = ctx.types.extra.tuple_infers[call.0].items[i];
+                    let cid = ctx.types.root(cid);
+                    items.push(resolve_cluster_to_typeid(ctx, cid)?);
+                }
+
+                ctx.ex.store.intern(TypeValue::Tuple(items))
+            }
+
+            ResolveKind::Array { element, size } => {
+                let element = ctx.types.root(element);
+                let element = resolve_cluster_to_typeid(ctx, element)?;
+                ctx.ex.store.intern(TypeValue::Array(element, size))
+            }
+
+            ResolveKind::Ptr { tgt, kind, mutable } => {
+                let mutable = mutable?;
+
+                let tgt = ctx.types.root(tgt);
+
+                let style = match kind {
+                    PtrKind::Solved(style) => style,
+                    PtrKind::RefInfer(lid) => {
+                        let lid = find_lid_root(&mut ctx.types.life_parent, lid);
+                        PointerStyle::Ref(ctx.types.life_known[lid]?)
+                    }
+                    _ => return None,
+                };
+
+                let tgt = resolve_cluster_to_typeid(ctx, tgt)?;
+                ctx.ex.store.intern(TypeValue::Ptr {
+                    tgt,
+                    style,
+                    mutable,
+                })
+            }
+
+            _ => return None,
+        };
+
+        ctx.types.core.cluster[root].state = ResolveKind::Solved(solved);
+        Some(solved)
+    }
 }
 
 pub(crate) fn resolve_pending_specializations(ctx: &mut InferState) -> bool {

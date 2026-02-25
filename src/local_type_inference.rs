@@ -116,19 +116,20 @@ pub fn local_solver(ctx: &mut InferState) {
     loop {
         let mut progress = false;
         progress |= resolve_operator_types(ctx);
-        progress |= resolve_deferred_types(ctx);
+        // progress |= resolve_deferred_types(ctx);
         progress |= resolve_pending_indexes(ctx);
         progress |= resolve_pending_member_accesses(ctx);
         progress |= resolve_pending_int_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
+        progress |= resolve_pending_derefs(ctx);
 
         if progress {
             continue;
         }
 
-        if resolve_pending_derefs(ctx) {
-            continue;
-        }
+        // if  resolve_deferred_types(ctx) {
+        //     continue;
+        // }
 
         //ORDER SENSATIVE semi hacks
         //these are all assuming defualts on the type system
@@ -148,6 +149,7 @@ pub fn local_solver(ctx: &mut InferState) {
 
         break;
     }
+    full_resolve_defered_types(ctx);
 
     if !ctx.ex.errors.is_empty() {
         return;
