@@ -503,6 +503,9 @@ Named function-set maps now store canonical `ValId` links (not duplicated full s
   - all assignment forms now gate on mutable-place checks before operator resolution (`var`/`let mut` locals, mutable deref origins, mutable autoderef chains).
 - `unify_if_distinct` is the main operator-resolution merge primitive.
 - Builtin legality checks are tri-state (`true` / `false` / `unknown`) to avoid premature hard errors.
+- Builtin bitwise bool support:
+  - `bool & bool`, `bool | bool`, and `bool ^ bool` are valid and preserve `bool`.
+  - Compound assignment forms (`&=`, `|=`, `^=`) reuse the same deferred binary-operator resolution path, so bool support applies there too.
 - Builtin binary pointer arithmetic now supports raw pointers only: `*T` / `*const T` can do `ptr + int`, `int + ptr`, and `ptr - int` (result keeps pointer type), plus `ptr - ptr` (both operands must be compatible raw pointers, result is `isize`).
 - Non-raw references (`&T`, `&mut T`) are intentionally rejected for builtin pointer arithmetic and still produce overload-not-found diagnostics.
 - User-struct operator overloads are now enforced through solved member-method signatures:

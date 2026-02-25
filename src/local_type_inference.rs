@@ -3234,7 +3234,9 @@ fn resolve_operator_site(
     // ----------------------------------------------------
     // 3) Arithmetic / bitwise
     //
-    // - Only unify once both sides are known numeric
+    // - Add/Sub/Mul/Div/Mod: both sides numeric
+    // - BitAnd/BitOr/BitXor: both sides int-like or bool
+    // - Shl/Shr: both sides int-like
     // ----------------------------------------------------
     let (store, parent, cluster) = (&ex.store, &mut types.core.parent, &mut types.core.cluster);
     let lhs_numeric = matches!(cluster_is_int_like(store, parent, cluster, lhs), Some(true))
@@ -3249,7 +3251,23 @@ fn resolve_operator_site(
             Some(true)
         );
 
-    if !(lhs_numeric && rhs_numeric) {
+    let lhs_bitwise = matches!(cluster_is_int_like(store, parent, cluster, lhs), Some(true))
+        || matches!(cluster_is_bool(store, parent, cluster, lhs), Some(true));
+
+    let rhs_bitwise = matches!(cluster_is_int_like(store, parent, cluster, rhs), Some(true))
+        || matches!(cluster_is_bool(store, parent, cluster, rhs), Some(true));
+
+    let operands_supported = match op {
+        Add | Sub | Mul | Div | Mod => lhs_numeric && rhs_numeric,
+        BitAnd | BitOr | BitXor => lhs_bitwise && rhs_bitwise,
+        Shl | Shr => {
+            matches!(cluster_is_int_like(store, parent, cluster, lhs), Some(true))
+                && matches!(cluster_is_int_like(store, parent, cluster, rhs), Some(true))
+        }
+        Eq | Ne | Lt | Le | Gt | Ge => unreachable!("comparison ops returned earlier"),
+    };
+
+    if !operands_supported {
         //TODO handle other cases
         return ResolveOutcome::keep(progress);
     }
@@ -4060,7 +4078,18 @@ fn system_types_operator_applicable(
             }
         }
 
-        BitAnd | BitOr | BitXor | Shl | Shr => cluster_is_int_like(store, parent, cluster, cid),
+        BitAnd | BitOr | BitXor => {
+            match (
+                cluster_is_int_like(store, parent, cluster, cid),
+                cluster_is_bool(store, parent, cluster, cid),
+            ) {
+                (Some(true), _) | (_, Some(true)) => Some(true),
+                (Some(false), Some(false)) => Some(false),
+                _ => None,
+            }
+        }
+
+        Shl | Shr => cluster_is_int_like(store, parent, cluster, cid),
     }
 }
 

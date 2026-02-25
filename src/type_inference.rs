@@ -6567,6 +6567,18 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn bool_bitwise_ops_and_compound_assignments_typecheck() {
+        assert_fn_type!(
+            "f=fn(){ var x = true var change = false; change |= x; change &= true; change ^= false; change }",
+            BuiltinType::Bool
+        );
+        assert_fn_type!(
+            "f=fn(){ let a = true; let b = false; (a & b) | (a ^ b) }",
+            BuiltinType::Bool
+        );
+    }
+
+    #[test]
     fn inc_dec_assign_falls_back_to_add_sub_overloads_with_implicit_int_rhs() {
         let src = "S=struct{}; S.__add = fn(self:S, rhs:usize)->S { self }; S.__sub = fn(self:S, rhs:int)->S { self }; f=fn(){ var s = S{}; ++s; s--; --s; s++; };";
         let program = gather_program(src);
