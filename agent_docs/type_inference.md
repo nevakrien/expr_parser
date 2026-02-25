@@ -333,7 +333,7 @@ Important fragile/unfinished expression areas:
     - `Some(false)` when only `__deref` exists,
     - `Some(true)` when only `__deref_mut` exists,
     - `None` when both exist,
-  - current temporary limitation: when both deref methods exist, local deref-chain pointer mutability is intentionally left unresolved until place/mutability constraints are introduced for write expressions (`*p = _`),
+  - write-style place checks now consume origin + deref-chain mutability metadata during local inference: `*p = _` requires mutable pointer/reference provenance, and `->` assignment rejects chains containing immutable deref hops,
   - the deref expression now owns a dedicated output cluster and immediately tries a `pointee -> output` unification when the source is already resolvable,
   - when deref starts from an unresolved `Nothing` source, it records a pending pointer-like constraint (`source -> target`) and resolves it in the middle solver instead of eagerly forcing the source to pointer.
 - `Value::Access`:
@@ -341,8 +341,10 @@ Important fragile/unfinished expression areas:
   - unresolved member-access receivers are deferred into a pending queue (similar to pointer-like deferred solving) and retried in the main solver instead of erroring early,
   - `.` member access performs at most one implicit dereference step (`(*x).field` behavior),
   - `->` member access can chain implicit pointer-like dereference steps (with a safety cap) until lookup resolves,
-  - smart-pointer access tries direct member lookup on the current struct first, and only falls back to `__deref`/`__deref_mut` target lookup when direct lookup misses,
-  - all implicit deref hops used by member access and indexing are tracked in `SolvedTypes.implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
+- smart-pointer access tries direct member lookup on the current struct first, and only falls back to `__deref`/`__deref_mut` target lookup when direct lookup misses,
+- smart-deref steps now track an optional "source" pointer provenance (`PendingImplicitDeref.source: Option<CId>`): pointer-like hops keep/update it, while struct-smart-deref hops may clear it and rely on recorded receiver-chain pointers,
+- when a smart-deref hop needs `__deref_mut`, local inference now checks pointer mutability provenance (source pointer or most recent pointer-like chain receiver) and emits a hard error if the chain would require upgrading immutable to mutable,
+- all implicit deref hops used by member access and indexing are tracked in `SolvedTypes.implicit_derefs` so later IR lowering can materialize the exact implicit dereference chain,
 - for smart-deref struct hops, the chain records the full step path: pre-deref value type, synthesized self-reference input type (`&self`/`&mut self` shape), deref-method result pointer/reference type, then the pointee target,
   - if a field is not found, member methods are resolved from `program.member_methods`,
   - method access now supports implicit receiver currying: `obj.method` becomes a closure where `self` is already unified/applied when the first parameter is self-like (`self`, `&self`, `&mut self`),
@@ -453,6 +455,7 @@ Named function-set maps now store canonical `ValId` links (not duplicated full s
 - Assignment operators are now also deferred for operator-driven cases:
   - `a <op>= b` (`AssignOp::Bin`) is modeled as the same binary operator site as `a <op> b` with output constrained to `a`.
   - `++a` / `a++` / `--a` / `a--` are solved through assignment-op sites that (a) prefer dedicated overload names, then (b) fall back to `__add` / `__sub` with an implicit int-like rhs and output constrained to the target.
+  - all assignment forms now gate on mutable-place checks before operator resolution (`var`/`let mut` locals, mutable deref origins, mutable autoderef chains).
 - `unify_if_distinct` is the main operator-resolution merge primitive.
 - Builtin legality checks are tri-state (`true` / `false` / `unknown`) to avoid premature hard errors.
 - Builtin binary pointer arithmetic now supports raw pointers only: `*T` / `*const T` can do `ptr + int`, `int + ptr`, and `ptr - int` (result keeps pointer type), plus `ptr - ptr` (both operands must be compatible raw pointers, result is `isize`).
@@ -561,7 +564,7 @@ The refactoring goal was to reduce the number of arguments in internal helper fu
 ```
 InferState
 ├── ExternState   (store, program, errors, ans)
-├── SearchState   (val_cluster, pat_cluster, typedef_cluster, local_types, names)
+├── SearchState   (val_cluster, pat_cluster, typedef_cluster, local_types, names{name -> (cid, kind)}; kind -> derived Origin)
 ├── TypeState
 │   ├── TypeCore  (parent, cluster) - union-find
 │   └── TypeExtra (func_defs, struct_defs, struct_infers, tuple_infers)

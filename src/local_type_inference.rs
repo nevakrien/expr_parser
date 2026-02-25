@@ -6,6 +6,7 @@ use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
 use crate::ir::GenDec;
+use crate::ir::Pattern;
 use crate::ir::PatternSpan;
 use crate::ir::TExpId;
 use crate::ir::VarKind;
@@ -135,6 +136,8 @@ fn local_solver_fuzz(ctx: &mut InferState) {
             progress |= run_local_solver_pass(pass, ctx);
         }
 
+        progress |= resolve_pending_assign_target_mutabilities(ctx);
+
         if progress {
             continue;
         }
@@ -192,6 +195,7 @@ fn local_solver_stable(ctx: &mut InferState) {
         progress |= resolve_pending_int_accesses(ctx);
         progress |= resolve_pending_specializations(ctx);
         progress |= resolve_pending_derefs(ctx);
+        progress |= resolve_pending_assign_target_mutabilities(ctx);
 
         if progress {
             continue;
@@ -590,7 +594,7 @@ pub(crate) fn gather_constraints(
             c
         }
         Value::NameRef(n) => {
-            if let Some(base) = ctx.search.names.get_mut(&n) {
+            if let Some(base) = ctx.search.name_cluster_mut(n) {
                 //names might refer to something that us generic in the local scope...
                 //so this here is actually wrong for when users define local genric stuff
                 let c = ctx.types.root(*base);
@@ -834,8 +838,23 @@ pub(crate) fn gather_constraints(
         }
 
         Value::Assign { op, target } => {
-            let lhs = gather_constraints(ctx, target, current_output);
+            let (lhs, origin) = gather_constraints_with_origin(ctx, target, current_output);
             ctx.bind_val(v, lhs);
+
+            match check_assignment_target_mutability(ctx, target, origin) {
+                PlaceMutability::Mutable => {}
+                PlaceMutability::Pending => {
+                    ctx.req
+                        .pending_assign_target_mutabilities
+                        .push(PendingAssignTargetMutability { site: v, target });
+                }
+                PlaceMutability::Immutable(message) => {
+                    ctx.push_error(TypeError::Simple {
+                        loc: ctx.ex.program.value_loc(v),
+                        message,
+                    });
+                }
+            }
 
             match op {
                 AssignOp::Nothing(value) => {
@@ -1570,6 +1589,251 @@ pub(crate) fn gather_constraints(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaceMutability {
+    Mutable,
+    Pending,
+    Immutable(&'static str),
+}
+
+//TODO this needs to be part of gather_constraints
+//when we start talking about let(a,b)=1,2 or ither complex setups
+//this aproch breaks down
+fn gather_constraints_with_origin(
+    ctx: &mut InferState,
+    v: ValId,
+    current_output: Option<CId>,
+) -> (CId, Option<Origin>) {
+    let c = gather_constraints(ctx, v, current_output);
+    (c, value_origin(ctx, v))
+}
+
+fn value_origin(ctx: &mut InferState, value: ValId) -> Option<Origin> {
+    match ctx.ex.program.value(value) {
+        Value::NameRef(name) => ctx
+            .search
+            .name_binding(name)
+            .map(|(_, origin)| origin)
+            .or(Some(Origin::CantAddr)),
+        Value::Deref(base) => {
+            let base_cluster = ctx.search.value_cluster(base)?;
+            Some(Origin::DerefOf(ctx.types.root(base_cluster)))
+        }
+        _ => Some(Origin::CantAddr),
+    }
+}
+
+#[inline(always)]
+fn pointer_mutability_from_cluster(
+    ex: &ExternState,
+    types: &mut TypeState,
+    cid: CId,
+) -> Option<Option<bool>> {
+    let root = types.root(cid);
+    match types.cluster_state(root) {
+        ResolveKind::Ptr { mutable, .. } => Some(mutable),
+        ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
+            TypeValue::Ptr { mutable, .. } => Some(Some(*mutable)),
+            _ => None,
+        },
+        ResolveKind::Nothing => Some(None),
+        _ => None,
+    }
+}
+
+fn smart_deref_write_mutability(ctx: &mut InferState, value: ValId, cid: CId) -> PlaceMutability {
+    let root = ctx.types.root(cid);
+    let struct_name = match ctx.types.cluster_state(root) {
+        ResolveKind::Solved(ty) => match ctx.ex.store.type_value(ty) {
+            TypeValue::Struct { id, .. } => ctx.ex.store.struct_value(*id).name,
+            _ => return PlaceMutability::Immutable("cannot assign through immutable dereference"),
+        },
+        ResolveKind::Struct(rid) => {
+            let sid = ctx.types.struct_infer(rid).sid;
+            ctx.ex.store.struct_value(sid).name
+        }
+        ResolveKind::Nothing => return PlaceMutability::Pending,
+        _ => return PlaceMutability::Immutable("cannot assign through immutable dereference"),
+    };
+
+    let Some(struct_name) = struct_name else {
+        return PlaceMutability::Immutable("cannot assign through immutable dereference");
+    };
+
+    let Some(deref_style) = ctx
+        .ex
+        .store
+        .struct_overload_info(struct_name)
+        .and_then(|info| info.deref_style)
+    else {
+        return PlaceMutability::Immutable("cannot assign through immutable dereference");
+    };
+
+    if matches!(deref_style.mutable, Some(false)) {
+        return PlaceMutability::Immutable("cannot assign through immutable dereference");
+    }
+
+    check_place_mutability(ctx, value)
+}
+
+fn deref_source_write_mutability(ctx: &mut InferState, value: ValId) -> PlaceMutability {
+    let Some(base_cluster) = ctx.search.value_cluster(value) else {
+        return PlaceMutability::Pending;
+    };
+
+    if let Some(pointer_mutability) =
+        pointer_mutability_from_cluster(&ctx.ex, &mut ctx.types, base_cluster)
+    {
+        return match pointer_mutability {
+            Some(true) => PlaceMutability::Mutable,
+            Some(false) => {
+                PlaceMutability::Immutable("cannot assign through immutable dereference")
+            }
+            None => PlaceMutability::Pending,
+        };
+    }
+
+    smart_deref_write_mutability(ctx, value, base_cluster)
+}
+
+fn chain_write_mutability(
+    ex: &ExternState,
+    types: &mut TypeState,
+    chain: &[CId],
+) -> PlaceMutability {
+    let mut pending = false;
+    for &receiver in chain {
+        let Some(pointer_mutability) = pointer_mutability_from_cluster(ex, types, receiver) else {
+            continue;
+        };
+
+        match pointer_mutability {
+            Some(true) => {}
+            Some(false) => {
+                return PlaceMutability::Immutable(
+                    "assignment through `->` requires mutable dereference steps",
+                );
+            }
+            None => pending = true,
+        }
+    }
+
+    if pending {
+        PlaceMutability::Pending
+    } else {
+        PlaceMutability::Mutable
+    }
+}
+
+fn check_place_mutability(ctx: &mut InferState, target: ValId) -> PlaceMutability {
+    match ctx.ex.program.value(target) {
+        Value::NameRef(name) => match ctx.search.name_binding(name).map(|(_, origin)| origin) {
+            Some(Origin::Local(true)) => PlaceMutability::Mutable,
+            Some(Origin::Local(false)) => {
+                PlaceMutability::Immutable("cannot assign to an immutable local binding")
+            }
+            Some(Origin::CantAddr) | Some(Origin::Generic) | None => {
+                PlaceMutability::Immutable("assignment target is not a mutable place")
+            }
+            Some(Origin::DerefOf(_)) => {
+                PlaceMutability::Immutable("assignment target is not a mutable place")
+            }
+        },
+        Value::Deref(base) => deref_source_write_mutability(ctx, base),
+        Value::Access { base, kind, .. } | Value::IntAccess { base, kind, .. } => match kind {
+            AccessKind::Static => {
+                PlaceMutability::Immutable("assignment target is not a mutable place")
+            }
+            AccessKind::Dot => check_place_mutability(ctx, base),
+            AccessKind::Ptr => {
+                if let Some(site) = ctx
+                    .req
+                    .member_access_implicit_deref_sites
+                    .iter()
+                    .rev()
+                    .find(|site| site.site == target)
+                {
+                    let chain_state =
+                        chain_write_mutability(&ctx.ex, &mut ctx.types, &site.receivers);
+                    let receivers_empty = site.receivers.is_empty();
+                    if matches!(chain_state, PlaceMutability::Mutable) && receivers_empty {
+                        return check_place_mutability(ctx, base);
+                    }
+                    return chain_state;
+                }
+
+                if let Some(site) = ctx
+                    .req
+                    .index_implicit_deref_sites
+                    .iter()
+                    .rev()
+                    .find(|site| site.site == target)
+                {
+                    let chain_state =
+                        chain_write_mutability(&ctx.ex, &mut ctx.types, &site.receivers);
+                    let receivers_empty = site.receivers.is_empty();
+                    if matches!(chain_state, PlaceMutability::Mutable) && receivers_empty {
+                        return check_place_mutability(ctx, base);
+                    }
+                    return chain_state;
+                }
+
+                if ctx
+                    .req
+                    .pending_member_accesses
+                    .iter()
+                    .any(|pending| pending.site == target)
+                    || ctx
+                        .req
+                        .pending_int_accesses
+                        .iter()
+                        .any(|pending| pending.site == target)
+                {
+                    return PlaceMutability::Pending;
+                }
+
+                check_place_mutability(ctx, base)
+            }
+        },
+        _ => PlaceMutability::Immutable("assignment target is not a mutable place"),
+    }
+}
+
+#[inline(always)]
+fn check_assignment_target_mutability(
+    ctx: &mut InferState,
+    target: ValId,
+    origin: Option<Origin>,
+) -> PlaceMutability {
+    match origin {
+        Some(Origin::Local(is_mut_legal)) => {
+            if is_mut_legal {
+                PlaceMutability::Mutable
+            } else {
+                PlaceMutability::Immutable("cannot assign to an immutable local binding")
+            }
+        }
+        Some(Origin::DerefOf(cid)) => {
+            if let Some(pointer_mutability) =
+                pointer_mutability_from_cluster(&ctx.ex, &mut ctx.types, cid)
+            {
+                match pointer_mutability {
+                    Some(true) => PlaceMutability::Mutable,
+                    Some(false) => {
+                        PlaceMutability::Immutable("cannot assign through immutable dereference")
+                    }
+                    None => PlaceMutability::Pending,
+                }
+            } else {
+                check_place_mutability(ctx, target)
+            }
+        }
+        Some(Origin::CantAddr) | Some(Origin::Generic) | None => {
+            check_place_mutability(ctx, target)
+        }
+    }
+}
+
 fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -> CId {
     let Some(known_ty) = ctx
         .ex
@@ -1609,7 +1873,10 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         };
         ctx.bind_pat(pat, c);
         if let Some(name) = maybe_name {
-            ctx.search.names.insert(name, c);
+            let is_mut_legal =
+                matches!(ctx.ex.program.pattern(pat), Pattern::Bind(_, VarKind::Mut));
+            ctx.search
+                .insert_name(name, c, NameBindingKind::Local(is_mut_legal));
         }
     }
 
@@ -1631,7 +1898,8 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         let generic_cid = ctx.new_solved(generic_ty);
         if let Some(name) = maybe_name {
             ctx.search.local_types.insert(name, generic_cid);
-            ctx.search.names.insert(name, generic_cid);
+            ctx.search
+                .insert_name(name, generic_cid, NameBindingKind::Generic);
         }
     }
 
@@ -1990,44 +2258,6 @@ fn resolve_any_type_builtin_member_access(
         }
     }
 }
-fn resolve_struct_deref_method(
-    ex: &mut ExternState,
-    types: &mut TypeState,
-    site: ValId,
-    method_site: ValId,
-    mutable: bool,
-) -> Option<ResolvedStructDerefMethod> {
-    let method_ty = ex.ans.function_types_by_value(method_site)?.ty;
-    let method_local = solved_type_to_specialized_local(ex, types, method_ty, site);
-
-    let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
-        unreachable!("specialized deref method must resolve to a function shape");
-    };
-
-    let self_param = params.first().copied()?;
-    debug_assert_eq!(params.len(), 1);
-
-    let (_, self_kind, _self_mutable) = ptr_parts_from_cluster(ex, types, self_param)?;
-    if matches!(self_kind.is_fancy(), Some(false)) {
-        return None;
-    }
-
-    let (target, ret_kind, _ret_mutable) = ptr_parts_from_cluster(ex, types, ret)?;
-    if matches!(ret_kind.is_fancy(), Some(false)) {
-        return None;
-    }
-
-    Some(ResolvedStructDerefMethod {
-        deref_site: (!mutable).then_some(method_site),
-        deref_mut_site: mutable.then_some(method_site),
-        mutable: Some(mutable),
-        self_param,
-        self_kind,
-        target,
-        ret_kind,
-    })
-}
-
 fn resolve_struct_deref_target(
     ex: &mut ExternState,
     types: &mut TypeState,
@@ -2035,118 +2265,124 @@ fn resolve_struct_deref_target(
     base_value: ValId,
     base_cluster: CId,
     struct_name: NameId,
-) -> Option<ResolvedStructDerefTarget> {
-    let deref = ex
+) -> Option<ResolvedStructDerefMethod> {
+    let cached = ex
         .store
         .struct_overload_info(struct_name)
         .and_then(|info| info.deref_style)?;
 
-    let deref_resolved = deref
-        .deref_site
-        .and_then(|method_site| resolve_struct_deref_method(ex, types, site, method_site, false));
-    let deref_mut_resolved = deref
-        .deref_mut_site
-        .and_then(|method_site| resolve_struct_deref_method(ex, types, site, method_site, true));
+    //try resolve the first function we can it should give us the info we need
+    //this is a somewhat hacky solution it relies on the invraince of deref and deref_mut being the same
+    //we will construct this ghost call that wont be listed anywhere
 
-    let resolved = match (deref_resolved, deref_mut_resolved) {
-        (Some(x), Some(y)) => {
-            if let Err(clash) = types.unify(ex, x.target, y.target) {
-                ex.push_error(TypeError::ValuesContradict {
-                    expectation_reason:
-                        "`__deref` and `__deref_mut` must dereference to compatible target types",
-                    site,
-                    found: base_value,
-                    expected_place: site,
-                    clash,
-                });
-                return None;
-            }
-            x
+    let mut resolve_from_site = |types: &mut TypeState, method_site: ValId, mutable: bool| {
+        let method_ty = ex.ans.function_types_by_value(method_site)?.ty;
+        let method_local = solved_type_to_specialized_local(ex, types, method_ty, site);
+        let (params, ret) = function_parts_from_cluster(ex, types, method_local)?;
+        let self_ptr = params.first().copied()?;
+        if params.len() != 1 {
+            return None;
         }
-        (Some(x), None) => x,
-        (None, Some(y)) => y,
-        (None, None) => return None,
+
+        let (self_param, self_kind, _) = ptr_parts_from_cluster(ex, types, self_ptr)?;
+        if matches!(self_kind.is_fancy(), Some(false)) {
+            return None;
+        }
+
+        let target_ptr = ret;
+        let (target, ret_kind, _) = ptr_parts_from_cluster(ex, types, ret)?;
+        if matches!(ret_kind.is_fancy(), Some(false)) {
+            return None;
+        }
+
+        Some(ResolvedStructDerefMethod {
+            deref_site: (!mutable).then_some(method_site),
+            deref_mut_site: mutable.then_some(method_site),
+            mutable: Some(mutable),
+            self_ptr,
+            self_param,
+            self_kind,
+            target_ptr,
+            target,
+            ret_kind,
+        })
     };
 
-    let self_kind = resolved.self_kind;
-    let ret_kind = resolved.ret_kind;
-    let fallback_mutable = deref.mutable;
+    let mut try_site = |site: Option<_>, is_mut| {
+        site.and_then(|method_site| resolve_from_site(types, method_site, is_mut))
+    };
 
-    let receiver_input = types.new_cluster();
+    let resolved =
+        try_site(cached.deref_site, false).or_else(|| try_site(cached.deref_mut_site, true))?;
+
+    if let Err(clash) = unify_if_distinct(ex, types, resolved.self_param, base_cluster) {
+        ex.push_error(TypeError::ValuesContradict {
+            expectation_reason: "deref receiver must match special deref method self parameter",
+            site,
+            found: base_value,
+            expected_place: site,
+            clash,
+        });
+        return None;
+    }
+
+    let self_ptr = types.new_cluster();
     types.set_cluster_state(
-        receiver_input,
+        self_ptr,
         ResolveKind::Ptr {
             tgt: base_cluster,
-            kind: self_kind,
-            mutable: fallback_mutable,
+            kind: resolved.self_kind,
+            mutable: cached.mutable,
         },
     );
 
-    let mut unify_receiver = |expected_self: CId| {
-        let adapted_receiver = types.new_cluster();
-        let expected_mutable = ptr_parts_from_cluster(ex, types, expected_self).and_then(|x| x.2);
-        types.set_cluster_state(
-            adapted_receiver,
-            ResolveKind::Ptr {
-                tgt: base_cluster,
-                kind: self_kind,
-                mutable: expected_mutable,
-            },
-        );
-        unify_if_distinct(ex, types, expected_self, adapted_receiver)
-    };
-
-    if let Some(deref_method) = deref_resolved
-        && let Err(clash) = unify_receiver(deref_method.self_param)
-    {
-        ex.push_error(TypeError::ValuesContradict {
-            expectation_reason: "deref receiver must match special deref method self parameter",
-            site,
-            found: base_value,
-            expected_place: site,
-            clash,
-        });
-        return None;
-    }
-
-    if let Some(deref_mut_method) = deref_mut_resolved
-        && let Err(clash) = unify_receiver(deref_mut_method.self_param)
-    {
-        ex.push_error(TypeError::ValuesContradict {
-            expectation_reason: "deref receiver must match special deref method self parameter",
-            site,
-            found: base_value,
-            expected_place: site,
-            clash,
-        });
-        return None;
-    }
-
-    let deref_result_ptr = types.new_cluster();
-    // this will cause infrence to assume immute in many cases even though thats not really true.
-    // that bug will be fixed once we introduce places and mutability constraints over *p=_ expressions.
+    let target_ptr = types.new_cluster();
     types.set_cluster_state(
-        deref_result_ptr,
+        target_ptr,
         ResolveKind::Ptr {
             tgt: resolved.target,
-            kind: ret_kind,
-            mutable: fallback_mutable,
+            kind: resolved.ret_kind,
+            mutable: cached.mutable,
         },
     );
 
-    Some(ResolvedStructDerefTarget {
+    Some(ResolvedStructDerefMethod {
+        deref_site: cached.deref_site,
+        deref_mut_site: cached.deref_mut_site,
+        mutable: cached.mutable,
+        self_ptr,
+        self_param: resolved.self_param,
+        self_kind: resolved.self_kind,
+        target_ptr,
         target: resolved.target,
-        deref_receiver_ptr: receiver_input,
-        deref_result_ptr,
+        ret_kind: resolved.ret_kind,
     })
 }
 
 impl PendingImplicitDeref {
     #[inline(always)]
     fn sync_roots(&mut self, types: &mut TypeState) -> CId {
-        self.source = types.root(self.source);
+        if let Some(source) = self.source {
+            self.source = Some(types.root(source));
+        }
         self.current = types.root(self.current);
         self.current
+    }
+
+    #[inline(always)]
+    fn mutability_source_from_chain(
+        &self,
+        ex: &ExternState,
+        types: &mut TypeState,
+    ) -> Option<Option<bool>> {
+        if let Some(source) = self.source {
+            return pointer_mutability_from_cluster(ex, types, source);
+        }
+
+        self.implicit_receivers
+            .iter()
+            .rev()
+            .find_map(|&receiver| pointer_mutability_from_cluster(ex, types, receiver))
     }
 
     #[inline(always)]
@@ -2171,7 +2407,54 @@ impl PendingImplicitDeref {
                 }
 
                 self.implicit_receivers.push(current);
+                self.source = Some(self.current);
                 self.current = types.root(tgt);
+                Ok(ImplicitDerefStep::Stepped)
+            }
+
+            ResolveKind::Struct(rid) => {
+                if self.implicit_receivers.len() >= max_implicit_deref_steps {
+                    return Err(TypeError::Simple {
+                        loc: ex.program.value_loc(self.site),
+                        message: implicit_deref_limit_message,
+                    });
+                }
+
+                let sid = types.extra.struct_infers[rid.0].sid;
+                let Some(struct_name) = ex.store.struct_value(sid).name else {
+                    return Ok(ImplicitDerefStep::Done);
+                };
+
+                let Some(target) = resolve_struct_deref_target(
+                    ex,
+                    types,
+                    self.site,
+                    self.base_value,
+                    current,
+                    struct_name,
+                ) else {
+                    return Ok(ImplicitDerefStep::Done);
+                };
+
+                if matches!(target.mutable, Some(true)) {
+                    match self.mutability_source_from_chain(ex, types) {
+                        Some(Some(true)) => {}
+                        Some(Some(false)) => {
+                            return Err(TypeError::Simple {
+                                loc: ex.program.value_loc(self.site),
+                                message: "implicit `__deref_mut` step requires mutable source",
+                            });
+                        }
+                        Some(None) => return Ok(ImplicitDerefStep::Pending),
+                        None => {}
+                    }
+                }
+
+                self.implicit_receivers.push(current);
+                self.implicit_receivers.push(target.self_ptr);
+                self.implicit_receivers.push(target.target_ptr);
+                self.source = None;
+                self.current = types.root(target.target);
                 Ok(ImplicitDerefStep::Stepped)
             }
 
@@ -2185,6 +2468,8 @@ impl PendingImplicitDeref {
                     }
 
                     self.implicit_receivers.push(current);
+                    self.source = Some(self.current);
+
                     let c = types.new_solved(*tgt);
                     self.current = types.root(c);
                     Ok(ImplicitDerefStep::Stepped)
@@ -2213,46 +2498,30 @@ impl PendingImplicitDeref {
                         return Ok(ImplicitDerefStep::Done);
                     };
 
+                    if matches!(target.mutable, Some(true)) {
+                        match self.mutability_source_from_chain(ex, types) {
+                            Some(Some(true)) => {}
+                            Some(Some(false)) => {
+                                return Err(TypeError::Simple {
+                                    loc: ex.program.value_loc(self.site),
+                                    message: "implicit `__deref_mut` step requires mutable source",
+                                });
+                            }
+                            Some(None) => return Ok(ImplicitDerefStep::Pending),
+                            None => {}
+                        }
+                    }
+
                     self.implicit_receivers.push(current);
-                    self.implicit_receivers.push(target.deref_receiver_ptr);
-                    self.implicit_receivers.push(target.deref_result_ptr);
+                    self.implicit_receivers.push(target.self_ptr);
+                    self.implicit_receivers.push(target.target_ptr);
+                    self.source = None;
                     self.current = types.root(target.target);
                     Ok(ImplicitDerefStep::Stepped)
                 }
 
                 _ => Ok(ImplicitDerefStep::Done),
             },
-
-            ResolveKind::Struct(rid) => {
-                if self.implicit_receivers.len() >= max_implicit_deref_steps {
-                    return Err(TypeError::Simple {
-                        loc: ex.program.value_loc(self.site),
-                        message: implicit_deref_limit_message,
-                    });
-                }
-
-                let sid = types.extra.struct_infers[rid.0].sid;
-                let Some(struct_name) = ex.store.struct_value(sid).name else {
-                    return Ok(ImplicitDerefStep::Done);
-                };
-
-                let Some(target) = resolve_struct_deref_target(
-                    ex,
-                    types,
-                    self.site,
-                    self.base_value,
-                    current,
-                    struct_name,
-                ) else {
-                    return Ok(ImplicitDerefStep::Done);
-                };
-
-                self.implicit_receivers.push(current);
-                self.implicit_receivers.push(target.deref_receiver_ptr);
-                self.implicit_receivers.push(target.deref_result_ptr);
-                self.current = types.root(target.target);
-                Ok(ImplicitDerefStep::Stepped)
-            }
 
             _ => Ok(ImplicitDerefStep::Done),
         }
@@ -3439,6 +3708,27 @@ pub(crate) fn resolve_pending_derefs(ctx: &mut InferState) -> bool {
         progress |= outcome.progress;
         outcome.retain
     });
+
+    progress
+}
+
+#[inline(always)]
+pub(crate) fn resolve_pending_assign_target_mutabilities(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+
+    let pending = std::mem::take(&mut ctx.req.pending_assign_target_mutabilities);
+    for check in pending {
+        let origin = value_origin(ctx, check.target);
+        match check_assignment_target_mutability(ctx, check.target, origin) {
+            PlaceMutability::Mutable => {}
+            PlaceMutability::Pending => ctx.req.pending_assign_target_mutabilities.push(check),
+            PlaceMutability::Immutable(message) => {
+                let loc = ctx.ex.program.value_loc(check.site);
+                ctx.push_error(TypeError::Simple { loc, message });
+                progress = true;
+            }
+        }
+    }
 
     progress
 }

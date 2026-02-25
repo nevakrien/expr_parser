@@ -412,7 +412,7 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
             }
             let t = ctx.ex.store.intern(TypeValue::Generic(id));
             let c = ctx.new_solved(t);
-            ctx.search.names.insert(n, c);
+            ctx.search.insert_name(n, c, NameBindingKind::Generic);
             ctx.search.local_types.insert(n, c);
             ctx.bind_pat(p, c);
             c
@@ -1749,29 +1749,7 @@ fn validate_and_insert_member_overload(
 
         if valid {
             pending_deref_methods.deref = Some((method_ty, method_site));
-            let entry = info.deref_style.get_or_insert(ResolvedStructDerefMethod {
-                deref_site: None,
-                deref_mut_site: None,
-                mutable: None,
-                self_param: CId(0),
-                self_kind: PtrKind::Unknown,
-                target: CId(0),
-                ret_kind: PtrKind::Unknown,
-            });
-            if let Some(existing_site) = entry.deref_site {
-                assert_eq!(
-                    existing_site, method_site,
-                    "global deref overload entry unexpectedly changed for same struct"
-                );
-            } else {
-                entry.deref_site = Some(method_site);
-            }
-            entry.mutable = match (entry.deref_site.is_some(), entry.deref_mut_site.is_some()) {
-                (true, true) => None,
-                (true, false) => Some(false),
-                (false, true) => Some(true),
-                (false, false) => None,
-            };
+            update_cached_deref_site_if_present(ctx, info, method_ty, method_site, false);
             check_inserted_deref_pair_compatible(ctx, pending_deref_methods, method_site);
         }
         return;
@@ -1806,29 +1784,7 @@ fn validate_and_insert_member_overload(
 
         if valid {
             pending_deref_methods.deref_mut = Some((method_ty, method_site));
-            let entry = info.deref_style.get_or_insert(ResolvedStructDerefMethod {
-                deref_site: None,
-                deref_mut_site: None,
-                mutable: None,
-                self_param: CId(0),
-                self_kind: PtrKind::Unknown,
-                target: CId(0),
-                ret_kind: PtrKind::Unknown,
-            });
-            if let Some(existing_site) = entry.deref_mut_site {
-                assert_eq!(
-                    existing_site, method_site,
-                    "global deref overload entry unexpectedly changed for same struct"
-                );
-            } else {
-                entry.deref_mut_site = Some(method_site);
-            }
-            entry.mutable = match (entry.deref_site.is_some(), entry.deref_mut_site.is_some()) {
-                (true, true) => None,
-                (true, false) => Some(false),
-                (false, true) => Some(true),
-                (false, false) => None,
-            };
+            update_cached_deref_site_if_present(ctx, info, method_ty, method_site, true);
             check_inserted_deref_pair_compatible(ctx, pending_deref_methods, method_site);
         }
         return;
@@ -1910,6 +1866,76 @@ fn validate_and_insert_member_overload(
         method_site,
         method_name,
     });
+}
+
+#[inline(always)]
+fn update_cached_deref_site_if_present(
+    ctx: &mut InferState,
+    info: &mut StructOverloadInfo,
+    method_ty: TypeId,
+    method_site: ValId,
+    mutable: bool,
+) {
+    let entry = info.deref_style.get_or_insert_with(|| {
+        resolved_deref_style_for_method(ctx, method_ty, method_site, mutable)
+    });
+
+    let site_slot = if mutable {
+        &mut entry.deref_mut_site
+    } else {
+        &mut entry.deref_site
+    };
+
+    if let Some(existing_site) = *site_slot {
+        assert_eq!(
+            existing_site, method_site,
+            "global deref overload entry unexpectedly changed for same struct"
+        );
+    } else {
+        *site_slot = Some(method_site);
+    }
+
+    entry.mutable = match (entry.deref_site.is_some(), entry.deref_mut_site.is_some()) {
+        (true, true) => None,
+        (true, false) => Some(false),
+        (false, true) => Some(true),
+        (false, false) => None,
+    };
+}
+
+#[inline(always)]
+fn resolved_deref_style_for_method(
+    ctx: &mut InferState,
+    method_ty: TypeId,
+    method_site: ValId,
+    mutable: bool,
+) -> ResolvedStructDerefMethod {
+    let (inputs, output) = method_signature_type_parts(ctx.ex.store, method_ty)
+        .expect("validated deref method must have function signature type");
+    let self_ty = *inputs
+        .first()
+        .expect("validated deref method must have self parameter");
+
+    let (self_param_ty, self_style) = match ctx.ex.store.type_value(self_ty) {
+        TypeValue::Ptr { tgt, style, .. } => (*tgt, *style),
+        _ => unreachable!("validated deref method self must be pointer-like"),
+    };
+    let (target_ty, ret_style) = match ctx.ex.store.type_value(output) {
+        TypeValue::Ptr { tgt, style, .. } => (*tgt, *style),
+        _ => unreachable!("validated deref method return must be pointer-like"),
+    };
+
+    ResolvedStructDerefMethod {
+        deref_site: (!mutable).then_some(method_site),
+        deref_mut_site: mutable.then_some(method_site),
+        mutable: Some(mutable),
+        self_ptr: ctx.new_solved(self_ty),
+        self_param: ctx.new_solved(self_param_ty),
+        self_kind: PtrKind::Solved(self_style),
+        target_ptr: ctx.new_solved(output),
+        target: ctx.new_solved(target_ty),
+        ret_kind: PtrKind::Solved(ret_style),
+    }
 }
 
 fn check_inserted_deref_pair_compatible(

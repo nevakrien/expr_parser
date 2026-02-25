@@ -1698,6 +1698,20 @@ pub(crate) enum AssignIncDecFlavor {
     PostDec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    Generic,
+    CantAddr,
+    Local(bool),
+    DerefOf(CId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameBindingKind {
+    Generic,
+    Local(bool),
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AssignPrePostSite {
     pub(crate) loc: ValId,
@@ -1705,6 +1719,12 @@ pub(crate) struct AssignPrePostSite {
     pub(crate) target: CId,
     pub(crate) implicit_rhs: CId,
     pub(crate) flavor: AssignIncDecFlavor,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PendingAssignTargetMutability {
+    pub(crate) site: ValId,
+    pub(crate) target: ValId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1758,7 +1778,7 @@ impl PendingMemberAccess {
 pub(crate) struct PendingImplicitDeref {
     pub(crate) site: ValId,
     pub(crate) base_value: ValId,
-    pub(crate) source: CId,
+    pub(crate) source: Option<CId>,
     pub(crate) current: CId,
     pub(crate) implicit_receivers: Vec<CId>,
 }
@@ -1771,7 +1791,7 @@ impl PendingImplicitDeref {
         Self {
             site,
             base_value,
-            source,
+            source: Some(source),
             // CRITICAL: start cursor here
             current: source,
             implicit_receivers: Vec::new(),
@@ -1939,7 +1959,7 @@ pub(crate) struct SearchState {
     pub(crate) pat_cluster: Vec<(PatId, CId)>,
     pub(crate) typedef_cluster: Vec<(TExpId, CId)>,
     pub(crate) local_types: IdHashMap<NameId, CId>,
-    pub(crate) names: IdHashMap<NameId, CId>,
+    pub(crate) names: IdHashMap<NameId, (CId, NameBindingKind)>,
     pub(crate) local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
 }
 
@@ -1989,6 +2009,31 @@ impl SearchState {
 
     pub(crate) fn bind_pat(&mut self, p: PatId, c: CId) {
         self.pat_cluster.push((p, c));
+    }
+
+    pub(crate) fn insert_name(&mut self, name: NameId, cluster: CId, kind: NameBindingKind) {
+        self.names.insert(name, (cluster, kind));
+    }
+
+    pub(crate) fn name_binding(&self, name: NameId) -> Option<(CId, Origin)> {
+        self.names.get(&name).copied().map(|(cid, kind)| {
+            let origin = match kind {
+                NameBindingKind::Generic => Origin::Generic,
+                NameBindingKind::Local(mutable) => Origin::Local(mutable),
+            };
+            (cid, origin)
+        })
+    }
+
+    pub(crate) fn name_cluster_mut(&mut self, name: NameId) -> Option<&mut CId> {
+        self.names.get_mut(&name).map(|(cid, _)| cid)
+    }
+
+    pub(crate) fn value_cluster(&mut self, value: ValId) -> Option<CId> {
+        self.val_cluster
+            .iter()
+            .rev()
+            .find_map(|(v, c)| (*v == value).then_some(*c))
     }
 }
 
@@ -2291,6 +2336,7 @@ pub(crate) struct ReqState {
     pub(crate) pending_int_accesses: Vec<PendingIntAccess>,
     pub(crate) pending_indexes: Vec<PendingIndex>,
     pub(crate) pending_derefs: Vec<PendingDeref>,
+    pub(crate) pending_assign_target_mutabilities: Vec<PendingAssignTargetMutability>,
 }
 
 impl ReqState {
@@ -2309,6 +2355,7 @@ impl ReqState {
             pending_int_accesses: Vec::new(),
             pending_indexes: Vec::new(),
             pending_derefs: Vec::new(),
+            pending_assign_target_mutabilities: Vec::new(),
         }
     }
 
@@ -2326,6 +2373,7 @@ impl ReqState {
             pending_int_accesses,
             pending_indexes,
             pending_derefs,
+            pending_assign_target_mutabilities,
         } = self;
 
         *owner = None;
@@ -2341,6 +2389,7 @@ impl ReqState {
         pending_int_accesses.clear();
         pending_indexes.clear();
         pending_derefs.clear();
+        pending_assign_target_mutabilities.clear();
     }
 }
 
@@ -4085,18 +4134,20 @@ pub(crate) struct ResolvedStructDerefMethod {
 
     pub(crate) mutable: Option<bool>,
 
+    pub(crate) self_ptr: CId,
     pub(crate) self_param: CId,
     pub(crate) self_kind: PtrKind,
+    pub(crate) target_ptr: CId,
     pub(crate) target: CId,
     pub(crate) ret_kind: PtrKind,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ResolvedStructDerefTarget {
-    pub(crate) target: CId,
-    pub(crate) deref_receiver_ptr: CId,
-    pub(crate) deref_result_ptr: CId,
-}
+// #[derive(Debug, Clone, Copy)]
+// pub(crate) struct ResolvedStructDerefTarget {
+//     pub(crate) target: CId,
+//     pub(crate) deref_receiver_ptr: CId,
+//     pub(crate) deref_result_ptr: CId,
+// }
 
 #[derive(Debug)]
 pub(crate) enum MemberAccessResolve {
@@ -4105,7 +4156,7 @@ pub(crate) enum MemberAccessResolve {
         implicit_receivers: Vec<CId>,
     },
     Pending {
-        source: CId,
+        source: Option<CId>,
     },
     Error(TypeError),
 }
@@ -4181,9 +4232,11 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             ctx.bind_pat(p, c);
             (c, None)
         }
-        Pattern::Bind(n, _) => {
+        Pattern::Bind(n, kind) => {
             let c = ctx.new_cluster();
-            ctx.search.names.insert(n, c);
+            let is_mut_legal = matches!(kind, VarKind::Mut);
+            ctx.search
+                .insert_name(n, c, NameBindingKind::Local(is_mut_legal));
             ctx.bind_pat(p, c);
             (c, Some(n))
         }
@@ -5990,7 +6043,7 @@ mod type_infer_tests {
         assert_fn_type!(
             r#"
             f = fn() {
-                let z = 0:int;
+                var z = 0:int;
                 let x: bool = true;
                 while x {
                     z = z + if x { 1 } else { 2 }
@@ -6008,7 +6061,7 @@ mod type_infer_tests {
             r#"
             f = fn() {
                 let keep_going: bool = true;
-                let z: int = 0;
+                var z: int = 0;
                 while keep_going {
                     z = z + if keep_going { 1:int } else { break }
                 }
@@ -6026,7 +6079,7 @@ mod type_infer_tests {
             r#"
             f = fn() {
                 let keep_going: bool = true;
-                let z: int = 0;
+                var z: int = 0;
                 while keep_going {
                     let step = if keep_going {
                         if keep_going { 2:int } else { continue }
@@ -6490,7 +6543,7 @@ mod type_infer_tests {
 
     #[test]
     fn compound_assignment_reuses_binary_operator_resolution() {
-        let src = "S=struct{}; S.__add = fn(self:S, rhs:int)->S { self }; f=fn(){ let s = S{}; s += 1:int; };";
+        let src = "S=struct{}; S.__add = fn(self:S, rhs:int)->S { self }; f=fn(){ var s = S{}; s += 1:int; };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -6502,7 +6555,7 @@ mod type_infer_tests {
 
     #[test]
     fn inc_dec_assign_falls_back_to_add_sub_overloads_with_implicit_int_rhs() {
-        let src = "S=struct{}; S.__add = fn(self:S, rhs:usize)->S { self }; S.__sub = fn(self:S, rhs:int)->S { self }; f=fn(){ let s = S{}; ++s; s--; --s; s++; };";
+        let src = "S=struct{}; S.__add = fn(self:S, rhs:usize)->S { self }; S.__sub = fn(self:S, rhs:int)->S { self }; f=fn(){ var s = S{}; ++s; s--; --s; s++; };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -6514,7 +6567,7 @@ mod type_infer_tests {
 
     #[test]
     fn inc_dec_assign_can_use_dedicated_pre_post_overloads() {
-        let src = "S=struct{}; S.__pre_inc = fn(self:S)->S { self }; S.__post_inc = fn(self:S)->S { self }; S.__pre_dec = fn(self:S)->S { self }; S.__post_dec = fn(self:S)->S { self }; f=fn(){ let s = S{}; ++s; s++; --s; s--; };";
+        let src = "S=struct{}; S.__pre_inc = fn(self:S)->S { self }; S.__post_inc = fn(self:S)->S { self }; S.__pre_dec = fn(self:S)->S { self }; S.__post_dec = fn(self:S)->S { self }; f=fn(){ var s = S{}; ++s; s++; --s; s--; };";
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -7442,7 +7495,7 @@ mod type_infer_tests {
             S.__deref = fn(self:&S)->&int { &*self.p };
             f=fn(){
                 let x = 0:int;
-                let y = x as _;
+                var y = x as _;
                 let r = *y;
                 y = S{&x};
                 r
@@ -7485,6 +7538,95 @@ mod type_infer_tests {
             store.type_value(body_ty),
             TypeValue::Builtin(BuiltinType::Int)
         ));
+    }
+
+    #[test]
+    fn assignment_through_shared_reference_is_rejected() {
+        assert_fn_body_simple_error(
+            "f=fn(){ let x:int = 0; let p:&int = &x; *p = 2:int; }",
+            "cannot assign through immutable dereference",
+        );
+    }
+
+    #[test]
+    fn ptr_member_assignment_allows_chain_with_mutable_deref_hop() {
+        let src = "C=struct{x:int}; B=struct{c:C}; A=struct{b:B}; A.__deref_mut = fn(self:&mut A)->&mut B; B.__deref_mut = fn(self:&mut B)->&mut C; f=fn(a:A){ a->x = 2:int; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn ptr_member_assignment_rejects_chain_with_immutable_deref_hop() {
+        let src = "C=struct{x:int}; B=struct{c:C}; A=struct{b:B}; A.__deref = fn(self:&A)->&B; B.__deref_mut = fn(self:&mut B)->&mut C; f=fn(a:A){ a->x = 2:int; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected ptr member assignment through shared deref chain to fail"),
+            Err(errs) => errs,
+        };
+
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple { message, .. }
+                if *message == "implicit `__deref_mut` step requires mutable source"
+            )
+        }));
+    }
+
+    #[test]
+    fn ptr_member_method_call_rejects_chain_with_immutable_deref_hop() {
+        let src = "C=struct{x:int}; C.bump = fn(self:&mut C)->int { self.x }; B=struct{c:C}; A=struct{b:B}; A.__deref = fn(self:&A)->&B; B.__deref_mut = fn(self:&mut B)->&mut C; f=fn(a:&A){ let out:int = a->bump(); };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected ptr member method call through shared deref chain to fail"),
+            Err(errs) => errs,
+        };
+
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple { message, .. }
+                if *message == "implicit `__deref_mut` step requires mutable source"
+            )
+        }));
+    }
+
+    #[test]
+    fn pending_ptr_member_method_call_rejects_immutable_to_mut_hop_after_type_is_known() {
+        let src = "C=struct{x:int}; C.bump = fn(self:&mut C)->int { self.x }; B=struct{c:C}; A=struct{b:B}; A.__deref = fn(self:&A)->&B; B.__deref_mut = fn(self:&mut B)->&mut C; f=fn(seed:A){ let v = seed as _; let out:int = v->bump(); v:A; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => {
+                panic!(
+                    "expected deferred ptr member method call through shared deref chain to fail"
+                )
+            }
+            Err(errs) => errs,
+        };
+
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple { message, .. }
+                if *message == "implicit `__deref_mut` step requires mutable source"
+            )
+        }));
     }
 
     #[test]

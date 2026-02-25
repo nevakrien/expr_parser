@@ -8,26 +8,26 @@ use expr_parser::type_inference::run_typechecker;
 // S.__deref_mut = fn(s:&mut S)-> &'raw int {&s.x}
 // S.__deref = fn(s:&S)-> &int {&s.x}
 // "#;
-// const SOURCE: &str = r#"
-// Wrapper = struct {baba:[int;1]};
-// Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.baba[0]}
+const SOURCE: &str = r#"
+Wrapper = struct {baba:[int;1]};
+Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.baba[0]}
 
-// Unsafe = struct { inner: &'raw Wrapper };
-// Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
+Unsafe = struct { inner: &'raw Wrapper };
+Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
 
-// RawCalc = struct { inner: &'raw Unsafe };
-// RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
+RawCalc = struct { inner: &'raw Unsafe };
+RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
 
-// Raw = struct { inner: &'static mut RawCalc };
-// Raw.__deref_mut = fn(self: &mut Raw) -> &'static mut RawCalc { self.inner };
+Raw = struct { inner: &'static mut RawCalc };
+Raw.__deref_mut = fn(self: &mut Raw) -> &'static mut RawCalc { self.inner };
 
-// Safe = struct { inner: &'raw Raw };
-// Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
+Safe = struct { inner: &'raw Raw };
+Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
 
-// f = fn(s: &mut Safe) {
-//     let out : &mut int = s->get();
-//     let arr : [int;1] = s->baba;
-// };
+f = fn(s: &mut Safe) {
+    let out : &mut int = s->get();
+    let arr : [int;1] = s->baba;
+};
 // "#;
 // const SOURCE: &str = r#"
 // sqrt = fn(f:float)->float;
@@ -43,29 +43,29 @@ use expr_parser::type_inference::run_typechecker;
 // f=fn(p1:Point,p2:Point)->Point {p1+p2}
 // "#;
 
-const SOURCE: &str = r#"
-Box = struct[T]{ptr:&'raw T};
+// const SOURCE: &str = r#"
+// Box = struct[T]{ptr:&'raw T};
 
-free = cfn(p:*void);
-no_fail_alloc = cfn(s:usize)->*void;
-Box.new = fn[T](x:T)->Box[T] {
-  let p=no_fail_alloc(x.__size_of());
-  Box{p as &'raw _}
-}
-Box.__free = fn[T](b:&mut Box[T]){
-(*b.ptr).__free()
-free(b->ptr as *void)
-}
+// free = cfn(p:*void);
+// no_fail_alloc = cfn(s:usize)->*void;
+// Box.new = fn[T](x:T)->Box[T] {
+//   let p=no_fail_alloc(x.__size_of());
+//   Box{p as &'raw _}
+// }
+// Box.__free = fn[T](b:&mut Box[T]){
+// (*b.ptr).__free()
+// free(b->ptr as *void)
+// }
 
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+// Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+// Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
 
-S=struct{x:bool};
+// S=struct{x:bool};
 
-f=fn(b:&mut Box[Box[S]])->&mut bool { 
-    &mut b->x
-};
-"#;
+// f=fn(b:&mut Box[Box[S]])->&mut bool {
+//     &mut b->x
+// };
+// "#;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Running debug pipeline");
