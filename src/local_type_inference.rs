@@ -10,6 +10,8 @@ use crate::ir::PatternSpan;
 use crate::ir::TExpId;
 use crate::ir::VarKind;
 use crate::ir::{AssignOp, BinOp, Dir, Literal, NameId, UnOp, ValId, Value};
+#[cfg(feature = "solver_order_fuzz")]
+use crate::local_solver_order::{LocalSolverPass, SolverOrderPlanner};
 use crate::program::{Defined, Program};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
@@ -107,7 +109,20 @@ pub fn infer_value_internals<'a>(
     }
 }
 
+#[cfg(feature = "solver_order_fuzz")]
 pub fn local_solver(ctx: &mut InferState) {
+    local_solver_fuzz(ctx);
+}
+
+#[cfg(not(feature = "solver_order_fuzz"))]
+pub fn local_solver(ctx: &mut InferState) {
+    local_solver_stable(ctx);
+}
+
+#[cfg(feature = "solver_order_fuzz")]
+fn local_solver_fuzz(ctx: &mut InferState) {
+    let mut order_planner = SolverOrderPlanner::new();
+
     //this loop only exists once ALL requirments have checked and didnt complain
     //on the state we are gona release. since there was no change
     //this is SUPER important because they are not just progressions
@@ -115,21 +130,18 @@ pub fn local_solver(ctx: &mut InferState) {
 
     loop {
         let mut progress = false;
-        progress |= resolve_operator_types(ctx);
-        // progress |= resolve_deferred_types(ctx);
-        progress |= resolve_pending_indexes(ctx);
-        progress |= resolve_pending_member_accesses(ctx);
-        progress |= resolve_pending_int_accesses(ctx);
-        progress |= resolve_pending_specializations(ctx);
-        progress |= resolve_pending_derefs(ctx);
+
+        for pass in order_planner.primary_pass_order() {
+            progress |= run_local_solver_pass(pass, ctx);
+        }
 
         if progress {
             continue;
         }
 
-        // if  resolve_deferred_types(ctx) {
-        //     continue;
-        // }
+        if order_planner.resolve_deferred_on_stall() && resolve_deferred_types(ctx) {
+            continue;
+        }
 
         //ORDER SENSATIVE semi hacks
         //these are all assuming defualts on the type system
@@ -149,13 +161,81 @@ pub fn local_solver(ctx: &mut InferState) {
 
         break;
     }
-    full_resolve_defered_types(ctx);
+
+    if order_planner.use_iterative_deferred_finalize() {
+        while resolve_deferred_types(ctx) {}
+    } else {
+        full_resolve_deferred_types(ctx);
+    }
 
     if !ctx.ex.errors.is_empty() {
         return;
     }
 
     finalize_local(ctx);
+}
+
+#[cfg(not(feature = "solver_order_fuzz"))]
+fn local_solver_stable(ctx: &mut InferState) {
+    //this loop only exists once ALL requirments have checked and didnt complain
+    //on the state we are gona release. since there was no change
+    //this is SUPER important because they are not just progressions
+    let mut unknown_count = 0;
+
+    loop {
+        let mut progress = false;
+
+        progress |= resolve_operator_types(ctx);
+        progress |= resolve_pending_indexes(ctx);
+        progress |= resolve_pending_member_accesses(ctx);
+        progress |= resolve_pending_int_accesses(ctx);
+        progress |= resolve_pending_specializations(ctx);
+        progress |= resolve_pending_derefs(ctx);
+
+        if progress {
+            continue;
+        }
+
+        //ORDER SENSATIVE semi hacks
+        //these are all assuming defualts on the type system
+        //so they are mostly last resorts for that exact reason
+
+        if finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count) {
+            continue;
+        }
+
+        if force_unresolved_refs_to_safe(ctx, &mut unknown_count) {
+            continue;
+        }
+
+        if force_unresolved_ptr_mutability_to_immut(ctx) {
+            continue;
+        }
+
+        break;
+    }
+
+    full_resolve_deferred_types(ctx);
+
+    if !ctx.ex.errors.is_empty() {
+        return;
+    }
+
+    finalize_local(ctx);
+}
+
+#[cfg(feature = "solver_order_fuzz")]
+#[inline(always)]
+fn run_local_solver_pass(pass: LocalSolverPass, ctx: &mut InferState) -> bool {
+    match pass {
+        LocalSolverPass::Operators => resolve_operator_types(ctx),
+        LocalSolverPass::Deferred => resolve_deferred_types(ctx),
+        LocalSolverPass::PendingIndexes => resolve_pending_indexes(ctx),
+        LocalSolverPass::PendingMemberAccesses => resolve_pending_member_accesses(ctx),
+        LocalSolverPass::PendingIntAccesses => resolve_pending_int_accesses(ctx),
+        LocalSolverPass::PendingSpecializations => resolve_pending_specializations(ctx),
+        LocalSolverPass::PendingDerefs => resolve_pending_derefs(ctx),
+    }
 }
 
 #[inline(always)]

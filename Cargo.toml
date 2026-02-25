@@ -10,8 +10,13 @@ libc = "0.2"
 yansi = "1.0.1"
 simdutf8 = "0.1.5"
 foldhash = "0.2.0"
+rand = "0.9.2"
 # bump-scope = "1.5.1"
 # arrayvec = "0.7"
+
+[features]
+solver_order_fuzz = []
+determinism = []
 
 [profile.release]
 debug=true

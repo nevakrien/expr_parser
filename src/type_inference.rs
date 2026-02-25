@@ -4414,7 +4414,7 @@ pub(crate) fn resolve_deferred_types(ctx: &mut InferState) -> bool {
     change
 }
 
-pub(crate) fn full_resolve_defered_types(ctx: &mut InferState) {
+pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
     for raw in 0..ctx.types.core.cluster.len() {
         let cid = CId(raw);
         if ctx.types.core.parent[cid] != cid {

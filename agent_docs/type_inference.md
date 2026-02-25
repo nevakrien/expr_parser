@@ -54,6 +54,25 @@ These functions are the center of the entire file and appear all over inference:
   - avoids redundant unify calls when both clusters already share one root,
   - returns "did progress happen" for the solver fixpoint loop.
 
+## Local Solver Order Fuzzing
+
+- Solver order planning now lives in `src/local_solver_order.rs`; `local_solver` in `src/local_type_inference.rs` consumes that planner.
+- `src/local_solver_order.rs` is module-gated in `src/lib.rs` behind `#[cfg(feature = "solver_order_fuzz")]`, so it is not compiled in stable/non-fuzz builds.
+- `local_solver` itself is split into two cfg-separated implementations in `src/local_type_inference.rs`:
+  - non-fuzz builds use a direct fixed pass sequence with no random planner construction,
+  - fuzz builds use planner-driven randomized pass order.
+- Fuzzing is enabled with standard feature cfg (`#[cfg(feature = "solver_order_fuzz")]`), no build-script cfg wiring.
+- Features `solver_order_fuzz` and `determinism` are intentionally incompatible (compile-time `compile_error!`).
+- Seed control:
+  - set `EXPR_SOLVER_ORDER_SEED=<u64>` to reproduce one exact schedule,
+  - if unset, a random seed is generated via `rand::random::<u64>()` and printed to stderr as `[solver-order-fuzz] seed=...`.
+- The fuzzing schedule randomizes:
+  - pass order among `resolve_operator_types`, pending-index/member/int access, specializations, derefs,
+  - whether deferred type resolution is mixed into the main loop,
+  - whether deferred type resolution gets an extra stall-continue pass,
+  - finalize strategy: either iterative `resolve_deferred_types` fixpoint or `full_resolve_deferred_types` (never both in one run).
+- Invariant goal: successful resolution should remain solver-order independent; this mode is intended to expose hidden order dependencies.
+
 ## Unification and Clash Semantics
 
 ### How `unify_clusters` decides

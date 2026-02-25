@@ -185,7 +185,7 @@ fn global_solver(ctx: &mut InferState) {
         }
     }
 
-    full_resolve_defered_types(ctx);
+    full_resolve_deferred_types(ctx);
 
     if !ctx.ex.errors.is_empty() {
         return;

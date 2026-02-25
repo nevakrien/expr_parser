@@ -55,6 +55,7 @@
 
 ## Tests
 - `cargo test` should be used by agents after every change that can be tested.
+- It's a good idea to also run `cargo test --features solver_order_fuzz` when touching type-inference solver logic; randomized pass order helps catch hidden order-dependence bugs early.
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
