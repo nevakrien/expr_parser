@@ -478,6 +478,19 @@ pub(crate) fn gather_constraints(
             c
         }
 
+        Value::Literal(Literal::Null) => {
+            let tgt = ctx.new_cluster();
+            let c = ctx.new_cluster();
+            ctx.types.core.cluster[c].state = ResolveKind::Ptr {
+                tgt,
+                kind: PtrKind::Solved(PointerStyle::Raw(Nullable::Yes)),
+                mutable: None,
+            };
+
+            ctx.bind_val(v, c);
+            c
+        }
+
         Value::Literal(Literal::Void) => {
             let c = ctx.new_solved(BuiltinType::Void.into());
             ctx.bind_val(v, c);

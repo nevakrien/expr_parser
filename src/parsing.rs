@@ -87,7 +87,7 @@ impl fmt::Display for Token {
 pub const KEYWORDS: &[&str] = &[
     "let", "var", "const", "mut", "type", "struct", "cstruct", "union", "enum", "fn", "cfn",
     "macro", "if", "else", "while", "for", "match", "return", "break", "continue", "goto", "as",
-    "true", "false",
+    "true", "false", "null", "nil",
 ];
 
 ///greedy match
@@ -204,6 +204,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"mut" => Some("mut"),
             b"for" => Some("for"),
             b"cfn" => Some("cfn"),
+            b"nil" => Some("nil"),
             _ => None,
         },
 
@@ -213,6 +214,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"enum" => Some("enum"),
             b"true" => Some("true"),
             b"goto" => Some("goto"),
+            b"null" => Some("null"),
             _ => None,
         },
 
@@ -1080,7 +1082,7 @@ impl<'a> Parser<'a> {
                 //its actually slower hence why we do this
                 let op_s = tok.with(op);
 
-                if op == "true" || op == "false" {
+                if matches!(op, "true" | "false" | "null" | "nil") {
                     let tok = self.next_token()?.unwrap();
                     return Ok(Some(Located {
                         loc: self.produce_loc(start),

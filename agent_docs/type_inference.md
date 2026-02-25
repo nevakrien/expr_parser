@@ -278,6 +278,7 @@ This is the AST/IR-to-typechecker bridge and one of the most important maintenan
 High-level behavior:
 
 - literals create weak (`IntLike`/`FloatLike`) or concrete builtin clusters,
+- `null` / `nil` literals create deferred pointer clusters with nullable raw-pointer kind (`PtrKind::Solved(PointerStyle::Raw(Nullable::Yes))`) and unknown pointee/mutability until constrained,
 - tuple values (`Value::Tuple`) gather element clusters and produce deferred tuple clusters,
 - array values (`Value::Array`) unify element clusters and produce deferred array clusters with known length,
 - `let`, assignment, and branch joins create equality constraints with `ctx.unify`,

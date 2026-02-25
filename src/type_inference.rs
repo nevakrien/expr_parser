@@ -6245,6 +6245,64 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn null_literal_can_initialize_nullable_raw_pointer() {
+        let src = "f = fn(){ let p:*const int = null; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let p_ty = find_let_stmt_type(&program, solved_types, f, "p");
+
+        let TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } = *store.type_value(p_ty)
+        else {
+            panic!("expected raw pointer result type")
+        };
+        assert_eq!(style, PointerStyle::Raw(Nullable::Yes));
+        assert!(!mutable);
+        assert!(matches!(
+            store.type_value(tgt),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
+    fn nil_literal_aliases_null_for_nullable_raw_pointers() {
+        let src = "f = fn(){ let p:*mut int = nil; };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let solved_types =
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        let p_ty = find_let_stmt_type(&program, solved_types, f, "p");
+
+        let TypeValue::Ptr {
+            tgt,
+            style,
+            mutable,
+        } = *store.type_value(p_ty)
+        else {
+            panic!("expected raw pointer result type")
+        };
+        assert_eq!(style, PointerStyle::Raw(Nullable::Yes));
+        assert!(mutable);
+        assert!(matches!(
+            store.type_value(tgt),
+            TypeValue::Builtin(BuiltinType::Int)
+        ));
+    }
+
+    #[test]
     fn reference_addition_still_rejected() {
         let src = "f = fn(x:int){ let p:&int = &x; let y = p + 1:int; }";
         let program = gather_program(src);

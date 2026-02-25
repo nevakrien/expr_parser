@@ -1784,7 +1784,7 @@ fn check_struct_deref_targets_compatible(
         };
 
     if deref_target != deref_mut_target
-        || deref_self_style!= deref_mut_self_style
+        || deref_self_style != deref_mut_self_style
         || deref_out_style != deref_mut_out_style
         || deref_self_mut
         || !deref_mut_self_mut

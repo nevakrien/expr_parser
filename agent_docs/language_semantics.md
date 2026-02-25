@@ -31,6 +31,12 @@ Comments:
 
 - The lexer skips `//` line comments (from `//` to end-of-line) as trivia.
 
+Null-pointer literals:
+
+- `null` and `nil` are aliases for the same literal value.
+- They represent a nullable raw pointer literal (the `*T` / `*const T` / `*mut T` family), not a normal reference.
+- Their target pointee type and mutability are inferred from context (for example assignment/annotation).
+
 Type-level representation:
 
 - Function types carry calling convention and generic arity in `TypeValue::Func { calling_convention, generics, ... }`.

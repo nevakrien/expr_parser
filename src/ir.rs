@@ -184,6 +184,7 @@ pub enum Literal {
     Float(f64),
     Bool(bool),
     Str(StrId),
+    Null,
     Void,
 }
 
@@ -761,6 +762,7 @@ impl Program {
             Token::Operator("(") => Value::Literal(Literal::Void),
             Token::Operator("true") => Value::Literal(Literal::Bool(true)),
             Token::Operator("false") => Value::Literal(Literal::Bool(false)),
+            Token::Operator("null") | Token::Operator("nil") => Value::Literal(Literal::Null),
 
             Token::Ident(name) if name == "_" => Value::Wildcard,
             Token::Ident(name) => {
