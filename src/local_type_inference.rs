@@ -148,7 +148,8 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         //so they are mostly last resorts for that exact reason
 
         if order_planner.use_main_loop_deferred_mode()
-        && finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count) {
+            && finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count)
+        {
             continue;
         }
 
@@ -1993,8 +1994,10 @@ fn resolve_struct_deref_method(
     ex: &mut ExternState,
     types: &mut TypeState,
     site: ValId,
-    method_ty: TypeId,
+    method_site: ValId,
+    mutable: bool,
 ) -> Option<ResolvedStructDerefMethod> {
+    let method_ty = ex.ans.function_types_by_value(method_site)?.ty;
     let method_local = solved_type_to_specialized_local(ex, types, method_ty, site);
 
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
@@ -2004,23 +2007,24 @@ fn resolve_struct_deref_method(
     let self_param = params.first().copied()?;
     debug_assert_eq!(params.len(), 1);
 
-    let (_, self_kind, self_mutable) = ptr_parts_from_cluster(ex, types, self_param)?;
+    let (_, self_kind, _self_mutable) = ptr_parts_from_cluster(ex, types, self_param)?;
     if matches!(self_kind.is_fancy(), Some(false)) {
         return None;
     }
 
-    let (target, ret_kind, ret_mutable) = ptr_parts_from_cluster(ex, types, ret)?;
+    let (target, ret_kind, _ret_mutable) = ptr_parts_from_cluster(ex, types, ret)?;
     if matches!(ret_kind.is_fancy(), Some(false)) {
         return None;
     }
 
     Some(ResolvedStructDerefMethod {
+        deref_site: (!mutable).then_some(method_site),
+        deref_mut_site: mutable.then_some(method_site),
+        mutable: Some(mutable),
         self_param,
         self_kind,
-        self_mutable,
         target,
         ret_kind,
-        ret_mutable,
     })
 }
 
@@ -2031,22 +2035,34 @@ fn resolve_struct_deref_target(
     base_value: ValId,
     base_cluster: CId,
     struct_name: NameId,
-    shared_lid: &mut Option<LId>,
-    chain_mutability: &mut Option<bool>,
 ) -> Option<ResolvedStructDerefTarget> {
-    let (deref, deref_mut) = ex
+    let deref = ex
         .store
         .struct_overload_info(struct_name)
-        .map(|info| (info.deref, info.deref_mut))
-        .unwrap_or((None, None));
+        .and_then(|info| info.deref_style)?;
 
-    let deref_resolved =
-        deref.and_then(|method| resolve_struct_deref_method(ex, types, site, method));
-    let deref_mut_resolved =
-        deref_mut.and_then(|method| resolve_struct_deref_method(ex, types, site, method));
+    let deref_resolved = deref
+        .deref_site
+        .and_then(|method_site| resolve_struct_deref_method(ex, types, site, method_site, false));
+    let deref_mut_resolved = deref
+        .deref_mut_site
+        .and_then(|method_site| resolve_struct_deref_method(ex, types, site, method_site, true));
 
     let resolved = match (deref_resolved, deref_mut_resolved) {
-        (Some(x), Some(_y)) => x,
+        (Some(x), Some(y)) => {
+            if let Err(clash) = types.unify(ex, x.target, y.target) {
+                ex.push_error(TypeError::ValuesContradict {
+                    expectation_reason:
+                        "`__deref` and `__deref_mut` must dereference to compatible target types",
+                    site,
+                    found: base_value,
+                    expected_place: site,
+                    clash,
+                });
+                return None;
+            }
+            x
+        }
         (Some(x), None) => x,
         (None, Some(y)) => y,
         (None, None) => return None,
@@ -2054,10 +2070,7 @@ fn resolve_struct_deref_target(
 
     let self_kind = resolved.self_kind;
     let ret_kind = resolved.ret_kind;
-    let self_mutable = resolved.self_mutable;
-    let ret_mutable = resolved.ret_mutable;
-    let _ = shared_lid;
-    let _ = chain_mutability;
+    let fallback_mutable = deref.mutable;
 
     let receiver_input = types.new_cluster();
     types.set_cluster_state(
@@ -2065,11 +2078,40 @@ fn resolve_struct_deref_target(
         ResolveKind::Ptr {
             tgt: base_cluster,
             kind: self_kind,
-            mutable: self_mutable,
+            mutable: fallback_mutable,
         },
     );
 
-    if let Err(clash) = unify_if_distinct(ex, types, resolved.self_param, receiver_input) {
+    let mut unify_receiver = |expected_self: CId| {
+        let adapted_receiver = types.new_cluster();
+        let expected_mutable = ptr_parts_from_cluster(ex, types, expected_self).and_then(|x| x.2);
+        types.set_cluster_state(
+            adapted_receiver,
+            ResolveKind::Ptr {
+                tgt: base_cluster,
+                kind: self_kind,
+                mutable: expected_mutable,
+            },
+        );
+        unify_if_distinct(ex, types, expected_self, adapted_receiver)
+    };
+
+    if let Some(deref_method) = deref_resolved
+        && let Err(clash) = unify_receiver(deref_method.self_param)
+    {
+        ex.push_error(TypeError::ValuesContradict {
+            expectation_reason: "deref receiver must match special deref method self parameter",
+            site,
+            found: base_value,
+            expected_place: site,
+            clash,
+        });
+        return None;
+    }
+
+    if let Some(deref_mut_method) = deref_mut_resolved
+        && let Err(clash) = unify_receiver(deref_mut_method.self_param)
+    {
         ex.push_error(TypeError::ValuesContradict {
             expectation_reason: "deref receiver must match special deref method self parameter",
             site,
@@ -2081,12 +2123,14 @@ fn resolve_struct_deref_target(
     }
 
     let deref_result_ptr = types.new_cluster();
+    // this will cause infrence to assume immute in many cases even though thats not really true.
+    // that bug will be fixed once we introduce places and mutability constraints over *p=_ expressions.
     types.set_cluster_state(
         deref_result_ptr,
         ResolveKind::Ptr {
             tgt: resolved.target,
             kind: ret_kind,
-            mutable: ret_mutable,
+            mutable: fallback_mutable,
         },
     );
 
@@ -2165,8 +2209,6 @@ impl PendingImplicitDeref {
                         self.base_value,
                         current,
                         struct_name,
-                        &mut self.deref_chain_lid,
-                        &mut self.deref_chain_mutability,
                     ) else {
                         return Ok(ImplicitDerefStep::Done);
                     };
@@ -2201,8 +2243,6 @@ impl PendingImplicitDeref {
                     self.base_value,
                     current,
                     struct_name,
-                    &mut self.deref_chain_lid,
-                    &mut self.deref_chain_mutability,
                 ) else {
                     return Ok(ImplicitDerefStep::Done);
                 };
@@ -3302,9 +3342,6 @@ impl PendingDeref {
         let source = types.root(self.source);
         self.source = source;
 
-        let mut deref_chain_lid = None;
-        let mut deref_chain_mutability = None;
-
         let result = match types.core.cluster[source].state {
             // unknown — wait
             ResolveKind::Nothing => {
@@ -3329,8 +3366,6 @@ impl PendingDeref {
                             self.source_value,
                             source,
                             struct_name,
-                            &mut deref_chain_lid,
-                            &mut deref_chain_mutability,
                         )
                         .map(|resolved| resolved.target)
                     })
@@ -3352,8 +3387,6 @@ impl PendingDeref {
                         self.source_value,
                         source,
                         struct_name,
-                        &mut deref_chain_lid,
-                        &mut deref_chain_mutability,
                     )
                     .map(|resolved| resolved.target)
                 })

@@ -278,8 +278,9 @@ Main orchestration is two-phase:
       - at most one implementation (`body: Some`) is allowed,
       - if an implementation exists, it must exactly match the reference signature,
     - inserts `SolvedTypes.function_types` (keyed by `NameId`) during that same pass as a single reference entry (`reference_type` + first decl/impl sites),
-   - validates special member method signatures (`__add`, unary overload names, `__deref`, `__deref_mut`) against each method set reference type,
-   - builds `TypeStore.struct_overloads` inline while walking member method sets (validated `__deref` / `__deref_mut` and operator overload entries) so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
+    - validates and inserts special member overloads (`__add`, unary overload names, `__deref`, `__deref_mut`) in one pass per member method reference type,
+    - while inserting deref methods, `__deref`/`__deref_mut` pair compatibility is checked immediately when the second method is seen (instead of a separate post-pass),
+    - builds `TypeStore.struct_overloads` inline while walking member method sets so body inference does not repeatedly rescan/reshape member overload declarations at each use site,
    - supports recursive typedef + deferred specialization setup.
 2. `infer_value_internals`
   - resolves function body internals or arbitrary value internals,
@@ -328,6 +329,11 @@ Important fragile/unfinished expression areas:
   - supports builtin pointer dereference,
   - also supports struct-based smart-pointer style dereference through member methods `__deref` and `__deref_mut`,
   - when both methods exist, dereference target types are constrained to agree,
+  - global overload metadata now stores deref method sites as one merged entry (`deref_style`) and records mutability mode as:
+    - `Some(false)` when only `__deref` exists,
+    - `Some(true)` when only `__deref_mut` exists,
+    - `None` when both exist,
+  - current temporary limitation: when both deref methods exist, local deref-chain pointer mutability is intentionally left unresolved until place/mutability constraints are introduced for write expressions (`*p = _`),
   - the deref expression now owns a dedicated output cluster and immediately tries a `pointee -> output` unification when the source is already resolvable,
   - when deref starts from an unresolved `Nothing` source, it records a pending pointer-like constraint (`source -> target`) and resolves it in the middle solver instead of eagerly forcing the source to pointer.
 - `Value::Access`:

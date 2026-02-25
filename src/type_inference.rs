@@ -1005,17 +1005,14 @@ pub struct SolvedMemberMethodAccessType {
 
 #[derive(Debug, Default, Clone)]
 pub struct StructOverloadInfo {
-    pub deref: Option<TypeId>,
-    pub deref_site: Option<ValId>,
-    pub deref_mut: Option<TypeId>,
-    pub deref_mut_site: Option<ValId>,
+    pub deref_style: Option<ResolvedStructDerefMethod>,
     pub operators: IdHashMap<StrId, StructOperatorOverload>,
 }
 
 impl StructOverloadInfo {
     #[inline(always)]
     pub fn has_any(&self) -> bool {
-        self.deref.is_some() || self.deref_mut.is_some() || !self.operators.is_empty()
+        self.deref_style.is_some() || !self.operators.is_empty()
     }
 }
 
@@ -1764,8 +1761,6 @@ pub(crate) struct PendingImplicitDeref {
     pub(crate) source: CId,
     pub(crate) current: CId,
     pub(crate) implicit_receivers: Vec<CId>,
-    pub(crate) deref_chain_lid: Option<LId>,
-    pub(crate) deref_chain_mutability: Option<bool>,
 }
 
 impl PendingImplicitDeref {
@@ -1780,8 +1775,6 @@ impl PendingImplicitDeref {
             // CRITICAL: start cursor here
             current: source,
             implicit_receivers: Vec::new(),
-            deref_chain_lid: None,
-            deref_chain_mutability: None,
         }
     }
 }
@@ -4087,12 +4080,15 @@ pub(crate) fn specialize_type(
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedStructDerefMethod {
+    pub deref_site: Option<ValId>,
+    pub deref_mut_site: Option<ValId>,
+
+    pub(crate) mutable: Option<bool>,
+
     pub(crate) self_param: CId,
     pub(crate) self_kind: PtrKind,
-    pub(crate) self_mutable: Option<bool>,
     pub(crate) target: CId,
     pub(crate) ret_kind: PtrKind,
-    pub(crate) ret_mutable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]

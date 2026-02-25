@@ -98,6 +98,7 @@ pub fn infer_global_types<'a>(
         }
 
         let mut overloads = StructOverloadInfo::default();
+        let mut pending_deref_methods = PendingStructDerefMethods::default();
         for (method_name, method_set) in methods.iter() {
             let Some((reference_type, reference_site)) = check_and_record_function_set_types(
                 &mut ctx,
@@ -108,16 +109,10 @@ pub fn infer_global_types<'a>(
                 continue;
             };
 
-            check_special_member_method_signature(
+            validate_and_insert_member_overload(
                 &mut ctx,
-                reference_site,
-                reference_type,
-                *struct_name,
-                *method_name,
-            );
-            maybe_insert_member_overload(
-                ctx.ex.store,
                 &mut overloads,
+                &mut pending_deref_methods,
                 *struct_name,
                 *method_name,
                 reference_site,
@@ -125,7 +120,6 @@ pub fn infer_global_types<'a>(
             );
         }
 
-        check_struct_deref_targets_compatible(&mut ctx, *struct_name, &overloads);
         if overloads.has_any() {
             ctx.ex
                 .store
@@ -1659,88 +1653,273 @@ fn get_deref_method_target_type(
     get_ref_target_type_if_kind(store, output, output_mutable)
 }
 
-fn maybe_insert_member_overload(
-    store: &TypeStore,
+#[derive(Debug, Default, Clone, Copy)]
+struct PendingStructDerefMethods {
+    deref: Option<(TypeId, ValId)>,
+    deref_mut: Option<(TypeId, ValId)>,
+}
+
+fn validate_and_insert_member_overload(
+    ctx: &mut InferState,
     info: &mut StructOverloadInfo,
+    pending_deref_methods: &mut PendingStructDerefMethods,
     struct_name: NameId,
     method_name: StrId,
     method_site: ValId,
     method_ty: TypeId,
 ) {
-    let Some((inputs, output)) = method_signature_type_parts(store, method_ty) else {
+    let loc = ctx.ex.program.value_loc(method_site);
+
+    if is_reserved_builtin_member_name(ctx.ex.program, method_name)
+        && !is_known_special_member_method_name(method_name)
+    {
+        //this is technically a bug the site is the name itself but eh
+        ctx.push_error(TypeError::UnknownBuiltinMemberMethod {
+            site: method_site,
+            method: method_name,
+        });
+    }
+
+    if !is_known_special_member_method_name(method_name) {
+        return;
+    }
+
+    let Some((inputs, output)) = method_signature_type_parts(ctx.ex.store, method_ty) else {
         return;
     };
+    let inputs = inputs.to_vec();
     let Some(first_input) = inputs.first().copied() else {
+        ctx.push_error(TypeError::Simple {
+            loc,
+            message: "special member methods must take `self` as the first parameter",
+        });
         return;
     };
 
+    if matches!(method_name, FREE_STR | USER_FREE_STR) {
+        if !is_mut_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__free` must take `&mut self` as the first parameter",
+            });
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__free` must not take parameters after `self`",
+            });
+        }
+
+        if output != BuiltinType::Void.into() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__free` must return `void`",
+            });
+        }
+        return;
+    }
+
     if method_name == DEREF_STR {
-        if inputs.len() == 1
-            && is_ref_to_named_struct_input_type(store, first_input, struct_name, false)
-            && get_ref_target_type_if_kind(store, output, false).is_some()
-        {
-            info.deref = Some(method_ty);
-            info.deref_site = Some(method_site);
+        let mut valid = true;
+
+        if !is_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name, false) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref` must take `&self` as the first parameter",
+            });
+            valid = false;
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref` must not take parameters after `self`",
+            });
+            valid = false;
+        }
+
+        if get_ref_target_type_if_kind(ctx.ex.store, output, false).is_none() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__deref` must return a non-raw shared reference `&T`",
+            });
+            valid = false;
+        }
+
+        if valid {
+            pending_deref_methods.deref = Some((method_ty, method_site));
+            let entry = info.deref_style.get_or_insert(ResolvedStructDerefMethod {
+                deref_site: None,
+                deref_mut_site: None,
+                mutable: None,
+                self_param: CId(0),
+                self_kind: PtrKind::Unknown,
+                target: CId(0),
+                ret_kind: PtrKind::Unknown,
+            });
+            if let Some(existing_site) = entry.deref_site {
+                assert_eq!(
+                    existing_site, method_site,
+                    "global deref overload entry unexpectedly changed for same struct"
+                );
+            } else {
+                entry.deref_site = Some(method_site);
+            }
+            entry.mutable = match (entry.deref_site.is_some(), entry.deref_mut_site.is_some()) {
+                (true, true) => None,
+                (true, false) => Some(false),
+                (false, true) => Some(true),
+                (false, false) => None,
+            };
+            check_inserted_deref_pair_compatible(ctx, pending_deref_methods, method_site);
         }
         return;
     }
 
     if method_name == DEREF_MUT_STR {
-        if inputs.len() == 1
-            && is_ref_to_named_struct_input_type(store, first_input, struct_name, true)
-            && get_ref_target_type_if_kind(store, output, true).is_some()
-        {
-            info.deref_mut = Some(method_ty);
-            info.deref_mut_site = Some(method_site);
+        let mut valid = true;
+
+        if !is_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name, true) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref_mut` must take `&mut self` as the first parameter",
+            });
+            valid = false;
+        }
+
+        if inputs.len() != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "`__deref_mut` must not take parameters after `self`",
+            });
+            valid = false;
+        }
+
+        if get_ref_target_type_if_kind(ctx.ex.store, output, true).is_none() {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "`__deref_mut` must return a non-raw mutable reference `&mut T`",
+            });
+            valid = false;
+        }
+
+        if valid {
+            pending_deref_methods.deref_mut = Some((method_ty, method_site));
+            let entry = info.deref_style.get_or_insert(ResolvedStructDerefMethod {
+                deref_site: None,
+                deref_mut_site: None,
+                mutable: None,
+                self_param: CId(0),
+                self_kind: PtrKind::Unknown,
+                target: CId(0),
+                ret_kind: PtrKind::Unknown,
+            });
+            if let Some(existing_site) = entry.deref_mut_site {
+                assert_eq!(
+                    existing_site, method_site,
+                    "global deref overload entry unexpectedly changed for same struct"
+                );
+            } else {
+                entry.deref_mut_site = Some(method_site);
+            }
+            entry.mutable = match (entry.deref_site.is_some(), entry.deref_mut_site.is_some()) {
+                (true, true) => None,
+                (true, false) => Some(false),
+                (false, true) => Some(true),
+                (false, false) => None,
+            };
+            check_inserted_deref_pair_compatible(ctx, pending_deref_methods, method_site);
         }
         return;
     }
 
-    let extra = inputs.len().saturating_sub(1);
-    if is_binary_operator_overload_name(method_name)
-        && is_self_like_member_input_type(store, first_input, struct_name)
-        && extra == 1
-    {
-        let self_pointer_style = get_member_self_pointer_style(store, method_ty, struct_name)
-            .expect("validated binary operator overload must have self-like first parameter");
-        info.operators.insert(
-            method_name,
-            StructOperatorOverload {
-                method_type: method_ty,
-                method_site,
-                self_pointer_style,
-            },
-        );
+    let additional_args = inputs.len() - 1;
+
+    if is_binary_operator_overload_name(method_name) {
+        if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "binary operator overloads must take `self` as the first parameter type",
+            });
+        }
+
+        if additional_args != 1 {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "binary operator overloads must take exactly one parameter after `self`",
+            });
+        }
+
+        if is_self_like_member_input_type(ctx.ex.store, first_input, struct_name)
+            && additional_args == 1
+        {
+            let self_pointer_style =
+                get_member_self_pointer_style(ctx.ex.store, method_ty, struct_name).expect(
+                    "validated binary operator overload must have self-like first parameter",
+                );
+            info.operators.insert(
+                method_name,
+                StructOperatorOverload {
+                    method_type: method_ty,
+                    method_site,
+                    self_pointer_style,
+                },
+            );
+        }
+
         return;
     }
 
-    if is_unary_operator_overload_name(method_name)
-        && is_self_like_member_input_type(store, first_input, struct_name)
-        && extra == 0
-    {
-        let self_pointer_style = get_member_self_pointer_style(store, method_ty, struct_name)
-            .expect("validated unary operator overload must have self-like first parameter");
-        info.operators.insert(
-            method_name,
-            StructOperatorOverload {
-                method_type: method_ty,
-                method_site,
-                self_pointer_style,
-            },
-        );
+    if is_unary_operator_overload_name(method_name) {
+        if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
+            ctx.push_error(TypeError::Simple {
+                loc: loc.clone(),
+                message: "unary operator overloads must take `self` as the first parameter type",
+            });
+        }
+
+        if additional_args != 0 {
+            ctx.push_error(TypeError::Simple {
+                loc,
+                message: "unary operator overloads must not take parameters after `self`",
+            });
+        }
+
+        if is_self_like_member_input_type(ctx.ex.store, first_input, struct_name)
+            && additional_args == 0
+        {
+            let self_pointer_style =
+                get_member_self_pointer_style(ctx.ex.store, method_ty, struct_name).expect(
+                    "validated unary operator overload must have self-like first parameter",
+                );
+            info.operators.insert(
+                method_name,
+                StructOperatorOverload {
+                    method_type: method_ty,
+                    method_site,
+                    self_pointer_style,
+                },
+            );
+        }
+
+        return;
     }
+
+    ctx.push_error(TypeError::IlegalToImplMethod {
+        method_site,
+        method_name,
+    });
 }
 
-fn check_struct_deref_targets_compatible(
+fn check_inserted_deref_pair_compatible(
     ctx: &mut InferState,
-    _struct_name: NameId,
-    overloads: &StructOverloadInfo,
+    pending_deref_methods: &PendingStructDerefMethods,
+    mismatch_site: ValId,
 ) {
-    let (Some(deref_ty), Some(deref_mut_ty), Some(deref_mut_site)) = (
-        overloads.deref,
-        overloads.deref_mut,
-        overloads.deref_mut_site,
-    ) else {
+    let (Some((deref_ty, _)), Some((deref_mut_ty, _))) =
+        (pending_deref_methods.deref, pending_deref_methods.deref_mut)
+    else {
         return;
     };
 
@@ -1794,186 +1973,10 @@ fn check_struct_deref_targets_compatible(
         || !deref_mut_out_mut
     {
         ctx.push_error(TypeError::Simple {
-            loc: ctx.ex.program.value_loc(deref_mut_site),
+            loc: ctx.ex.program.value_loc(mismatch_site),
             message: "`__deref` and `__deref_mut` must dereference to the same target type",
         });
     }
-}
-
-fn check_special_member_method_signature(
-    ctx: &mut InferState,
-    method_site: ValId,
-    method_ty: TypeId,
-    struct_name: NameId,
-    method_name: StrId,
-) {
-    let loc = ctx.ex.program.value_loc(method_site);
-
-    if is_reserved_builtin_member_name(ctx.ex.program, method_name)
-        && !is_known_special_member_method_name(method_name)
-    {
-        //this is technically a bug the site is the name itself but eh
-        ctx.push_error(TypeError::UnknownBuiltinMemberMethod {
-            site: method_site,
-            method: method_name,
-        });
-    }
-
-    if !is_known_special_member_method_name(method_name) {
-        return;
-    }
-
-    let Some((inputs, output)) = method_signature_type_parts(ctx.ex.store, method_ty) else {
-        return;
-    };
-    let inputs = inputs.to_vec();
-
-    if matches!(method_name, FREE_STR | USER_FREE_STR) {
-        let Some(first_input) = inputs.first().copied() else {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "special member methods must take `self` as the first parameter",
-            });
-            return;
-        };
-
-        if !is_mut_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__free` must take `&mut self` as the first parameter",
-            });
-        }
-
-        if inputs.len() != 1 {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__free` must not take parameters after `self`",
-            });
-        }
-
-        if output != BuiltinType::Void.into() {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__free` must return `void`",
-            });
-        }
-        return;
-    }
-
-    if method_name == DEREF_STR {
-        let Some(first_input) = inputs.first().copied() else {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "special member methods must take `self` as the first parameter",
-            });
-            return;
-        };
-
-        if !is_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name, false) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__deref` must take `&self` as the first parameter",
-            });
-        }
-
-        if inputs.len() != 1 {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__deref` must not take parameters after `self`",
-            });
-        }
-
-        if get_ref_target_type_if_kind(ctx.ex.store, output, false).is_none() {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__deref` must return a non-raw shared reference `&T`",
-            });
-        }
-        return;
-    }
-
-    if method_name == DEREF_MUT_STR {
-        let Some(first_input) = inputs.first().copied() else {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "special member methods must take `self` as the first parameter",
-            });
-            return;
-        };
-
-        if !is_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name, true) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__deref_mut` must take `&mut self` as the first parameter",
-            });
-        }
-
-        if inputs.len() != 1 {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "`__deref_mut` must not take parameters after `self`",
-            });
-        }
-
-        if get_ref_target_type_if_kind(ctx.ex.store, output, true).is_none() {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "`__deref_mut` must return a non-raw mutable reference `&mut T`",
-            });
-        }
-        return;
-    }
-
-    let Some(first_input) = inputs.first().copied() else {
-        ctx.push_error(TypeError::Simple {
-            loc,
-            message: "special member methods must take `self` as the first parameter",
-        });
-        return;
-    };
-
-    let additional_args = inputs.len() - 1;
-
-    if is_binary_operator_overload_name(method_name) {
-        if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "binary operator overloads must take `self` as the first parameter type",
-            });
-        }
-
-        if additional_args != 1 {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "binary operator overloads must take exactly one parameter after `self`",
-            });
-        }
-
-        return;
-    }
-
-    if is_unary_operator_overload_name(method_name) {
-        if !is_self_like_member_input_type(ctx.ex.store, first_input, struct_name) {
-            ctx.push_error(TypeError::Simple {
-                loc: loc.clone(),
-                message: "unary operator overloads must take `self` as the first parameter type",
-            });
-        }
-
-        if additional_args != 0 {
-            ctx.push_error(TypeError::Simple {
-                loc,
-                message: "unary operator overloads must not take parameters after `self`",
-            });
-        }
-
-        return;
-    }
-
-    ctx.push_error(TypeError::IlegalToImplMethod {
-        method_site,
-        method_name,
-    });
 }
 
 impl StructRep {
