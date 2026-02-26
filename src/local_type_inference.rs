@@ -13,6 +13,7 @@ use crate::ir::VarKind;
 use crate::ir::{AssignOp, BinOp, Dir, Literal, NameId, UnOp, ValId, Value};
 #[cfg(feature = "solver_order_fuzz")]
 use crate::local_solver_order::{LocalSolverPass, SolverOrderPlanner};
+use crate::parsing::Loc;
 use crate::program::{Defined, Program};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
@@ -4063,6 +4064,61 @@ fn writable_place_error_message(
     }
 }
 
+fn immutable_origin_cause(ctx: &InferState, origin: OriginId) -> Option<(Loc, &'static str)> {
+    let mut current = Some(origin);
+
+    while let Some(origin) = current {
+        let node = ctx.search.origin(origin)?;
+
+        if matches!(node.kind, OriginKind::BindingRoot) && node.parent.is_some() {
+            current = node.parent;
+            continue;
+        }
+
+        if node.declared_mutability == Some(false) {
+            let decl = node.decl_site?;
+            let (loc, related_message) = match decl {
+                OriginDeclSite::Pattern(pat) => (
+                    ctx.ex.program.pattern_loc(pat),
+                    "origin binding is immutable here",
+                ),
+                OriginDeclSite::Value(value) => (
+                    ctx.ex.program.value_loc(value),
+                    "origin becomes immutable here",
+                ),
+            };
+            return Some((loc, related_message));
+        }
+
+        current = node.parent;
+    }
+
+    None
+}
+
+fn push_writable_place_error(
+    ctx: &mut InferState,
+    site: ValId,
+    message: &'static str,
+    projected_origin: Option<OriginId>,
+) {
+    let loc = ctx.ex.program.value_loc(site);
+    if let Some((related, related_message)) = projected_origin
+        .and_then(|origin| immutable_origin_cause(ctx, origin))
+        .filter(|(related, _)| *related != loc)
+    {
+        ctx.push_error(TypeError::SimpleRelated {
+            loc,
+            message,
+            related,
+            related_message,
+        });
+        return;
+    }
+
+    ctx.push_error(TypeError::Simple { loc, message });
+}
+
 fn require_place_writable(
     ctx: &mut InferState,
     site: ValId,
@@ -4087,10 +4143,12 @@ fn require_place_writable(
             access_kind,
             mutable: Some(false),
         } => {
-            ctx.push_error(TypeError::Simple {
-                loc: ctx.ex.program.value_loc(site),
-                message: writable_place_error_message(context, access_kind),
-            });
+            push_writable_place_error(
+                ctx,
+                site,
+                writable_place_error_message(context, access_kind),
+                ctx.search.value_origin(target),
+            );
             true
         }
     }
@@ -4113,10 +4171,12 @@ impl PendingMutabilityMatchRequirement {
             weak_access_kind = place.access_kind;
             weak_place_mutability = Some(place.mutable);
             if matches!(place.mutable, Some(false)) {
-                ctx.push_error(TypeError::Simple {
-                    loc: ctx.ex.program.value_loc(self.site),
-                    message: writable_place_error_message(self.context, weak_access_kind),
-                });
+                push_writable_place_error(
+                    ctx,
+                    self.site,
+                    writable_place_error_message(self.context, weak_access_kind),
+                    Some(self.projected_origin),
+                );
                 return ResolveOutcome::drop(true);
             }
         }
@@ -4130,10 +4190,12 @@ impl PendingMutabilityMatchRequirement {
                 Some(Some(true)) => ResolveOutcome::drop(true),
                 Some(Some(false)) => {
                     if emit_context_error {
-                        ctx.push_error(TypeError::Simple {
-                            loc: ctx.ex.program.value_loc(self.site),
-                            message: writable_place_error_message(self.context, weak_access_kind),
-                        });
+                        push_writable_place_error(
+                            ctx,
+                            self.site,
+                            writable_place_error_message(self.context, weak_access_kind),
+                            Some(self.projected_origin),
+                        );
                     }
                     ResolveOutcome::drop(true)
                 }

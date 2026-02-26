@@ -249,6 +249,7 @@ Current local inference mutability is driven by a single pending-constraint queu
   - mutable binding roots do not get parent-linked in let-alias flow.
 - `SearchState::new_origin(...)` computes `effective_mutability` for the appended node directly instead of triggering whole-graph recomputation on every insertion.
 - `AddrOf` now records projection mutability as `Option<bool>` directly (plain `&` no longer forces `false`), so later constraints decide whether mutability can be promoted.
+- Writable-place diagnostics now try to include an origin cause label (`TypeError::SimpleRelated`) when mutability fails: assignment/`&mut` error sites point at the immutable origin declaration site when available (for example immutable `let` binding that a later deref write flows from).
 
 ### Practical pitfalls
 

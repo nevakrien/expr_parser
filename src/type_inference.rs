@@ -1038,6 +1038,12 @@ pub enum TypeError {
         loc: Loc,
         message: &'static str,
     },
+    SimpleRelated {
+        loc: Loc,
+        message: &'static str,
+        related: Loc,
+        related_message: &'static str,
+    },
     UnknownBuiltinMemberMethod {
         site: ValId,
         method: StrId,
@@ -5073,6 +5079,34 @@ mod type_infer_tests {
         panic!("let binding `{}` not found", name)
     }
 
+    fn find_let_stmt_pattern(program: &Program, func: ValId, name: &str) -> PatId {
+        let Value::Func { body, .. } = program.value(func) else {
+            panic!("expected function value")
+        };
+        let body = body.expect("expected function body");
+        let Value::Block {
+            statements,
+            return_value: _,
+        } = program.value(body)
+        else {
+            panic!("expected block body")
+        };
+
+        for stmt in statements.ids() {
+            let Value::Let { pat, .. } = program.value(stmt) else {
+                continue;
+            };
+            let Some(n) = extract_bind_name(program, pat) else {
+                continue;
+            };
+            if program.name_string(n) == name {
+                return pat;
+            }
+        }
+
+        panic!("let binding `{}` not found", name)
+    }
+
     fn find_typedef_type_by_name(program: &Program, solved: &SolvedTypes, name: &str) -> TypeId {
         let texp = program
             .definitions
@@ -5253,13 +5287,17 @@ mod type_infer_tests {
 
     fn assert_has_simple_error(errs: &[TypeError], message: &'static str) {
         assert!(
-            errs.iter().any(|err| matches!(
-                err,
+            errs.iter().any(|err| match err {
                 TypeError::Simple {
                     message: found_message,
                     ..
-                } if *found_message == message
-            )),
+                }
+                | TypeError::SimpleRelated {
+                    message: found_message,
+                    ..
+                } => *found_message == message,
+                _ => false,
+            }),
             "expected simple error `{message}`, got {errs:?}"
         );
     }
@@ -7417,6 +7455,7 @@ mod type_infer_tests {
             matches!(
                 err,
                 TypeError::Simple { message, .. }
+                | TypeError::SimpleRelated { message, .. }
                 if *message == "`.` tuple access performs at most one implicit dereference"
             )
         }));
@@ -7856,6 +7895,40 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn assignment_through_shared_reference_reports_immutable_origin_site() {
+        let src = "f=fn(){ let x:int = 0; let p = &x as &mut int; *p = 2:int; }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected shared-reference assignment to fail"),
+            Err(errs) => errs,
+        };
+        let x_pat = find_let_stmt_pattern(&program, f, "x");
+        let x_loc = program.pattern_loc(x_pat);
+
+        assert!(
+            errs.iter().any(|err| {
+                matches!(
+                    err,
+                    TypeError::SimpleRelated {
+                        message,
+                        related,
+                        related_message,
+                        ..
+                    } if *message == "cannot assign through immutable dereference"
+                        && related.file == x_loc.file
+                        && related.range.start == x_loc.range.start
+                        && *related_message == "origin binding is immutable here"
+                )
+            }),
+            "expected immutable-origin related diagnostic, got {errs:?}"
+        );
+    }
+
+    #[test]
     fn assignment_through_shared_reference_stays_rejected_after_later_const_use() {
         assert_fn_body_simple_error(
             "f=fn(){ let x:int = 1; let p = &x; *p = 2:int; x:int; }",
@@ -7887,6 +7960,41 @@ mod type_infer_tests {
                 f = fn(){ let x:int = 1; let p = id(&x); *p = 2:int; }
             "#,
             "cannot assign through immutable dereference",
+        );
+    }
+
+    #[test]
+    fn assignment_through_generic_identity_shared_reference_from_var_binding_is_allowed() {
+        assert_fn_type!(
+            r#"
+                id = fn[T](a:T)->T { a }
+                f = fn(){ var x:int = 1; let p = id(&x); *p = 2:int; }
+            "#,
+            BuiltinType::Void
+        );
+    }
+
+    #[test]
+    fn assignment_through_non_generic_ref_identity_from_var_binding_is_allowed() {
+        assert_fn_type!(
+            r#"
+                id_ref = fn(a:&int)->&int { a }
+                f = fn(){ var x:int = 1; let p = id_ref(&x); *p = 2:int; }
+            "#,
+            BuiltinType::Void
+        );
+    }
+
+    #[test]
+    fn assignment_through_nested_generic_identity_from_var_binding_is_allowed() {
+        assert_fn_type!(
+            r#"
+                step1 = fn[T](a:T)->T { a }
+                step2 = fn[T](a:T)->T { step1(a) }
+                step3 = fn[T](a:T)->T { step2(a) }
+                f = fn(){ var x:int = 1; let p = step3(&x); *p = 2:int; }
+            "#,
+            BuiltinType::Void
         );
     }
 
@@ -7999,6 +8107,7 @@ mod type_infer_tests {
                     matches!(
                         err,
                         TypeError::Simple { message, .. }
+                        | TypeError::SimpleRelated { message, .. }
                         if *message == expected
                     )
                 }),
@@ -8037,6 +8146,7 @@ mod type_infer_tests {
             matches!(
                 err,
                 TypeError::Simple { message, .. }
+                | TypeError::SimpleRelated { message, .. }
                 if *message == "implicit `__deref_mut` step requires mutable source"
             )
         }));
@@ -8059,6 +8169,7 @@ mod type_infer_tests {
             matches!(
                 err,
                 TypeError::Simple { message, .. }
+                | TypeError::SimpleRelated { message, .. }
                 if *message == "implicit `__deref_mut` step requires mutable source"
             )
         }));
@@ -8085,6 +8196,7 @@ mod type_infer_tests {
             matches!(
                 err,
                 TypeError::Simple { message, .. }
+                | TypeError::SimpleRelated { message, .. }
                 if *message == "implicit `__deref_mut` step requires mutable source"
             )
         }));

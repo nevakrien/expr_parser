@@ -242,6 +242,27 @@ impl ErrorReporter {
 
                 self.print_report(report.finish())
             }
+            TypeError::SimpleRelated {
+                loc,
+                message,
+                related,
+                related_message,
+            } => {
+                let report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(*message)
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message("here")
+                            .with_color(Color::Red),
+                    )
+                    .with_label(
+                        Label::new((related.file, related.range.clone()))
+                            .with_message(*related_message)
+                            .with_color(Color::Yellow),
+                    );
+
+                self.print_report(report.finish())
+            }
             TypeError::UnknownBuiltinMemberMethod { site, method } => {
                 let loc = program.value_loc(*site);
                 let method_name = program.str_intern.resolve(*method);
