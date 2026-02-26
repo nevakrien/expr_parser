@@ -236,10 +236,12 @@ It is intentionally staged so multiple agents can continue safely.
 
 ### Stage 2
 
-- Replace origin-based short-circuit (`Origin::Local`, `Origin::DerefOf`) with explicit place-walk artifacts (`PlaceInfo`) gathered from expression shape.
-- Route all place-relevant operations through one checker API:
-  - addressability requirement,
-  - writable requirement.
+- Local inference now stores explicit origin nodes in an arena (`SearchState.origins`) with stable `OriginId`s.
+- `value_origin` reconstruction was removed from writable checks; place mutability now starts from gathered `ValId -> OriginId` links plus existing place-shape checks.
+- `InnerFunctionTypes` now persists local provenance artifacts (`origins`, `value_origins`, `pattern_origins`) for downstream analysis and tests.
+- `let` bindings now link binding roots to RHS provenance, so shared-reference provenance is preserved through aliases (`let p = &x; *p = ...` stays rejected).
+- Writable checks still use place-shape context for diagnostics (`assign` vs `&mut`, `.` vs `->` vs index), while ancestry only contributes mutability vetoes.
+- Implementation contract and migration notes remain in `agent_docs/origin_graph_plan.md`.
 
 ### Stage 3
 

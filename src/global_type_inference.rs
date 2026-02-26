@@ -412,7 +412,7 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
             }
             let t = ctx.ex.store.intern(TypeValue::Generic(id));
             let c = ctx.new_solved(t);
-            ctx.search.insert_name(n, c, NameBindingKind::Generic);
+            ctx.search.insert_name(n, c, NameBindingKind::Generic, None);
             ctx.search.local_types.insert(n, c);
             ctx.bind_pat(p, c);
             c

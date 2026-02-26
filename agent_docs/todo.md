@@ -25,3 +25,8 @@ if we moved all the expensive fields to be Rc<[]> that would allow us to fixup t
 - Struct global-range resolution likely needs a mostly gather-first path with only a narrow loop over selected resolve passes (instead of full solver behavior).
 - Function body inference may be able to stay gather-only for many cases.
 - This is a design follow-up note only; no behavior change is implied by this note.
+
+## Origin Provenance Rewrite
+
+- Detailed implementation plan is tracked in `agent_docs/origin_graph_plan.md`.
+- Provenance regression tests for shared-reference assignment now pass under the gathered-origin writable checks.

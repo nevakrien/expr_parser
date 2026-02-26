@@ -820,7 +820,7 @@ impl Program {
             let methods = self.member_methods.entry(struct_name_id).or_default();
             methods
                 .entry(method_name)
-                .or_insert_with(FunctionSet::new)
+                .or_default()
                 .push(def_value, has_body);
             return;
         }

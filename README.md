@@ -166,6 +166,9 @@ this also lets us put noalias/restrict on every safe refrences which is great fo
 but we still want to support C++ like code that doesnt fit neatly into the lifetime model.
 which is why we take kind of a middele road aproch.
 
+we also do less implicit lifetime casts to what Rust does. partly as a limitation and partly as a design choice.
+Rust would allow passing `&'a &'b` into a `&'a &'a` completly implictly. a similar sort of cast is actually required to exploit 1 of their worse [compiler bugs](https://github.com/Speykious/cve-rs/blob/main/src/lifetime_expansion.rs).
+
 member methods can either use lifetimes or use raw refrences.
 its on users to mark unsafe methods with unsafe_... or not we dont mind.
 if code does not use any raw pointers it is gurnteed to safe (and if there is UB thats a compiler bug).

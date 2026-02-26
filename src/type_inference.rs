@@ -50,7 +50,6 @@ use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, Program};
 
-use std::ffi::CStr;
 unsafe extern "C" {
     fn perf_init();
     fn perf_begin();
@@ -986,6 +985,9 @@ pub struct InnerFunctionTypes {
     pub pat_types: IdHashMap<PatId, TypeId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
+    pub origins: Vec<OriginNode>,
+    pub value_origins: IdHashMap<ValId, OriginId>,
+    pub pattern_origins: IdHashMap<PatId, OriginId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1330,7 +1332,7 @@ fn _infer_value_hacky<'a>(
 
     value: ValId,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
-    if !matches!(ans.function_values.get(&value), Some(_)) {
+    if !ans.function_values.get(&value).is_some() {
         ans.set_function_signature(
             value,
             SolvedFunctionTypes {
@@ -1452,8 +1454,16 @@ impl<'a> InferState<'a> {
         self.search.bind_val(v, c);
     }
 
+    pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>) {
+        self.search.bind_val_with_origin(v, c, origin);
+    }
+
     pub(crate) fn bind_pat(&mut self, p: PatId, c: CId) {
         self.search.bind_pat(p, c);
+    }
+
+    pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>) {
+        self.search.bind_pat_with_origin(p, c, origin);
     }
 
     pub(crate) fn unify(&mut self, a: CId, b: CId) -> Result<CId, TypeClash> {
@@ -1698,12 +1708,36 @@ pub(crate) enum AssignIncDecFlavor {
     PostDec,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OriginId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Origin {
-    Generic,
-    CantAddr,
-    Local(bool),
-    DerefOf(CId),
+pub enum OriginDeclSite {
+    Pattern(PatId),
+    Value(ValId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginKind {
+    BindingRoot,
+    ArgumentRoot,
+    CallReturnRoot,
+    RawRoot,
+    Reborrow,
+    Deref,
+    MemberProjection,
+    IndexProjection,
+    CastProjection,
+    RawDerefLifetimeProjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginNode {
+    pub kind: OriginKind,
+    pub parent: Option<OriginId>,
+    pub decl_site: Option<OriginDeclSite>,
+    pub declared_mutability: Option<bool>,
+    pub lifetime_seed: Option<LId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1976,8 +2010,18 @@ pub(crate) struct SearchState {
     pub(crate) pat_cluster: Vec<(PatId, CId)>,
     pub(crate) typedef_cluster: Vec<(TExpId, CId)>,
     pub(crate) local_types: IdHashMap<NameId, CId>,
-    pub(crate) names: IdHashMap<NameId, (CId, NameBindingKind)>,
+    pub(crate) names: IdHashMap<NameId, NameBinding>,
     pub(crate) local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
+    pub(crate) origins: Vec<OriginNode>,
+    pub(crate) value_origins: IdHashMap<ValId, OriginId>,
+    pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct NameBinding {
+    pub(crate) cluster: CId,
+    pub(crate) kind: NameBindingKind,
+    pub(crate) origin: Option<OriginId>,
 }
 
 impl SearchState {
@@ -1989,6 +2033,9 @@ impl SearchState {
             local_types: IdHashMap::default(),
             names: IdHashMap::default(),
             local_lifetimes: IdHashMap::default(),
+            origins: Vec::new(),
+            value_origins: IdHashMap::default(),
+            pattern_origins: IdHashMap::default(),
         };
         ans.populate_defaults(types);
         ans
@@ -2002,6 +2049,9 @@ impl SearchState {
             local_types,
             names,
             local_lifetimes,
+            origins,
+            value_origins,
+            pattern_origins,
         } = self;
 
         val_cluster.clear();
@@ -2010,6 +2060,9 @@ impl SearchState {
         local_types.clear();
         names.clear();
         local_lifetimes.clear();
+        origins.clear();
+        value_origins.clear();
+        pattern_origins.clear();
 
         self.populate_defaults(types);
     }
@@ -2024,26 +2077,47 @@ impl SearchState {
         self.val_cluster.push((v, c));
     }
 
+    pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>) {
+        self.val_cluster.push((v, c));
+        if let Some(origin) = origin {
+            self.value_origins.insert(v, origin);
+        }
+    }
+
     pub(crate) fn bind_pat(&mut self, p: PatId, c: CId) {
         self.pat_cluster.push((p, c));
     }
 
-    pub(crate) fn insert_name(&mut self, name: NameId, cluster: CId, kind: NameBindingKind) {
-        self.names.insert(name, (cluster, kind));
+    pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>) {
+        self.pat_cluster.push((p, c));
+        if let Some(origin) = origin {
+            self.pattern_origins.insert(p, origin);
+        }
     }
 
-    pub(crate) fn name_binding(&self, name: NameId) -> Option<(CId, Origin)> {
-        self.names.get(&name).copied().map(|(cid, kind)| {
-            let origin = match kind {
-                NameBindingKind::Generic => Origin::Generic,
-                NameBindingKind::Local(mutable) => Origin::Local(mutable),
-            };
-            (cid, origin)
-        })
+    pub(crate) fn insert_name(
+        &mut self,
+        name: NameId,
+        cluster: CId,
+        kind: NameBindingKind,
+        origin: Option<OriginId>,
+    ) {
+        self.names.insert(
+            name,
+            NameBinding {
+                cluster,
+                kind,
+                origin,
+            },
+        );
+    }
+
+    pub(crate) fn name_binding(&self, name: NameId) -> Option<NameBinding> {
+        self.names.get(&name).copied()
     }
 
     pub(crate) fn name_cluster_mut(&mut self, name: NameId) -> Option<&mut CId> {
-        self.names.get_mut(&name).map(|(cid, _)| cid)
+        self.names.get_mut(&name).map(|entry| &mut entry.cluster)
     }
 
     pub(crate) fn value_cluster(&mut self, value: ValId) -> Option<CId> {
@@ -2051,6 +2125,33 @@ impl SearchState {
             .iter()
             .rev()
             .find_map(|(v, c)| (*v == value).then_some(*c))
+    }
+
+    pub(crate) fn value_origin(&self, value: ValId) -> Option<OriginId> {
+        self.value_origins.get(&value).copied()
+    }
+
+    pub(crate) fn pattern_origin(&self, pat: PatId) -> Option<OriginId> {
+        self.pattern_origins.get(&pat).copied()
+    }
+
+    pub(crate) fn new_origin(
+        &mut self,
+        kind: OriginKind,
+        parent: Option<OriginId>,
+        decl_site: Option<OriginDeclSite>,
+        declared_mutability: Option<bool>,
+        lifetime_seed: Option<LId>,
+    ) -> OriginId {
+        let id = OriginId(self.origins.len() as u32);
+        self.origins.push(OriginNode {
+            kind,
+            parent,
+            decl_site,
+            declared_mutability,
+            lifetime_seed,
+        });
+        id
     }
 }
 
@@ -4248,9 +4349,16 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         Pattern::Bind(n, kind) => {
             let c = ctx.new_cluster();
             let is_mut_legal = matches!(kind, VarKind::Mut);
+            let origin = Some(ctx.search.new_origin(
+                OriginKind::BindingRoot,
+                None,
+                Some(OriginDeclSite::Pattern(p)),
+                Some(is_mut_legal),
+                None,
+            ));
             ctx.search
-                .insert_name(n, c, NameBindingKind::Local(is_mut_legal));
-            ctx.bind_pat(p, c);
+                .insert_name(n, c, NameBindingKind::Local(is_mut_legal), origin);
+            ctx.bind_pat_with_origin(p, c, origin);
             (c, Some(n))
         }
 
@@ -4264,7 +4372,16 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
                 kind: PtrKind::SafeRef,
                 tgt,
             };
-            ctx.bind_pat(p, c);
+            let origin = ctx.search.pattern_origin(base).map(|base_origin| {
+                ctx.search.new_origin(
+                    OriginKind::Reborrow,
+                    Some(base_origin),
+                    Some(OriginDeclSite::Pattern(p)),
+                    Some(mutable),
+                    None,
+                )
+            });
+            ctx.bind_pat_with_origin(p, c, origin);
             (c, n)
         }
 
@@ -4285,7 +4402,8 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
                 });
             }
 
-            ctx.bind_pat(p, c);
+            let origin = ctx.search.pattern_origin(pat);
+            ctx.bind_pat_with_origin(p, c, origin);
             (c, n)
         }
 
@@ -4295,7 +4413,7 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
                 .map(|item| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, item))
                 .collect::<Vec<_>>();
             let tuple = ctx.new_tuple_instance(item_clusters);
-            ctx.bind_pat(p, tuple);
+            ctx.bind_pat_with_origin(p, tuple, None);
             (tuple, None)
         }
 
@@ -7593,6 +7711,22 @@ mod type_infer_tests {
     fn assignment_through_shared_reference_is_rejected() {
         assert_fn_body_simple_error(
             "f=fn(){ let x:int = 0; let p:&int = &x; *p = 2:int; }",
+            "cannot assign through immutable dereference",
+        );
+    }
+
+    #[test]
+    fn assignment_through_shared_reference_stays_rejected_after_later_const_use() {
+        assert_fn_body_simple_error(
+            "f=fn(){ let x:int = 1; let p = &x; *p = 2:int; x:int; }",
+            "cannot assign through immutable dereference",
+        );
+    }
+
+    #[test]
+    fn assignment_through_reborrowed_shared_reference_is_rejected() {
+        assert_fn_body_simple_error(
+            "f=fn(){ let x:int = 1; let p1 = &x; let p2 = &*p1; *p2 = 2:int; }",
             "cannot assign through immutable dereference",
         );
     }

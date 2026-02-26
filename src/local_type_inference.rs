@@ -82,11 +82,7 @@ pub fn infer_value_internals<'a>(
 
             ctx.new_solved(known_function_ty.unwrap_or(UNKNOWN_TYPE))
         }
-        _ => {
-            let found = gather_constraints(&mut ctx, value, None);
-
-            found
-        }
+        _ => gather_constraints(&mut ctx, value, None),
     };
 
     local_solver(&mut ctx);
@@ -364,11 +360,11 @@ fn finalize_local(ctx: &mut InferState) {
         let root = types.root(*c);
         if let ResolveKind::Solved(t) = types.cluster_state(root) {
             inner.val_types.insert(*v, t);
-        } else if *c == root && !reported.contains_key(&c) {
+        } else if *c == root && !reported.contains_key(c) {
             let found = types.bad_type(ex, root);
             ex.errors.push(TypeError::Unresolved { value: *v, found });
             reported.insert(root, ());
-            if let Some(entry) = member_method_by_site.get(&v) {
+            if let Some(entry) = member_method_by_site.get(v) {
                 let full_root = types.root(entry.full_method);
                 reported.insert(full_root, ());
             }
@@ -379,7 +375,7 @@ fn finalize_local(ctx: &mut InferState) {
         let root = types.root(*c);
         if let ResolveKind::Solved(t) = types.cluster_state(root) {
             inner.pat_types.insert(*p, t);
-        } else if *c == root && !reported.contains_key(&c) {
+        } else if *c == root && !reported.contains_key(c) {
             let found = types.bad_type(ex, root);
             ex.errors
                 .push(TypeError::UnresolvedPattern { pattern: *p, found });
@@ -431,6 +427,9 @@ fn finalize_local(ctx: &mut InferState) {
         &mut types.core.parent,
         &types.core.cluster,
     );
+    inner.origins = std::mem::take(&mut search.origins);
+    inner.value_origins = std::mem::take(&mut search.value_origins);
+    inner.pattern_origins = std::mem::take(&mut search.pattern_origins);
 
     let owner = req.owner.or_else(|| {
         val_cluster
@@ -524,6 +523,42 @@ pub(crate) fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
     ctx.ex.name_render = previous_name_render;
     f
 }
+
+#[inline(always)]
+fn new_origin_projection(
+    ctx: &mut InferState,
+    kind: OriginKind,
+    site: ValId,
+    parent: Option<OriginId>,
+    declared_mutability: Option<bool>,
+) -> Option<OriginId> {
+    parent.map(|parent| {
+        ctx.search.new_origin(
+            kind,
+            Some(parent),
+            Some(OriginDeclSite::Value(site)),
+            declared_mutability,
+            None,
+        )
+    })
+}
+
+#[inline(always)]
+fn new_origin_root(
+    ctx: &mut InferState,
+    kind: OriginKind,
+    site: ValId,
+    declared_mutability: Option<bool>,
+) -> OriginId {
+    ctx.search.new_origin(
+        kind,
+        None,
+        Some(OriginDeclSite::Value(site)),
+        declared_mutability,
+        None,
+    )
+}
+
 pub(crate) fn gather_constraints(
     ctx: &mut InferState,
     v: ValId,
@@ -592,7 +627,11 @@ pub(crate) fn gather_constraints(
                 //so this here is actually wrong for when users define local genric stuff
                 let c = ctx.types.root(*base);
                 *base = c;
-                ctx.bind_val(v, c);
+                let origin = ctx
+                    .search
+                    .name_binding(n)
+                    .and_then(|binding| binding.origin);
+                ctx.bind_val_with_origin(v, c, origin);
                 return c;
             }
 
@@ -631,9 +670,18 @@ pub(crate) fn gather_constraints(
         } => {
             let lhs = gather_pattern_constraints(ctx, pat);
             // let-expr evaluates to the bound pattern value => alias
-            ctx.bind_val(v, lhs);
+            let lhs_origin = ctx.search.pattern_origin(pat);
+            ctx.bind_val_with_origin(v, lhs, lhs_origin);
 
             let rhs = gather_constraints(ctx, value, current_output);
+            let rhs_origin = ctx.search.value_origin(value);
+
+            if let (Some(lhs_origin), Some(rhs_origin)) = (lhs_origin, rhs_origin)
+                && let Some(node) = ctx.search.origins.get_mut(lhs_origin.0 as usize)
+                && node.parent.is_none()
+            {
+                node.parent = Some(rhs_origin);
+            }
 
             if let Err(clash) = ctx.unify(rhs, lhs) {
                 ctx.push_error(TypeError::ValuesContradict {
@@ -675,7 +723,8 @@ pub(crate) fn gather_constraints(
             }
 
             // Annotation does not introduce a new type identity: alias to the value
-            ctx.bind_val(v, rhs_cluster);
+            let origin = ctx.search.value_origin(value);
+            ctx.bind_val_with_origin(v, rhs_cluster, origin);
             rhs_cluster
         }
 
@@ -683,7 +732,15 @@ pub(crate) fn gather_constraints(
             let _ = gather_constraints(ctx, value, current_output);
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty);
-            ctx.bind_val(v, c);
+            let origin = new_origin_projection(
+                ctx,
+                OriginKind::CastProjection,
+                v,
+                ctx.search.value_origin(value),
+                None,
+            )
+            .or_else(|| Some(new_origin_root(ctx, OriginKind::RawRoot, v, None)));
+            ctx.bind_val_with_origin(v, c, origin);
             c
         }
 
@@ -729,15 +786,29 @@ pub(crate) fn gather_constraints(
                 kind: PtrKind::Unknown,
                 mutable,
             };
-            ctx.bind_val(v, ans);
+            let origin = new_origin_projection(
+                ctx,
+                OriginKind::Reborrow,
+                v,
+                ctx.search.value_origin(base),
+                Some(mutable.unwrap_or(false)),
+            )
+            .or_else(|| Some(new_origin_root(ctx, OriginKind::RawRoot, v, mutable)));
+            ctx.bind_val_with_origin(v, ans, origin);
             ans
         }
 
         Value::Deref(base) => {
             let output = ctx.new_cluster();
-            ctx.bind_val(v, output);
-
             let src = gather_constraints(ctx, base, current_output);
+            let origin = new_origin_projection(
+                ctx,
+                OriginKind::Deref,
+                v,
+                ctx.search.value_origin(base),
+                None,
+            );
+            ctx.bind_val_with_origin(v, output, origin);
             let mut pending = PendingDeref::new(&mut ctx.types, v, base, src, output);
 
             let outcome = pending.step(&mut ctx.ex, &mut ctx.types);
@@ -779,6 +850,13 @@ pub(crate) fn gather_constraints(
             }
 
             let source = gather_constraints(ctx, base, current_output);
+            let output_origin = new_origin_projection(
+                ctx,
+                OriginKind::MemberProjection,
+                v,
+                ctx.search.value_origin(base),
+                None,
+            );
 
             if is_any_type_builtin_member_name(name) {
                 let result = resolve_any_type_builtin_member_access(
@@ -791,7 +869,7 @@ pub(crate) fn gather_constraints(
                     source,
                     name,
                 );
-                ctx.bind_val(v, result);
+                ctx.bind_val_with_origin(v, result, output_origin);
                 return result;
             }
 
@@ -809,7 +887,7 @@ pub(crate) fn gather_constraints(
                     result,
                     implicit_receivers,
                 } => {
-                    ctx.bind_val(v, result);
+                    ctx.bind_val_with_origin(v, result, output_origin);
 
                     record_implicit_deref_receivers(
                         &mut ctx.req.implicit_deref_sites,
@@ -822,7 +900,7 @@ pub(crate) fn gather_constraints(
 
                 MemberAccessResolve::Pending { .. } => {
                     let result = pending.output;
-                    ctx.bind_val(v, result);
+                    ctx.bind_val_with_origin(v, result, output_origin);
 
                     // IMPORTANT: push the entire frame
                     ctx.req.pending_member_accesses.push(pending);
@@ -834,7 +912,7 @@ pub(crate) fn gather_constraints(
                     ctx.push_error(err);
 
                     let result = pending.output;
-                    ctx.bind_val(v, result);
+                    ctx.bind_val_with_origin(v, result, output_origin);
 
                     result
                 }
@@ -843,7 +921,7 @@ pub(crate) fn gather_constraints(
 
         Value::Assign { op, target } => {
             let lhs = gather_constraints(ctx, target, current_output);
-            ctx.bind_val(v, lhs);
+            ctx.bind_val_with_origin(v, lhs, ctx.search.value_origin(target));
 
             require_place_writable(ctx, v, target, WritablePlaceContext::Assign);
 
@@ -925,7 +1003,8 @@ pub(crate) fn gather_constraints(
                 None => ctx.new_solved(BuiltinType::Void.into()),
             };
 
-            ctx.bind_val(v, c);
+            let origin = return_value.and_then(|r| ctx.search.value_origin(r));
+            ctx.bind_val_with_origin(v, c, origin);
             c
         }
 
@@ -1099,6 +1178,13 @@ pub(crate) fn gather_constraints(
                     .map(|a| gather_constraints(ctx, a, current_output))
                     .collect();
                 let output = ctx.new_cluster();
+                let output_origin = Some(ctx.search.new_origin(
+                    OriginKind::CallReturnRoot,
+                    ctx.search.value_origin(call.base),
+                    Some(OriginDeclSite::Value(v)),
+                    None,
+                    None,
+                ));
 
                 let found = ctx.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
@@ -1116,6 +1202,7 @@ pub(crate) fn gather_constraints(
                         clash,
                     });
                 }
+                ctx.bind_val_with_origin(v, output, output_origin);
                 output
             } else {
                 //we have to get exact function here because we need to figure out arg order
@@ -1384,12 +1471,19 @@ pub(crate) fn gather_constraints(
 
         Value::IntAccess { base, id, kind } => {
             let source = gather_constraints(ctx, base, current_output);
+            let output_origin = new_origin_projection(
+                ctx,
+                OriginKind::IndexProjection,
+                v,
+                ctx.search.value_origin(base),
+                None,
+            );
             match try_resolve_tuple_int_access(&mut ctx.ex, &mut ctx.types, v, source, id, kind) {
                 IntAccessResolve::Resolved {
                     result,
                     implicit_receivers,
                 } => {
-                    ctx.bind_val(v, result);
+                    ctx.bind_val_with_origin(v, result, output_origin);
                     record_implicit_deref_receivers(
                         &mut ctx.req.implicit_deref_sites,
                         v,
@@ -1399,7 +1493,7 @@ pub(crate) fn gather_constraints(
                 }
                 IntAccessResolve::Pending { source } => {
                     let result = ctx.new_cluster();
-                    ctx.bind_val(v, result);
+                    ctx.bind_val_with_origin(v, result, output_origin);
                     ctx.req.pending_int_accesses.push(PendingIntAccess {
                         site: v,
                         source,
@@ -1412,7 +1506,7 @@ pub(crate) fn gather_constraints(
                 IntAccessResolve::Error(err) => {
                     ctx.push_error(err);
                     let result = ctx.new_cluster();
-                    ctx.bind_val(v, result);
+                    ctx.bind_val_with_origin(v, result, output_origin);
                     result
                 }
             }
@@ -1533,7 +1627,14 @@ pub(crate) fn gather_constraints(
             }
 
             let output = ctx.new_cluster();
-            ctx.bind_val(v, output);
+            let output_origin = new_origin_projection(
+                ctx,
+                OriginKind::IndexProjection,
+                v,
+                ctx.search.value_origin(call.base),
+                None,
+            );
+            ctx.bind_val_with_origin(v, output, output_origin);
 
             if !named_args.is_empty() || pos_args.len() != 1 {
                 let loc = ctx.ex.program.value_loc(v);
@@ -1595,18 +1696,49 @@ fn place_with_access(place: PlaceKind, access_kind: PlaceAccessKind) -> PlaceKin
     }
 }
 
-fn value_origin(ctx: &mut InferState, value: ValId) -> Option<Origin> {
-    match ctx.ex.program.value(value) {
-        Value::NameRef(name) => ctx
-            .search
-            .name_binding(name)
-            .map(|(_, origin)| origin)
-            .or(Some(Origin::CantAddr)),
-        Value::Deref(base) => {
-            let base_cluster = ctx.search.value_cluster(base)?;
-            Some(Origin::DerefOf(ctx.types.root(base_cluster)))
+fn origin_mutability_from_ancestry(search: &SearchState, origin: OriginId) -> Option<bool> {
+    let mut current = Some(origin);
+    let mut saw_mutable_root = false;
+    let mut saw_unknown = false;
+
+    while let Some(origin) = current {
+        let Some(node) = search.origins.get(origin.0 as usize) else {
+            saw_unknown = true;
+            break;
+        };
+
+        let participates_in_mutability = !matches!(
+            node.kind,
+            OriginKind::BindingRoot | OriginKind::ArgumentRoot | OriginKind::CallReturnRoot
+        );
+        if participates_in_mutability {
+            if let Some(false) = node.declared_mutability {
+                return Some(false);
+            }
+            if let Some(true) = node.declared_mutability {
+                saw_mutable_root = true;
+            }
         }
-        _ => Some(Origin::CantAddr),
+
+        if node.parent.is_none()
+            && !matches!(
+                node.kind,
+                OriginKind::BindingRoot | OriginKind::ArgumentRoot
+            )
+            && node.declared_mutability.is_none()
+        {
+            saw_unknown = true;
+        }
+
+        current = node.parent;
+    }
+
+    if saw_mutable_root {
+        Some(true)
+    } else if saw_unknown {
+        None
+    } else {
+        None
     }
 }
 
@@ -1780,14 +1912,15 @@ fn record_implicit_deref_receivers(
 
 fn check_place_mutability(ctx: &mut InferState, target: ValId) -> PlaceKind {
     match ctx.ex.program.value(target) {
-        Value::NameRef(name) => match ctx.search.name_binding(name).map(|(_, origin)| origin) {
-            Some(Origin::Local(true)) => place_kind(PlaceAccessKind::Local, Some(true)),
-            Some(Origin::Local(false)) => place_kind(PlaceAccessKind::Local, Some(false)),
-            Some(Origin::CantAddr) | Some(Origin::Generic) | None => {
-                place_kind(PlaceAccessKind::NonPlace, Some(false))
+        Value::NameRef(name) => {
+            let Some(binding) = ctx.search.name_binding(name) else {
+                return place_kind(PlaceAccessKind::NonPlace, Some(false));
+            };
+            match binding.kind {
+                NameBindingKind::Generic => place_kind(PlaceAccessKind::NonPlace, Some(false)),
+                NameBindingKind::Local(is_mut) => place_kind(PlaceAccessKind::Local, Some(is_mut)),
             }
-            Some(Origin::DerefOf(_)) => place_kind(PlaceAccessKind::NonPlace, Some(false)),
-        },
+        }
         Value::Deref(base) => deref_source_write_mutability(ctx, base),
         Value::Access { base, kind, .. } | Value::IntAccess { base, kind, .. } => match kind {
             AccessKind::Static => place_kind(PlaceAccessKind::NonPlace, Some(false)),
@@ -1862,26 +1995,25 @@ fn check_place_mutability(ctx: &mut InferState, target: ValId) -> PlaceKind {
 fn writable_place_kind_with_origin(
     ctx: &mut InferState,
     target: ValId,
-    origin: Option<Origin>,
+    origin: Option<OriginId>,
 ) -> PlaceKind {
+    let mut place = check_place_mutability(ctx, target);
+
     match origin {
-        Some(Origin::Local(is_mut_legal)) => place_kind(PlaceAccessKind::Local, Some(is_mut_legal)),
-        Some(Origin::DerefOf(cid)) => {
-            if let Some(pointer_mutability) =
-                pointer_write_mutability_with_promotion(&ctx.ex, &mut ctx.types, cid)
-            {
-                match pointer_mutability {
-                    Some(true) => place_kind(PlaceAccessKind::Deref, Some(true)),
-                    Some(false) => place_kind(PlaceAccessKind::Deref, Some(false)),
-                    None => place_kind(PlaceAccessKind::Deref, None),
-                }
-            } else {
-                check_place_mutability(ctx, target)
+        Some(origin) => match origin_mutability_from_ancestry(&ctx.search, origin) {
+            Some(false) => {
+                place.mutable = Some(false);
+                place
             }
-        }
-        Some(Origin::CantAddr) | Some(Origin::Generic) | None => {
-            check_place_mutability(ctx, target)
-        }
+            Some(true) => place,
+            None => {
+                if place.mutable == Some(true) {
+                    place.mutable = None;
+                }
+                place
+            }
+        },
+        None => place,
     }
 }
 
@@ -1922,12 +2054,22 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         } else {
             ctx.new_solved(ty)
         };
-        ctx.bind_pat(pat, c);
+        let origin = Some(ctx.search.new_origin(
+            OriginKind::ArgumentRoot,
+            None,
+            Some(OriginDeclSite::Pattern(pat)),
+            Some(matches!(
+                ctx.ex.program.pattern(pat),
+                Pattern::Bind(_, VarKind::Mut)
+            )),
+            None,
+        ));
+        ctx.bind_pat_with_origin(pat, c, origin);
         if let Some(name) = maybe_name {
             let is_mut_legal =
                 matches!(ctx.ex.program.pattern(pat), Pattern::Bind(_, VarKind::Mut));
             ctx.search
-                .insert_name(name, c, NameBindingKind::Local(is_mut_legal));
+                .insert_name(name, c, NameBindingKind::Local(is_mut_legal), origin);
         }
     }
 
@@ -1950,7 +2092,7 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         if let Some(name) = maybe_name {
             ctx.search.local_types.insert(name, generic_cid);
             ctx.search
-                .insert_name(name, generic_cid, NameBindingKind::Generic);
+                .insert_name(name, generic_cid, NameBindingKind::Generic, None);
         }
     }
 
@@ -3831,7 +3973,7 @@ fn require_place_writable(
     target: ValId,
     context: WritablePlaceContext,
 ) -> bool {
-    let origin = value_origin(ctx, target);
+    let origin = ctx.search.value_origin(target);
     let place = writable_place_kind_with_origin(ctx, target, origin);
 
     match place {
