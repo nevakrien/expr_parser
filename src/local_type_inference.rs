@@ -719,15 +719,7 @@ pub(crate) fn gather_constraints(
             // fallback by threading stable local life ids through these edges so later phases
             // can validate ordering requirements directly.
             if matches!(kind, Some(VarKind::Mut)) {
-                let origin = value_origin(ctx, base);
-                let place = check_writable_place_requirement_with_origin(ctx, base, origin);
-                apply_writable_place_requirement_result(
-                    ctx,
-                    v,
-                    base,
-                    WritablePlaceContext::AddrOfMut,
-                    place,
-                );
+                require_place_writable(ctx, v, base, WritablePlaceContext::AddrOfMut);
             }
 
             let mutable = kind.map(|x| matches!(x, VarKind::Mut));
@@ -850,17 +842,10 @@ pub(crate) fn gather_constraints(
         }
 
         Value::Assign { op, target } => {
-            let (lhs, origin) = gather_constraints_with_origin(ctx, target, current_output);
+            let lhs = gather_constraints(ctx, target, current_output);
             ctx.bind_val(v, lhs);
 
-            let place = check_writable_place_requirement_with_origin(ctx, target, origin);
-            apply_writable_place_requirement_result(
-                ctx,
-                v,
-                target,
-                WritablePlaceContext::Assign,
-                place,
-            );
+            require_place_writable(ctx, v, target, WritablePlaceContext::Assign);
 
             match op {
                 AssignOp::Nothing(value) => {
@@ -1610,18 +1595,6 @@ fn place_with_access(place: PlaceKind, access_kind: PlaceAccessKind) -> PlaceKin
     }
 }
 
-//TODO this needs to be part of gather_constraints
-//when we start talking about let(a,b)=1,2 or ither complex setups
-//this aproch breaks down
-fn gather_constraints_with_origin(
-    ctx: &mut InferState,
-    v: ValId,
-    current_output: Option<CId>,
-) -> (CId, Option<Origin>) {
-    let c = gather_constraints(ctx, v, current_output);
-    (c, value_origin(ctx, v))
-}
-
 fn value_origin(ctx: &mut InferState, value: ValId) -> Option<Origin> {
     match ctx.ex.program.value(value) {
         Value::NameRef(name) => ctx
@@ -1886,7 +1859,7 @@ fn check_place_mutability(ctx: &mut InferState, target: ValId) -> PlaceKind {
     }
 }
 
-fn check_writable_place_requirement_with_origin(
+fn writable_place_kind_with_origin(
     ctx: &mut InferState,
     target: ValId,
     origin: Option<Origin>,
@@ -3852,13 +3825,15 @@ fn writable_place_error_message(
     }
 }
 
-fn apply_writable_place_requirement_result(
+fn require_place_writable(
     ctx: &mut InferState,
     site: ValId,
     target: ValId,
     context: WritablePlaceContext,
-    place: PlaceKind,
 ) -> bool {
+    let origin = value_origin(ctx, target);
+    let place = writable_place_kind_with_origin(ctx, target, origin);
+
     match place {
         PlaceKind {
             mutable: Some(true),
@@ -3892,15 +3867,7 @@ pub(crate) fn resolve_pending_writable_place_requirements(ctx: &mut InferState) 
 
     let pending = std::mem::take(&mut ctx.req.pending_writable_place_requirements);
     for check in pending {
-        let origin = value_origin(ctx, check.target);
-        let place = check_writable_place_requirement_with_origin(ctx, check.target, origin);
-        progress |= apply_writable_place_requirement_result(
-            ctx,
-            check.site,
-            check.target,
-            check.context,
-            place,
-        );
+        progress |= require_place_writable(ctx, check.site, check.target, check.context);
     }
 
     progress
