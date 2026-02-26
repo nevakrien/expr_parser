@@ -387,7 +387,9 @@ fn finalize_local(ctx: &mut InferState) {
         }
     }
 
-    inner.member_method_types.reserve(member_method_type_sites.len());
+    inner
+        .member_method_types
+        .reserve(member_method_type_sites.len());
     for entry in member_method_type_sites {
         let root = types.root(entry.full_method);
         if let ResolveKind::Solved(full_type) = types.cluster_state(root) {
@@ -457,7 +459,7 @@ fn store_implicit_deref_chains(
     parent: &mut ClusterVec<CId>,
     cluster: &ClusterVec<Cluster>,
 ) {
-    out.reserve(out.len()+entries.len());
+    out.reserve(out.len() + entries.len());
     for (site, receivers) in entries {
         let mut chain = Vec::with_capacity(receivers.len());
         let mut all_solved = true;

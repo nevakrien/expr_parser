@@ -4,9 +4,49 @@ use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
 use expr_parser::type_inference::{SolvedTypes, TypeStore, run_typechecker};
+use std::env;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::ops::Range;
+
+#[derive(Clone, Copy, Debug)]
+struct CliOptions {
+    stdin_batch: bool,
+    show_ast: bool,
+    type_dump: bool,
+}
+
+fn cli_usage() -> &'static str {
+    "Usage: expr_parser [--stdin-batch] [--show-ast] [--type-dump]\n\
+     \n\
+     Flags:\n\
+       --stdin-batch  Read all stdin until EOF and compile once\n\
+       --show-ast     Print parsed AST nodes while parsing\n\
+       --type-dump    Print full type dump after successful typecheck\n\
+       -h, --help     Show this help text"
+}
+
+fn parse_cli_options() -> Result<Option<CliOptions>, String> {
+    let mut options = CliOptions {
+        stdin_batch: false,
+        show_ast: false,
+        type_dump: false,
+    };
+
+    for arg in env::args().skip(1) {
+        match arg.as_str() {
+            "--stdin-batch" => options.stdin_batch = true,
+            "--show-ast" => options.show_ast = true,
+            "--type-dump" => options.type_dump = true,
+            "-h" | "--help" => return Ok(None),
+            _ => {
+                return Err(format!("Unknown argument: {arg}\n\n{}", cli_usage()));
+            }
+        }
+    }
+
+    Ok(Some(options))
+}
 
 fn pretty_print_token(token: &Token) -> String {
     match token {
@@ -63,10 +103,21 @@ enum ReplInput {
     Quit,
     Reset,
     Load(Vec<String>),
+    SetShowAst(bool),
+    SetTypeDump(bool),
+    ShowModes,
     ShowType(Vec<String>),
     DumpTypes,
     DumpTypesOf(String),
     Code(String),
+}
+
+fn parse_on_off(rest: &str) -> Option<bool> {
+    match rest.trim() {
+        "on" => Some(true),
+        "off" => Some(false),
+        _ => None,
+    }
 }
 
 struct ParsedExprInfo {
@@ -282,6 +333,23 @@ fn read_repl_input() -> io::Result<ReplInput> {
                 let args = trimmed.split_whitespace().skip(1);
                 return Ok(ReplInput::Load(args.map(String::from).collect()));
             }
+            if let Some(rest) = trimmed.strip_prefix(":show-ast") {
+                let Some(value) = parse_on_off(rest) else {
+                    eprintln!("Usage: :show-ast <on|off>");
+                    continue;
+                };
+                return Ok(ReplInput::SetShowAst(value));
+            }
+            if let Some(rest) = trimmed.strip_prefix(":type-dump") {
+                let Some(value) = parse_on_off(rest) else {
+                    eprintln!("Usage: :type-dump <on|off>");
+                    continue;
+                };
+                return Ok(ReplInput::SetTypeDump(value));
+            }
+            if trimmed == ":modes" {
+                return Ok(ReplInput::ShowModes);
+            }
             if let Some(rest) = trimmed.strip_prefix(":types-of") {
                 let names: Vec<String> = rest.split_whitespace().map(String::from).collect();
                 match names.as_slice() {
@@ -314,7 +382,7 @@ fn read_repl_input() -> io::Result<ReplInput> {
     }
 }
 
-fn parse_source(program: &mut Program, input: &str, file_id: usize) -> ParseBatch {
+fn parse_source(program: &mut Program, input: &str, file_id: usize, show_ast: bool) -> ParseBatch {
     let mut parser = Parser::new(input, file_id);
     let mut expr_count = 0;
     let mut infos = Vec::new();
@@ -327,13 +395,15 @@ fn parse_source(program: &mut Program, input: &str, file_id: usize) -> ParseBatc
                 let expr_loc = expr.loc.clone();
                 let value_start = program.values.len();
 
-                println!(
-                    "Expr {}: [{}..{}]",
-                    expr_count + 1,
-                    expr.loc.range.start,
-                    expr.loc.range.end
-                );
-                println!("{}", pretty_print_expr(&expr, 0));
+                if show_ast {
+                    println!(
+                        "Expr {}: [{}..{}]",
+                        expr_count + 1,
+                        expr.loc.range.start,
+                        expr.loc.range.end
+                    );
+                    println!("{}", pretty_print_expr(&expr, 0));
+                }
                 expr_count += 1;
                 program.gather_definition(expr);
 
@@ -382,16 +452,50 @@ fn finalize_program(
     Ok(Some(ans))
 }
 
+fn run_stdin_batch(options: CliOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let mut reporter = ErrorReporter::new();
+    let mut program = Program::new();
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+
+    if input.trim().is_empty() {
+        return Ok(());
+    }
+
+    reporter.add_source(0, input.clone());
+    let _batch = parse_source(&mut program, &input, 0, options.show_ast);
+
+    if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)?
+        && options.type_dump
+    {
+        reporter.report_type_dump(&program, &types, &solved)?;
+    }
+
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(options) = parse_cli_options().map_err(io::Error::other)? else {
+        println!("{}", cli_usage());
+        return Ok(());
+    };
+
+    if options.stdin_batch {
+        return run_stdin_batch(options);
+    }
+
     let mut reporter = ErrorReporter::new();
     let mut program = Program::new();
     let mut next_file_id = 0usize;
     let mut last_typecheck: Option<(TypeStore, SolvedTypes)> = None;
+    let mut show_ast = options.show_ast;
+    let mut type_dump = options.type_dump;
 
     println!("Expression Parser REPL");
     println!("Enter expressions; REPL waits for complete input.");
+    println!("AST printing is off by default. Pass --show-ast or use :show-ast on.");
     println!(
-        "Commands: :load <path...>, :reset, :types, :types-of <name>, :type <name...>, :quit, :exit"
+        "Commands: :load <path...>, :reset, :show-ast <on|off>, :type-dump <on|off>, :modes, :types, :types-of <name>, :type <name...>, :quit, :exit"
     );
 
     loop {
@@ -401,6 +505,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 program = Program::new();
                 last_typecheck = None;
                 println!("REPL state cleared.");
+            }
+            Ok(ReplInput::SetShowAst(value)) => {
+                show_ast = value;
+                println!("show-ast: {}", if show_ast { "on" } else { "off" });
+            }
+            Ok(ReplInput::SetTypeDump(value)) => {
+                type_dump = value;
+                println!("type-dump: {}", if type_dump { "on" } else { "off" });
+            }
+            Ok(ReplInput::ShowModes) => {
+                println!(
+                    "modes: show-ast={}, type-dump={}",
+                    if show_ast { "on" } else { "off" },
+                    if type_dump { "on" } else { "off" }
+                );
             }
             Ok(ReplInput::ShowType(names)) => {
                 let Some((types, solved)) = last_typecheck.as_ref() else {
@@ -453,7 +572,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             next_file_id += 1;
                             reporter.add_source(file_id, contents.clone());
 
-                            let batch = parse_source(&mut program, &contents, file_id);
+                            let batch = parse_source(&mut program, &contents, file_id, show_ast);
                             batches.push(batch);
                         }
                         Err(err) => {
@@ -473,6 +592,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for batch in &batches {
                         print_expr_types(&program, &types, &solved, batch);
                     }
+                    if type_dump {
+                        reporter.report_type_dump(&program, &types, &solved)?;
+                    }
                     last_typecheck = Some((types, solved));
                 } else {
                     last_typecheck = None;
@@ -482,9 +604,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let file_id = next_file_id;
                 next_file_id += 1;
                 reporter.add_source(file_id, input.clone());
-                let batch = parse_source(&mut program, &input, file_id);
+                let batch = parse_source(&mut program, &input, file_id, show_ast);
                 if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)? {
                     print_expr_types(&program, &types, &solved, &batch);
+                    if type_dump {
+                        reporter.report_type_dump(&program, &types, &solved)?;
+                    }
                     last_typecheck = Some((types, solved));
                 } else {
                     last_typecheck = None;

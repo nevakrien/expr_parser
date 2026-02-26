@@ -42,7 +42,23 @@
 - `agent_docs/todo.md`: short-lived implementation notes (including active refactor items and known temporary failures).
 
 ## Commands
-- `cargo run` runs the CLI/REPL, which can be used to inspect parsed AST shape and type inference behavior.
+- First step for quick compile/typecheck checks: run `scripts/repl_batch.sh` with stdin + EOF.
+
+```bash
+scripts/repl_batch.sh <<'EOF'
+main = fn() {};
+EOF
+```
+
+- Add `--type-dump` when you need solved types:
+
+```bash
+scripts/repl_batch.sh --type-dump <<'EOF'
+main = fn() {};
+EOF
+```
+
+- `cargo run` runs the interactive CLI/REPL when you want manual exploration.
 - See `agent_docs/cli_debugging.md` for practical debugging workflows and REPL command details.
 - `cargo test` runs the full test suite and should be used routinely.
 - `cargo fmt` formats Rust code; run before committing style changes.
