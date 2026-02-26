@@ -4,12 +4,8 @@ use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
 const SOURCE: &str = r#"
-f=fn(){
-    var x = 1:int;
-    let p:&mut _ = &x;
-    *p=2;
-    x:int;
- }
+id = fn(a:&mut int)->&mut int { a }
+    f = fn(){ let x:int = 1; let p = id(&x); *p = 2:int; }
 
 
 "#;

@@ -215,51 +215,46 @@ Pointer note: specialization must recurse through `TypeValue::Ptr` as well as fu
 - `UNKNOWN_TYPE`, `UNKNOWN_INT_SIZE`, `UNKNOWN_FLOAT_SIZE`: unresolved/weak placeholders for diagnostics.
 - `BadTypeId`: legacy wrapper still used by some non-clash diagnostics; clash payloads now use strings directly.
 
-## Staged Plan: Place Requirements and Mutability
+## Place Mutability and Origin Constraints
 
-This is the active plan for replacing the current ad-hoc place mutability checks.
-It is intentionally staged so multiple agents can continue safely.
+Current local inference mutability is driven by a single pending-constraint queue:
 
-### Stage 1 (current)
+- `ReqState.pending_mutability_matches` stores `PendingMutabilityMatchRequirement` entries.
+- Each entry points at a single projected origin (`projected_origin`); the parent origin is looked up from the origin graph at resolve-time.
+- The rule is monotone: if a projected origin is required mutable, its parent origin must also be mutable.
 
-- Introduce one shared writable-place requirement path used by both:
-  - assignment targets (`x = ...`, `*p = ...`, `a->x = ...`), and
-  - mutable address-of (`&mut place`).
-- Add a shared pending queue for unresolved writable place checks.
-- While checking writable places, if a pointer cluster is known pointer-shape with unresolved mutability (`ResolveKind::Ptr { mutable: None, .. }`), force it to `Some(true)` instead of waiting for fallback default-to-immutable.
-- Keep `&const` / plain `&` as addressability-only semantics (do not require mutable target).
-- Writable-place checks now return a small `PlaceKind` record (`access_kind + mutable: Option<bool>`) instead of carrying ad-hoc message strings:
-  - `Some(true)` => writable,
-  - `Some(false)` => known immutable,
-  - `None` => unresolved/pending.
-- Error text selection for assign vs `&mut` is now keyed by `(WritablePlaceContext, PlaceAccessKind)`; there is no string matching on intermediate check results.
+### Constraint sources
 
-### Stage 2
+- Writable-place checks (`assign`, `&mut`) now enqueue mutability-match requirements instead of using a dedicated writable-place pending queue.
+- Projection origin creation for explicit mutable projections marks that origin as requiring mutability.
+- Projection origin creation now goes through `new_suborigin(...)`; mutable projections immediately run `mutability_subtype(...)` with `WritablePlaceContext::OriginProjection` so parent/child mutability consistency is checked at construction time.
+- Implicit `__deref_mut` checks keep pointer-chain validation and enqueue pending mutability requirements when pointer mutability is unresolved.
 
-- Local inference now stores explicit origin nodes in an arena (`SearchState.origins`) with stable `OriginId`s.
-- `value_origin` reconstruction was removed from writable checks; place mutability now starts from gathered `ValId -> OriginId` links plus existing place-shape checks.
-- `InnerFunctionTypes` now persists local provenance artifacts (`origins`, `value_origins`, `pattern_origins`) for downstream analysis and tests.
-- `let` bindings now link binding roots to RHS provenance, so shared-reference provenance is preserved through aliases (`let p = &x; *p = ...` stays rejected).
-- Writable-place ancestry now treats terminal mutable binding/argument roots as mutable anchors, so writes through shared-reference aliases of mutable roots are accepted (`var x = 1; let p = &x; *p = 2;`), while immutable roots still veto writes.
-- Writable checks still use place-shape context for diagnostics (`assign` vs `&mut`, `.` vs `->` vs index), while ancestry only contributes mutability vetoes.
-- Implementation contract and migration notes remain in `agent_docs/origin_graph_plan.md`.
+### Resolution model
 
-### Stage 3
+- `resolve_pending_mutability_matches` runs in both stable and fuzzed local solver loops.
+- New mutability requirements are stepped immediately via `PendingMutabilityMatchRequirement::step`; only requirements that return `retain` are enqueued. The queue remains the fallback for unresolved constraints rather than the default path.
+- If parent mutability is already known mutable, a weak/unknown projected side can resolve immediately (no retain), because the directional constraint is already satisfied.
+- Place mutability is still computed via `PlaceKind { access_kind, mutable }` and chain-aware checks (`implicit_deref_sites`), but pending constraints themselves are always origin-to-origin.
+- Unknown pointer mutability can be promoted to mutable, but only when constraints permit it:
+  - never when strong origin is known immutable,
+  - for plain deref writes, only when strong origin is explicitly mutable,
+  - for non-deref projection writes (`->`, index, dot with chain), unresolved strong origin may still allow promotion.
 
-- Add explicit pending addressability checks for unresolved member/index chains (not just writable checks).
-- Improve error orientation and wording per context (`assign` vs `&mut` vs `&`).
+### Origin mutability behavior
 
-### Stage 4 (lifetime-aware places)
+- `origin_mutability_from_ancestry` was removed.
+- Effective origin mutability is cached per `OriginNode` (`effective_mutability`) and read via `SearchState::origin_mutability(origin)`:
+  - binding roots that alias another origin (`BindingRoot` with parent) do not override parent mutability,
+  - mutable binding roots do not get parent-linked in let-alias flow.
+- `SearchState::new_origin(...)` computes `effective_mutability` for the appended node directly instead of triggering whole-graph recomputation on every insertion.
+- `AddrOf` now records projection mutability as `Option<bool>` directly (plain `&` no longer forces `false`), so later constraints decide whether mutability can be promoted.
 
-- During address-of and implicit/explicit reborrow (`&*x` and compiler-synthesized equivalents), record lifetime ordering constraints between source and produced references.
-- Keep stable local lifetime ids for these edges so borrow checking can validate outlives relations.
+### Practical pitfalls
 
-### Known pitfalls
-
-- Do not rely on `ResolveKind::Nothing` as evidence of immutable/non-place; it only means unresolved.
-- Solver pass order matters: pending place checks must run before fallback `force_unresolved_ptr_mutability_to_immut`.
-- Implicit deref receiver chains carry synthetic pointer clusters; mutability constraints must be applied there too, not only on final target origin.
-- Keep behavior order-independent: delayed errors can vary by schedule, but solvability must not.
+- `ResolveKind::Nothing` still means unresolved, not immutable.
+- Keep `resolve_pending_mutability_matches` before fallback `force_unresolved_ptr_mutability_to_immut` in solver order.
+- For flaky tests that include helper functions plus target `f`, prefer deterministic function selection (tests now prefer function named `f`).
 
 ### Type shapes and storage
 

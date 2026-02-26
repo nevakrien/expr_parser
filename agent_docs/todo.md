@@ -18,6 +18,12 @@ if we moved all the expensive fields to be Rc<[]> that would allow us to fixup t
 - Every specialization call should register global signature lifetimes as fresh local unresolved `LId`s and preserve equality links through substitution.
 - Fix/verify struct elided-lifetime rejection (`S=struct{p:&int}` must error with the declared-lifetime message).
 - Mutable receiver method calls through `->` currently allow a shared-to-mutable deref hop in some paths; see failing tests `ptr_member_method_call_rejects_chain_with_immutable_deref_hop` and `pending_ptr_member_method_call_rejects_immutable_to_mut_hop_after_type_is_known` in `src/type_inference.rs`.
+- Generic identity path currently launders shared-reference mutability in one case; regression test `assignment_through_generic_identity_shared_reference_is_rejected` in `src/type_inference.rs` should fail until provenance is preserved through `CallReturnRoot` ancestry.
+
+## Fuzzing Follow-up
+
+- `examples/mutability_fuzz_sketch.rs` is a template-oracle scaffold for mutability regression hunting.
+- Design/usage notes are in `agent_docs/mutability_fuzzing.md`.
 
 ## Type Inference Architecture Follow-up
 

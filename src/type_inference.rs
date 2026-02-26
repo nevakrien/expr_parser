@@ -985,7 +985,7 @@ pub struct InnerFunctionTypes {
     pub pat_types: IdHashMap<PatId, TypeId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<TypeId>>,
-    pub origins: Vec<OriginNode>,
+    pub origins: OriginVec<OriginNode>,
     pub value_origins: IdHashMap<ValId, OriginId>,
     pub pattern_origins: IdHashMap<PatId, OriginId>,
 }
@@ -1711,6 +1711,55 @@ pub(crate) enum AssignIncDecFlavor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OriginId(pub u32);
 
+#[derive(Debug, Clone)]
+pub struct OriginVec<T>(pub Vec<T>);
+
+impl<T> Default for OriginVec<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<T> OriginVec<T> {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn push(&mut self, value: T) {
+        self.0.push(value);
+    }
+
+    pub fn get(&self, id: OriginId) -> Option<&T> {
+        self.0.get(id.0 as usize)
+    }
+
+    pub fn get_mut(&mut self, id: OriginId) -> Option<&mut T> {
+        self.0.get_mut(id.0 as usize)
+    }
+}
+
+impl<T> Index<OriginId> for OriginVec<T> {
+    type Output = T;
+
+    fn index(&self, id: OriginId) -> &T {
+        &self.0[id.0 as usize]
+    }
+}
+
+impl<T> IndexMut<OriginId> for OriginVec<T> {
+    fn index_mut(&mut self, id: OriginId) -> &mut T {
+        &mut self.0[id.0 as usize]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OriginDeclSite {
     Pattern(PatId),
@@ -1737,6 +1786,7 @@ pub struct OriginNode {
     pub parent: Option<OriginId>,
     pub decl_site: Option<OriginDeclSite>,
     pub declared_mutability: Option<bool>,
+    pub effective_mutability: Option<bool>,
     pub lifetime_seed: Option<LId>,
 }
 
@@ -1755,10 +1805,12 @@ pub(crate) struct AssignPrePostSite {
     pub(crate) flavor: AssignIncDecFlavor,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WritablePlaceContext {
     Assign,
     AddrOfMut,
+    ImplicitDerefMut,
+    OriginProjection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1777,11 +1829,11 @@ pub(crate) struct PlaceKind {
     pub(crate) mutable: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PendingWritablePlaceRequirement {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingMutabilityMatchRequirement {
     pub(crate) site: ValId,
-    pub(crate) target: ValId,
     pub(crate) context: WritablePlaceContext,
+    pub(crate) projected_origin: OriginId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2012,7 +2064,7 @@ pub(crate) struct SearchState {
     pub(crate) local_types: IdHashMap<NameId, CId>,
     pub(crate) names: IdHashMap<NameId, NameBinding>,
     pub(crate) local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
-    pub(crate) origins: Vec<OriginNode>,
+    pub(crate) origins: OriginVec<OriginNode>,
     pub(crate) value_origins: IdHashMap<ValId, OriginId>,
     pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
 }
@@ -2033,7 +2085,7 @@ impl SearchState {
             local_types: IdHashMap::default(),
             names: IdHashMap::default(),
             local_lifetimes: IdHashMap::default(),
-            origins: Vec::new(),
+            origins: OriginVec::new(),
             value_origins: IdHashMap::default(),
             pattern_origins: IdHashMap::default(),
         };
@@ -2143,15 +2195,88 @@ impl SearchState {
         declared_mutability: Option<bool>,
         lifetime_seed: Option<LId>,
     ) -> OriginId {
+        let effective_mutability =
+            self.compute_origin_mutability_for_new(kind, parent, declared_mutability);
         let id = OriginId(self.origins.len() as u32);
         self.origins.push(OriginNode {
             kind,
             parent,
             decl_site,
             declared_mutability,
+            effective_mutability,
             lifetime_seed,
         });
         id
+    }
+
+    #[inline(always)]
+    pub(crate) fn origin(&self, origin: OriginId) -> Option<&OriginNode> {
+        self.origins.get(origin)
+    }
+
+    #[inline(always)]
+    pub(crate) fn origin_mut(&mut self, origin: OriginId) -> Option<&mut OriginNode> {
+        self.origins.get_mut(origin)
+    }
+
+    pub(crate) fn origin_mutability(&self, origin: OriginId) -> Option<bool> {
+        self.origin(origin)
+            .and_then(|node| node.effective_mutability)
+    }
+
+    pub(crate) fn set_origin_mutable_if_unknown(&mut self, origin: OriginId) {
+        if self.origin_mutability(origin) == Some(true) {
+            return;
+        }
+
+        let Some(node) = self.origin_mut(origin) else {
+            return;
+        };
+        if node.declared_mutability.is_none() {
+            node.declared_mutability = Some(true);
+            self.recompute_origin_mutability();
+        }
+    }
+
+    pub(crate) fn recompute_origin_mutability(&mut self) {
+        for raw in 0..self.origins.len() {
+            let origin = OriginId(raw as u32);
+            let effective = self.compute_origin_mutability(origin);
+            self.origins[origin].effective_mutability = effective;
+        }
+    }
+
+    fn compute_origin_mutability(&self, origin: OriginId) -> Option<bool> {
+        let mut current = Some(origin);
+        while let Some(origin) = current {
+            let Some(node) = self.origin(origin) else {
+                return None;
+            };
+
+            if matches!(node.kind, OriginKind::BindingRoot) && node.parent.is_some() {
+                current = node.parent;
+                continue;
+            }
+
+            if let Some(mutable) = node.declared_mutability {
+                return Some(mutable);
+            }
+            current = node.parent;
+        }
+        None
+    }
+
+    fn compute_origin_mutability_for_new(
+        &self,
+        kind: OriginKind,
+        parent: Option<OriginId>,
+        declared_mutability: Option<bool>,
+    ) -> Option<bool> {
+        if matches!(kind, OriginKind::BindingRoot) && parent.is_some() {
+            return parent.and_then(|id| self.origin_mutability(id));
+        }
+
+        declared_mutability.or_else(|| parent.and_then(|id| self.origin_mutability(id)))
     }
 }
 
@@ -2453,7 +2578,7 @@ pub(crate) struct ReqState {
     pub(crate) pending_int_accesses: Vec<PendingIntAccess>,
     pub(crate) pending_indexes: Vec<PendingIndex>,
     pub(crate) pending_derefs: Vec<PendingDeref>,
-    pub(crate) pending_writable_place_requirements: Vec<PendingWritablePlaceRequirement>,
+    pub(crate) pending_mutability_matches: Vec<PendingMutabilityMatchRequirement>,
 }
 
 impl ReqState {
@@ -2471,7 +2596,7 @@ impl ReqState {
             pending_int_accesses: Vec::new(),
             pending_indexes: Vec::new(),
             pending_derefs: Vec::new(),
-            pending_writable_place_requirements: Vec::new(),
+            pending_mutability_matches: Vec::new(),
         }
     }
 
@@ -2488,7 +2613,7 @@ impl ReqState {
             pending_int_accesses,
             pending_indexes,
             pending_derefs,
-            pending_writable_place_requirements,
+            pending_mutability_matches,
         } = self;
 
         *owner = None;
@@ -2503,7 +2628,7 @@ impl ReqState {
         pending_int_accesses.clear();
         pending_indexes.clear();
         pending_derefs.clear();
-        pending_writable_place_requirements.clear();
+        pending_mutability_matches.clear();
     }
 }
 
@@ -4826,13 +4951,28 @@ mod type_infer_tests {
 
     /// Extract the implementation value of the *single* function in the program.
     fn extract_single_fn(program: &Program) -> ValId {
-        program
+        if let Some(main_like) = program.definitions.iter().find_map(|(n, def)| match def {
+            Defined::Func(funcs) if program.name_string(*n) == "f" => {
+                funcs.implementations.first().copied()
+            }
+            _ => None,
+        }) {
+            return main_like;
+        }
+
+        let mut found = program
             .definitions
             .iter()
-            .find_map(|(_, def)| match def {
+            .filter_map(|(_, def)| match def {
                 Defined::Func(funcs) => funcs.implementations.first().copied(),
                 _ => None,
             })
+            .collect::<Vec<_>>();
+
+        found.sort_by_key(|val| val.0);
+        found
+            .first()
+            .copied()
             .expect("expected a function implementation")
     }
 
@@ -7736,6 +7876,17 @@ mod type_infer_tests {
         assert_fn_type!(
             "f=fn(){ var x:int = 1; let p = &x; *p = 2:int; x:int; }",
             BuiltinType::Void
+        );
+    }
+
+    #[test]
+    fn assignment_through_generic_identity_shared_reference_is_rejected() {
+        assert_fn_body_simple_error(
+            r#"
+                id = fn[T](a:T)->T { a }
+                f = fn(){ let x:int = 1; let p = id(&x); *p = 2:int; }
+            "#,
+            "cannot assign through immutable dereference",
         );
     }
 
