@@ -1699,6 +1699,7 @@ fn place_with_access(place: PlaceKind, access_kind: PlaceAccessKind) -> PlaceKin
 fn origin_mutability_from_ancestry(search: &SearchState, origin: OriginId) -> Option<bool> {
     let mut current = Some(origin);
     let mut saw_mutable_root = false;
+    let mut saw_immutable = false;
     let mut saw_unknown = false;
 
     while let Some(origin) = current {
@@ -1707,16 +1708,22 @@ fn origin_mutability_from_ancestry(search: &SearchState, origin: OriginId) -> Op
             break;
         };
 
-        let participates_in_mutability = !matches!(
-            node.kind,
-            OriginKind::BindingRoot | OriginKind::ArgumentRoot | OriginKind::CallReturnRoot
-        );
+        let terminal_binding_root =
+            node.parent.is_none() && matches!(node.kind, OriginKind::BindingRoot);
+        let participates_in_mutability = terminal_binding_root
+            || !matches!(
+                node.kind,
+                OriginKind::BindingRoot | OriginKind::ArgumentRoot | OriginKind::CallReturnRoot
+            );
         if participates_in_mutability {
             if let Some(false) = node.declared_mutability {
-                return Some(false);
+                saw_immutable = true;
             }
             if let Some(true) = node.declared_mutability {
                 saw_mutable_root = true;
+            }
+            if node.declared_mutability.is_none() {
+                saw_unknown = true;
             }
         }
 
@@ -1735,6 +1742,8 @@ fn origin_mutability_from_ancestry(search: &SearchState, origin: OriginId) -> Op
 
     if saw_mutable_root {
         Some(true)
+    } else if saw_immutable {
+        Some(false)
     } else if saw_unknown {
         None
     } else {
@@ -1998,6 +2007,10 @@ fn writable_place_kind_with_origin(
     origin: Option<OriginId>,
 ) -> PlaceKind {
     let mut place = check_place_mutability(ctx, target);
+
+    if matches!(place.access_kind, PlaceAccessKind::Local) {
+        return place;
+    }
 
     match origin {
         Some(origin) => match origin_mutability_from_ancestry(&ctx.search, origin) {

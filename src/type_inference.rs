@@ -7732,6 +7732,14 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn assignment_through_shared_reference_to_var_binding_is_allowed() {
+        assert_fn_type!(
+            "f=fn(){ var x:int = 1; let p = &x; *p = 2:int; x:int; }",
+            BuiltinType::Void
+        );
+    }
+
+    #[test]
     fn dot_member_and_tuple_writes_on_mut_and_raw_mut_refs_typecheck() {
         let src = r#"
             S=struct{x:int,y:bool};

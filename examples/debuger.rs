@@ -5,11 +5,12 @@ use expr_parser::type_inference::run_typechecker;
 
 const SOURCE: &str = r#"
 f=fn(){
-    let x = _;
-    let p = &x;
+    var x = 1:int;
+    let p:&mut _ = &x;
     *p=2;
     x:int;
  }
+
 
 "#;
 // const SOURCE: &str = r#"

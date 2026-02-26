@@ -240,6 +240,7 @@ It is intentionally staged so multiple agents can continue safely.
 - `value_origin` reconstruction was removed from writable checks; place mutability now starts from gathered `ValId -> OriginId` links plus existing place-shape checks.
 - `InnerFunctionTypes` now persists local provenance artifacts (`origins`, `value_origins`, `pattern_origins`) for downstream analysis and tests.
 - `let` bindings now link binding roots to RHS provenance, so shared-reference provenance is preserved through aliases (`let p = &x; *p = ...` stays rejected).
+- Writable-place ancestry now treats terminal mutable binding/argument roots as mutable anchors, so writes through shared-reference aliases of mutable roots are accepted (`var x = 1; let p = &x; *p = 2;`), while immutable roots still veto writes.
 - Writable checks still use place-shape context for diagnostics (`assign` vs `&mut`, `.` vs `->` vs index), while ancestry only contributes mutability vetoes.
 - Implementation contract and migration notes remain in `agent_docs/origin_graph_plan.md`.
 
