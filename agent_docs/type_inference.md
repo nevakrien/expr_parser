@@ -226,6 +226,7 @@ Current local inference mutability is driven by a single pending-constraint queu
 ### Constraint sources
 
 - Writable-place checks (`assign`, `&mut`) now enqueue mutability-match requirements instead of using a dedicated writable-place pending queue.
+- Casts to mutable pointer/reference targets (`value as &mut T`, raw-mutable pointer forms) now impose a directional mutability requirement on pointer-like sources: source mutability can stay mutable or become more permissive (`mut -> const`), but immutable pointer/reference sources are rejected for `-> mut` casts.
 - Projection origin creation for explicit mutable projections marks that origin as requiring mutability.
 - Projection origin creation now goes through `new_suborigin(...)`; mutable projections immediately run `mutability_subtype(...)` with `WritablePlaceContext::OriginProjection` so parent/child mutability consistency is checked at construction time.
 - Implicit `__deref_mut` checks keep pointer-chain validation and enqueue pending mutability requirements when pointer mutability is unresolved.

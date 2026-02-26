@@ -17,6 +17,8 @@
 ## Agent Documentation Responsibility
 - If a test fails you may not change it just so it works without getting explicit permission from a human
   adding new tests is fine but existing tests should be kept as is
+- Do Not add inline(always) unless you have a specific reason 
+- Do Not add clones to vectors or similar large structures unless there is no better way, if u do comment explaining why there isnt better ways.
 - Agents should keep `agent_docs/` up to date when behavior, architecture, or important APIs change.
 - If an agent touches a complex subsystem, it should also update the relevant doc in `agent_docs/` as part of the same task when practical.
 - Treat stale docs in `agent_docs/` as a maintenance issue and refresh them proactively.

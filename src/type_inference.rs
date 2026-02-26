@@ -50,11 +50,11 @@ use std::ops::{Index, IndexMut};
 
 use crate::program::{Defined, Program};
 
-unsafe extern "C" {
-    fn perf_init();
-    fn perf_begin();
-    fn perf_done(name: *const std::os::raw::c_char);
-}
+// unsafe extern "C" {
+//     fn perf_init();
+//     fn perf_begin();
+//     fn perf_done(name: *const std::os::raw::c_char);
+// }
 
 /* ================================================================
  * Core IDs (STABLE)
@@ -1793,7 +1793,7 @@ pub struct OriginNode {
     pub decl_site: Option<OriginDeclSite>,
     pub declared_mutability: Option<bool>,
     pub effective_mutability: Option<bool>,
-    pub lifetime_seed: Option<LId>,
+    pub(crate) lifetime_seed: Option<LId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1815,6 +1815,7 @@ pub(crate) struct AssignPrePostSite {
 pub(crate) enum WritablePlaceContext {
     Assign,
     AddrOfMut,
+    CastToMutPtr,
     ImplicitDerefMut,
     OriginProjection,
 }
@@ -4373,7 +4374,7 @@ pub(crate) fn specialize_type(
 // ===================================
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ResolvedStructDerefMethod {
+pub struct ResolvedStructDerefMethod {
     pub deref_site: Option<ValId>,
     pub deref_mut_site: Option<ValId>,
 
@@ -4698,6 +4699,7 @@ pub(crate) struct ResolvedMemberOverload {
     pub(crate) full_method: CId,
 }
 
+#[allow(dead_code)]
 pub(crate) fn resolve_deferred_types(ctx: &mut InferState) -> bool {
     let mut change = false;
     for cid in (0..ctx.types.core.cluster.len()).map(CId) {
@@ -7929,6 +7931,22 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn cast_to_mutable_ref_rejects_immutable_source_ref() {
+        assert_fn_body_simple_error(
+            "f=fn(){ let x:int = 0; let _p = &x as &mut int; }",
+            "cannot cast immutable pointer/reference to mutable pointer/reference",
+        );
+    }
+
+    #[test]
+    fn cast_to_mutable_ref_from_var_source_ref_is_allowed() {
+        assert_fn_type!(
+            "f=fn(){ var x:int = 0; let _p = &x as &mut int; }",
+            BuiltinType::Void
+        );
+    }
+
+    #[test]
     fn assignment_through_shared_reference_stays_rejected_after_later_const_use() {
         assert_fn_body_simple_error(
             "f=fn(){ let x:int = 1; let p = &x; *p = 2:int; x:int; }",
@@ -7978,7 +7996,7 @@ mod type_infer_tests {
     fn assignment_through_non_generic_ref_identity_from_var_binding_is_allowed() {
         assert_fn_type!(
             r#"
-                id_ref = fn(a:&int)->&int { a }
+                id_ref = fn(a:&mut int)->&mut int { a }
                 f = fn(){ var x:int = 1; let p = id_ref(&x); *p = 2:int; }
             "#,
             BuiltinType::Void

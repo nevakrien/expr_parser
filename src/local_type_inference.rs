@@ -567,6 +567,101 @@ fn mutability_subtype(
     }
 }
 
+fn source_pointer_mutability_state(ctx: &mut InferState, source: CId) -> Option<Option<bool>> {
+    let root = ctx.types.root(source);
+    match ctx.types.cluster_state(root) {
+        ResolveKind::Ptr { mutable, .. } => Some(mutable),
+        ResolveKind::Solved(ty) => match ctx.ex.store.type_value(ty) {
+            TypeValue::Ptr { mutable, .. } => Some(Some(*mutable)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn promote_source_pointer_mutability(ctx: &mut InferState, source: CId) -> bool {
+    let root = ctx.types.root(source);
+    let ResolveKind::Ptr { tgt, kind, mutable } = ctx.types.cluster_state(root) else {
+        return false;
+    };
+    if mutable.is_some() {
+        return false;
+    }
+    ctx.types.set_cluster_state(
+        root,
+        ResolveKind::Ptr {
+            tgt,
+            kind,
+            mutable: Some(true),
+        },
+    );
+    true
+}
+
+fn cast_target_requires_mut_ptr(ctx: &mut InferState, target: CId) -> bool {
+    let root = ctx.types.root(target);
+    match ctx.types.cluster_state(root) {
+        ResolveKind::Ptr {
+            mutable: Some(true),
+            ..
+        } => true,
+        ResolveKind::Solved(ty) => matches!(
+            ctx.ex.store.type_value(ty),
+            TypeValue::Ptr { mutable: true, .. }
+        ),
+        _ => false,
+    }
+}
+
+fn cluster_is_pointer_like(ctx: &mut InferState, cluster: CId) -> bool {
+    let root = ctx.types.root(cluster);
+    match ctx.types.cluster_state(root) {
+        ResolveKind::Ptr { .. } => true,
+        ResolveKind::Solved(ty) => matches!(ctx.ex.store.type_value(ty), TypeValue::Ptr { .. }),
+        _ => false,
+    }
+}
+
+fn enforce_cast_pointer_mutability(
+    ctx: &mut InferState,
+    cast_site: ValId,
+    source_value: ValId,
+    target: CId,
+) {
+    if !cast_target_requires_mut_ptr(ctx, target) {
+        return;
+    }
+
+    let source = match ctx.search.value_cluster(source_value) {
+        Some(cid) => cid,
+        None => return,
+    };
+
+    let mut emitted = false;
+    if let Some(source_mutability) = source_pointer_mutability_state(ctx, source) {
+        match source_mutability {
+            Some(false) => {
+                let loc = ctx.ex.program.value_loc(cast_site);
+                ctx.push_error(TypeError::Simple {
+                    loc,
+                    message: "cannot cast immutable pointer/reference to mutable pointer/reference",
+                });
+                emitted = true;
+            }
+            Some(true) => {}
+            None => {
+                let _ = promote_source_pointer_mutability(ctx, source);
+            }
+        }
+    }
+
+    if !emitted
+        && let Value::AddrOf(base, _) = ctx.ex.program.value(source_value)
+    {
+        let _ = require_place_writable(ctx, cast_site, base, WritablePlaceContext::CastToMutPtr);
+    }
+}
+
 #[inline(always)]
 fn new_suborigin(
     ctx: &mut InferState,
@@ -787,6 +882,7 @@ pub(crate) fn gather_constraints(
             let _ = gather_constraints(ctx, value, current_output);
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty);
+            enforce_cast_pointer_mutability(ctx, v, value, c);
             let origin = new_suborigin(
                 ctx,
                 OriginKind::CastProjection,
@@ -1228,11 +1324,12 @@ pub(crate) fn gather_constraints(
                 //this makes life SOOOO much easier than named args
 
                 let base = gather_constraints(ctx, call.base, current_output);
-                let inputs: Vec<_> = call
+                let input_pairs = call
                     .args
                     .ids()
-                    .map(|a| gather_constraints(ctx, a, current_output))
-                    .collect();
+                    .map(|arg| (arg, gather_constraints(ctx, arg, current_output)))
+                    .collect::<Vec<_>>();
+                let inputs = input_pairs.iter().map(|(_, cluster)| *cluster).collect();
                 let output = ctx.new_cluster();
                 let output_origin = Some(ctx.search.new_origin(
                     OriginKind::CallReturnRoot,
@@ -1258,6 +1355,45 @@ pub(crate) fn gather_constraints(
                         clash,
                     });
                 }
+
+                if let Some(output_origin) = output_origin {
+                    let output_root = ctx.types.root(output);
+                    let mut alias_parent = input_pairs
+                        .iter()
+                        .copied()
+                        .find_map(|(arg_value, arg_cluster)| {
+                            (ctx.types.root(arg_cluster) == output_root)
+                                .then(|| ctx.search.value_origin(arg_value))
+                                .flatten()
+                        });
+
+                    if alias_parent.is_none() {
+                        let mut pointer_like_parent = None;
+                        let mut pointer_like_count = 0usize;
+
+                        for (arg_value, arg_cluster) in input_pairs.iter().copied() {
+                            if !cluster_is_pointer_like(ctx, arg_cluster) {
+                                continue;
+                            }
+                            pointer_like_count += 1;
+                            if pointer_like_parent.is_none() {
+                                pointer_like_parent = ctx.search.value_origin(arg_value);
+                            }
+                        }
+
+                        if pointer_like_count == 1 {
+                            alias_parent = pointer_like_parent;
+                        }
+                    }
+
+                    if let Some(parent) = alias_parent
+                        && let Some(node) = ctx.search.origin_mut(output_origin)
+                    {
+                        node.parent = Some(parent);
+                        ctx.search.recompute_origin_mutability();
+                    }
+                }
+
                 ctx.bind_val_with_origin(v, output, output_origin);
                 output
             } else {
@@ -3998,6 +4134,10 @@ fn writable_place_error_message(
         return "implicit `__deref_mut` step requires mutable source";
     }
 
+    if matches!(ctx, WritablePlaceContext::CastToMutPtr) {
+        return "cannot cast immutable pointer/reference to mutable pointer/reference";
+    }
+
     match (ctx, access_kind) {
         (WritablePlaceContext::OriginProjection, PlaceAccessKind::Local) => {
             "cannot derive mutable projection from immutable origin"
@@ -4060,6 +4200,9 @@ fn writable_place_error_message(
         }
         (WritablePlaceContext::AddrOfMut, PlaceAccessKind::NonPlace) => {
             "cannot take mutable reference to a non-place value"
+        }
+        (WritablePlaceContext::CastToMutPtr, _) => {
+            "cannot cast immutable pointer/reference to mutable pointer/reference"
         }
     }
 }
