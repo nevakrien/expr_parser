@@ -538,14 +538,33 @@ fn enqueue_pending_mutability_match(
     pending: &mut Vec<PendingMutabilityMatchRequirement>,
     requirement: PendingMutabilityMatchRequirement,
 ) {
-    if !pending.contains(&requirement) {
-        pending.push(requirement);
-    }
+    pending.push(requirement);
+    // if !pending.contains(&requirement) {
+    //     pending.push(requirement);
+    // }
 }
 
 #[inline(always)]
-fn mark_origin_requires_mut(types: &mut TypeState, origin: OriginId) {
-    types.set_origin_mutable_if_unknown(origin);
+fn ensure_origin_requires_mut_or_emit(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    site: ValId,
+    origin: OriginId,
+    context: WritablePlaceContext,
+    access_kind: PlaceAccessKind,
+) -> bool {
+    if types.set_origin_mutable_if_unknown(origin) {
+        return true;
+    }
+
+    push_writable_place_error_(
+        ex,
+        types,
+        site,
+        writable_place_error_message(context, access_kind),
+        Some(origin),
+    );
+    false
 }
 
 #[inline(always)]
@@ -555,13 +574,34 @@ fn mutability_subtype(
     projected_origin: OriginId,
     context: WritablePlaceContext,
 ) {
-    mark_origin_requires_mut(&mut ctx.types, projected_origin);
+    let access_kind = if context == WritablePlaceContext::OriginProjection {
+        PlaceAccessKind::NonPlace
+    } else {
+        PlaceAccessKind::Deref
+    };
+
+    if !ensure_origin_requires_mut_or_emit(
+        &mut ctx.ex,
+        &mut ctx.types,
+        site,
+        projected_origin,
+        context,
+        access_kind,
+    ) {
+        return;
+    }
+
     let check = PendingMutabilityMatchRequirement {
         site,
         context,
         projected_origin,
     };
-    let outcome = check.step(&mut ctx.ex, &mut ctx.types, &mut ctx.search, &ctx.req.implicit_deref_sites);
+    let outcome = check.step(
+        &mut ctx.ex,
+        &mut ctx.types,
+        &mut ctx.search,
+        &ctx.req.implicit_deref_sites,
+    );
     if outcome.retain {
         enqueue_pending_mutability_match(&mut ctx.req.pending_mutability_matches, check);
     }
@@ -655,9 +695,7 @@ fn enforce_cast_pointer_mutability(
         }
     }
 
-    if !emitted
-        && let Value::AddrOf(base, _) = ctx.ex.program.value(source_value)
-    {
+    if !emitted && let Value::AddrOf(base, _) = ctx.ex.program.value(source_value) {
         let _ = require_place_writable(ctx, cast_site, base, WritablePlaceContext::CastToMutPtr);
     }
 }
@@ -1358,14 +1396,15 @@ pub(crate) fn gather_constraints(
 
                 if let Some(output_origin) = output_origin {
                     let output_root = ctx.types.root(output);
-                    let mut alias_parent = input_pairs
-                        .iter()
-                        .copied()
-                        .find_map(|(arg_value, arg_cluster)| {
-                            (ctx.types.root(arg_cluster) == output_root)
-                                .then(|| ctx.types.value_origin(arg_value))
-                                .flatten()
-                        });
+                    let mut alias_parent =
+                        input_pairs
+                            .iter()
+                            .copied()
+                            .find_map(|(arg_value, arg_cluster)| {
+                                (ctx.types.root(arg_cluster) == output_root)
+                                    .then(|| ctx.types.value_origin(arg_value))
+                                    .flatten()
+                            });
 
                     if alias_parent.is_none() {
                         let mut pointer_like_parent = None;
@@ -1930,96 +1969,64 @@ fn promote_pointer_cluster_to_mutable_for_write(types: &mut TypeState, cid: CId)
     true
 }
 
-fn promote_place_mutability(ctx: &mut InferState, target: ValId) -> bool {
-    match ctx.ex.program.value(target) {
-        Value::Deref(base) => ctx
-            .search
-            .value_cluster(base)
-            .map(|cid| promote_pointer_cluster_to_mutable_for_write(&mut ctx.types, cid))
-            .unwrap_or(false),
-        Value::Access { base, .. } | Value::IntAccess { base, .. } => {
-            if let Some(receivers) =
-                find_implicit_deref_receivers_for_site(&ctx.req.implicit_deref_sites, target)
-            {
-                let mut changed = false;
-                for receiver in receivers {
-                    changed |=
-                        promote_pointer_cluster_to_mutable_for_write(&mut ctx.types, *receiver);
-                }
-                changed
-            } else {
-                promote_place_mutability(ctx, base)
-            }
-        }
-        Value::Index(call) => {
-            if let Some(receivers) =
-                find_implicit_deref_receivers_for_site(&ctx.req.implicit_deref_sites, target)
-            {
-                let mut changed = false;
-                for receiver in receivers {
-                    changed |=
-                        promote_pointer_cluster_to_mutable_for_write(&mut ctx.types, *receiver);
-                }
-                changed
-            } else {
-                promote_place_mutability(ctx, call.base)
-            }
-        }
-        _ => false,
-    }
-}
-
-fn smart_deref_write_mutability(ctx: &mut InferState, value: ValId, cid: CId) -> PlaceKind {
-    let root = ctx.types.root(cid);
-    let struct_name = match ctx.types.cluster_state(root) {
-        ResolveKind::Solved(ty) => match ctx.ex.store.type_value(ty) {
-            TypeValue::Struct { id, .. } => ctx.ex.store.struct_value(*id).name,
-            _ => return place_kind(PlaceAccessKind::Deref, Some(false)),
-        },
-        ResolveKind::Struct(rid) => {
-            let sid = ctx.types.struct_infer(rid).sid;
-            ctx.ex.store.struct_value(sid).name
-        }
-        ResolveKind::Nothing => return place_kind(PlaceAccessKind::Deref, None),
-        _ => return place_kind(PlaceAccessKind::Deref, Some(false)),
-    };
-
-    let Some(struct_name) = struct_name else {
-        return place_kind(PlaceAccessKind::Deref, Some(false));
-    };
-
-    let Some(deref_style) = ctx
-        .ex
-        .store
-        .struct_overload_info(struct_name)
-        .and_then(|info| info.deref_style)
-    else {
-        return place_kind(PlaceAccessKind::Deref, Some(false));
-    };
-
-    if matches!(deref_style.mutable, Some(false)) {
-        return place_kind(PlaceAccessKind::Deref, Some(false));
-    }
-
-    check_place_mutability(ctx, value)
-}
-
-fn deref_source_write_mutability(ctx: &mut InferState, value: ValId) -> PlaceKind {
-    let Some(base_cluster) = ctx.search.value_cluster(value) else {
-        return place_kind(PlaceAccessKind::Deref, None);
-    };
-
-    if let Some(pointer_mutability) =
-        pointer_mutability_from_cluster(&ctx.ex, &mut ctx.types, base_cluster)
-    {
-        return match pointer_mutability {
-            Some(true) => place_kind(PlaceAccessKind::Deref, Some(true)),
-            Some(false) => place_kind(PlaceAccessKind::Deref, Some(false)),
-            None => place_kind(PlaceAccessKind::Deref, None),
+impl<'a> InferState<'a> {
+    fn deref_source_write_mutability(&mut self, value: ValId) -> PlaceKind {
+        let Some(base_cluster) = self.search.value_cluster(value) else {
+            return place_kind(PlaceAccessKind::Deref, None);
         };
+
+        if let Some(pointer_mutability) =
+            pointer_mutability_from_cluster(&self.ex, &mut self.types, base_cluster)
+        {
+            return match pointer_mutability {
+                Some(true) => place_kind(PlaceAccessKind::Deref, Some(true)),
+                Some(false) => place_kind(PlaceAccessKind::Deref, Some(false)),
+                None => place_kind(PlaceAccessKind::Deref, None),
+            };
+        }
+
+        self.smart_deref_write_mutability(value, base_cluster)
     }
 
-    smart_deref_write_mutability(ctx, value, base_cluster)
+    fn place_from_implicit_chain_state(
+        &mut self,
+        base: ValId,
+        chain_state: PlaceKind,
+        receivers_empty: bool,
+        access_kind: PlaceAccessKind,
+    ) -> PlaceKind {
+        place_from_implicit_chain_state_(
+            &self.ex,
+            &mut self.types,
+            &mut self.search,
+            &self.req.implicit_deref_sites,
+            base,
+            chain_state,
+            receivers_empty,
+            access_kind,
+        )
+    }
+
+    fn check_place_mutability(&mut self, target: ValId) -> PlaceKind {
+        check_place_mutability_(
+            &self.ex,
+            &mut self.types,
+            &mut self.search,
+            &self.req.implicit_deref_sites,
+            target,
+        )
+    }
+
+    fn smart_deref_write_mutability(&mut self, value: ValId, cid: CId) -> PlaceKind {
+        smart_deref_write_mutability_(
+            &self.ex,
+            &mut self.types,
+            &mut self.search,
+            &self.req.implicit_deref_sites,
+            value,
+            cid,
+        )
+    }
 }
 
 fn chain_write_mutability(ex: &ExternState, types: &mut TypeState, chain: &[CId]) -> PlaceKind {
@@ -2052,19 +2059,6 @@ fn find_implicit_deref_receivers_for_site(
     entries.get(&target).map(Vec::as_slice)
 }
 
-fn place_from_implicit_chain_state(
-    ctx: &mut InferState,
-    base: ValId,
-    chain_state: PlaceKind,
-    receivers_empty: bool,
-    access_kind: PlaceAccessKind,
-) -> PlaceKind {
-    if place_is_writable(chain_state) && receivers_empty {
-        return check_place_mutability(ctx, base);
-    }
-    place_with_access(chain_state, access_kind)
-}
-
 fn record_implicit_deref_receivers(
     sites: &mut IdHashMap<ValId, Vec<CId>>,
     site: ValId,
@@ -2074,96 +2068,6 @@ fn record_implicit_deref_receivers(
         return;
     }
     sites.insert(site, receivers);
-}
-
-fn check_place_mutability(ctx: &mut InferState, target: ValId) -> PlaceKind {
-    match ctx.ex.program.value(target) {
-        Value::NameRef(name) => {
-            let Some(binding) = ctx.search.name_binding(name) else {
-                return place_kind(PlaceAccessKind::NonPlace, Some(false));
-            };
-            match binding.kind {
-                NameBindingKind::Generic => place_kind(PlaceAccessKind::NonPlace, Some(false)),
-                NameBindingKind::Local(is_mut) => {
-                    if is_mut {
-                        place_kind(PlaceAccessKind::Local, Some(true))
-                    } else if let Some(origin) = binding.origin {
-                        place_kind(PlaceAccessKind::Local, ctx.types.origin_mutability(origin))
-                    } else {
-                        place_kind(PlaceAccessKind::Local, Some(false))
-                    }
-                }
-            }
-        }
-        Value::Deref(base) => deref_source_write_mutability(ctx, base),
-        Value::Access { base, kind, .. } | Value::IntAccess { base, kind, .. } => match kind {
-            AccessKind::Static => place_kind(PlaceAccessKind::NonPlace, Some(false)),
-            AccessKind::Dot | AccessKind::Ptr => {
-                let access_kind = match kind {
-                    AccessKind::Dot => PlaceAccessKind::MemberAccessDot,
-                    AccessKind::Ptr => PlaceAccessKind::MemberAccessPtr,
-                    AccessKind::Static => unreachable!(),
-                };
-
-                if let Some(receivers) =
-                    find_implicit_deref_receivers_for_site(&ctx.req.implicit_deref_sites, target)
-                {
-                    let chain_state = chain_write_mutability(&ctx.ex, &mut ctx.types, receivers);
-                    return place_from_implicit_chain_state(
-                        ctx,
-                        base,
-                        chain_state,
-                        receivers.is_empty(),
-                        access_kind,
-                    );
-                }
-
-                if ctx
-                    .req
-                    .pending_member_accesses
-                    .iter()
-                    .any(|pending| pending.site == target)
-                    || ctx
-                        .req
-                        .pending_int_accesses
-                        .iter()
-                        .any(|pending| pending.site == target)
-                {
-                    return place_kind(access_kind, None);
-                }
-
-                let base_place = check_place_mutability(ctx, base);
-                place_with_access(base_place, access_kind)
-            }
-        },
-        Value::Index(call) => {
-            if let Some(receivers) =
-                find_implicit_deref_receivers_for_site(&ctx.req.implicit_deref_sites, target)
-            {
-                let chain_state = chain_write_mutability(&ctx.ex, &mut ctx.types, receivers);
-                return place_from_implicit_chain_state(
-                    ctx,
-                    call.base,
-                    chain_state,
-                    receivers.is_empty(),
-                    PlaceAccessKind::Index,
-                );
-            }
-
-            if ctx
-                .req
-                .pending_indexes
-                .iter()
-                .any(|pending| pending.site == target)
-            {
-                return place_kind(PlaceAccessKind::Index, None);
-            }
-
-            let base_place = check_place_mutability(ctx, call.base);
-            place_with_access(base_place, PlaceAccessKind::Index)
-        }
-        _ => place_kind(PlaceAccessKind::NonPlace, Some(false)),
-    }
 }
 
 fn queue_mutability_match_for_place(
@@ -4268,7 +4172,7 @@ fn require_place_writable(
     target: ValId,
     context: WritablePlaceContext,
 ) -> bool {
-    let place = check_place_mutability(ctx, target);
+    let place = ctx.check_place_mutability(target);
 
     match place {
         PlaceKind {
@@ -4297,7 +4201,7 @@ fn require_place_writable(
     }
 }
 
-fn check_place_mutability_for_origin(
+fn check_place_mutability_(
     ex: &ExternState,
     types: &mut TypeState,
     search: &mut SearchState,
@@ -4322,7 +4226,9 @@ fn check_place_mutability_for_origin(
                 }
             }
         }
-        Value::Deref(base) => deref_source_write_mutability_for_origin(ex, types, search, implicit_deref_sites, base),
+        Value::Deref(base) => {
+            deref_source_write_mutability_(ex, types, search, implicit_deref_sites, base)
+        }
         Value::Access { base, kind, .. } | Value::IntAccess { base, kind, .. } => match kind {
             AccessKind::Static => place_kind(PlaceAccessKind::NonPlace, Some(false)),
             AccessKind::Dot | AccessKind::Ptr => {
@@ -4336,8 +4242,11 @@ fn check_place_mutability_for_origin(
                     find_implicit_deref_receivers_for_site(implicit_deref_sites, target)
                 {
                     let chain_state = chain_write_mutability(ex, types, receivers);
-                    return place_from_implicit_chain_state_for_origin(
-                        ex, types, search, implicit_deref_sites,
+                    return place_from_implicit_chain_state_(
+                        ex,
+                        types,
+                        search,
+                        implicit_deref_sites,
                         base,
                         chain_state,
                         receivers.is_empty(),
@@ -4345,7 +4254,8 @@ fn check_place_mutability_for_origin(
                     );
                 }
 
-                let base_place = check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, base);
+                let base_place =
+                    check_place_mutability_(ex, types, search, implicit_deref_sites, base);
                 place_with_access(base_place, access_kind)
             }
         },
@@ -4354,8 +4264,11 @@ fn check_place_mutability_for_origin(
                 find_implicit_deref_receivers_for_site(implicit_deref_sites, target)
             {
                 let chain_state = chain_write_mutability(ex, types, receivers);
-                return place_from_implicit_chain_state_for_origin(
-                    ex, types, search, implicit_deref_sites,
+                return place_from_implicit_chain_state_(
+                    ex,
+                    types,
+                    search,
+                    implicit_deref_sites,
                     call.base,
                     chain_state,
                     receivers.is_empty(),
@@ -4363,14 +4276,15 @@ fn check_place_mutability_for_origin(
                 );
             }
 
-            let base_place = check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, call.base);
+            let base_place =
+                check_place_mutability_(ex, types, search, implicit_deref_sites, call.base);
             place_with_access(base_place, PlaceAccessKind::Index)
         }
         _ => place_kind(PlaceAccessKind::NonPlace, Some(false)),
     }
 }
 
-fn deref_source_write_mutability_for_origin(
+fn deref_source_write_mutability_(
     ex: &ExternState,
     types: &mut TypeState,
     search: &mut SearchState,
@@ -4381,9 +4295,7 @@ fn deref_source_write_mutability_for_origin(
         return place_kind(PlaceAccessKind::Deref, None);
     };
 
-    if let Some(pointer_mutability) =
-        pointer_mutability_from_cluster(ex, types, base_cluster)
-    {
+    if let Some(pointer_mutability) = pointer_mutability_from_cluster(ex, types, base_cluster) {
         return match pointer_mutability {
             Some(true) => place_kind(PlaceAccessKind::Deref, Some(true)),
             Some(false) => place_kind(PlaceAccessKind::Deref, Some(false)),
@@ -4391,10 +4303,10 @@ fn deref_source_write_mutability_for_origin(
         };
     }
 
-    smart_deref_write_mutability_for_origin(ex, types, search, implicit_deref_sites, value, base_cluster)
+    smart_deref_write_mutability_(ex, types, search, implicit_deref_sites, value, base_cluster)
 }
 
-fn smart_deref_write_mutability_for_origin(
+fn smart_deref_write_mutability_(
     ex: &ExternState,
     types: &mut TypeState,
     search: &mut SearchState,
@@ -4432,10 +4344,10 @@ fn smart_deref_write_mutability_for_origin(
         return place_kind(PlaceAccessKind::Deref, Some(false));
     }
 
-    check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, value)
+    check_place_mutability_(ex, types, search, implicit_deref_sites, value)
 }
 
-fn place_from_implicit_chain_state_for_origin(
+fn place_from_implicit_chain_state_(
     ex: &ExternState,
     types: &mut TypeState,
     search: &mut SearchState,
@@ -4446,12 +4358,12 @@ fn place_from_implicit_chain_state_for_origin(
     access_kind: PlaceAccessKind,
 ) -> PlaceKind {
     if place_is_writable(chain_state) && receivers_empty {
-        return check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, base);
+        return check_place_mutability_(ex, types, search, implicit_deref_sites, base);
     }
     place_with_access(chain_state, access_kind)
 }
 
-fn promote_place_mutability_for_origin(
+fn promote_place_mutability_(
     ex: &ExternState,
     types: &mut TypeState,
     search: &mut SearchState,
@@ -4469,12 +4381,11 @@ fn promote_place_mutability_for_origin(
             {
                 let mut changed = false;
                 for receiver in receivers {
-                    changed |=
-                        promote_pointer_cluster_to_mutable_for_write(types, *receiver);
+                    changed |= promote_pointer_cluster_to_mutable_for_write(types, *receiver);
                 }
                 changed
             } else {
-                promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, base)
+                promote_place_mutability_(ex, types, search, implicit_deref_sites, base)
             }
         }
         Value::Index(call) => {
@@ -4483,19 +4394,18 @@ fn promote_place_mutability_for_origin(
             {
                 let mut changed = false;
                 for receiver in receivers {
-                    changed |=
-                        promote_pointer_cluster_to_mutable_for_write(types, *receiver);
+                    changed |= promote_pointer_cluster_to_mutable_for_write(types, *receiver);
                 }
                 changed
             } else {
-                promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, call.base)
+                promote_place_mutability_(ex, types, search, implicit_deref_sites, call.base)
             }
         }
         _ => false,
     }
 }
 
-fn push_writable_place_error_for_origin(
+fn push_writable_place_error_(
     ex: &mut ExternState,
     types: &mut TypeState,
     site: ValId,
@@ -4521,10 +4431,9 @@ fn push_writable_place_error_for_origin(
                             ex.program.pattern_loc(pat),
                             "origin binding is immutable here",
                         ),
-                        OriginDeclSite::Value(value) => (
-                            ex.program.value_loc(value),
-                            "origin becomes immutable here",
-                        ),
+                        OriginDeclSite::Value(value) => {
+                            (ex.program.value_loc(value), "origin becomes immutable here")
+                        }
                     };
                     if related != loc {
                         ex.push_error(TypeError::SimpleRelated {
@@ -4562,11 +4471,11 @@ impl PendingMutabilityMatchRequirement {
         let mut weak_access_kind = PlaceAccessKind::Deref;
         let mut weak_place_mutability = None;
         if emit_context_error && let Some(OriginDeclSite::Value(target)) = projected_decl_site {
-            let place = check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, target);
+            let place = check_place_mutability_(ex, types, search, implicit_deref_sites, target);
             weak_access_kind = place.access_kind;
             weak_place_mutability = Some(place.mutable);
             if matches!(place.mutable, Some(false)) {
-                push_writable_place_error_for_origin(
+                push_writable_place_error_(
                     ex,
                     types,
                     self.site,
@@ -4586,7 +4495,7 @@ impl PendingMutabilityMatchRequirement {
                 Some(Some(true)) => ResolveOutcome::drop(true),
                 Some(Some(false)) => {
                     if emit_context_error {
-                        push_writable_place_error_for_origin(
+                        push_writable_place_error_(
                             ex,
                             types,
                             self.site,
@@ -4601,11 +4510,24 @@ impl PendingMutabilityMatchRequirement {
                         if weak_access_kind != PlaceAccessKind::Deref
                             && let Some(OriginDeclSite::Value(target)) = projected_decl_site
                         {
-                            let _ = promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, target);
+                            let _ = promote_place_mutability_(
+                                ex,
+                                types,
+                                search,
+                                implicit_deref_sites,
+                                target,
+                            );
                         }
                         ResolveOutcome::keep(false)
                     } else if let Some(parent) = projected_parent {
-                        mark_origin_requires_mut(types, parent);
+                        let _ = ensure_origin_requires_mut_or_emit(
+                            ex,
+                            types,
+                            self.site,
+                            parent,
+                            self.context,
+                            weak_access_kind,
+                        );
                         ResolveOutcome::drop(true)
                     } else {
                         ResolveOutcome::drop(true)
@@ -4615,10 +4537,20 @@ impl PendingMutabilityMatchRequirement {
             },
             Some(false) => ResolveOutcome::drop(true),
             None => {
-                mark_origin_requires_mut(types, self.projected_origin);
+                if !ensure_origin_requires_mut_or_emit(
+                    ex,
+                    types,
+                    self.site,
+                    self.projected_origin,
+                    self.context,
+                    weak_access_kind,
+                ) {
+                    return ResolveOutcome::drop(true);
+                }
 
                 if let Some(OriginDeclSite::Value(target)) = projected_decl_site {
-                    let _ = promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, target);
+                    let _ =
+                        promote_place_mutability_(ex, types, search, implicit_deref_sites, target);
                 }
 
                 if matches!(strong_mutability, Some(Some(true))) {
@@ -4636,7 +4568,12 @@ pub(crate) fn resolve_pending_mutability_matches(ctx: &mut InferState) -> bool {
 
     let implicit_deref_sites = &ctx.req.implicit_deref_sites;
     ctx.req.pending_mutability_matches.retain_mut(|check| {
-        let outcome = check.step(&mut ctx.ex, &mut ctx.types, &mut ctx.search, implicit_deref_sites);
+        let outcome = check.step(
+            &mut ctx.ex,
+            &mut ctx.types,
+            &mut ctx.search,
+            implicit_deref_sites,
+        );
         progress |= outcome.progress;
         outcome.retain
     });

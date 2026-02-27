@@ -1461,7 +1461,8 @@ impl<'a> InferState<'a> {
     }
 
     pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>) {
-        self.search.bind_val_with_origin(v, c, origin, &mut self.types.lifetimes);
+        self.search
+            .bind_val_with_origin(v, c, origin, &mut self.types.lifetimes);
     }
 
     pub(crate) fn bind_pat(&mut self, p: PatId, c: CId) {
@@ -1469,7 +1470,8 @@ impl<'a> InferState<'a> {
     }
 
     pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>) {
-        self.search.bind_pat_with_origin(p, c, origin, &mut self.types.lifetimes);
+        self.search
+            .bind_pat_with_origin(p, c, origin, &mut self.types.lifetimes);
     }
 
     pub(crate) fn unify(&mut self, a: CId, b: CId) -> Result<CId, TypeClash> {
@@ -2124,7 +2126,13 @@ impl SearchState {
         self.val_cluster.push((v, c));
     }
 
-    pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>, lifetimes: &mut LifetimeState) {
+    pub(crate) fn bind_val_with_origin(
+        &mut self,
+        v: ValId,
+        c: CId,
+        origin: Option<OriginId>,
+        lifetimes: &mut LifetimeState,
+    ) {
         self.val_cluster.push((v, c));
         if let Some(origin) = origin {
             lifetimes.value_origins.insert(v, origin);
@@ -2135,7 +2143,13 @@ impl SearchState {
         self.pat_cluster.push((p, c));
     }
 
-    pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>, lifetimes: &mut LifetimeState) {
+    pub(crate) fn bind_pat_with_origin(
+        &mut self,
+        p: PatId,
+        c: CId,
+        origin: Option<OriginId>,
+        lifetimes: &mut LifetimeState,
+    ) {
         self.pat_cluster.push((p, c));
         if let Some(origin) = origin {
             lifetimes.pattern_origins.insert(p, origin);
@@ -2382,18 +2396,20 @@ impl TypeState {
             .and_then(|node| node.effective_mutability)
     }
 
-    pub(crate) fn set_origin_mutable_if_unknown(&mut self, origin: OriginId) {
+    pub(crate) fn set_origin_mutable_if_unknown(&mut self, origin: OriginId) -> bool {
         if self.origin_mutability(origin) == Some(true) {
-            return;
+            return true;
         }
 
         let Some(node) = self.origin_mut(origin) else {
-            return;
+            return false;
         };
         if node.declared_mutability.is_none() {
             node.declared_mutability = Some(true);
             self.recompute_origin_mutability();
         }
+
+        self.origin_mutability(origin) == Some(true)
     }
 
     pub(crate) fn recompute_origin_mutability(&mut self) {
@@ -2560,8 +2576,10 @@ pub(crate) fn unify_struct_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
         return true;
     }
 
-    let Some(merged) = merge_lifetime_known_strict(types.lifetimes.life_known[ra], types.lifetimes.life_known[rb])
-    else {
+    let Some(merged) = merge_lifetime_known_strict(
+        types.lifetimes.life_known[ra],
+        types.lifetimes.life_known[rb],
+    ) else {
         return false;
     };
 
@@ -2577,7 +2595,8 @@ pub(crate) fn bind_struct_lid_to_lifetime(
     target: LifeTime,
 ) -> bool {
     let root = types.find_lid_root(lid);
-    let Some(merged) = merge_lifetime_known_strict(types.lifetimes.life_known[root], Some(target)) else {
+    let Some(merged) = merge_lifetime_known_strict(types.lifetimes.life_known[root], Some(target))
+    else {
         return false;
     };
     types.lifetimes.life_known[root] = merged;
@@ -8345,6 +8364,24 @@ mod type_infer_tests {
             "f=fn(){ let g = fn[T](x:T)->T{x}; }",
             CLOSURES_UNSUPPORTED_MSG,
         );
+    }
+
+    #[test]
+    fn set_origin_mutable_if_unknown_rejects_declared_immutable_origin() {
+        let mut types = TypeState::new();
+        let origin = types.new_origin(OriginKind::BindingRoot, None, None, Some(false), None);
+
+        assert!(!types.set_origin_mutable_if_unknown(origin));
+        assert_eq!(types.origin_mutability(origin), Some(false));
+    }
+
+    #[test]
+    fn set_origin_mutable_if_unknown_promotes_unknown_origin() {
+        let mut types = TypeState::new();
+        let origin = types.new_origin(OriginKind::BindingRoot, None, None, None, None);
+
+        assert!(types.set_origin_mutable_if_unknown(origin));
+        assert_eq!(types.origin_mutability(origin), Some(true));
     }
 
     //  #[test]
