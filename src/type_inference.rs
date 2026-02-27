@@ -1461,7 +1461,7 @@ impl<'a> InferState<'a> {
     }
 
     pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>) {
-        self.search.bind_val_with_origin(v, c, origin);
+        self.search.bind_val_with_origin(v, c, origin, &mut self.types.lifetimes);
     }
 
     pub(crate) fn bind_pat(&mut self, p: PatId, c: CId) {
@@ -1469,7 +1469,7 @@ impl<'a> InferState<'a> {
     }
 
     pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>) {
-        self.search.bind_pat_with_origin(p, c, origin);
+        self.search.bind_pat_with_origin(p, c, origin, &mut self.types.lifetimes);
     }
 
     pub(crate) fn unify(&mut self, a: CId, b: CId) -> Result<CId, TypeClash> {
@@ -2071,9 +2071,6 @@ pub(crate) struct SearchState {
     pub(crate) local_types: IdHashMap<NameId, CId>,
     pub(crate) names: IdHashMap<NameId, NameBinding>,
     pub(crate) local_lifetimes: IdHashMap<LifeTimeId, (LifeTime, LId)>,
-    pub(crate) origins: OriginVec<OriginNode>,
-    pub(crate) value_origins: IdHashMap<ValId, OriginId>,
-    pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2092,9 +2089,6 @@ impl SearchState {
             local_types: IdHashMap::default(),
             names: IdHashMap::default(),
             local_lifetimes: IdHashMap::default(),
-            origins: OriginVec::new(),
-            value_origins: IdHashMap::default(),
-            pattern_origins: IdHashMap::default(),
         };
         ans.populate_defaults(types);
         ans
@@ -2108,9 +2102,6 @@ impl SearchState {
             local_types,
             names,
             local_lifetimes,
-            origins,
-            value_origins,
-            pattern_origins,
         } = self;
 
         val_cluster.clear();
@@ -2119,9 +2110,6 @@ impl SearchState {
         local_types.clear();
         names.clear();
         local_lifetimes.clear();
-        origins.clear();
-        value_origins.clear();
-        pattern_origins.clear();
 
         self.populate_defaults(types);
     }
@@ -2136,10 +2124,10 @@ impl SearchState {
         self.val_cluster.push((v, c));
     }
 
-    pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>) {
+    pub(crate) fn bind_val_with_origin(&mut self, v: ValId, c: CId, origin: Option<OriginId>, lifetimes: &mut LifetimeState) {
         self.val_cluster.push((v, c));
         if let Some(origin) = origin {
-            self.value_origins.insert(v, origin);
+            lifetimes.value_origins.insert(v, origin);
         }
     }
 
@@ -2147,10 +2135,10 @@ impl SearchState {
         self.pat_cluster.push((p, c));
     }
 
-    pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>) {
+    pub(crate) fn bind_pat_with_origin(&mut self, p: PatId, c: CId, origin: Option<OriginId>, lifetimes: &mut LifetimeState) {
         self.pat_cluster.push((p, c));
         if let Some(origin) = origin {
-            self.pattern_origins.insert(p, origin);
+            lifetimes.pattern_origins.insert(p, origin);
         }
     }
 
@@ -2185,13 +2173,176 @@ impl SearchState {
             .rev()
             .find_map(|(v, c)| (*v == value).then_some(*c))
     }
+}
+
+pub(crate) struct TypeCore {
+    // unify-find
+    pub(crate) parent: ClusterVec<CId>,
+    pub(crate) cluster: ClusterVec<Cluster>,
+}
+
+impl TypeCore {
+    pub(crate) fn find_root(&mut self, x: CId) -> CId {
+        find_root(&mut self.parent, x)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn new_cluster(&mut self) -> CId {
+        let id = CId(self.parent.len());
+        self.parent.0.push(id);
+        self.cluster.0.push(Cluster {
+            state: ResolveKind::Nothing,
+        });
+        id
+    }
+}
+
+pub(crate) struct TypeExtra {
+    pub(crate) func_defs: Vec<FuncInfer>,
+    pub(crate) struct_defs: Vec<StructDef>,
+    pub(crate) struct_infers: Vec<StructInfer>,
+    pub(crate) tuple_infers: Vec<TupleInfer>,
+}
+
+pub(crate) struct LifetimeState {
+    pub(crate) origins: OriginVec<OriginNode>,
+    pub(crate) value_origins: IdHashMap<ValId, OriginId>,
+    pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
+    pub(crate) life_parent: LifeVec<LId>,
+    pub(crate) life_known: LifeVec<Option<LifeTime>>,
+    pub(crate) next_undeclared_lifetime: u32,
+}
+
+impl LifetimeState {
+    fn new() -> Self {
+        Self {
+            origins: OriginVec::new(),
+            value_origins: IdHashMap::default(),
+            pattern_origins: IdHashMap::default(),
+            life_parent: LifeVec(Vec::new()),
+            life_known: LifeVec(Vec::new()),
+            next_undeclared_lifetime: 0,
+        }
+    }
+
+    fn clear_local_state(&mut self) {
+        self.origins.clear();
+        self.value_origins.clear();
+        self.pattern_origins.clear();
+        self.life_parent.0.clear();
+        self.life_known.0.clear();
+        self.next_undeclared_lifetime = 0;
+    }
+}
+
+pub(crate) struct TypeState {
+    pub(crate) core: TypeCore,
+    pub(crate) extra: TypeExtra,
+    pub(crate) lifetimes: LifetimeState,
+}
+
+#[inline(always)]
+pub(crate) fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
+    let p = life_parent[lid];
+    if p == lid {
+        return lid;
+    }
+    let root = find_lid_root(life_parent, p);
+    life_parent[lid] = root;
+    root
+}
+
+impl TypeState {
+    fn new() -> Self {
+        let mut ans = Self {
+            core: TypeCore {
+                parent: ClusterVec::new(),
+                cluster: ClusterVec::new(),
+            },
+            extra: TypeExtra {
+                func_defs: Vec::new(),
+                struct_defs: Vec::new(),
+                struct_infers: Vec::new(),
+                tuple_infers: Vec::new(),
+            },
+            lifetimes: LifetimeState::new(),
+        };
+
+        ans.populate_defaults();
+        ans
+    }
+
+    fn clear_local_state(&mut self) {
+        let TypeCore { parent, cluster } = &mut self.core;
+
+        let TypeExtra {
+            func_defs,
+            struct_defs,
+            struct_infers,
+            tuple_infers,
+        } = &mut self.extra;
+
+        // ---- union find ----
+        parent.0.clear();
+        cluster.0.clear();
+
+        // ---- type database ----
+        func_defs.clear();
+        struct_defs.clear();
+        struct_infers.clear();
+        tuple_infers.clear();
+
+        // ---- lifetimes and origins ----
+        self.lifetimes.clear_local_state();
+
+        self.populate_defaults();
+    }
+
+    fn populate_defaults(&mut self) {
+        for _i in 0..BUILTIN_COUNT {
+            let id = self.new_cluster();
+            debug_assert_eq!(id.0, _i);
+            self.core.cluster[id].state = ResolveKind::Solved(TypeId(id.0));
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn new_lid(&mut self) -> LId {
+        let id = LId(self.lifetimes.life_parent.0.len());
+        self.lifetimes.life_parent.0.push(id);
+        self.lifetimes.life_known.0.push(None);
+        id
+    }
+
+    #[inline(always)]
+    pub(crate) fn new_lid_known(&mut self, known: LifeTime) -> LId {
+        let id = self.new_lid();
+        self.lifetimes.life_known[id] = Some(known);
+        id
+    }
+
+    #[inline(always)]
+    pub(crate) fn find_lid_root(&mut self, lid: LId) -> LId {
+        find_lid_root(&mut self.lifetimes.life_parent, lid)
+    }
+
+    #[inline(always)]
+    pub(crate) fn mint_undeclared_signature_lifetime(&mut self) -> LifeTime {
+        let id = self.lifetimes.next_undeclared_lifetime;
+        self.lifetimes.next_undeclared_lifetime += 1;
+        LifeTime::External(id)
+    }
+
+    // =========================================================
+    // origin handling
+    // =========================================================
 
     pub(crate) fn value_origin(&self, value: ValId) -> Option<OriginId> {
-        self.value_origins.get(&value).copied()
+        self.lifetimes.value_origins.get(&value).copied()
     }
 
     pub(crate) fn pattern_origin(&self, pat: PatId) -> Option<OriginId> {
-        self.pattern_origins.get(&pat).copied()
+        self.lifetimes.pattern_origins.get(&pat).copied()
     }
 
     pub(crate) fn new_origin(
@@ -2204,8 +2355,8 @@ impl SearchState {
     ) -> OriginId {
         let effective_mutability =
             self.compute_origin_mutability_for_new(kind, parent, declared_mutability);
-        let id = OriginId(self.origins.len() as u32);
-        self.origins.push(OriginNode {
+        let id = OriginId(self.lifetimes.origins.len() as u32);
+        self.lifetimes.origins.push(OriginNode {
             kind,
             parent,
             decl_site,
@@ -2218,12 +2369,12 @@ impl SearchState {
 
     #[inline(always)]
     pub(crate) fn origin(&self, origin: OriginId) -> Option<&OriginNode> {
-        self.origins.get(origin)
+        self.lifetimes.origins.get(origin)
     }
 
     #[inline(always)]
     pub(crate) fn origin_mut(&mut self, origin: OriginId) -> Option<&mut OriginNode> {
-        self.origins.get_mut(origin)
+        self.lifetimes.origins.get_mut(origin)
     }
 
     pub(crate) fn origin_mutability(&self, origin: OriginId) -> Option<bool> {
@@ -2246,10 +2397,10 @@ impl SearchState {
     }
 
     pub(crate) fn recompute_origin_mutability(&mut self) {
-        for raw in 0..self.origins.len() {
+        for raw in 0..self.lifetimes.origins.len() {
             let origin = OriginId(raw as u32);
             let effective = self.compute_origin_mutability(origin);
-            self.origins[origin].effective_mutability = effective;
+            self.lifetimes.origins[origin].effective_mutability = effective;
         }
     }
 
@@ -2284,138 +2435,6 @@ impl SearchState {
         }
 
         declared_mutability.or_else(|| parent.and_then(|id| self.origin_mutability(id)))
-    }
-}
-
-pub(crate) struct TypeCore {
-    // unify-find
-    pub(crate) parent: ClusterVec<CId>,
-    pub(crate) cluster: ClusterVec<Cluster>,
-}
-
-impl TypeCore {
-    pub(crate) fn find_root(&mut self, x: CId) -> CId {
-        find_root(&mut self.parent, x)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn new_cluster(&mut self) -> CId {
-        let id = CId(self.parent.len());
-        self.parent.0.push(id);
-        self.cluster.0.push(Cluster {
-            state: ResolveKind::Nothing,
-        });
-        id
-    }
-}
-
-pub(crate) struct TypeExtra {
-    pub(crate) func_defs: Vec<FuncInfer>,
-    pub(crate) struct_defs: Vec<StructDef>,
-    pub(crate) struct_infers: Vec<StructInfer>,
-    pub(crate) tuple_infers: Vec<TupleInfer>,
-}
-
-pub(crate) struct TypeState {
-    pub(crate) core: TypeCore,
-    pub(crate) extra: TypeExtra,
-    pub(crate) life_parent: LifeVec<LId>,
-    pub(crate) life_known: LifeVec<Option<LifeTime>>,
-    pub(crate) next_undeclared_lifetime: u32,
-}
-
-#[inline(always)]
-pub(crate) fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
-    let p = life_parent[lid];
-    if p == lid {
-        return lid;
-    }
-    let root = find_lid_root(life_parent, p);
-    life_parent[lid] = root;
-    root
-}
-
-impl TypeState {
-    fn new() -> Self {
-        let mut ans = Self {
-            core: TypeCore {
-                parent: ClusterVec::new(),
-                cluster: ClusterVec::new(),
-            },
-            extra: TypeExtra {
-                func_defs: Vec::new(),
-                struct_defs: Vec::new(),
-                struct_infers: Vec::new(),
-                tuple_infers: Vec::new(),
-            },
-            life_parent: LifeVec(Vec::new()),
-            life_known: LifeVec(Vec::new()),
-            next_undeclared_lifetime: 0,
-        };
-
-        ans.populate_defaults();
-        ans
-    }
-
-    fn clear_local_state(&mut self) {
-        let TypeCore { parent, cluster } = &mut self.core;
-
-        let TypeExtra {
-            func_defs,
-            struct_defs,
-            struct_infers,
-            tuple_infers,
-        } = &mut self.extra;
-
-        // ---- union find ----
-        parent.0.clear();
-        cluster.0.clear();
-
-        // ---- type database ----
-        func_defs.clear();
-        struct_defs.clear();
-        struct_infers.clear();
-        tuple_infers.clear();
-        self.life_parent.0.clear();
-        self.life_known.0.clear();
-        self.next_undeclared_lifetime = 0;
-
-        self.populate_defaults();
-    }
-
-    fn populate_defaults(&mut self) {
-        for _i in 0..BUILTIN_COUNT {
-            let id = self.new_cluster();
-            debug_assert_eq!(id.0, _i);
-            self.core.cluster[id].state = ResolveKind::Solved(TypeId(id.0));
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) fn new_lid(&mut self) -> LId {
-        let id = LId(self.life_parent.0.len());
-        self.life_parent.0.push(id);
-        self.life_known.0.push(None);
-        id
-    }
-
-    #[inline(always)]
-    pub(crate) fn new_lid_known(&mut self, known: LifeTime) -> LId {
-        let id = self.new_lid();
-        self.life_known[id] = Some(known);
-        id
-    }
-
-    #[inline(always)]
-    pub(crate) fn find_lid_root(&mut self, lid: LId) -> LId {
-        find_lid_root(&mut self.life_parent, lid)
-    }
-
-    #[inline(always)]
-    pub(crate) fn mint_undeclared_signature_lifetime(&mut self) -> LifeTime {
-        let id = self.next_undeclared_lifetime;
-        self.next_undeclared_lifetime += 1;
-        LifeTime::External(id)
     }
 
     // =========================================================
@@ -2541,13 +2560,13 @@ pub(crate) fn unify_struct_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
         return true;
     }
 
-    let Some(merged) = merge_lifetime_known_strict(types.life_known[ra], types.life_known[rb])
+    let Some(merged) = merge_lifetime_known_strict(types.lifetimes.life_known[ra], types.lifetimes.life_known[rb])
     else {
         return false;
     };
 
-    types.life_parent[rb] = ra;
-    types.life_known[ra] = merged;
+    types.lifetimes.life_parent[rb] = ra;
+    types.lifetimes.life_known[ra] = merged;
     true
 }
 
@@ -2558,10 +2577,10 @@ pub(crate) fn bind_struct_lid_to_lifetime(
     target: LifeTime,
 ) -> bool {
     let root = types.find_lid_root(lid);
-    let Some(merged) = merge_lifetime_known_strict(types.life_known[root], Some(target)) else {
+    let Some(merged) = merge_lifetime_known_strict(types.lifetimes.life_known[root], Some(target)) else {
         return false;
     };
-    types.life_known[root] = merged;
+    types.lifetimes.life_known[root] = merged;
     true
 }
 
@@ -3598,9 +3617,9 @@ fn try_resolve_struct_type(
 
     let mut lifetimes = Vec::with_capacity(site.lifetimes.len());
     for lid in site.lifetimes.iter_mut() {
-        let root = find_lid_root(&mut types.life_parent, *lid);
+        let root = find_lid_root(&mut types.lifetimes.life_parent, *lid);
         *lid = root;
-        let Some(ans) = types.life_known[root] else {
+        let Some(ans) = types.lifetimes.life_known[root] else {
             return None;
         };
         lifetimes.push(ans);
@@ -3663,8 +3682,8 @@ fn try_resolve_ptr_type(
     let style = match kind {
         PtrKind::Solved(style) => style,
         PtrKind::RefInfer(lid) => {
-            let root = find_lid_root(&mut types.life_parent, lid);
-            let lt = types.life_known[root]?;
+            let root = find_lid_root(&mut types.lifetimes.life_parent, lid);
+            let lt = types.lifetimes.life_known[root]?;
             PointerStyle::Ref(lt)
         }
         _ => return None,
@@ -4481,7 +4500,7 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         Pattern::Bind(n, kind) => {
             let c = ctx.new_cluster();
             let is_mut_legal = matches!(kind, VarKind::Mut);
-            let origin = Some(ctx.search.new_origin(
+            let origin = Some(ctx.types.new_origin(
                 OriginKind::BindingRoot,
                 None,
                 Some(OriginDeclSite::Pattern(p)),
@@ -4504,8 +4523,8 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
                 kind: PtrKind::SafeRef,
                 tgt,
             };
-            let origin = ctx.search.pattern_origin(base).map(|base_origin| {
-                ctx.search.new_origin(
+            let origin = ctx.types.pattern_origin(base).map(|base_origin| {
+                ctx.types.new_origin(
                     OriginKind::Reborrow,
                     Some(base_origin),
                     Some(OriginDeclSite::Pattern(p)),
@@ -4534,7 +4553,7 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
                 });
             }
 
-            let origin = ctx.search.pattern_origin(pat);
+            let origin = ctx.types.pattern_origin(pat);
             ctx.bind_pat_with_origin(p, c, origin);
             (c, n)
         }
@@ -4782,8 +4801,8 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
                 let mut lifetimes = Vec::with_capacity(m);
                 for i in 0..m {
                     let lid = ctx.types.extra.struct_infers[call.0].lifetimes[i];
-                    let lid = find_lid_root(&mut ctx.types.life_parent, lid);
-                    lifetimes.push(ctx.types.life_known[lid]?);
+                    let lid = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
+                    lifetimes.push(ctx.types.lifetimes.life_known[lid]?);
                 }
 
                 let sid = ctx.types.extra.struct_infers[call.0].sid;
@@ -4821,8 +4840,8 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
                 let style = match kind {
                     PtrKind::Solved(style) => style,
                     PtrKind::RefInfer(lid) => {
-                        let lid = find_lid_root(&mut ctx.types.life_parent, lid);
-                        PointerStyle::Ref(ctx.types.life_known[lid]?)
+                        let lid = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
+                        PointerStyle::Ref(ctx.types.lifetimes.life_known[lid]?)
                     }
                     _ => return None,
                 };

@@ -38,7 +38,7 @@ pub fn infer_global_types<'a>(
         //structs have to all resolve in the same scope so they see eachother
         //but we need to preserve them to have their own lifetime...
         //this is 100% a hack but because structs are so simple in terms of lifetimes it should work
-        ctx.types.next_undeclared_lifetime = 0;
+        ctx.types.lifetimes.next_undeclared_lifetime = 0;
         let t = do_typedef::<true>(&mut ctx, *n, *texp);
         if let Some(previous) = ctx.search.local_types.insert(*n, t)
             && let Err(clash) = ctx.unify(previous, t)
@@ -524,7 +524,7 @@ fn apply_signature_elided_output_lifetime_rule(
         return;
     };
 
-    let mut seen_output_roots = vec![false; ctx.types.life_parent.0.len()];
+    let mut seen_output_roots = vec![false; ctx.types.lifetimes.life_parent.0.len()];
     let mut output_elided_roots = Vec::new();
     for lid in lids_before_output..lids_after_output {
         let root = ctx.types.find_lid_root(LId(lid));
@@ -532,7 +532,7 @@ fn apply_signature_elided_output_lifetime_rule(
             continue;
         }
         seen_output_roots[root.0] = true;
-        if ctx.types.life_known[root].is_none() {
+        if ctx.types.lifetimes.life_known[root].is_none() {
             output_elided_roots.push(root);
         }
     }
@@ -561,7 +561,7 @@ fn assign_signature_implicit_input_lifetimes(
     lids_before_inputs: usize,
     lids_after_inputs: usize,
 ) -> Vec<LifeTime> {
-    let mut seen_input_roots = vec![false; ctx.types.life_parent.0.len()];
+    let mut seen_input_roots = vec![false; ctx.types.lifetimes.life_parent.0.len()];
     let mut implicit_input_roots = Vec::new();
     for lid in lids_before_inputs..lids_after_inputs {
         let root = ctx.types.find_lid_root(LId(lid));
@@ -569,7 +569,7 @@ fn assign_signature_implicit_input_lifetimes(
             continue;
         }
         seen_input_roots[root.0] = true;
-        if ctx.types.life_known[root].is_none() {
+        if ctx.types.lifetimes.life_known[root].is_none() {
             implicit_input_roots.push(root);
         }
     }
@@ -646,7 +646,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         //TODO: we probably wana do something with generics that are ints here if we have them
     }
 
-    let undeclared_before_fields = ctx.types.next_undeclared_lifetime;
+    let undeclared_before_fields = ctx.types.lifetimes.next_undeclared_lifetime;
 
     let mut field_info = Vec::with_capacity(fields.len());
     for p in fields.ids() {
@@ -678,7 +678,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         }
     }
 
-    let undeclared_after_fields = ctx.types.next_undeclared_lifetime;
+    let undeclared_after_fields = ctx.types.lifetimes.next_undeclared_lifetime;
     if undeclared_after_fields != undeclared_before_fields {
         let loc = ctx.ex.program.type_expr_loc(texpr);
         ctx.ex.push_error(TypeError::Simple {
@@ -857,14 +857,14 @@ pub(crate) fn compile_type_expr_with_mode(
             params,
             output_type,
         } => {
-            let undeclared_before_inputs = ctx.types.next_undeclared_lifetime;
+            let undeclared_before_inputs = ctx.types.lifetimes.next_undeclared_lifetime;
             let inputs = params
                 .ids()
                 .map(|arg| compile_type_expr_with_mode(ctx, arg, mode))
                 .collect::<Vec<_>>();
             let output = match mode {
                 TypeExprCompileMode::Signature => {
-                    let undeclared_after_inputs = ctx.types.next_undeclared_lifetime;
+                    let undeclared_after_inputs = ctx.types.lifetimes.next_undeclared_lifetime;
                     let output_lifetime = infer_elided_output_lifetime(
                         ctx,
                         output_type,
@@ -1331,7 +1331,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
-    let lifetime_before_signature = ctx.types.life_parent.0.len();
+    let lifetime_before_signature = ctx.types.lifetimes.life_parent.0.len();
     let lifetime_generics = generics.lifetimes();
     let generics = generics.generics();
     // Reject generic functions in local scope.
@@ -1354,7 +1354,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         });
     }
 
-    let lids_before_inputs = ctx.types.life_parent.0.len();
+    let lids_before_inputs = ctx.types.lifetimes.life_parent.0.len();
     bind_lifetime_generics(ctx, lifetime_generics);
 
     for (i, pat) in generics.ids().enumerate() {
@@ -1365,16 +1365,16 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
         .collect::<Vec<_>>();
-    let lids_after_inputs = ctx.types.life_parent.0.len();
+    let lids_after_inputs = ctx.types.lifetimes.life_parent.0.len();
     let implicit_input_lifetimes =
         assign_signature_implicit_input_lifetimes(ctx, lids_before_inputs, lids_after_inputs);
-    let lids_before_output = ctx.types.life_parent.0.len();
+    let lids_before_output = ctx.types.lifetimes.life_parent.0.len();
     let output = if let Some(x) = output_type {
         compile_type_expr_with_mode(ctx, x, TypeExprCompileMode::Signature)
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
-    let lids_after_output = ctx.types.life_parent.0.len();
+    let lids_after_output = ctx.types.lifetimes.life_parent.0.len();
     apply_signature_elided_output_lifetime_rule(
         ctx,
         output_type,

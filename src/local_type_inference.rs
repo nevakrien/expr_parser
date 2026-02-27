@@ -319,14 +319,14 @@ fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count:
     let mut progress = false;
     //should properly increment
 
-    for lid in ctx.types.life_parent.0.iter() {
-        if *lid != ctx.types.life_parent[*lid] {
+    for lid in ctx.types.lifetimes.life_parent.0.iter() {
+        if *lid != ctx.types.lifetimes.life_parent[*lid] {
             continue;
         }
 
-        if ctx.types.life_known[*lid].is_none() {
+        if ctx.types.lifetimes.life_known[*lid].is_none() {
             let hack = LifeId(*unknown_count);
-            ctx.types.life_known[*lid] = Some(LifeTime::Unknown(hack));
+            ctx.types.lifetimes.life_known[*lid] = Some(LifeTime::Unknown(hack));
             *unknown_count += 1;
             progress = true;
         }
@@ -435,9 +435,9 @@ fn finalize_local(ctx: &mut InferState) {
         &mut types.core.parent,
         &types.core.cluster,
     );
-    inner.origins = std::mem::take(&mut search.origins);
-    inner.value_origins = std::mem::take(&mut search.value_origins);
-    inner.pattern_origins = std::mem::take(&mut search.pattern_origins);
+    inner.origins = std::mem::take(&mut types.lifetimes.origins);
+    inner.value_origins = std::mem::take(&mut types.lifetimes.value_origins);
+    inner.pattern_origins = std::mem::take(&mut types.lifetimes.pattern_origins);
 
     let owner = req.owner.or_else(|| {
         val_cluster
@@ -544,8 +544,8 @@ fn enqueue_pending_mutability_match(
 }
 
 #[inline(always)]
-fn mark_origin_requires_mut(search: &mut SearchState, origin: OriginId) {
-    search.set_origin_mutable_if_unknown(origin);
+fn mark_origin_requires_mut(types: &mut TypeState, origin: OriginId) {
+    types.set_origin_mutable_if_unknown(origin);
 }
 
 #[inline(always)]
@@ -555,13 +555,13 @@ fn mutability_subtype(
     projected_origin: OriginId,
     context: WritablePlaceContext,
 ) {
-    mark_origin_requires_mut(&mut ctx.search, projected_origin);
+    mark_origin_requires_mut(&mut ctx.types, projected_origin);
     let check = PendingMutabilityMatchRequirement {
         site,
         context,
         projected_origin,
     };
-    let outcome = check.step(ctx);
+    let outcome = check.step(&mut ctx.ex, &mut ctx.types, &mut ctx.search, &ctx.req.implicit_deref_sites);
     if outcome.retain {
         enqueue_pending_mutability_match(&mut ctx.req.pending_mutability_matches, check);
     }
@@ -671,7 +671,7 @@ fn new_suborigin(
     declared_mutability: Option<bool>,
 ) -> Option<OriginId> {
     parent.map(|parent| {
-        let origin = ctx.search.new_origin(
+        let origin = ctx.types.new_origin(
             kind,
             Some(parent),
             Some(OriginDeclSite::Value(site)),
@@ -692,7 +692,7 @@ fn new_origin_root(
     site: ValId,
     declared_mutability: Option<bool>,
 ) -> OriginId {
-    ctx.search.new_origin(
+    ctx.types.new_origin(
         kind,
         None,
         Some(OriginDeclSite::Value(site)),
@@ -818,19 +818,19 @@ pub(crate) fn gather_constraints(
         } => {
             let lhs = gather_pattern_constraints(ctx, pat);
             // let-expr evaluates to the bound pattern value => alias
-            let lhs_origin = ctx.search.pattern_origin(pat);
+            let lhs_origin = ctx.types.pattern_origin(pat);
             ctx.bind_val_with_origin(v, lhs, lhs_origin);
 
             let rhs = gather_constraints(ctx, value, current_output);
-            let rhs_origin = ctx.search.value_origin(value);
+            let rhs_origin = ctx.types.value_origin(value);
 
             if let (Some(lhs_origin), Some(rhs_origin)) = (lhs_origin, rhs_origin)
-                && let Some(node) = ctx.search.origin_mut(lhs_origin)
+                && let Some(node) = ctx.types.origin_mut(lhs_origin)
                 && node.parent.is_none()
                 && node.declared_mutability != Some(true)
             {
                 node.parent = Some(rhs_origin);
-                ctx.search.recompute_origin_mutability();
+                ctx.types.recompute_origin_mutability();
             }
 
             if let Err(clash) = ctx.unify(rhs, lhs) {
@@ -873,7 +873,7 @@ pub(crate) fn gather_constraints(
             }
 
             // Annotation does not introduce a new type identity: alias to the value
-            let origin = ctx.search.value_origin(value);
+            let origin = ctx.types.value_origin(value);
             ctx.bind_val_with_origin(v, rhs_cluster, origin);
             rhs_cluster
         }
@@ -887,7 +887,7 @@ pub(crate) fn gather_constraints(
                 ctx,
                 OriginKind::CastProjection,
                 v,
-                ctx.search.value_origin(value),
+                ctx.types.value_origin(value),
                 None,
             )
             .or_else(|| Some(new_origin_root(ctx, OriginKind::RawRoot, v, None)));
@@ -941,7 +941,7 @@ pub(crate) fn gather_constraints(
                 ctx,
                 OriginKind::Reborrow,
                 v,
-                ctx.search.value_origin(base),
+                ctx.types.value_origin(base),
                 mutable,
             )
             .or_else(|| Some(new_origin_root(ctx, OriginKind::RawRoot, v, mutable)));
@@ -956,7 +956,7 @@ pub(crate) fn gather_constraints(
                 ctx,
                 OriginKind::Deref,
                 v,
-                ctx.search.value_origin(base),
+                ctx.types.value_origin(base),
                 None,
             );
             ctx.bind_val_with_origin(v, output, origin);
@@ -1005,7 +1005,7 @@ pub(crate) fn gather_constraints(
                 ctx,
                 OriginKind::MemberProjection,
                 v,
-                ctx.search.value_origin(base),
+                ctx.types.value_origin(base),
                 None,
             );
 
@@ -1073,7 +1073,7 @@ pub(crate) fn gather_constraints(
 
         Value::Assign { op, target } => {
             let lhs = gather_constraints(ctx, target, current_output);
-            ctx.bind_val_with_origin(v, lhs, ctx.search.value_origin(target));
+            ctx.bind_val_with_origin(v, lhs, ctx.types.value_origin(target));
 
             require_place_writable(ctx, v, target, WritablePlaceContext::Assign);
 
@@ -1155,7 +1155,7 @@ pub(crate) fn gather_constraints(
                 None => ctx.new_solved(BuiltinType::Void.into()),
             };
 
-            let origin = return_value.and_then(|r| ctx.search.value_origin(r));
+            let origin = return_value.and_then(|r| ctx.types.value_origin(r));
             ctx.bind_val_with_origin(v, c, origin);
             c
         }
@@ -1331,9 +1331,9 @@ pub(crate) fn gather_constraints(
                     .collect::<Vec<_>>();
                 let inputs = input_pairs.iter().map(|(_, cluster)| *cluster).collect();
                 let output = ctx.new_cluster();
-                let output_origin = Some(ctx.search.new_origin(
+                let output_origin = Some(ctx.types.new_origin(
                     OriginKind::CallReturnRoot,
-                    ctx.search.value_origin(call.base),
+                    ctx.types.value_origin(call.base),
                     Some(OriginDeclSite::Value(v)),
                     None,
                     None,
@@ -1363,7 +1363,7 @@ pub(crate) fn gather_constraints(
                         .copied()
                         .find_map(|(arg_value, arg_cluster)| {
                             (ctx.types.root(arg_cluster) == output_root)
-                                .then(|| ctx.search.value_origin(arg_value))
+                                .then(|| ctx.types.value_origin(arg_value))
                                 .flatten()
                         });
 
@@ -1377,7 +1377,7 @@ pub(crate) fn gather_constraints(
                             }
                             pointer_like_count += 1;
                             if pointer_like_parent.is_none() {
-                                pointer_like_parent = ctx.search.value_origin(arg_value);
+                                pointer_like_parent = ctx.types.value_origin(arg_value);
                             }
                         }
 
@@ -1387,10 +1387,10 @@ pub(crate) fn gather_constraints(
                     }
 
                     if let Some(parent) = alias_parent
-                        && let Some(node) = ctx.search.origin_mut(output_origin)
+                        && let Some(node) = ctx.types.origin_mut(output_origin)
                     {
                         node.parent = Some(parent);
-                        ctx.search.recompute_origin_mutability();
+                        ctx.types.recompute_origin_mutability();
                     }
                 }
 
@@ -1667,7 +1667,7 @@ pub(crate) fn gather_constraints(
                 ctx,
                 OriginKind::IndexProjection,
                 v,
-                ctx.search.value_origin(base),
+                ctx.types.value_origin(base),
                 None,
             );
             match try_resolve_tuple_int_access(&mut ctx.ex, &mut ctx.types, v, source, id, kind) {
@@ -1823,7 +1823,7 @@ pub(crate) fn gather_constraints(
                 ctx,
                 OriginKind::IndexProjection,
                 v,
-                ctx.search.value_origin(call.base),
+                ctx.types.value_origin(call.base),
                 None,
             );
             ctx.bind_val_with_origin(v, output, output_origin);
@@ -2088,7 +2088,7 @@ fn check_place_mutability(ctx: &mut InferState, target: ValId) -> PlaceKind {
                     if is_mut {
                         place_kind(PlaceAccessKind::Local, Some(true))
                     } else if let Some(origin) = binding.origin {
-                        place_kind(PlaceAccessKind::Local, ctx.search.origin_mutability(origin))
+                        place_kind(PlaceAccessKind::Local, ctx.types.origin_mutability(origin))
                     } else {
                         place_kind(PlaceAccessKind::Local, Some(false))
                     }
@@ -2172,7 +2172,7 @@ fn queue_mutability_match_for_place(
     target: ValId,
     context: WritablePlaceContext,
 ) -> bool {
-    let Some(projected_origin) = ctx.search.value_origin(target) else {
+    let Some(projected_origin) = ctx.types.value_origin(target) else {
         return false;
     };
     mutability_subtype(ctx, site, projected_origin, context);
@@ -2216,7 +2216,7 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         } else {
             ctx.new_solved(ty)
         };
-        let origin = Some(ctx.search.new_origin(
+        let origin = Some(ctx.types.new_origin(
             OriginKind::ArgumentRoot,
             None,
             Some(OriginDeclSite::Pattern(pat)),
@@ -2800,7 +2800,7 @@ impl PendingImplicitDeref {
                             });
                         }
                         Some(None) => {
-                            if let Some(projected_origin) = search.value_origin(self.base_value) {
+                            if let Some(projected_origin) = types.value_origin(self.base_value) {
                                 enqueue_pending_mutability_match(
                                     pending_mutability_matches,
                                     PendingMutabilityMatchRequirement {
@@ -2874,7 +2874,7 @@ impl PendingImplicitDeref {
                                 });
                             }
                             Some(None) => {
-                                if let Some(projected_origin) = search.value_origin(self.base_value)
+                                if let Some(projected_origin) = types.value_origin(self.base_value)
                                 {
                                     enqueue_pending_mutability_match(
                                         pending_mutability_matches,
@@ -4211,7 +4211,7 @@ fn immutable_origin_cause(ctx: &InferState, origin: OriginId) -> Option<(Loc, &'
     let mut current = Some(origin);
 
     while let Some(origin) = current {
-        let node = ctx.search.origin(origin)?;
+        let node = ctx.types.origin(origin)?;
 
         if matches!(node.kind, OriginKind::BindingRoot) && node.parent.is_some() {
             current = node.parent;
@@ -4290,16 +4290,268 @@ fn require_place_writable(
                 ctx,
                 site,
                 writable_place_error_message(context, access_kind),
-                ctx.search.value_origin(target),
+                ctx.types.value_origin(target),
             );
             true
         }
     }
 }
 
+fn check_place_mutability_for_origin(
+    ex: &ExternState,
+    types: &mut TypeState,
+    search: &mut SearchState,
+    implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
+    target: ValId,
+) -> PlaceKind {
+    match ex.program.value(target) {
+        Value::NameRef(name) => {
+            let Some(binding) = search.name_binding(name) else {
+                return place_kind(PlaceAccessKind::NonPlace, Some(false));
+            };
+            match binding.kind {
+                NameBindingKind::Generic => place_kind(PlaceAccessKind::NonPlace, Some(false)),
+                NameBindingKind::Local(is_mut) => {
+                    if is_mut {
+                        place_kind(PlaceAccessKind::Local, Some(true))
+                    } else if let Some(origin) = binding.origin {
+                        place_kind(PlaceAccessKind::Local, types.origin_mutability(origin))
+                    } else {
+                        place_kind(PlaceAccessKind::Local, Some(false))
+                    }
+                }
+            }
+        }
+        Value::Deref(base) => deref_source_write_mutability_for_origin(ex, types, search, implicit_deref_sites, base),
+        Value::Access { base, kind, .. } | Value::IntAccess { base, kind, .. } => match kind {
+            AccessKind::Static => place_kind(PlaceAccessKind::NonPlace, Some(false)),
+            AccessKind::Dot | AccessKind::Ptr => {
+                let access_kind = match kind {
+                    AccessKind::Dot => PlaceAccessKind::MemberAccessDot,
+                    AccessKind::Ptr => PlaceAccessKind::MemberAccessPtr,
+                    AccessKind::Static => unreachable!(),
+                };
+
+                if let Some(receivers) =
+                    find_implicit_deref_receivers_for_site(implicit_deref_sites, target)
+                {
+                    let chain_state = chain_write_mutability(ex, types, receivers);
+                    return place_from_implicit_chain_state_for_origin(
+                        ex, types, search, implicit_deref_sites,
+                        base,
+                        chain_state,
+                        receivers.is_empty(),
+                        access_kind,
+                    );
+                }
+
+                let base_place = check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, base);
+                place_with_access(base_place, access_kind)
+            }
+        },
+        Value::Index(call) => {
+            if let Some(receivers) =
+                find_implicit_deref_receivers_for_site(implicit_deref_sites, target)
+            {
+                let chain_state = chain_write_mutability(ex, types, receivers);
+                return place_from_implicit_chain_state_for_origin(
+                    ex, types, search, implicit_deref_sites,
+                    call.base,
+                    chain_state,
+                    receivers.is_empty(),
+                    PlaceAccessKind::Index,
+                );
+            }
+
+            let base_place = check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, call.base);
+            place_with_access(base_place, PlaceAccessKind::Index)
+        }
+        _ => place_kind(PlaceAccessKind::NonPlace, Some(false)),
+    }
+}
+
+fn deref_source_write_mutability_for_origin(
+    ex: &ExternState,
+    types: &mut TypeState,
+    search: &mut SearchState,
+    implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
+    value: ValId,
+) -> PlaceKind {
+    let Some(base_cluster) = search.value_cluster(value) else {
+        return place_kind(PlaceAccessKind::Deref, None);
+    };
+
+    if let Some(pointer_mutability) =
+        pointer_mutability_from_cluster(ex, types, base_cluster)
+    {
+        return match pointer_mutability {
+            Some(true) => place_kind(PlaceAccessKind::Deref, Some(true)),
+            Some(false) => place_kind(PlaceAccessKind::Deref, Some(false)),
+            None => place_kind(PlaceAccessKind::Deref, None),
+        };
+    }
+
+    smart_deref_write_mutability_for_origin(ex, types, search, implicit_deref_sites, value, base_cluster)
+}
+
+fn smart_deref_write_mutability_for_origin(
+    ex: &ExternState,
+    types: &mut TypeState,
+    search: &mut SearchState,
+    implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
+    value: ValId,
+    cid: CId,
+) -> PlaceKind {
+    let root = types.root(cid);
+    let struct_name = match types.cluster_state(root) {
+        ResolveKind::Solved(ty) => match ex.store.type_value(ty) {
+            TypeValue::Struct { id, .. } => ex.store.struct_value(*id).name,
+            _ => return place_kind(PlaceAccessKind::Deref, Some(false)),
+        },
+        ResolveKind::Struct(rid) => {
+            let sid = types.struct_infer(rid).sid;
+            ex.store.struct_value(sid).name
+        }
+        ResolveKind::Nothing => return place_kind(PlaceAccessKind::Deref, None),
+        _ => return place_kind(PlaceAccessKind::Deref, Some(false)),
+    };
+
+    let Some(struct_name) = struct_name else {
+        return place_kind(PlaceAccessKind::Deref, Some(false));
+    };
+
+    let Some(deref_style) = ex
+        .store
+        .struct_overload_info(struct_name)
+        .and_then(|info| info.deref_style)
+    else {
+        return place_kind(PlaceAccessKind::Deref, Some(false));
+    };
+
+    if matches!(deref_style.mutable, Some(false)) {
+        return place_kind(PlaceAccessKind::Deref, Some(false));
+    }
+
+    check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, value)
+}
+
+fn place_from_implicit_chain_state_for_origin(
+    ex: &ExternState,
+    types: &mut TypeState,
+    search: &mut SearchState,
+    implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
+    base: ValId,
+    chain_state: PlaceKind,
+    receivers_empty: bool,
+    access_kind: PlaceAccessKind,
+) -> PlaceKind {
+    if place_is_writable(chain_state) && receivers_empty {
+        return check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, base);
+    }
+    place_with_access(chain_state, access_kind)
+}
+
+fn promote_place_mutability_for_origin(
+    ex: &ExternState,
+    types: &mut TypeState,
+    search: &mut SearchState,
+    implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
+    target: ValId,
+) -> bool {
+    match ex.program.value(target) {
+        Value::Deref(base) => search
+            .value_cluster(base)
+            .map(|cid| promote_pointer_cluster_to_mutable_for_write(types, cid))
+            .unwrap_or(false),
+        Value::Access { base, .. } | Value::IntAccess { base, .. } => {
+            if let Some(receivers) =
+                find_implicit_deref_receivers_for_site(implicit_deref_sites, target)
+            {
+                let mut changed = false;
+                for receiver in receivers {
+                    changed |=
+                        promote_pointer_cluster_to_mutable_for_write(types, *receiver);
+                }
+                changed
+            } else {
+                promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, base)
+            }
+        }
+        Value::Index(call) => {
+            if let Some(receivers) =
+                find_implicit_deref_receivers_for_site(implicit_deref_sites, target)
+            {
+                let mut changed = false;
+                for receiver in receivers {
+                    changed |=
+                        promote_pointer_cluster_to_mutable_for_write(types, *receiver);
+                }
+                changed
+            } else {
+                promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, call.base)
+            }
+        }
+        _ => false,
+    }
+}
+
+fn push_writable_place_error_for_origin(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    site: ValId,
+    message: &'static str,
+    projected_origin: Option<OriginId>,
+) {
+    let loc = ex.program.value_loc(site);
+    if let Some(origin) = projected_origin {
+        let mut current = Some(origin);
+        while let Some(o) = current {
+            let Some(node) = types.origin(o) else {
+                break;
+            };
+            if matches!(node.kind, OriginKind::BindingRoot) && node.parent.is_some() {
+                current = node.parent;
+                continue;
+            }
+            if node.declared_mutability == Some(false) {
+                let decl = node.decl_site;
+                if let Some(decl) = decl {
+                    let (related, related_message) = match decl {
+                        OriginDeclSite::Pattern(pat) => (
+                            ex.program.pattern_loc(pat),
+                            "origin binding is immutable here",
+                        ),
+                        OriginDeclSite::Value(value) => (
+                            ex.program.value_loc(value),
+                            "origin becomes immutable here",
+                        ),
+                    };
+                    if related != loc {
+                        ex.push_error(TypeError::SimpleRelated {
+                            loc,
+                            message,
+                            related,
+                            related_message,
+                        });
+                        return;
+                    }
+                }
+            }
+            current = node.parent;
+        }
+    }
+    ex.push_error(TypeError::Simple { loc, message });
+}
+
 impl PendingMutabilityMatchRequirement {
-    fn step(self, ctx: &mut InferState) -> ResolveOutcome {
-        let Some(projected) = ctx.search.origin(self.projected_origin) else {
+    fn step(
+        self,
+        ex: &mut ExternState,
+        types: &mut TypeState,
+        search: &mut SearchState,
+        implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
+    ) -> ResolveOutcome {
+        let Some(projected) = types.origin(self.projected_origin) else {
             return ResolveOutcome::drop(true);
         };
 
@@ -4310,12 +4562,13 @@ impl PendingMutabilityMatchRequirement {
         let mut weak_access_kind = PlaceAccessKind::Deref;
         let mut weak_place_mutability = None;
         if emit_context_error && let Some(OriginDeclSite::Value(target)) = projected_decl_site {
-            let place = check_place_mutability(ctx, target);
+            let place = check_place_mutability_for_origin(ex, types, search, implicit_deref_sites, target);
             weak_access_kind = place.access_kind;
             weak_place_mutability = Some(place.mutable);
             if matches!(place.mutable, Some(false)) {
-                push_writable_place_error(
-                    ctx,
+                push_writable_place_error_for_origin(
+                    ex,
+                    types,
                     self.site,
                     writable_place_error_message(self.context, weak_access_kind),
                     Some(self.projected_origin),
@@ -4324,17 +4577,18 @@ impl PendingMutabilityMatchRequirement {
             }
         }
 
-        let weak_mutability = ctx.search.origin_mutability(self.projected_origin);
+        let weak_mutability = types.origin_mutability(self.projected_origin);
 
-        let strong_mutability = projected_parent.map(|origin| ctx.search.origin_mutability(origin));
+        let strong_mutability = projected_parent.map(|origin| types.origin_mutability(origin));
 
         match weak_mutability {
             Some(true) => match strong_mutability {
                 Some(Some(true)) => ResolveOutcome::drop(true),
                 Some(Some(false)) => {
                     if emit_context_error {
-                        push_writable_place_error(
-                            ctx,
+                        push_writable_place_error_for_origin(
+                            ex,
+                            types,
                             self.site,
                             writable_place_error_message(self.context, weak_access_kind),
                             Some(self.projected_origin),
@@ -4347,11 +4601,11 @@ impl PendingMutabilityMatchRequirement {
                         if weak_access_kind != PlaceAccessKind::Deref
                             && let Some(OriginDeclSite::Value(target)) = projected_decl_site
                         {
-                            let _ = promote_place_mutability(ctx, target);
+                            let _ = promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, target);
                         }
                         ResolveOutcome::keep(false)
                     } else if let Some(parent) = projected_parent {
-                        mark_origin_requires_mut(&mut ctx.search, parent);
+                        mark_origin_requires_mut(types, parent);
                         ResolveOutcome::drop(true)
                     } else {
                         ResolveOutcome::drop(true)
@@ -4361,10 +4615,10 @@ impl PendingMutabilityMatchRequirement {
             },
             Some(false) => ResolveOutcome::drop(true),
             None => {
-                mark_origin_requires_mut(&mut ctx.search, self.projected_origin);
+                mark_origin_requires_mut(types, self.projected_origin);
 
                 if let Some(OriginDeclSite::Value(target)) = projected_decl_site {
-                    let _ = promote_place_mutability(ctx, target);
+                    let _ = promote_place_mutability_for_origin(ex, types, search, implicit_deref_sites, target);
                 }
 
                 if matches!(strong_mutability, Some(Some(true))) {
@@ -4380,14 +4634,12 @@ impl PendingMutabilityMatchRequirement {
 pub(crate) fn resolve_pending_mutability_matches(ctx: &mut InferState) -> bool {
     let mut progress = false;
 
-    let pending = std::mem::take(&mut ctx.req.pending_mutability_matches);
-    for check in pending {
-        let outcome = check.step(ctx);
+    let implicit_deref_sites = &ctx.req.implicit_deref_sites;
+    ctx.req.pending_mutability_matches.retain_mut(|check| {
+        let outcome = check.step(&mut ctx.ex, &mut ctx.types, &mut ctx.search, implicit_deref_sites);
         progress |= outcome.progress;
-        if outcome.retain {
-            enqueue_pending_mutability_match(&mut ctx.req.pending_mutability_matches, check);
-        }
-    }
+        outcome.retain
+    });
 
     progress
 }
