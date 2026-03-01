@@ -964,6 +964,8 @@ pub(crate) fn gather_constraints(
             // TODO(lifetimes): evolve local inference away from `LifeTime::Unknown`-only
             // fallback by threading stable local life ids through these edges so later phases
             // can validate ordering requirements directly.
+            
+            //BUG
             if matches!(kind, Some(VarKind::Mut)) {
                 require_place_writable(ctx, v, base, WritablePlaceContext::AddrOfMut);
             }
@@ -975,6 +977,10 @@ pub(crate) fn gather_constraints(
                 kind: PtrKind::Unknown,
                 mutable,
             };
+
+            //this is actually wrong
+            //its a reborrow only when we have &*
+            //if we have let p = &x; thats not a reborrow
             let origin = new_suborigin(
                 ctx,
                 OriginKind::Reborrow,

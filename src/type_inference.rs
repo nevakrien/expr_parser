@@ -8001,6 +8001,23 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn place_is_checked_delayed() {
+        assert_fn_body_simple_error(
+            r#"
+                f=fn(){
+                    var x = 2;
+                    var p = &x;
+                    *p=3;
+                    p: &const int;
+                }
+            "#,
+            "cannot assign through immutable dereference",
+        );
+    }
+
+
+
+    #[test]
     fn assignment_through_shared_reference_to_var_binding_is_allowed() {
         assert_fn_type!(
             "f=fn(){ var x:int = 1; let p = &x; *p = 2:int; x:int; }",
