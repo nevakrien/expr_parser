@@ -29,6 +29,7 @@ use crate::local_type_inference::gather_constraints;
 use crate::local_type_inference::gather_func_constraints;
 use crate::local_type_inference::infer_value_internals;
 use crate::local_type_inference::local_solver;
+use crate::local_type_inference::ensure_or_enqueue_mutability_match;
 
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
@@ -2377,7 +2378,7 @@ impl TypeState {
         self.lifetimes.pattern_origins.get(&pat).copied()
     }
 
-    pub(crate) fn new_origin(
+    pub(crate) fn new_unchecked_origin(
         &mut self,
         kind: OriginKind,
         parent: Option<OriginId>,
@@ -2385,8 +2386,7 @@ impl TypeState {
         declared_mutability: Option<bool>,
         lifetime_seed: Option<LId>,
     ) -> OriginId {
-        let effective_mutability =
-            self.compute_origin_mutability_for_new(kind, parent, declared_mutability);
+        let effective_mutability = declared_mutability;
         let id = OriginId(self.lifetimes.origins.len() as u32);
         self.lifetimes.origins.push(OriginNode {
             kind,
@@ -2397,6 +2397,43 @@ impl TypeState {
             lifetime_seed,
         });
         id
+    }
+
+    pub(crate) fn new_origin(
+        &mut self,
+        ex: &mut ExternState,
+        search: &mut SearchState,
+        pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
+        kind: OriginKind,
+        parent: Option<OriginId>,
+        decl_site: Option<OriginDeclSite>,
+        declared_mutability: Option<bool>,
+        lifetime_seed: Option<LId>,
+        site: Option<ValId>,
+    ) -> OriginId {
+        let origin = self.new_unchecked_origin(
+            kind,
+            parent,
+            decl_site,
+            declared_mutability,
+            lifetime_seed,
+        );
+
+        if let Some(site) = site {
+            ensure_or_enqueue_mutability_match(
+                ex,
+                self,
+                search,
+                pending_mutability_matches,
+                PendingMutabilityMatchRequirement {
+                    site,
+                    context: WritablePlaceContext::OriginProjection,
+                    projected_origin: origin,
+                },
+            );
+        }
+
+        origin
     }
 
     #[inline(always)]
@@ -4538,10 +4575,14 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             let c = ctx.new_cluster();
             let is_mut_legal = matches!(kind, VarKind::Mut);
             let origin = Some(ctx.types.new_origin(
+                &mut ctx.ex,
+                &mut ctx.search,
+                &mut ctx.req.pending_mutability_matches,
                 OriginKind::BindingRoot,
                 None,
                 Some(OriginDeclSite::Pattern(p)),
                 Some(is_mut_legal),
+                None,
                 None,
             ));
             ctx.search
@@ -4562,10 +4603,14 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             };
             let origin = ctx.types.pattern_origin(base).map(|base_origin| {
                 ctx.types.new_origin(
+                    &mut ctx.ex,
+                    &mut ctx.search,
+                    &mut ctx.req.pending_mutability_matches,
                     OriginKind::Reborrow(c),
                     Some(base_origin),
                     Some(OriginDeclSite::Pattern(p)),
                     Some(mutable),
+                    None,
                     None,
                 )
             });
@@ -8404,7 +8449,7 @@ mod type_infer_tests {
     #[test]
     fn set_origin_mutable_if_unknown_rejects_declared_immutable_origin() {
         let mut types = TypeState::new();
-        let origin = types.new_origin(OriginKind::BindingRoot, None, None, Some(false), None);
+        let origin = types.new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
 
         assert!(!types.set_origin_mutable_if_unknown(origin));
         assert_eq!(types.origin_mutability(origin), Some(false));
@@ -8413,7 +8458,7 @@ mod type_infer_tests {
     #[test]
     fn set_origin_mutable_if_unknown_promotes_unknown_origin() {
         let mut types = TypeState::new();
-        let origin = types.new_origin(OriginKind::BindingRoot, None, None, None, None);
+        let origin = types.new_unchecked_origin(OriginKind::BindingRoot, None, None, None, None);
 
         assert!(types.set_origin_mutable_if_unknown(origin));
         assert_eq!(types.origin_mutability(origin), Some(true));

@@ -707,17 +707,17 @@ fn new_suborigin(
     declared_mutability: Option<bool>,
 ) -> Option<OriginId> {
     parent.map(|parent| {
-        let origin = ctx.types.new_origin(
+        ctx.types.new_origin(
+            &mut ctx.ex,
+            &mut ctx.search,
+            &mut ctx.req.pending_mutability_matches,
             kind,
             Some(parent),
             Some(OriginDeclSite::Value(site)),
             declared_mutability,
             None,
-        );
-        if declared_mutability == Some(true) {
-            mutability_subtype(ctx, site, origin, WritablePlaceContext::OriginProjection);
-        }
-        origin
+            Some(site),
+        )
     })
 }
 
@@ -729,11 +729,15 @@ fn new_origin_root(
     declared_mutability: Option<bool>,
 ) -> OriginId {
     ctx.types.new_origin(
+        &mut ctx.ex,
+        &mut ctx.search,
+        &mut ctx.req.pending_mutability_matches,
         kind,
         None,
         Some(OriginDeclSite::Value(site)),
         declared_mutability,
         None,
+        Some(site),
     )
 }
 
@@ -1382,11 +1386,15 @@ pub(crate) fn gather_constraints(
                 let inputs = input_pairs.iter().map(|(_, cluster)| *cluster).collect();
                 let output = ctx.new_cluster();
                 let output_origin = Some(ctx.types.new_origin(
+                    &mut ctx.ex,
+                    &mut ctx.search,
+                    &mut ctx.req.pending_mutability_matches,
                     OriginKind::CallReturnRoot(output),
                     ctx.types.value_origin(call.base),
                     Some(OriginDeclSite::Value(v)),
                     None,
                     None,
+                    Some(v),
                 ));
 
                 let found = ctx.new_func(FuncInfer {
@@ -2133,9 +2141,13 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
             ctx.new_solved(ty)
         };
         let origin = Some(ctx.types.new_origin(
+            &mut ctx.ex,
+            &mut ctx.search,
+            &mut ctx.req.pending_mutability_matches,
             OriginKind::ArgumentRoot(c),
             None,
             Some(OriginDeclSite::Pattern(pat)),
+            None,
             None,
             None,
         ));
@@ -2628,7 +2640,7 @@ fn resolve_struct_deref_target(
 }
 
 #[inline(always)]
-fn ensure_or_enqueue_mutability_match(
+pub(crate) fn ensure_or_enqueue_mutability_match(
     ex: &mut ExternState,
     types: &mut TypeState,
     search: &mut SearchState,
