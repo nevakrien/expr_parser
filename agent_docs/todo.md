@@ -12,7 +12,41 @@ if let SomePattern{vars,..} = ex.store.type_value(ty) else {
 in id based loops to avoid the issue.
 if we moved all the expensive fields to be Rc<[]> that would allow us to fixup this code to be more readble
 
-## Active Type-Inference Work
+## Current Failing Tests
+
+As of March 2026, the following 6 tests fail:
+
+1. **`dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_one_error_per_function`** (`src/type_inference.rs:8169`)
+   - Expected: `const_struct_borrow` to fail (error expected)
+   - Actual: Test passes when it should fail
+   - Reason: The const/raw_const member write check is not triggering errors as expected
+
+2. **`place_is_checked_delayed`** (`src/type_inference.rs:5347`)
+   - Expected: Error "cannot assign through immutable dereference"
+   - Actual: Test passes when it should fail (inference succeeds)
+   - Reason: The delayed place checking for immutable references is not detecting the error
+
+3. **`pending_ptr_member_method_call_rejects_immutable_to_mut_hop_after_type_is_known`** (`src/type_inference.rs:8261`)
+   - Expected: Error when ptr member method call goes through shared-to-mutable deref chain after type is known
+   - Actual: Inference succeeds when it should fail
+   - Reason: Mutable receiver method calls through `->` allow shared-to-mutable deref hop incorrectly
+
+4. **`nested_box_mut_addr_of_member_uses_mut_deref_chain`** (`src/type_inference.rs:8334`)
+   - Expected: Mutable reference step in autoderef chain (`&'a0 mut Box[Box[S]]`)
+   - Actual: Gets `&'idk0 Box[Box[S]]` (shared reference) instead
+   - Reason: The mut addr_of member access is using shared deref chain for nested Box
+
+5. **`ptr_member_assignment_rejects_chain_with_immutable_deref_hop`** (`src/type_inference.rs:8218`)
+   - Expected: Error "implicit `__deref_mut` step requires mutable source"
+   - Actual: Inference succeeds when it should fail
+   - Reason: Ptr member assignment through shared deref chain incorrectly allowed
+
+6. **`ptr_member_method_call_rejects_chain_with_immutable_deref_hop`** (`src/type_inference.rs:8237`)
+   - Expected: Error "implicit `__deref_mut` step requires mutable source"
+   - Actual: Inference succeeds when it should fail
+   - Reason: Ptr member method call through shared deref chain incorrectly allowed
+
+## Previous Work (may be stale)
 
 - Specialization must always include lifetime specialization, not just generic type substitution.
 - Every specialization call should register global signature lifetimes as fresh local unresolved `LId`s and preserve equality links through substitution.

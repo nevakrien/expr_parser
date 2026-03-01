@@ -79,9 +79,11 @@ EOF
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
 
 ### Known Temporary Failures
-- During the current specialization/lifetime refactor, some tests are expected to fail until lifetime display/assertion expectations are updated.
-- Current expected failing tests:
-  - `type_inference::type_infer_tests::generic_box_array_index_chain_includes_box_step`
-  - `type_inference::type_infer_tests::member_access_curried_ref_self_and_tracks_full_signature`
-  - `type_inference::type_infer_tests::struct_deref_to_array_index_expression_typechecks`
+- Current expected failing tests (as of March 2026):
+  - `type_inference::type_infer_tests::dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_one_error_per_function`
+  - `type_inference::type_infer_tests::place_is_checked_delayed`
+  - `type_inference::type_infer_tests::pending_ptr_member_method_call_rejects_immutable_to_mut_hop_after_type_is_known`
+  - `type_inference::type_infer_tests::nested_box_mut_addr_of_member_uses_mut_deref_chain`
+  - `type_inference::type_infer_tests::ptr_member_assignment_rejects_chain_with_immutable_deref_hop`
+  - `type_inference::type_infer_tests::ptr_member_method_call_rejects_chain_with_immutable_deref_hop`
 - Keep this list in sync with `agent_docs/todo.md`.

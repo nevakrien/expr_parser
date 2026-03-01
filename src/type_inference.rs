@@ -1777,15 +1777,33 @@ pub enum OriginDeclSite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OriginKind {
     BindingRoot,
-    ArgumentRoot,
-    CallReturnRoot,
-    RawRoot,
-    Reborrow,
+    ArgumentRoot(CId),
+    CallReturnRoot(CId),
+    RawRoot(CId),
+    Reborrow(CId),
     Deref,
     MemberProjection,
     IndexProjection,
-    CastProjection,
+    CastProjection(CId),
     RawDerefLifetimeProjection,
+}
+
+impl OriginKind {
+    #[inline(always)]
+    pub fn associated_pointer(&self) -> Option<CId> {
+        match *self {
+            OriginKind::BindingRoot => None,
+            OriginKind::ArgumentRoot(cid) => Some(cid),
+            OriginKind::CallReturnRoot(cid) => Some(cid),
+            OriginKind::RawRoot(cid) => Some(cid),
+            OriginKind::Reborrow(cid) => Some(cid),
+            OriginKind::Deref => None,
+            OriginKind::MemberProjection => None,
+            OriginKind::IndexProjection => None,
+            OriginKind::CastProjection(cid) => Some(cid),
+            OriginKind::RawDerefLifetimeProjection => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4544,7 +4562,7 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             };
             let origin = ctx.types.pattern_origin(base).map(|base_origin| {
                 ctx.types.new_origin(
-                    OriginKind::Reborrow,
+                    OriginKind::Reborrow(c),
                     Some(base_origin),
                     Some(OriginDeclSite::Pattern(p)),
                     Some(mutable),

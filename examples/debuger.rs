@@ -4,10 +4,24 @@ use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
 const SOURCE: &str = r#"
-id = fn(a:&mut int)->&mut int { a }
-    f = fn(){ let x:int = 1; let p = id(&x); *p = 2:int; }
+// f=fn(){
+//     var x = 2;
+//     var p = &x;
+//     *p=3;
+//     p: &const int;
+// }
 
+Box = struct[T]{ptr:&'raw T};
+Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
+Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
 
+S=struct{x:bool};
+
+f=fn(b:&mut Box[Box[S]])->&mut bool {
+    let ans = &mut b->x;
+    *ans=true;
+    ans
+};
 "#;
 // const SOURCE: &str = r#"
 // Wrapper = struct {baba:[int;1]};
