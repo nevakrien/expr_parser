@@ -14,7 +14,7 @@ if we moved all the expensive fields to be Rc<[]> that would allow us to fixup t
 
 ## Current Failing Tests
 
-As of March 2026, the following 6 tests fail:
+As of March 2026, the following 5 tests fail:
 
 1. **`dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_one_error_per_function`** (`src/type_inference.rs:8169`)
    - Expected: `const_struct_borrow` to fail (error expected)
@@ -36,12 +36,7 @@ As of March 2026, the following 6 tests fail:
    - Actual: Gets `&'idk0 Box[Box[S]]` (shared reference) instead
    - Reason: The mut addr_of member access is using shared deref chain for nested Box
 
-5. **`ptr_member_assignment_rejects_chain_with_immutable_deref_hop`** (`src/type_inference.rs:8218`)
-   - Expected: Error "implicit `__deref_mut` step requires mutable source"
-   - Actual: Inference succeeds when it should fail
-   - Reason: Ptr member assignment through shared deref chain incorrectly allowed
-
-6. **`ptr_member_method_call_rejects_chain_with_immutable_deref_hop`** (`src/type_inference.rs:8237`)
+5. **`ptr_member_method_call_rejects_chain_with_immutable_deref_hop`** (`src/type_inference.rs:8237`)
    - Expected: Error "implicit `__deref_mut` step requires mutable source"
    - Actual: Inference succeeds when it should fail
    - Reason: Ptr member method call through shared deref chain incorrectly allowed

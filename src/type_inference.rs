@@ -25,11 +25,11 @@
 use crate::global_type_inference::TypeExprCompileMode;
 use crate::global_type_inference::compile_type_expr_with_mode;
 use crate::global_type_inference::infer_global_types;
+use crate::local_type_inference::ensure_or_enqueue_mutability_match;
 use crate::local_type_inference::gather_constraints;
 use crate::local_type_inference::gather_func_constraints;
 use crate::local_type_inference::infer_value_internals;
 use crate::local_type_inference::local_solver;
-use crate::local_type_inference::ensure_or_enqueue_mutability_match;
 
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
@@ -1782,7 +1782,7 @@ pub enum OriginKind {
     CallReturnRoot(CId),
     RawRoot(CId),
     Reborrow(CId),
-    Deref,
+    Deref(CId),
     MemberProjection,
     IndexProjection,
     CastProjection(CId),
@@ -1798,7 +1798,7 @@ impl OriginKind {
             OriginKind::CallReturnRoot(cid) => Some(cid),
             OriginKind::RawRoot(cid) => Some(cid),
             OriginKind::Reborrow(cid) => Some(cid),
-            OriginKind::Deref => None,
+            OriginKind::Deref(cid) => Some(cid),
             OriginKind::MemberProjection => None,
             OriginKind::IndexProjection => None,
             OriginKind::CastProjection(cid) => Some(cid),
@@ -1890,6 +1890,7 @@ impl PendingMemberAccess {
         types: &mut TypeState,
         site: ValId,
         base_value: ValId,
+        projection_origin: Option<OriginId>,
         source: CId,
         output: CId,
         member: StrId,
@@ -1897,7 +1898,13 @@ impl PendingMemberAccess {
     ) -> Self {
         Self {
             site,
-            implicit_deref: PendingImplicitDeref::new(types, site, base_value, source),
+            implicit_deref: PendingImplicitDeref::new(
+                types,
+                site,
+                base_value,
+                source,
+                projection_origin,
+            ),
             output,
             member,
             kind,
@@ -1909,6 +1916,8 @@ impl PendingMemberAccess {
 pub(crate) struct PendingImplicitDeref {
     pub(crate) site: ValId,
     pub(crate) base_value: ValId,
+    pub(crate) projection_origin: Option<OriginId>,
+    pub(crate) attached_projection_parent: bool,
     pub(crate) source: Option<CId>,
     pub(crate) current: CId,
     pub(crate) implicit_receivers: Vec<CId>,
@@ -1916,12 +1925,20 @@ pub(crate) struct PendingImplicitDeref {
 
 impl PendingImplicitDeref {
     #[inline(always)]
-    pub(crate) fn new(types: &mut TypeState, site: ValId, base_value: ValId, source: CId) -> Self {
+    pub(crate) fn new(
+        types: &mut TypeState,
+        site: ValId,
+        base_value: ValId,
+        source: CId,
+        projection_origin: Option<OriginId>,
+    ) -> Self {
         // canonicalize immediately (VERY important - prevents stale path issues)
         let source = types.root(source);
         Self {
             site,
             base_value,
+            projection_origin,
+            attached_projection_parent: false,
             source: Some(source),
             // CRITICAL: start cursor here
             current: source,
@@ -1985,6 +2002,7 @@ impl PendingIndex {
         types: &mut TypeState,
         site: ValId,
         base_value: ValId,
+        projection_origin: Option<OriginId>,
         index_value: ValId,
         base: CId,
         index: CId,
@@ -1998,7 +2016,13 @@ impl PendingIndex {
             index_value,
             index,
             output,
-            implicit_deref: PendingImplicitDeref::new(types, site, base_value, base),
+            implicit_deref: PendingImplicitDeref::new(
+                types,
+                site,
+                base_value,
+                base,
+                projection_origin,
+            ),
         }
     }
 }
@@ -2411,13 +2435,8 @@ impl TypeState {
         lifetime_seed: Option<LId>,
         site: Option<ValId>,
     ) -> OriginId {
-        let origin = self.new_unchecked_origin(
-            kind,
-            parent,
-            decl_site,
-            declared_mutability,
-            lifetime_seed,
-        );
+        let origin =
+            self.new_unchecked_origin(kind, parent, decl_site, declared_mutability, lifetime_seed);
 
         if let Some(site) = site {
             ensure_or_enqueue_mutability_match(
@@ -8065,7 +8084,8 @@ mod type_infer_tests {
 
     #[test]
     fn place_is_checked_delayed() {
-        assert_fn_body_simple_error(
+        let mut store = TypeStore::new();
+        let errs = infer_fn_body(
             r#"
                 f=fn(){
                     var x = 2;
@@ -8074,11 +8094,22 @@ mod type_infer_tests {
                     p: &const int;
                 }
             "#,
-            "cannot assign through immutable dereference",
+            &mut store,
+        )
+        .unwrap_err();
+
+        assert!(
+            errs.iter().any(|err| {
+                matches!(
+                    err,
+                    TypeError::AnnotationMismatch { clash, .. }
+                        if clash.found.as_deref() == Some("&? const int")
+                            && clash.wanted.as_deref() == Some("&? mut int?")
+                )
+            }),
+            "expected annotation mismatch from `p: &const int`, got {errs:?}"
         );
     }
-
-
 
     #[test]
     fn assignment_through_shared_reference_to_var_binding_is_allowed() {
@@ -8283,7 +8314,7 @@ mod type_infer_tests {
                 err,
                 TypeError::Simple { message, .. }
                 | TypeError::SimpleRelated { message, .. }
-                if *message == "implicit `__deref_mut` step requires mutable source"
+                if *message == "assignment through `->` requires mutable dereference steps"
             )
         }));
     }
@@ -8449,7 +8480,8 @@ mod type_infer_tests {
     #[test]
     fn set_origin_mutable_if_unknown_rejects_declared_immutable_origin() {
         let mut types = TypeState::new();
-        let origin = types.new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
+        let origin =
+            types.new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
 
         assert!(!types.set_origin_mutable_if_unknown(origin));
         assert_eq!(types.origin_mutability(origin), Some(false));

@@ -235,6 +235,7 @@ Current local inference mutability is driven by a single pending-constraint queu
 
 - `resolve_pending_mutability_matches` runs in both stable and fuzzed local solver loops.
 - New mutability requirements are stepped immediately via `PendingMutabilityMatchRequirement::step`; only requirements that return `retain` are enqueued. The queue remains the fallback for unresolved constraints rather than the default path.
+- Pending mutability checks now also enforce origin/pointer consistency in the opposite direction: when an origin is known immutable, any associated unresolved pointer cluster is pushed to `mutable: Some(false)`, and a hard writable-place error is emitted if that associated pointer is already known mutable.
 - If parent mutability is already known mutable, a weak/unknown projected side can resolve immediately (no retain), because the directional constraint is already satisfied.
 - Place mutability is still computed via `PlaceKind { access_kind, mutable }` and chain-aware checks (`implicit_deref_sites`), but pending constraints themselves are always origin-to-origin.
 - Unknown pointer mutability can be promoted to mutable, but only when constraints permit it:
