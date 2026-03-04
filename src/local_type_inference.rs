@@ -539,9 +539,6 @@ fn enqueue_pending_mutability_match(
     requirement: PendingMutabilityMatchRequirement,
 ) {
     pending.push(requirement);
-    // if !pending.contains(&requirement) {
-    //     pending.push(requirement);
-    // }
 }
 
 #[inline(always)]
@@ -552,9 +549,9 @@ fn ensure_origin_requires_mut_or_emit(
     origin: OriginId,
     context: WritablePlaceContext,
     access_kind: PlaceAccessKind,
-) -> bool {
+) -> Result<(), ()> {
     if types.set_origin_mutable_if_unknown(origin) {
-        return true;
+        return Ok(());
     }
 
     push_writable_place_error_(
@@ -564,7 +561,7 @@ fn ensure_origin_requires_mut_or_emit(
         writable_place_error_message(context, access_kind),
         Some(origin),
     );
-    false
+    Err(())
 }
 
 #[inline(always)]
@@ -580,14 +577,14 @@ fn mutability_subtype(
         PlaceAccessKind::Deref
     };
 
-    if !ensure_origin_requires_mut_or_emit(
+    if ensure_origin_requires_mut_or_emit(
         &mut ctx.ex,
         &mut ctx.types,
         site,
         projected_origin,
         context,
         access_kind,
-    ) {
+    ).is_err() {
         return;
     }
 
@@ -1974,64 +1971,9 @@ fn pointer_mutability_from_cluster(
     }
 }
 
-fn promote_pointer_cluster_to_mutable_for_write(types: &mut TypeState, cid: CId) -> bool {
-    let root = types.root(cid);
-    let ResolveKind::Ptr { tgt, kind, mutable } = types.cluster_state(root) else {
-        return false;
-    };
-    if mutable.is_some() {
-        return false;
-    }
-    types.set_cluster_state(
-        root,
-        ResolveKind::Ptr {
-            tgt,
-            kind,
-            mutable: Some(true),
-        },
-    );
-    true
-}
-
 impl<'a> InferState<'a> {
-    fn deref_source_write_mutability(&mut self, value: ValId) -> PlaceKind {
-        let Some(base_cluster) = self.search.value_cluster(value) else {
-            return place_kind(PlaceAccessKind::Deref, None);
-        };
 
-        if let Some(pointer_mutability) =
-            pointer_mutability_from_cluster(&self.ex, &mut self.types, base_cluster)
-        {
-            return match pointer_mutability {
-                Some(true) => place_kind(PlaceAccessKind::Deref, Some(true)),
-                Some(false) => place_kind(PlaceAccessKind::Deref, Some(false)),
-                None => place_kind(PlaceAccessKind::Deref, None),
-            };
-        }
-
-        self.smart_deref_write_mutability(value, base_cluster)
-    }
-
-    fn place_from_implicit_chain_state(
-        &mut self,
-        base: ValId,
-        chain_state: PlaceKind,
-        receivers_empty: bool,
-        access_kind: PlaceAccessKind,
-    ) -> PlaceKind {
-        place_from_implicit_chain_state_(
-            &self.ex,
-            &mut self.types,
-            &mut self.search,
-            &self.req.implicit_deref_sites,
-            base,
-            chain_state,
-            receivers_empty,
-            access_kind,
-        )
-    }
-
-    fn check_place_mutability(&mut self, target: ValId) -> PlaceKind {
+    fn check_place_mutability_(&mut self, target: ValId) -> PlaceKind {
         check_place_mutability_(
             &self.ex,
             &mut self.types,
@@ -2041,16 +1983,7 @@ impl<'a> InferState<'a> {
         )
     }
 
-    fn smart_deref_write_mutability(&mut self, value: ValId, cid: CId) -> PlaceKind {
-        smart_deref_write_mutability_(
-            &self.ex,
-            &mut self.types,
-            &mut self.search,
-            &self.req.implicit_deref_sites,
-            value,
-            cid,
-        )
-    }
+
 }
 
 fn chain_write_mutability(ex: &ExternState, types: &mut TypeState, chain: &[CId]) -> PlaceKind {
@@ -2421,18 +2354,17 @@ fn resolve_member_method_access(
             types,
             access_site,
             projected_origin,
-            WritablePlaceContext::ImplicitDerefMut,
+            WritablePlaceContext::ImplicitDeref,
             PlaceAccessKind::Deref,
-        )
+        ).is_ok()
     {
         let _ = ensure_or_enqueue_mutability_match(
             ex,
             types,
-            search,
             pending_mutability_matches,
             PendingMutabilityMatchRequirement {
                 site: access_site,
-                context: WritablePlaceContext::ImplicitDerefMut,
+                context: WritablePlaceContext::ImplicitDeref,
                 projected_origin,
             },
         );
@@ -2673,7 +2605,6 @@ fn resolve_struct_deref_target(
 pub(crate) fn ensure_or_enqueue_mutability_match(
     ex: &mut ExternState,
     types: &mut TypeState,
-    search: &mut SearchState,
     // implicit_deref_sites: &IdHashMap<ValId, Vec<CId>>,
     pending: &mut Vec<PendingMutabilityMatchRequirement>,
     req: PendingMutabilityMatchRequirement,
@@ -2712,7 +2643,7 @@ impl PendingImplicitDeref {
         fn record_hop_mutability_req(
             ex: &mut ExternState,
             types: &mut TypeState,
-            search: &mut SearchState,
+    _search: &mut SearchState,
             pending: &mut Vec<PendingMutabilityMatchRequirement>,
             site: ValId,
             base_value: ValId,
@@ -2721,11 +2652,10 @@ impl PendingImplicitDeref {
                 let _ = ensure_or_enqueue_mutability_match(
                     ex,
                     types,
-                    search,
                     pending,
                     PendingMutabilityMatchRequirement {
                         site,
-                        context: WritablePlaceContext::ImplicitDerefMut,
+                        context: WritablePlaceContext::ImplicitDeref,
                         projected_origin,
                     },
                 );
@@ -2919,17 +2849,8 @@ impl PendingImplicitDeref {
             types.recompute_origin_mutability();
             self.attached_projection_parent = true;
 
-            let _ = ensure_or_enqueue_mutability_match(
-                ex,
-                types,
-                search,
-                pending_mutability_matches,
-                PendingMutabilityMatchRequirement {
-                    site: self.site,
-                    context: WritablePlaceContext::OriginProjection,
-                    projected_origin,
-                },
-            );
+            // Note: we don't record another requirement here - the early recording
+            // in step() via record_hop_mutability_req already handles this.
         }
 
         let used = self.implicit_receivers.len();
@@ -4186,7 +4107,7 @@ fn writable_place_error_message(
     ctx: WritablePlaceContext,
     access_kind: PlaceAccessKind,
 ) -> &'static str {
-    if matches!(ctx, WritablePlaceContext::ImplicitDerefMut) {
+    if matches!(ctx, WritablePlaceContext::ImplicitDeref) {
         return "implicit `__deref_mut` step requires mutable source";
     }
 
@@ -4213,12 +4134,12 @@ fn writable_place_error_message(
         (WritablePlaceContext::OriginProjection, PlaceAccessKind::NonPlace) => {
             "cannot derive mutable projection from immutable origin"
         }
-        (WritablePlaceContext::ImplicitDerefMut, PlaceAccessKind::Local)
-        | (WritablePlaceContext::ImplicitDerefMut, PlaceAccessKind::Deref)
-        | (WritablePlaceContext::ImplicitDerefMut, PlaceAccessKind::MemberAccessDot)
-        | (WritablePlaceContext::ImplicitDerefMut, PlaceAccessKind::MemberAccessPtr)
-        | (WritablePlaceContext::ImplicitDerefMut, PlaceAccessKind::Index)
-        | (WritablePlaceContext::ImplicitDerefMut, PlaceAccessKind::NonPlace) => {
+        (WritablePlaceContext::ImplicitDeref, PlaceAccessKind::Local)
+        | (WritablePlaceContext::ImplicitDeref, PlaceAccessKind::Deref)
+        | (WritablePlaceContext::ImplicitDeref, PlaceAccessKind::MemberAccessDot)
+        | (WritablePlaceContext::ImplicitDeref, PlaceAccessKind::MemberAccessPtr)
+        | (WritablePlaceContext::ImplicitDeref, PlaceAccessKind::Index)
+        | (WritablePlaceContext::ImplicitDeref, PlaceAccessKind::NonPlace) => {
             "implicit `__deref_mut` step requires mutable source"
         }
         (WritablePlaceContext::Assign, PlaceAccessKind::Local) => {
@@ -4324,7 +4245,7 @@ fn require_place_writable(
     target: ValId,
     context: WritablePlaceContext,
 ) -> bool {
-    let place = ctx.check_place_mutability(target);
+    let place = ctx.check_place_mutability_(target);
 
     match place {
         // Already writable. Still enqueue so we propagate up the origin chain / produce better errors.
@@ -4338,31 +4259,10 @@ fn require_place_writable(
 
         // Unknown: THIS is the critical change.
         // Old behavior only queued a matcher; new system needs to actually "require" mutability.
-        PlaceKind {
-            access_kind,
-            mutable: None,
-        } => {
-            // Queue a match requirement for parent propagation / future diagnostics.
+        PlaceKind { mutable: None, .. } => {
+            // Queueing already tries an immediate mutability requirement (and emits if impossible),
+            // then retains only if the check is still pending.
             let _ = queue_mutability_match_for_place(ctx, site, target, context);
-
-            // Force the origin (non-breaking) if we have one.
-            if let Some(origin) = ctx.types.value_origin(target) {
-                // This should set mutability to Some(true) if possible,
-                // or emit a contextual error if it discovers it can't be made writable.
-                let _ = ensure_origin_requires_mut_or_emit(
-                    &mut ctx.ex,
-                    &mut ctx.types,
-                    site,
-                    origin,
-                    context,
-                    access_kind,
-                );
-            } else {
-                // No origin => nothing to force here; we rely on later checks to error.
-                // (If this is unexpected, you can emit a debug error.)
-            }
-
-            // Return false: we didn't *definitely* error here.
             false
         }
 
@@ -4838,14 +4738,17 @@ impl PendingMutabilityMatchRequirement {
 
                 None => {
                     // Force parent mutable and continue
-                    ensure_origin_requires_mut_or_emit(
+                    if ensure_origin_requires_mut_or_emit(
                         ex,
                         types,
                         self.site,
                         parent,
                         self.context,
                         PlaceAccessKind::Deref,
-                    );
+                    ).is_err() {
+                        // Contradiction already reported, stop here
+                        return ResolveOutcome::drop(progress);
+                    }
                     progress = true;
                     current = parent;
                 }
