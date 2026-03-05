@@ -18,9 +18,8 @@ use crate::program::{Defined, Program};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
     FORGET_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
-    NOT_STR,
-    POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR, SUB_STR,
-    StrId,
+    NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR,
+    SUB_STR, StrId,
 };
 use crate::type_inference::*;
 
@@ -2397,7 +2396,8 @@ fn global_to_specialized_local(
     //we wana make sure that we add a good way to run this
     //would be done as some normlization function somewhere
     //structs especially are weird with this
-    let ans = solved_type_to_specialized_local(ex, types, pending_sized_requirements, reference_type, v);
+    let ans =
+        solved_type_to_specialized_local(ex, types, pending_sized_requirements, reference_type, v);
     search.bind_val(v, ans);
     ans
 }
@@ -2415,8 +2415,13 @@ fn resolve_member_method_access(
     member_name: StrId,
     method_ty: TypeId,
 ) -> CId {
-    let method_local =
-        solved_type_to_specialized_local(ex, types, pending_sized_requirements, method_ty, access_site);
+    let method_local = solved_type_to_specialized_local(
+        ex,
+        types,
+        pending_sized_requirements,
+        method_ty,
+        access_site,
+    );
 
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
         unreachable!("specialized member access method must resolve to a function shape");
@@ -2596,8 +2601,13 @@ fn resolve_struct_deref_target(
 
     let mut resolve_from_site = |types: &mut TypeState, method_site: ValId, mutable: bool| {
         let method_ty = ex.ans.function_types_by_value(method_site)?.ty;
-        let method_local =
-            solved_type_to_specialized_local(ex, types, pending_sized_requirements, method_ty, site);
+        let method_local = solved_type_to_specialized_local(
+            ex,
+            types,
+            pending_sized_requirements,
+            method_ty,
+            site,
+        );
         let (params, ret) = function_parts_from_cluster(ex, types, method_local)?;
         let self_ptr = params.first().copied()?;
         if params.len() != 1 {
@@ -3238,6 +3248,13 @@ impl PendingMemberAccess {
                     };
                 }
                 Ok(ImplicitDerefStep::Done) => {
+                    if !self.implicit_deref.implicit_receivers.is_empty() {
+                        return MemberAccessResolve::Error(TypeError::UnknownField {
+                            field: self.member,
+                            site: self.site,
+                        });
+                    }
+
                     return MemberAccessResolve::Error(TypeError::Simple {
                         loc: ex.program.value_loc(self.site),
                         message: "member access requires a struct or pointer-like base",
@@ -3402,15 +3419,13 @@ fn resolve_operator_site(
             .copied();
 
         if let Some(method) = method {
-            let Some(overload_sig) =
-                resolve_member_overload_signature(
-                    ex,
-                    types,
-                    pending_sized_requirements,
-                    method.method_type,
-                    site.loc,
-                )
-            else {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                ex,
+                types,
+                pending_sized_requirements,
+                method.method_type,
+                site.loc,
+            ) else {
                 let err = bin_op_overload_not_found_error(ex, types, site, lhs, rhs);
                 ex.push_error(err);
                 return ResolveOutcome::drop(progress);
@@ -3712,15 +3727,13 @@ fn resolve_unary_operator_site(
             .and_then(|info| info.operators.get(&method_name))
             .copied();
         if let Some(method) = method {
-            let Some(overload_sig) =
-                resolve_member_overload_signature(
-                    ex,
-                    types,
-                    pending_sized_requirements,
-                    method.method_type,
-                    site.loc,
-                )
-            else {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                ex,
+                types,
+                pending_sized_requirements,
+                method.method_type,
+                site.loc,
+            ) else {
                 let err = un_op_overload_not_found_error(ex, types, site, input);
                 ex.push_error(err);
                 return ResolveOutcome::drop(progress);
@@ -3881,15 +3894,13 @@ fn resolve_assign_pre_post_site(
             .copied();
 
         if let Some(method) = method {
-            let Some(overload_sig) =
-                resolve_member_overload_signature(
-                    ex,
-                    types,
-                    pending_sized_requirements,
-                    method.method_type,
-                    site.loc,
-                )
-            else {
+            let Some(overload_sig) = resolve_member_overload_signature(
+                ex,
+                types,
+                pending_sized_requirements,
+                method.method_type,
+                site.loc,
+            ) else {
                 return ResolveOutcome::drop(progress);
             };
 

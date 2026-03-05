@@ -387,6 +387,7 @@ Important fragile/unfinished expression areas:
   - unresolved member-access receivers are deferred into a pending queue (similar to pointer-like deferred solving) and retried in the main solver instead of erroring early,
   - `.` member access performs at most one implicit dereference step (`(*x).field` behavior),
   - `->` member access can chain implicit pointer-like dereference steps (with a safety cap) until lookup resolves,
+  - when member lookup has already traversed at least one implicit deref hop and still fails, diagnostics now prefer `UnknownField` over the generic "requires a struct or pointer-like base" message,
 - smart-pointer access tries direct member lookup on the current struct first, and only falls back to `__deref`/`__deref_mut` target lookup when direct lookup misses,
 - smart-deref steps now track an optional "source" pointer provenance (`PendingImplicitDeref.source: Option<CId>`): pointer-like hops keep/update it, while struct-smart-deref hops may clear it and rely on recorded receiver-chain pointers,
 - when a smart-deref hop needs `__deref_mut`, local inference now checks pointer mutability provenance (source pointer or most recent pointer-like chain receiver) and emits a hard error if the chain would require upgrading immutable to mutable,

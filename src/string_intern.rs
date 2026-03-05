@@ -349,11 +349,7 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
 
 #[inline]
 fn scrub_hash(h: u64) -> u64 {
-    if h == 0 {
-        1
-    } else {
-        h
-    }
+    if h == 0 { 1 } else { h }
 }
 
 #[cfg(test)]

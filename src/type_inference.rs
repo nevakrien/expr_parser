@@ -7528,6 +7528,64 @@ mod type_infer_tests {
         );
     }
 
+    #[test]
+    fn to_unsized_box_macro_expansion_typechecks() {
+        let src = "
+            Box = struct[T:dsize]{ptr:&'raw T};
+
+            to_unsized_box = macro (b) {
+                b:Box[_];
+                type b_inner = _;
+                &b[0] : *mut b_inner;
+                let p = b.ptr as &'raw [b_inner];
+                b.__forget();
+                Box{p}
+            }
+
+            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+            Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+
+            f=fn(b:Box[[int;4]])->Box[[int]]{to_unsized_box(b)};
+        ";
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn dot_member_access_missing_struct_field_reports_unknown_field_after_single_autoderef() {
+        let src = "
+            Box = struct[T:dsize]{ptr:&'raw T};
+            Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
+            f=fn(b:Box[[int;4]]){ let x = b.p; };
+        ";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+            Ok(_) => panic!("expected missing field access to fail"),
+            Err(errs) => errs,
+        };
+
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::UnknownField {
+                    field,
+                    ..
+                } if program.str_intern.resolve(*field) == "p"
+            )
+        }));
+    }
+
     //breaks because we dont wait our turn enough in derefs resolution
     #[test]
     fn deref_chain_supports_all_four_style_transitions_with_raw_links() {
