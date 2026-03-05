@@ -12,15 +12,7 @@ fn write_prelude(writer: &mut BufWriter<File>, line_count: &mut usize) {
     let lines = [
         "__user_free=fn[T](p:&mut T);",
         "free = cfn(p:*void);",
-        "memcpy = cfn(dst:*void, src:*void, n:usize)->*void;",
         "opaque_alloc = cfn(n:usize)->*void;",
-        "no_fail_alloc = cfn(s:usize)->*void;",
-        "Box = struct[T:dsize]{ptr:&'raw T};",
-        "Box.new = fn[T](x:T)->Box[T] { let s=x.__size_of(); let p=no_fail_alloc(s); memcpy(p, &x as *void, s); x.__forget(); Box{p as &'raw _} };",
-        "to_unsized_box = macro (b) { b:Box[_]; type b_inner = _; &b[0] : *mut b_inner; let p = b.ptr as &'raw [b_inner]; b.__forget(); Box{p} };",
-        "Box.__free = fn[T:dsize](b:&mut Box[T]){ (*b.ptr).__free(); free(b->ptr as *void) };",
-        "Box.__deref = fn[T:dsize](b:&const Box[T])->&T{&*b.ptr};",
-        "Box.__deref_mut = fn[T:dsize](b:&mut Box[T])->&mut T{&*b.ptr};",
     ];
 
     for line in lines {
@@ -100,7 +92,7 @@ fn write_family(writer: &mut BufWriter<File>, line_count: &mut usize, i: usize) 
         writer,
         line_count,
         &format!(
-            "build_and_free_{i} = fn()->int {{ var x = Base{i}{{ raw = opaque_alloc(8:usize), payload = {i}:int }}; free_base_impl_{i}(&mut x); let sized = Box::new([x.payload, {i}:int, 2:int, 3:int]); let unsized = to_unsized_box(sized); unsized[0:usize] + x.payload }};"
+            "build_and_free_{i} = fn()->int {{ let x = Base{i}{{ raw = opaque_alloc(8:usize), payload = {i}:int }}; free_base_impl_{i}(&mut x); x.payload }};"
         ),
     );
 }

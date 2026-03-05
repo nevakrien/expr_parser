@@ -91,9 +91,7 @@ fn write_noise_block(writer: &mut BufWriter<File>, line_count: &mut usize, rng: 
 fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
     let lines = [
         "free = cfn(p:*void);",
-        "memcpy = cfn(dst:*void, src:*void, n:usize)->*void;",
         "opaque_alloc = cfn(n:usize)->*void;",
-        "no_fail_alloc = cfn(s:usize)->*void;",
         "id = fn[T](x:T)->T { x };",
         "inc = fn(x:int)->int { x + 1:int };",
         "dec = fn(x:int)->int { x - 1:int };",
@@ -106,7 +104,7 @@ fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
         "Vec2 = struct { x:int, y:int };",
         "Node = struct { value:int };",
         "Point = struct { x:int, y:int };",
-        "Box = struct[T:dsize] { ptr:&'raw T };",
+        "Box = struct[T] { ptr:*T };",
         "Wrap = struct[T] { boxed:Box[T] };",
         "Deep = struct[T] { inner:Wrap[T] };",
         "ArrBox = struct { arr:[int;4] };",
@@ -117,11 +115,9 @@ fn write_header(writer: &mut BufWriter<File>, line_count: &mut usize) {
         "Vec2.norm1 = fn(v:Vec2)->int { v.x + v.y };",
         "Point.sum = fn(p:Point)->int { p.x + p.y };",
         "Point.shift = fn(p:Point, dx:int, dy:int)->Point { Point{ x = p.x + dx, y = p.y + dy } };",
-        "Box.new = fn[T](x:T)->Box[T] { let s = x.__size_of(); let p = no_fail_alloc(s); memcpy(p, &x as *void, s); x.__forget(); Box{ ptr = p as &'raw _ } };",
-        "to_unsized_box = macro (b) { b:Box[_]; type b_inner = _; &b[0] : *mut b_inner; let p = b.ptr as &'raw [b_inner]; b.__forget(); Box{ ptr = p } };",
-        "Box.__free = fn[T:dsize](b:&mut Box[T]) { (*b.ptr).__free(); free(b->ptr as *void) };",
-        "Box.__deref = fn[T:dsize](b:&const Box[T])->&T { &*b.ptr };",
-        "Box.__deref_mut = fn[T:dsize](b:&mut Box[T])->&mut T { &*b.ptr };",
+        "Box.__free = fn[T](b:&mut Box[T]) { free(b->ptr as *void) };",
+        "Box.__deref = fn[T](b:&const Box[T])->&T { &*b.ptr };",
+        "Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T { &*b.ptr };",
         "Box.get = fn[T](b:Box[T])->T { *b };",
         "Wrap.__deref = fn[T](w:&const Wrap[T])->&Box[T] { &w.boxed };",
         "Wrap.__deref_mut = fn[T](w:&mut Wrap[T])->&mut Box[T] { &mut w.boxed };",
@@ -338,29 +334,6 @@ fn write_dynamic_struct_use_fn(
     write_line(writer, line_count, "};");
 }
 
-fn write_unsized_box_fn(
-    writer: &mut BufWriter<File>,
-    line_count: &mut usize,
-    name: &str,
-    rng: &mut Rng,
-) {
-    write_line(
-        writer,
-        line_count,
-        &format!("{name} = fn(seed:int, extra:int)->int {{"),
-    );
-    write_line(
-        writer,
-        line_count,
-        "    let b = Box::new([seed, extra, 3:int, 4:int]);",
-    );
-    write_line(writer, line_count, "    let u = to_unsized_box(b);");
-    write_line(writer, line_count, "    let out = u[0:usize];");
-    write_noise_block(writer, line_count, rng);
-    write_line(writer, line_count, "    out");
-    write_line(writer, line_count, "};");
-}
-
 fn main() {
     let output_path = std::env::args()
         .nth(1)
@@ -393,7 +366,7 @@ fn main() {
 
         let name = format!("f_{function_count}");
         let sid = dynamic_structs[rng.range(dynamic_structs.len() as u32) as usize];
-        match rng.range(12) {
+        match rng.range(11) {
             0 => write_box_chain_fn(&mut writer, &mut line_count, &name, &mut rng),
             1 => write_deep_chain_fn(&mut writer, &mut line_count, &name, &mut rng),
             2 => write_vec_overload_fn(&mut writer, &mut line_count, &name, &mut rng),
@@ -404,8 +377,7 @@ fn main() {
             7 => write_generic_box_fn(&mut writer, &mut line_count, &name, &mut rng),
             8 => write_late_type_fn(&mut writer, &mut line_count, &name, &mut rng),
             9 => write_alloc_cast_fn(&mut writer, &mut line_count, &name, &mut rng),
-            10 => write_dynamic_struct_use_fn(&mut writer, &mut line_count, &name, sid, &mut rng),
-            _ => write_unsized_box_fn(&mut writer, &mut line_count, &name, &mut rng),
+            _ => write_dynamic_struct_use_fn(&mut writer, &mut line_count, &name, sid, &mut rng),
         }
         function_count += 1;
     }

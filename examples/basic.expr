@@ -1,12 +1,16 @@
 Box = struct[T:dsize]{ptr:&'raw T};
 
 free = cfn(p:*void);
+memcpy = cfn(dst:*void, src:*void, n:usize)->*void;
 no_fail_alloc = cfn(s:usize)->*void;
 Box.new = fn[T](x:T)->Box[T] {
-  let p=no_fail_alloc(x.__size_of());
+  let s=x.__size_of();
+  let p=no_fail_alloc(s);
+  memcpy(p, &x as *void, s);
+  x.__forget();
   Box{p as &'raw _}
 }
-Box.__free = fn[T](b:&mut Box[T]){
+Box.__free = fn[T:dsize](b:&mut Box[T]){
 (*b.ptr).__free()
 free(b->ptr as *void)
 }
@@ -20,8 +24,8 @@ to_unsized_box = macro (b) {
   Box{p}
 }
 
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+Box.__deref = fn[T:dsize](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T:dsize](b:&mut Box[T])->&mut T{&*b.ptr}
 
 some_function_that_wont_colide=fn(x:int)->Box[int] { Box::new(x) };
 
