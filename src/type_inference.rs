@@ -5715,24 +5715,29 @@ mod type_infer_tests {
         );
     }
     const BOX_EXAMPLE: &str = r#"
-        Box = struct[T]{ptr:&'raw T};
+        Box = struct[T:dsize]{ptr:&'raw T};
 
         free = cfn(p:*void);
+        memcpy = cfn(dst:*void, src:*void, n:usize)->*void;
         no_fail_alloc = cfn(s:usize)->*void;
         Box.new = fn[T](x:T)->Box[T] {
-          let p=no_fail_alloc(x.__size_of());
+          let s=x.__size_of();
+          let p=no_fail_alloc(s);
+          memcpy(p, &x as *void, s);
+          x.__forget();
           Box{p as &'raw _}
         }
-        Box.__free = fn[T](b:&mut Box[T]){
+        Box.__free = fn[T:dsize](b:&mut Box[T]){
         (*b.ptr).__free()
         free(b->ptr as *void)
         }
 
 
-        Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-        Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+        Box.__deref = fn[T:dsize](b:&const Box[T])->&T{&*b.ptr}
+        Box.__deref_mut = fn[T:dsize](b:&mut Box[T])->&mut T{&*b.ptr}
 
         f=fn(x:int)->Box[int] { Box::new(x) };
+        g=fn(b:Box[[int;2]])->int { let y:int = b[0]; y };
         "#;
 
     #[test]
@@ -8060,6 +8065,52 @@ mod type_infer_tests {
             store.type_value(ty),
             TypeValue::Builtin(BuiltinType::Void)
         ));
+    }
+
+    #[test]
+    fn any_type_builtin_forget_is_available_on_generic_t_and_literals() {
+        let src = r#"
+            g = fn[T](x:T){ x.__forget(); }
+            f = fn(){
+                let x:int = 1;
+                x.__forget();
+                (2:int).__forget();
+                g(x);
+            }
+        "#;
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+
+        let Value::Func { body, .. } = program.value(f) else {
+            panic!("expected function value")
+        };
+        let body = body.expect("expected function body");
+        let ty = solved_types
+            .inner_value_type(f, body)
+            .expect("missing inferred body type");
+        assert!(matches!(
+            store.type_value(ty),
+            TypeValue::Builtin(BuiltinType::Void)
+        ));
+    }
+
+    #[test]
+    fn user_struct_cannot_implement_forget_member() {
+        let errs = infer_global_errs("S=struct{}; S.__forget = fn(self:S){}; f=fn(){};");
+        assert!(errs.iter().any(|err| {
+            matches!(
+                err,
+                TypeError::Simple {
+                    message: "users may not implement forget",
+                    ..
+                }
+            )
+        }));
     }
 
     #[test]

@@ -7,7 +7,8 @@ use crate::ir::VarKind;
 use crate::ir::{GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, ValId, Value};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
-    DIV_STR, DSIZED_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR,
+    DIV_STR, DSIZED_STR, EQ_STR, FORGET_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR,
+    MUL_STR,
     NE_STR, NEG_STR, NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR,
     SHR_STR, SIZE_OF_STR, SUB_STR, StrId, USER_FREE_STR,
 };
@@ -1563,6 +1564,7 @@ fn is_unary_operator_overload_name(name: StrId) -> bool {
 fn is_known_special_member_method_name(name: StrId) -> bool {
     is_binary_operator_overload_name(name)
         || is_unary_operator_overload_name(name)
+        || name == FORGET_STR
         || name == FREE_STR
         || name == USER_FREE_STR
         || name == SIZE_OF_STR
@@ -1573,7 +1575,10 @@ fn is_known_special_member_method_name(name: StrId) -> bool {
 
 #[inline(always)]
 pub(crate) fn is_any_type_builtin_member_name(name: StrId) -> bool {
-    matches!(name, FREE_STR | USER_FREE_STR | SIZE_OF_STR | ALIGN_OF_STR)
+    matches!(
+        name,
+        FORGET_STR | FREE_STR | USER_FREE_STR | SIZE_OF_STR | ALIGN_OF_STR
+    )
 }
 
 #[inline(always)]
@@ -1824,6 +1829,14 @@ fn validate_and_insert_member_overload(
         });
         return;
     };
+
+    if method_name == FORGET_STR {
+        ctx.push_error(TypeError::Simple {
+            loc,
+            message: "users may not implement forget",
+        });
+        return;
+    }
 
     if matches!(method_name, FREE_STR | USER_FREE_STR) {
         if !is_mut_ref_to_named_struct_input_type(ctx.ex.store, first_input, struct_name) {

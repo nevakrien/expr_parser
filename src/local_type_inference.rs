@@ -17,7 +17,8 @@ use crate::parsing::Loc;
 use crate::program::{Defined, Program};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
-    FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR, NOT_STR,
+    FORGET_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
+    NOT_STR,
     POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR, SUB_STR,
     StrId,
 };
@@ -2508,14 +2509,10 @@ fn resolve_any_type_builtin_member_access(
     //this assumes u can full solve here
     //u cant we dont know the lifetime at all
     //we need to do a downcast of it which is a bit anoying
-    let (self_param, output) = if member_name == FREE_STR {
-        let generic_self = types.new_cluster();
+    let (self_param, output) = if member_name == FORGET_STR {
+        (base_cluster, types.new_solved(BuiltinType::Void.into()))
+    } else if member_name == FREE_STR {
         let self_param = types.new_cluster();
-        types.core.cluster[self_param].state = ResolveKind::Ptr {
-            tgt: generic_self,
-            kind: PtrKind::SafeRef,
-            mutable: Some(true),
-        };
         (self_param, types.new_solved(BuiltinType::Void.into()))
     } else if matches!(member_name, SIZE_OF_STR | ALIGN_OF_STR) {
         let self_param = types.new_cluster();

@@ -105,24 +105,28 @@ we basically assume all overloads may exist for all types untill the very last m
 
 we also support generics so nad destructors to allow for this
 ```
-Box = struct[T]{ptr:&'raw T};
+Box = struct[T:dsize]{ptr:&'raw T};
 
 free = cfn(p:*void);
+memcpy = cfn(dst:*void, src:*void, n:usize)->*void;
 no_fail_alloc = cfn(s:usize)->*void;
 Box.new = fn[T](x:T)->Box[T] {
-  let p=no_fail_alloc(x.__size_of());
+  let s=x.__size_of();
+  let p=no_fail_alloc(s);
+  memcpy(p, &x as *void, s);
+  x.__forget();
   Box{p as &'raw _}
 }
-Box.__free = fn[T](b:&mut Box[T]){
+Box.__free = fn[T:dsize](b:&mut Box[T]){
 (*b.ptr).__free()
 free(b->ptr as *void)
 }
 
 
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+Box.__deref = fn[T:dsize](b:&const Box[T])->&T{&*b.ptr}
+Box.__deref_mut = fn[T:dsize](b:&mut Box[T])->&mut T{&*b.ptr}
 
-f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
+f=fn(b:Box[[int;2]])->int { let y:int = b[0]; y };
 
 ```
 
