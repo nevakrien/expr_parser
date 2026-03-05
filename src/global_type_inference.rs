@@ -1087,9 +1087,8 @@ pub(crate) fn compile_type_expr_with_mode(
                 return ctx.new_cluster();
             }
 
-            let generic_info = ctx.ex.store.struct_value(sid).gen_info.clone();
             for i in 0..expected {
-                if !generic_info[i].sized {
+                if !ctx.ex.store.struct_value(sid).gen_info[i].sized {
                     continue;
                 }
                 let arg_loc = ctx.ex.program.type_expr_loc(generic_args[i].0);

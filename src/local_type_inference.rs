@@ -822,6 +822,7 @@ pub(crate) fn gather_constraints(
                     &mut ctx.ex,
                     &mut ctx.search,
                     &mut ctx.types,
+                    &mut ctx.req.pending_sized_requirements,
                     t,
                     v,
                 );
@@ -1021,7 +1022,11 @@ pub(crate) fn gather_constraints(
             ctx.bind_val_with_origin(v, output, origin);
             let mut pending = PendingDeref::new(&mut ctx.types, v, base, src, output);
 
-            let outcome = pending.step(&mut ctx.ex, &mut ctx.types);
+            let outcome = pending.step(
+                &mut ctx.ex,
+                &mut ctx.types,
+                &mut ctx.req.pending_sized_requirements,
+            );
             if outcome.retain {
                 ctx.req.pending_derefs.push(pending);
             }
@@ -1054,6 +1059,7 @@ pub(crate) fn gather_constraints(
                     &mut ctx.ex,
                     &mut ctx.search,
                     &mut ctx.types,
+                    &mut ctx.req.pending_sized_requirements,
                     t,
                     v,
                 );
@@ -1100,6 +1106,7 @@ pub(crate) fn gather_constraints(
                 &mut ctx.types,
                 &mut ctx.search,
                 &mut ctx.req.member_method_type_sites,
+                &mut ctx.req.pending_sized_requirements,
                 &mut ctx.req.pending_mutability_matches,
             ) {
                 MemberAccessResolve::Resolved {
@@ -1181,6 +1188,7 @@ pub(crate) fn gather_constraints(
                         &mut ctx.ex,
                         &mut ctx.types,
                         &mut ctx.req.member_method_type_sites,
+                        &mut ctx.req.pending_sized_requirements,
                         &mut site,
                     );
                     if outcome.retain {
@@ -1206,6 +1214,7 @@ pub(crate) fn gather_constraints(
                         &mut ctx.ex,
                         &mut ctx.types,
                         &mut ctx.req.member_method_type_sites,
+                        &mut ctx.req.pending_sized_requirements,
                         &mut site,
                     );
                     if outcome.retain {
@@ -1286,6 +1295,7 @@ pub(crate) fn gather_constraints(
                     &mut ctx.ex,
                     &mut ctx.types,
                     &mut ctx.req.member_method_type_sites,
+                    &mut ctx.req.pending_sized_requirements,
                     &mut site,
                 );
                 if outcome.retain {
@@ -1314,6 +1324,7 @@ pub(crate) fn gather_constraints(
                     &mut ctx.ex,
                     &mut ctx.types,
                     &mut ctx.req.member_method_type_sites,
+                    &mut ctx.req.pending_sized_requirements,
                     &mut site,
                 );
                 if outcome.retain {
@@ -1934,6 +1945,7 @@ pub(crate) fn gather_constraints(
                 &mut ctx.ex,
                 &mut ctx.types,
                 &mut ctx.search,
+                &mut ctx.req.pending_sized_requirements,
                 &mut ctx.req.pending_mutability_matches,
             );
 
@@ -2309,6 +2321,7 @@ fn try_get_name(ctx: &mut InferState, v: ValId) -> Option<NameId> {
 fn solved_type_to_specialized_local(
     ex: &mut ExternState,
     types: &mut TypeState,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     t: TypeId,
     loc: ValId,
 ) -> CId {
@@ -2329,6 +2342,26 @@ fn solved_type_to_specialized_local(
     if generic_count != 0 || lifetime_count != 0 {
         let gens: Vec<_> = (0..generic_count).map(|_| types.new_cluster()).collect();
         let lifes: Vec<_> = (0..lifetime_count).map(|_| types.new_lid()).collect();
+
+        let site = ex.program.value_loc(loc);
+        for i in 0..generic_count {
+            let needs_sized = match ex.store.type_value(t) {
+                TypeValue::Func { generics, .. } => generics[i].sized,
+                TypeValue::Struct { id, .. } => ex.store.struct_value(*id).gen_info[i].sized,
+                _ => false,
+            };
+            if needs_sized {
+                require_sized_or_enqueue(
+                    ex,
+                    types,
+                    pending_sized_requirements,
+                    site.clone(),
+                    gens[i],
+                    "generic argument for this parameter must be sized",
+                );
+            }
+        }
+
         return specialize_type(ex, types, t, &gens, &lifes, loc);
     }
 
@@ -2344,6 +2377,7 @@ fn global_to_specialized_local(
     ex: &mut ExternState,
     search: &mut SearchState,
     types: &mut TypeState,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     reference_type: TypeId,
     v: ValId,
 ) -> CId {
@@ -2362,7 +2396,7 @@ fn global_to_specialized_local(
     //we wana make sure that we add a good way to run this
     //would be done as some normlization function somewhere
     //structs especially are weird with this
-    let ans = solved_type_to_specialized_local(ex, types, reference_type, v);
+    let ans = solved_type_to_specialized_local(ex, types, pending_sized_requirements, reference_type, v);
     search.bind_val(v, ans);
     ans
 }
@@ -2372,6 +2406,7 @@ fn resolve_member_method_access(
     types: &mut TypeState,
     search: &mut SearchState,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
     access_site: ValId,
     base_value: ValId,
@@ -2379,7 +2414,8 @@ fn resolve_member_method_access(
     member_name: StrId,
     method_ty: TypeId,
 ) -> CId {
-    let method_local = solved_type_to_specialized_local(ex, types, method_ty, access_site);
+    let method_local =
+        solved_type_to_specialized_local(ex, types, pending_sized_requirements, method_ty, access_site);
 
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
         unreachable!("specialized member access method must resolve to a function shape");
@@ -2546,6 +2582,7 @@ fn resolve_any_type_builtin_member_access(
 fn resolve_struct_deref_target(
     ex: &mut ExternState,
     types: &mut TypeState,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     site: ValId,
     base_value: ValId,
     base_cluster: CId,
@@ -2562,7 +2599,8 @@ fn resolve_struct_deref_target(
 
     let mut resolve_from_site = |types: &mut TypeState, method_site: ValId, mutable: bool| {
         let method_ty = ex.ans.function_types_by_value(method_site)?.ty;
-        let method_local = solved_type_to_specialized_local(ex, types, method_ty, site);
+        let method_local =
+            solved_type_to_specialized_local(ex, types, pending_sized_requirements, method_ty, site);
         let (params, ret) = function_parts_from_cluster(ex, types, method_local)?;
         let self_ptr = params.first().copied()?;
         if params.len() != 1 {
@@ -2674,6 +2712,7 @@ impl PendingImplicitDeref {
         ex: &mut ExternState,
         types: &mut TypeState,
         search: &mut SearchState,
+        pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
         pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
         max_implicit_deref_steps: usize,
         implicit_deref_limit_message: &'static str,
@@ -2749,6 +2788,7 @@ impl PendingImplicitDeref {
                 let Some(target) = resolve_struct_deref_target(
                     ex,
                     types,
+                    pending_sized_requirements,
                     self.site,
                     self.base_value,
                     current,
@@ -2817,6 +2857,7 @@ impl PendingImplicitDeref {
                     let Some(target) = resolve_struct_deref_target(
                         ex,
                         types,
+                        pending_sized_requirements,
                         self.site,
                         self.base_value,
                         current,
@@ -2934,6 +2975,7 @@ impl PendingMemberAccess {
         types: &mut TypeState,
         search: &mut SearchState,
         member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+        pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
         pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
     ) -> MemberAccessResolve {
         let max_implicit_deref_steps = match self.kind {
@@ -3019,6 +3061,7 @@ impl PendingMemberAccess {
                                 types,
                                 search,
                                 member_method_type_sites,
+                                pending_sized_requirements,
                                 pending_mutability_matches,
                                 self.site,
                                 self.implicit_deref.base_value,
@@ -3044,6 +3087,7 @@ impl PendingMemberAccess {
                                 ex,
                                 types,
                                 search,
+                                pending_sized_requirements,
                                 pending_mutability_matches,
                                 max_implicit_deref_steps,
                                 implicit_deref_limit_message,
@@ -3125,6 +3169,7 @@ impl PendingMemberAccess {
                             types,
                             search,
                             member_method_type_sites,
+                            pending_sized_requirements,
                             pending_mutability_matches,
                             self.site,
                             self.implicit_deref.base_value,
@@ -3150,6 +3195,7 @@ impl PendingMemberAccess {
                             ex,
                             types,
                             search,
+                            pending_sized_requirements,
                             pending_mutability_matches,
                             max_implicit_deref_steps,
                             implicit_deref_limit_message,
@@ -3183,6 +3229,7 @@ impl PendingMemberAccess {
                 ex,
                 types,
                 search,
+                pending_sized_requirements,
                 pending_mutability_matches,
                 max_implicit_deref_steps,
                 implicit_deref_limit_message,
@@ -3242,10 +3289,12 @@ fn un_op_overload_not_found_error(
 fn resolve_member_overload_signature(
     ex: &mut ExternState,
     types: &mut TypeState,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     method_ty: TypeId,
     loc: ValId,
 ) -> Option<ResolvedMemberOverload> {
-    let method_local = solved_type_to_specialized_local(ex, types, method_ty, loc);
+    let method_local =
+        solved_type_to_specialized_local(ex, types, pending_sized_requirements, method_ty, loc);
     let Some((params, ret)) = function_parts_from_cluster(ex, types, method_local) else {
         unreachable!("specialized operator overload method must resolve to a function shape");
     };
@@ -3327,6 +3376,7 @@ fn resolve_operator_site(
     ex: &mut ExternState,
     types: &mut TypeState,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     site: &mut BinOpSite,
 ) -> ResolveOutcome {
     use BinOp::*;
@@ -3356,7 +3406,13 @@ fn resolve_operator_site(
 
         if let Some(method) = method {
             let Some(overload_sig) =
-                resolve_member_overload_signature(ex, types, method.method_type, site.loc)
+                resolve_member_overload_signature(
+                    ex,
+                    types,
+                    pending_sized_requirements,
+                    method.method_type,
+                    site.loc,
+                )
             else {
                 let err = bin_op_overload_not_found_error(ex, types, site, lhs, rhs);
                 ex.push_error(err);
@@ -3634,6 +3690,7 @@ fn resolve_unary_operator_site(
     ex: &mut ExternState,
     types: &mut TypeState,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     site: &mut UnOpSite,
 ) -> ResolveOutcome {
     use UnOp::*;
@@ -3659,7 +3716,13 @@ fn resolve_unary_operator_site(
             .copied();
         if let Some(method) = method {
             let Some(overload_sig) =
-                resolve_member_overload_signature(ex, types, method.method_type, site.loc)
+                resolve_member_overload_signature(
+                    ex,
+                    types,
+                    pending_sized_requirements,
+                    method.method_type,
+                    site.loc,
+                )
             else {
                 let err = un_op_overload_not_found_error(ex, types, site, input);
                 ex.push_error(err);
@@ -3800,6 +3863,7 @@ fn resolve_assign_pre_post_site(
     ex: &mut ExternState,
     types: &mut TypeState,
     member_method_type_sites: &mut Vec<PendingMemberMethodType>,
+    pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
     site: &mut AssignPrePostSite,
 ) -> ResolveOutcome {
     let mut progress = false;
@@ -3821,7 +3885,13 @@ fn resolve_assign_pre_post_site(
 
         if let Some(method) = method {
             let Some(overload_sig) =
-                resolve_member_overload_signature(ex, types, method.method_type, site.loc)
+                resolve_member_overload_signature(
+                    ex,
+                    types,
+                    pending_sized_requirements,
+                    method.method_type,
+                    site.loc,
+                )
             else {
                 return ResolveOutcome::drop(progress);
             };
@@ -3876,7 +3946,13 @@ fn resolve_assign_pre_post_site(
         output: target,
     };
 
-    let outcome = resolve_operator_site(ex, types, member_method_type_sites, &mut fallback_site);
+    let outcome = resolve_operator_site(
+        ex,
+        types,
+        member_method_type_sites,
+        pending_sized_requirements,
+        &mut fallback_site,
+    );
     progress |= outcome.progress;
     if outcome.retain {
         site.target = fallback_site.lhs;
@@ -3892,20 +3968,39 @@ pub(crate) fn resolve_operator_types(ctx: &mut InferState) -> bool {
     let ex = &mut ctx.ex;
     let types = &mut ctx.types;
     let member_method_type_sites = &mut ctx.req.member_method_type_sites;
+    let pending_sized_requirements = &mut ctx.req.pending_sized_requirements;
     ctx.req.bin_op_sites.retain_mut(|site| {
-        let outcome = resolve_operator_site(ex, types, member_method_type_sites, site);
+        let outcome = resolve_operator_site(
+            ex,
+            types,
+            member_method_type_sites,
+            pending_sized_requirements,
+            site,
+        );
         progress |= outcome.progress;
         outcome.retain
     });
 
     ctx.req.un_op_sites.retain_mut(|site| {
-        let outcome = resolve_unary_operator_site(ex, types, member_method_type_sites, site);
+        let outcome = resolve_unary_operator_site(
+            ex,
+            types,
+            member_method_type_sites,
+            pending_sized_requirements,
+            site,
+        );
         progress |= outcome.progress;
         outcome.retain
     });
 
     ctx.req.assign_pre_post_sites.retain_mut(|site| {
-        let outcome = resolve_assign_pre_post_site(ex, types, member_method_type_sites, site);
+        let outcome = resolve_assign_pre_post_site(
+            ex,
+            types,
+            member_method_type_sites,
+            pending_sized_requirements,
+            site,
+        );
         progress |= outcome.progress;
         outcome.retain
     });
@@ -3920,6 +4015,7 @@ impl PendingIndex {
         ex: &mut ExternState,
         types: &mut TypeState,
         search: &mut SearchState,
+        pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
         pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
     ) -> ResolveOutcome {
         let mut progress = false;
@@ -3946,6 +4042,7 @@ impl PendingIndex {
                         ex,
                         types,
                         search,
+                        pending_sized_requirements,
                         pending_mutability_matches,
                         max_implicit_deref_steps,
                         implicit_deref_limit_message,
@@ -3971,6 +4068,7 @@ impl PendingIndex {
                         ex,
                         types,
                         search,
+                        pending_sized_requirements,
                         pending_mutability_matches,
                         max_implicit_deref_steps,
                         implicit_deref_limit_message,
@@ -4039,7 +4137,12 @@ impl PendingIndex {
 
 impl PendingDeref {
     #[inline(always)]
-    fn step(&mut self, ex: &mut ExternState, types: &mut TypeState) -> ResolveOutcome {
+    fn step(
+        &mut self,
+        ex: &mut ExternState,
+        types: &mut TypeState,
+        pending_sized_requirements: &mut Vec<PendingSizedRequirement>,
+    ) -> ResolveOutcome {
         let mut progress = false;
 
         let source = types.root(self.source);
@@ -4065,6 +4168,7 @@ impl PendingDeref {
                         resolve_struct_deref_target(
                             ex,
                             types,
+                            pending_sized_requirements,
                             self.site,
                             self.source_value,
                             source,
@@ -4086,6 +4190,7 @@ impl PendingDeref {
                     resolve_struct_deref_target(
                         ex,
                         types,
+                        pending_sized_requirements,
                         self.site,
                         self.source_value,
                         source,
@@ -4138,7 +4243,7 @@ pub(crate) fn resolve_pending_derefs(ctx: &mut InferState) -> bool {
     let types = &mut ctx.types;
 
     ctx.req.pending_derefs.retain_mut(|pending| {
-        let outcome = pending.step(ex, types);
+        let outcome = pending.step(ex, types, &mut ctx.req.pending_sized_requirements);
         progress |= outcome.progress;
         outcome.retain
     });
@@ -4824,11 +4929,18 @@ pub(crate) fn resolve_pending_indexes(ctx: &mut InferState) -> bool {
     let ex = &mut ctx.ex;
     let types = &mut ctx.types;
     let search = &mut ctx.search;
+    let pending_sized_requirements = &mut ctx.req.pending_sized_requirements;
     let pending_mutability_matches = &mut ctx.req.pending_mutability_matches;
 
     ctx.req.pending_indexes.retain_mut(|site| {
         site.implicit_deref.sync_roots(types);
-        let outcome = site.step(ex, types, search, pending_mutability_matches);
+        let outcome = site.step(
+            ex,
+            types,
+            search,
+            pending_sized_requirements,
+            pending_mutability_matches,
+        );
         progress |= outcome.progress;
         if !outcome.retain {
             let receivers = std::mem::take(&mut site.implicit_deref.implicit_receivers);
@@ -4863,6 +4975,7 @@ pub(crate) fn resolve_pending_member_accesses(ctx: &mut InferState) -> bool {
             types,
             search,
             member_method_type_sites,
+            &mut ctx.req.pending_sized_requirements,
             pending_mutability_matches,
         ) {
             MemberAccessResolve::Pending { source } => {

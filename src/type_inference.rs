@@ -3699,10 +3699,14 @@ fn try_resolve_func_type(
         _ => return None,
     };
 
+    let calling_convention = func.calling_convention;
+    let lifetimes = func.lifetimes;
+    let generics = std::mem::take(&mut func.generics);
+
     Some(ex.store.intern(TypeValue::Func {
-        calling_convention: func.calling_convention,
-        generics: func.generics.clone(),
-        lifetimes: func.lifetimes,
+        calling_convention,
+        generics,
+        lifetimes,
         params,
         ret,
     }))
@@ -4983,11 +4987,14 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
                 let cid = ctx.types.root(cid);
                 let ret = resolve_cluster_to_typeid(ctx, cid)?;
 
-                let func = &ctx.types.extra.func_defs[call.0];
+                let func = &mut ctx.types.extra.func_defs[call.0];
+                let calling_convention = func.calling_convention;
+                let lifetimes = func.lifetimes;
+                let generics = std::mem::take(&mut func.generics);
                 ctx.ex.store.intern(TypeValue::Func {
-                    calling_convention: func.calling_convention,
-                    generics: func.generics.clone(),
-                    lifetimes: func.lifetimes,
+                    calling_convention,
+                    generics,
+                    lifetimes,
                     params,
                     ret,
                 })
@@ -6275,6 +6282,22 @@ mod type_infer_tests {
     #[test]
     fn sized_generic_argument_rejects_unsized_type_argument() {
         let errs = infer_global_errs("S=struct[T]{ptr:*T}; f=fn(x:S[[int]]){}");
+        assert_has_simple_error(&errs, "generic argument for this parameter must be sized");
+    }
+
+    #[test]
+    fn default_sized_generic_rejects_unsized_substitution_through_pointer() {
+        let src = "f=fn[T](p:*T)->int{0:int}; g=fn(p:*[int])->int{f(p)}";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let g = find_value_by_name(&program, "g");
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, g) {
+            Ok(_) => panic!("expected local inference to fail"),
+            Err(errs) => errs,
+        };
         assert_has_simple_error(&errs, "generic argument for this parameter must be sized");
     }
 
