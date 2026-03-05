@@ -40,7 +40,8 @@
 - `agent_docs/struct_layout.md`: layout computation model in `src/struct_layout.rs`, including recursion detection and generic specialization handling.
 - `agent_docs/string_intern_and_ids.md`: intern table internals and `IdHashMap`/`IdentityHasher` conventions for ID-keyed maps.
 - `agent_docs/low_ir_sketch.md`: current status and intent for the unfinished low-level IR sketch in `src/low_ir.rs`.
-- `agent_docs/lifetimes_plan.md`: planned lifetime semantics and staged implementation notes across type inference and borrow checking.
+- `agent_docs/lifetimes_plan.md`: primary lifetime plan focused on local lifetime ordering via origin-derived constraints, SCC solving, raw-vs-ref handling, and a CId-free solved graph boundary for borrow checking.
+- `agent_docs/lifetime_impl_status.md`: current implementation status for lifetime/type-inference work (implemented pieces, transitional behavior, and remaining stages).
 - `agent_docs/todo.md`: short-lived implementation notes (including active refactor items and known temporary failures).
 
 ## Commands
