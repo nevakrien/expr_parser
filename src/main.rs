@@ -184,6 +184,7 @@ fn def_type_string(
             .copied()
             .map(|ty| types.get_type_string(program, ty)),
         Defined::BuildinType(_) => Some("builtin type".to_string()),
+        Defined::BuildinInterface(_) => Some("builtin interface".to_string()),
         Defined::Macro(_) => Some("macro".to_string()),
         Defined::ToBeDefined => None,
     }

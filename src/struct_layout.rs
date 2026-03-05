@@ -210,7 +210,7 @@ impl<'a> LayoutComputer<'a> {
             TypeValue::Builtin(builtin) => self.layout_builtin(*builtin),
             TypeValue::Tuple(items) => self.layout_tuple(items, generics),
             TypeValue::Func { generics, .. } => {
-                if *generics != 0 {
+                if !generics.is_empty() {
                     return Err(LayoutError::UnsupportedType { type_id });
                 }
                 Ok(Layout {
@@ -233,7 +233,7 @@ impl<'a> LayoutComputer<'a> {
                     align: self.target.pointer_align,
                 })
             }
-            TypeValue::Generic(gid) => {
+            TypeValue::Generic(gid, _) => {
                 let Some(mapped) = generics.get(gid.0) else {
                     return Err(LayoutError::UnsupportedType { type_id });
                 };
@@ -413,7 +413,7 @@ mod tests {
     use crate::program::Program;
     use crate::type_inference::Nullable;
     use crate::type_inference::PointerStyle;
-    use crate::type_inference::{ArrayType, GenId, StructRep, TypeStore, TypeValue};
+    use crate::type_inference::{ArrayType, GenId, StructRep, TraitInfo, TypeStore, TypeValue};
 
     fn name(program: &mut Program, text: &str) -> NameId {
         let id = program.str_intern.intern(text);
@@ -530,11 +530,11 @@ mod tests {
         let mut store = TypeStore::new();
 
         let value = name(&mut program, "value");
-        let generic = store.intern(TypeValue::Generic(GenId(0)));
+        let generic = store.intern(TypeValue::Generic(GenId(0), TraitInfo { sized: true }));
         let rep = StructRep {
             name: None,
             fields: vec![(value, generic)],
-            gen_count: 1,
+            gen_info: vec![TraitInfo { sized: true }],
             life_count: 0,
             layout: StructLayoutSpec::Hot,
         };
@@ -560,11 +560,11 @@ mod tests {
         let mut store = TypeStore::new();
 
         let value = name(&mut program, "value");
-        let generic = store.intern(TypeValue::Generic(GenId(0)));
+        let generic = store.intern(TypeValue::Generic(GenId(0), TraitInfo { sized: true }));
         let rep = StructRep {
             name: None,
             fields: vec![(value, generic)],
-            gen_count: 1,
+            gen_info: vec![TraitInfo { sized: true }],
             life_count: 0,
             layout: StructLayoutSpec::Hot,
         };

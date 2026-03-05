@@ -271,7 +271,8 @@ pub enum TypeValue {
     Array(TypeId, ArrayType),
     Func {
         calling_convention: CallingConvention,
-        generics: usize,
+        // generics: usize,
+        generics: Vec<TraitInfo>,
         lifetimes: usize,
         params: Vec<TypeId>,
         ret: TypeId,
@@ -281,7 +282,7 @@ pub enum TypeValue {
         style: PointerStyle,
         mutable: bool,
     },
-    Generic(GenId),
+    Generic(GenId, TraitInfo),
     // Specialized {
     //     base: TypeId,
     //     parts: Vec<TypeId>,
@@ -306,6 +307,13 @@ impl Program {
             let id = self.insert_value_in_current_scope(name);
             self.definitions
                 .insert(id, Defined::BuildinType(TypeValue::Builtin(builtin)));
+            // self.set_definition_loc(id, Program::placeholder_loc());
+        }
+
+        use crate::string_intern::DSIZED_STR;
+        for name in [DSIZED_STR] {
+            let id = self.insert_value_in_current_scope(name);
+            self.definitions.insert(id, Defined::BuildinInterface(name));
             // self.set_definition_loc(id, Program::placeholder_loc());
         }
     }
@@ -364,8 +372,9 @@ impl TypeStore {
                 params,
                 ret,
                 ..
-            } if *generics != 0 => {
-                let unused = self.compute_unused_function_generic_indexes(params, *ret, *generics);
+            } if !generics.is_empty() => {
+                let unused =
+                    self.compute_unused_function_generic_indexes(params, *ret, generics.len());
                 (!unused.is_empty()).then_some(unused)
             }
             _ => None,
@@ -431,7 +440,7 @@ impl TypeStore {
     ) {
         match self.type_value(ty) {
             TypeValue::Builtin(_) => {}
-            TypeValue::Generic(gid) => {
+            TypeValue::Generic(gid, _) => {
                 if gid.0 < generic_count {
                     used[gid.0] = true;
                 }
@@ -469,7 +478,7 @@ impl TypeStore {
     ) {
         match self.type_value(ty) {
             TypeValue::Builtin(_) => {}
-            TypeValue::Generic(_) => {}
+            TypeValue::Generic(..) => {}
             TypeValue::Tuple(items) => {
                 for &item in items {
                     self.mark_used_function_lifetime_indexes(item, lifetime_count, used);
@@ -527,7 +536,7 @@ impl TypeStore {
         let rep = StructRep {
             name,
             fields,
-            gen_count: 0,
+            gen_info: Vec::new(),
             life_count: 0,
             layout: StructLayoutSpec::Hot,
         };
@@ -644,13 +653,14 @@ impl TypeStore {
                 params,
                 ret,
             } => {
+                let glen = generics.len();
                 let params = params
                     .iter()
                     .map(|id| {
                         self.get_type_string_nested(
                             program,
                             *id,
-                            gen_count + generics,
+                            gen_count + glen,
                             life_count + lifetimes,
                         )
                     })
@@ -664,7 +674,13 @@ impl TypeStore {
                 let mut sig_parts = (life_count..(life_count + lifetimes))
                     .map(|i| format!("'a{i}"))
                     .collect::<Vec<_>>();
-                sig_parts.extend((gen_count..(gen_count + generics)).map(|i| format!("T{i}")));
+                sig_parts.extend(generics.iter().enumerate().map(|(i, info)| {
+                    if info.sized {
+                        format!("T{}", gen_count + i)
+                    } else {
+                        format!("T{}:dsize", gen_count + i)
+                    }
+                }));
                 let signature_params = if sig_parts.is_empty() {
                     String::new()
                 } else {
@@ -678,7 +694,7 @@ impl TypeStore {
                     self.get_type_string_nested(
                         program,
                         *ret,
-                        gen_count + generics,
+                        gen_count + glen,
                         life_count + lifetimes,
                     )
                 )
@@ -737,7 +753,7 @@ impl TypeStore {
             }
 
             // TypeValue::Type => "Type".to_string(),
-            TypeValue::Generic(g) => format!("T{}", g.0),
+            TypeValue::Generic(g, _) => format!("T{}", g.0),
 
             //TODO cover cases where we do know the name
             TypeValue::Struct {
@@ -1019,12 +1035,18 @@ impl StructOverloadInfo {
     }
 }
 
-///todo add actual fields
+///general info on buildin traits
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TraitInfo {
+    pub sized: bool,
+}
+
 #[derive(Debug)]
 pub struct StructRep {
     pub name: Option<NameId>,
     pub fields: Vec<(NameId, TypeId)>,
-    pub gen_count: usize,
+    // pub gen_count: usize,
+    pub gen_info: Vec<TraitInfo>,
     pub life_count: usize,
     pub layout: StructLayoutSpec,
 }
@@ -1630,7 +1652,7 @@ pub(crate) enum ResolveKind {
 #[derive(Debug)]
 pub(crate) struct FuncInfer {
     pub(crate) calling_convention: CallingConvention,
-    pub(crate) generics: usize,
+    pub(crate) generics: Vec<TraitInfo>,
     pub(crate) lifetimes: usize,
     pub(crate) inputs: Vec<CId>,
     pub(crate) output: CId,
@@ -1862,6 +1884,13 @@ pub(crate) struct PendingMutabilityMatchRequirement {
     pub(crate) site: ValId,
     pub(crate) context: WritablePlaceContext,
     pub(crate) projected_origin: OriginId,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingSizedRequirement {
+    pub(crate) site: Loc,
+    pub(crate) ty: CId,
+    pub(crate) message: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2513,7 +2542,6 @@ impl TypeState {
         None
     }
 
-
     // =========================================================
     // cluster construction
     // =========================================================
@@ -2685,6 +2713,7 @@ pub(crate) struct ReqState {
     pub(crate) pending_indexes: Vec<PendingIndex>,
     pub(crate) pending_derefs: Vec<PendingDeref>,
     pub(crate) pending_mutability_matches: Vec<PendingMutabilityMatchRequirement>,
+    pub(crate) pending_sized_requirements: Vec<PendingSizedRequirement>,
 }
 
 impl ReqState {
@@ -2703,6 +2732,7 @@ impl ReqState {
             pending_indexes: Vec::new(),
             pending_derefs: Vec::new(),
             pending_mutability_matches: Vec::new(),
+            pending_sized_requirements: Vec::new(),
         }
     }
 
@@ -2720,6 +2750,7 @@ impl ReqState {
             pending_indexes,
             pending_derefs,
             pending_mutability_matches,
+            pending_sized_requirements,
         } = self;
 
         *owner = None;
@@ -2735,6 +2766,7 @@ impl ReqState {
         pending_indexes.clear();
         pending_derefs.clear();
         pending_mutability_matches.clear();
+        pending_sized_requirements.clear();
     }
 }
 
@@ -3420,7 +3452,7 @@ pub(crate) fn unify_func_with_type(
             ret,
         } => (
             *calling_convention,
-            *generics,
+            generics.as_slice(),
             *lifetimes,
             params.as_slice(),
             *ret,
@@ -3443,7 +3475,7 @@ pub(crate) fn unify_func_with_type(
 
     types.extra.func_defs[call.0].calling_convention = merged_cc;
 
-    if types.extra.func_defs[call.0].generics != generics
+    if types.extra.func_defs[call.0].generics.as_slice() != generics
         || types.extra.func_defs[call.0].lifetimes != lifetimes
     {
         return Err(TypeClash {
@@ -3669,7 +3701,7 @@ fn try_resolve_func_type(
 
     Some(ex.store.intern(TypeValue::Func {
         calling_convention: func.calling_convention,
-        generics: func.generics,
+        generics: func.generics.clone(),
         lifetimes: func.lifetimes,
         params,
         ret,
@@ -3845,13 +3877,14 @@ fn type_string_from_type_id_nested(
             params,
             ret,
         } => {
+            let glen = generics.len();
             let params = params
                 .iter()
                 .map(|id| {
                     type_string_from_type_id_nested(
                         ex,
                         *id,
-                        gen_count + *generics,
+                        gen_count + glen,
                         life_count + *lifetimes,
                     )
                 })
@@ -3861,9 +3894,14 @@ fn type_string_from_type_id_nested(
             let mut sig_parts = (life_count..(life_count + *lifetimes))
                 .map(|i| format!("'{}", ex.name_render.external_lifetime_name(i as u32)))
                 .collect::<Vec<_>>();
-            sig_parts.extend(
-                (gen_count..(gen_count + *generics)).map(|i| ex.name_render.generic_name(i)),
-            );
+            sig_parts.extend(generics.iter().enumerate().map(|(i, info)| {
+                let name = ex.name_render.generic_name(gen_count + i);
+                if info.sized {
+                    name
+                } else {
+                    format!("{name}:dsize")
+                }
+            }));
             let signature_params = if sig_parts.is_empty() {
                 String::new()
             } else {
@@ -3878,7 +3916,7 @@ fn type_string_from_type_id_nested(
                 type_string_from_type_id_nested(
                     ex,
                     *ret,
-                    gen_count + *generics,
+                    gen_count + glen,
                     life_count + *lifetimes,
                 )
             )
@@ -3926,7 +3964,7 @@ fn type_string_from_type_id_nested(
                 type_string_from_type_id_nested(ex, *inner, gen_count, life_count)
             )
         }
-        TypeValue::Generic(g) => ex.name_render.generic_name(g.0),
+        TypeValue::Generic(g, _) => ex.name_render.generic_name(g.0),
         TypeValue::Struct {
             id,
             generics,
@@ -4039,13 +4077,17 @@ fn write_func_mock_string_inner(
 ) {
     let site = &extra.func_defs[call.0];
     let _ = out.write_str(calling_convention_keyword(site.calling_convention));
-    if site.generics > 0 {
+    if !site.generics.is_empty() {
         let _ = out.write_char('[');
-        for i in 0..site.generics {
+        for (i, info) in site.generics.iter().enumerate() {
             if i > 0 {
                 let _ = out.write_str(", ");
             }
-            let _ = write!(out, "T{i}");
+            if info.sized {
+                let _ = write!(out, "T{i}");
+            } else {
+                let _ = write!(out, "T{i}:dsize");
+            }
         }
         let _ = out.write_char(']');
     }
@@ -4289,7 +4331,8 @@ fn specialize_type_inner(
     ctx: &mut SpecializeCtx<'_>,
 ) -> CId {
     match ex.store.type_value(ty) {
-        TypeValue::Generic(id) => ctx.generics.get(id.0).copied().unwrap(),
+        //TODO(dsize)
+        TypeValue::Generic(id, _) => ctx.generics.get(id.0).copied().unwrap(),
 
         TypeValue::Func {
             calling_convention,
@@ -4314,7 +4357,7 @@ fn specialize_type_inner(
             // create FuncInfer
             let call_id = FuncInferId(types.extra.func_defs.len());
             types.extra.func_defs.push(FuncInfer {
-                generics: 0,
+                generics: Vec::new(),
                 lifetimes: 0,
                 inputs,
                 output,
@@ -4753,6 +4796,80 @@ pub(crate) fn cluster_is_bool(
     }
 }
 
+pub(crate) fn cluster_is_sized_known(
+    ex: &ExternState,
+    types: &mut TypeState,
+    cid: CId,
+) -> Option<bool> {
+    let root = types.root(cid);
+    match types.cluster_state(root) {
+        ResolveKind::Nothing => None,
+        ResolveKind::Solved(ty) => {
+            debug_assert!(ty != UNKNOWN_TYPE && ty != UNKNOWN_INT_SIZE && ty != UNKNOWN_FLOAT_SIZE);
+            if ty == UNKNOWN_TYPE || ty == UNKNOWN_INT_SIZE || ty == UNKNOWN_FLOAT_SIZE {
+                return None;
+            }
+            Some(match ex.store.type_value(ty) {
+                TypeValue::Array(_, ArrayType::Unsized) => false,
+                TypeValue::Generic(_, info) => info.sized,
+                _ => true,
+            })
+        }
+        ResolveKind::Array {
+            size: ArrayType::Sized(_),
+            ..
+        } => Some(true),
+        ResolveKind::Array {
+            size: ArrayType::Unsized,
+            ..
+        } => Some(false),
+        ResolveKind::IntLike
+        | ResolveKind::FloatLike
+        | ResolveKind::Func(_)
+        | ResolveKind::Struct(_)
+        | ResolveKind::Tuple(_)
+        | ResolveKind::Ptr { .. } => Some(true),
+    }
+}
+
+#[inline(always)]
+pub(crate) fn require_sized_or_enqueue(
+    ex: &mut ExternState,
+    types: &mut TypeState,
+    pending: &mut Vec<PendingSizedRequirement>,
+    site: Loc,
+    ty: CId,
+    message: &'static str,
+) {
+    match cluster_is_sized_known(ex, types, ty) {
+        Some(true) => {}
+        Some(false) => ex.push_error(TypeError::Simple { loc: site, message }),
+        None => pending.push(PendingSizedRequirement { site, ty, message }),
+    }
+}
+
+pub(crate) fn resolve_pending_sized_requirements(ctx: &mut InferState) -> bool {
+    let mut progress = false;
+    ctx.req.pending_sized_requirements.retain_mut(|req| {
+        match cluster_is_sized_known(&ctx.ex, &mut ctx.types, req.ty) {
+            Some(true) => {
+                progress = true;
+                false
+            }
+            Some(false) => {
+                ctx.ex.push_error(TypeError::Simple {
+                    loc: req.site.clone(),
+                    message: req.message,
+                });
+                progress = true;
+                false
+            }
+            None => true,
+        }
+    });
+    progress
+}
+
 /// Unify only if roots differ; report whether a merge happened.
 #[inline]
 pub(crate) fn unify_if_distinct(
@@ -4869,7 +4986,7 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
                 let func = &ctx.types.extra.func_defs[call.0];
                 ctx.ex.store.intern(TypeValue::Func {
                     calling_convention: func.calling_convention,
-                    generics: func.generics,
+                    generics: func.generics.clone(),
                     lifetimes: func.lifetimes,
                     params,
                     ret,
@@ -4974,7 +5091,7 @@ pub(crate) fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
             }
         };
 
-        let expected = ex.store.struct_value(sid).gen_count;
+        let expected = ex.store.struct_value(sid).gen_info.len();
         if p.generics.len() != expected {
             let loc = ex.program.type_expr_loc(p.global);
             ex.push_error(TypeError::Simple {
@@ -5616,22 +5733,10 @@ mod type_infer_tests {
     //currently fails over not doing places in f
     fn generic_box_array_index_chain_includes_box_step() {
         let source = r#"
-        Box = struct[T]{ptr:&'raw T};
+        Box = struct[T:dsize]{ptr:&'raw T};
 
-        free = cfn(p:*void);
-        no_fail_alloc = cfn(s:usize)->*void;
-        Box.new = fn[T](x:T)->Box[T] {
-          let p=no_fail_alloc(x.__size_of());
-          Box{p as &'raw _}
-        }
-        Box.__free = fn[T](b:&mut Box[T]){
-        (&*b.ptr).__free()
-        free(b->ptr as *void)
-        }
-
-
-        Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr}
-        Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr}
+        Box.__deref = fn[T:dsize](b:&const Box[T])->&T{&*b.ptr}
+        Box.__deref_mut = fn[T:dsize](b:&mut Box[T])->&mut T{&*b.ptr}
 
         f=fn(b:Box[[int]])->int { let y:int = b[0]; y };
             
@@ -6057,7 +6162,7 @@ mod type_infer_tests {
         let mut store = TypeStore::new();
         let ty = store.intern(TypeValue::Func {
             calling_convention: CallingConvention::Unknown,
-            generics: 0,
+            generics: Vec::new(),
             lifetimes: 0,
             params: vec![BuiltinType::Int.into()],
             ret: BuiltinType::Int.into(),
@@ -6098,11 +6203,11 @@ mod type_infer_tests {
                 ret,
                 ..
             } => {
-                assert_eq!(*generics, 1);
+                assert_eq!(generics.len(), 1);
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0], *ret);
                 match store.type_value(params[0]) {
-                    TypeValue::Generic(gid) => assert_eq!(gid.0, 0),
+                    TypeValue::Generic(gid, _) => assert_eq!(gid.0, 0),
                     other => panic!("expected generic param, got {:?}", other),
                 }
             }
@@ -6121,6 +6226,72 @@ mod type_infer_tests {
         let f_ty = solved_types.type_of(f).unwrap();
 
         assert_eq!(store.get_type_string(&program, f_ty), "fn[T0](T0) -> T0");
+    }
+
+    #[test]
+    fn generic_function_prints_dsize_bound_only_in_signature() {
+        let src = "f = fn[T:dsize](p:&mut T)->&mut T { p }";
+        let mut store = TypeStore::new();
+        let program = gather_program(src);
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = extract_single_fn(&program);
+        let f_ty = solved_types.type_of(f).unwrap();
+
+        let rendered = store.get_type_string(&program, f_ty);
+        assert!(rendered.contains("T0:dsize"));
+        assert_eq!(rendered.matches("dsize").count(), 1);
+        assert!(rendered.contains("mut T0"));
+    }
+
+    #[test]
+    fn dsize_generic_cannot_be_used_as_direct_param_or_return() {
+        let errs = infer_global_errs("f = fn[T:dsize](x:T)->T { x }");
+        assert_has_simple_error(&errs, "function parameter types must be sized");
+        assert_has_simple_error(&errs, "function return type must be sized");
+    }
+
+    #[test]
+    fn dsize_generic_can_be_passed_indirectly_via_pointer() {
+        let src = "f = fn[T:dsize](p:&mut T)->&mut T { p }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+    }
+
+    #[test]
+    fn struct_field_type_must_be_sized() {
+        let errs = infer_global_errs("S=struct{data:[int]}; f=fn(){}");
+        assert_has_simple_error(&errs, "struct field types must be sized");
+    }
+
+    #[test]
+    fn tuple_element_type_must_be_sized() {
+        let errs = infer_global_errs("f = fn(x:(int,[int]))->int { 0:int }");
+        assert_has_simple_error(&errs, "tuple element types must be sized");
+    }
+
+    #[test]
+    fn sized_generic_argument_rejects_unsized_type_argument() {
+        let errs = infer_global_errs("S=struct[T]{ptr:*T}; f=fn(x:S[[int]]){}");
+        assert_has_simple_error(&errs, "generic argument for this parameter must be sized");
+    }
+
+    #[test]
+    fn let_binding_type_must_be_sized() {
+        assert_fn_body_simple_error(
+            "f = fn(){ let x:[int] = [1:int, 2:int]; x }",
+            "let binding type must be sized",
+        );
+    }
+
+    #[test]
+    fn assignment_target_type_must_be_sized() {
+        assert_fn_body_simple_error(
+            "f = fn(){ let p:*[int] = null; *p = *p; }",
+            "assignment target type must be sized",
+        );
     }
 
     #[test]

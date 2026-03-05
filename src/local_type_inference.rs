@@ -169,6 +169,8 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         full_resolve_deferred_types(ctx);
     }
 
+    let _ = resolve_pending_sized_requirements(ctx);
+
     if !ctx.ex.errors.is_empty() {
         return;
     }
@@ -218,6 +220,7 @@ fn local_solver_stable(ctx: &mut InferState) {
     finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
 
     full_resolve_deferred_types(ctx);
+    let _ = resolve_pending_sized_requirements(ctx);
 
     if !ctx.ex.errors.is_empty() {
         return;
@@ -584,7 +587,9 @@ fn mutability_subtype(
         projected_origin,
         context,
         access_kind,
-    ).is_err() {
+    )
+    .is_err()
+    {
         return;
     }
 
@@ -851,6 +856,15 @@ pub(crate) fn gather_constraints(
             else_part,
         } => {
             let lhs = gather_pattern_constraints(ctx, pat);
+            let let_loc = ctx.ex.program.value_loc(v);
+            require_sized_or_enqueue(
+                &mut ctx.ex,
+                &mut ctx.types,
+                &mut ctx.req.pending_sized_requirements,
+                let_loc,
+                lhs,
+                "let binding type must be sized",
+            );
             // let-expr evaluates to the bound pattern value => alias
             let lhs_origin = ctx.types.pattern_origin(pat);
             ctx.bind_val_with_origin(v, lhs, lhs_origin);
@@ -1126,6 +1140,15 @@ pub(crate) fn gather_constraints(
 
         Value::Assign { op, target } => {
             let lhs = gather_constraints(ctx, target, current_output);
+            let assign_loc = ctx.ex.program.value_loc(v);
+            require_sized_or_enqueue(
+                &mut ctx.ex,
+                &mut ctx.types,
+                &mut ctx.req.pending_sized_requirements,
+                assign_loc,
+                lhs,
+                "assignment target type must be sized",
+            );
             ctx.bind_val_with_origin(v, lhs, ctx.types.value_origin(target));
 
             require_place_writable(ctx, v, target, WritablePlaceContext::Assign);
@@ -1399,7 +1422,7 @@ pub(crate) fn gather_constraints(
 
                 let found = ctx.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
-                    generics: 0,
+                    generics: Vec::new(),
                     lifetimes: 0,
                     inputs,
                     output,
@@ -1972,7 +1995,6 @@ fn pointer_mutability_from_cluster(
 }
 
 impl<'a> InferState<'a> {
-
     fn check_place_mutability_(&mut self, target: ValId) -> PlaceKind {
         check_place_mutability_(
             &self.ex,
@@ -1982,8 +2004,6 @@ impl<'a> InferState<'a> {
             target,
         )
     }
-
-
 }
 
 fn chain_write_mutability(ex: &ExternState, types: &mut TypeState, chain: &[CId]) -> PlaceKind {
@@ -2111,7 +2131,18 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
             .and_then(|known| known.generic_parameters.get(i))
             .and_then(|(_pat, maybe_name)| *maybe_name);
 
-        let generic_ty = ctx.ex.store.intern(TypeValue::Generic(GenId(i)));
+        let info = {
+            let known = ctx
+                .ex
+                .ans
+                .function_types_by_value(value)
+                .expect("function signature should be available before body inference");
+            let TypeValue::Func { generics, .. } = ctx.ex.store.type_value(known.ty) else {
+                unreachable!("function signature must resolve to function type");
+            };
+            generics[i]
+        };
+        let generic_ty = ctx.ex.store.intern(TypeValue::Generic(GenId(i), info));
         let generic_cid = ctx.new_solved(generic_ty);
         if let Some(name) = maybe_name {
             ctx.search.local_types.insert(name, generic_cid);
@@ -2281,15 +2312,23 @@ fn solved_type_to_specialized_local(
     t: TypeId,
     loc: ValId,
 ) -> CId {
-    //BUG
-    if let TypeValue::Func {
-        generics,
-        lifetimes,
-        ..
-    } = *ex.store.type_value(t)
-    {
-        let gens: Vec<_> = (0..generics).map(|_| types.new_cluster()).collect();
-        let lifes: Vec<_> = (0..lifetimes).map(|_| types.new_lid()).collect();
+    let (generic_count, lifetime_count) = match ex.store.type_value(t) {
+        TypeValue::Func {
+            generics,
+            lifetimes,
+            ..
+        } => (generics.len(), *lifetimes),
+        TypeValue::Struct {
+            generics,
+            lifetimes,
+            ..
+        } => (generics.len(), lifetimes.len()),
+        _ => (0, 0),
+    };
+
+    if generic_count != 0 || lifetime_count != 0 {
+        let gens: Vec<_> = (0..generic_count).map(|_| types.new_cluster()).collect();
+        let lifes: Vec<_> = (0..lifetime_count).map(|_| types.new_lid()).collect();
         return specialize_type(ex, types, t, &gens, &lifes, loc);
     }
 
@@ -2347,7 +2386,10 @@ fn resolve_member_method_access(
     };
 
     if let Some(self_param) = params.first().copied()
-        && matches!(ptr_parts_from_cluster(ex, types, self_param), Some((_, _, Some(true))))
+        && matches!(
+            ptr_parts_from_cluster(ex, types, self_param),
+            Some((_, _, Some(true)))
+        )
         && let Some(projected_origin) = types.value_origin(base_value)
         && ensure_origin_requires_mut_or_emit(
             ex,
@@ -2356,7 +2398,8 @@ fn resolve_member_method_access(
             projected_origin,
             WritablePlaceContext::ImplicitDeref,
             PlaceAccessKind::Deref,
-        ).is_ok()
+        )
+        .is_ok()
     {
         let _ = ensure_or_enqueue_mutability_match(
             ex,
@@ -2456,7 +2499,7 @@ fn resolve_any_type_builtin_member_access(
 
     let full_method = types.new_func(FuncInfer {
         calling_convention: CallingConvention::Unknown,
-        generics: 0,
+        generics: Vec::new(),
         lifetimes: 0,
         inputs: vec![self_param],
         output,
@@ -2643,7 +2686,7 @@ impl PendingImplicitDeref {
         fn record_hop_mutability_req(
             ex: &mut ExternState,
             types: &mut TypeState,
-    _search: &mut SearchState,
+            _search: &mut SearchState,
             pending: &mut Vec<PendingMutabilityMatchRequirement>,
             site: ValId,
             base_value: ValId,
@@ -3236,7 +3279,7 @@ fn make_member_closure(
 
     Ok(types.new_func(FuncInfer {
         calling_convention: CallingConvention::Unknown,
-        generics: 0,
+        generics: Vec::new(),
         lifetimes: 0,
         inputs: params,
         output: ret,
@@ -3331,7 +3374,7 @@ fn resolve_operator_site(
                 let method_closure = make_member_closure(ex, types, lhs, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
-                    generics: 0,
+                    generics: Vec::new(),
                     lifetimes: 0,
                     inputs: vec![rhs],
                     output: out,
@@ -3634,7 +3677,7 @@ fn resolve_unary_operator_site(
                 let method_closure = make_member_closure(ex, types, input, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
-                    generics: 0,
+                    generics: Vec::new(),
                     lifetimes: 0,
                     inputs: Vec::new(),
                     output: out,
@@ -3793,7 +3836,7 @@ fn resolve_assign_pre_post_site(
                     make_member_closure(ex, types, target, overload_sig, site.loc)?;
                 let expected_fn = types.new_func(FuncInfer {
                     calling_convention: CallingConvention::Unknown,
-                    generics: 0,
+                    generics: Vec::new(),
                     lifetimes: 0,
                     inputs: Vec::new(),
                     output: target,
@@ -4573,7 +4616,10 @@ fn align_origin_pointer_mutability(
     let root = types.root(cid);
 
     #[inline(always)]
-    fn pointer_satisfies_required_mutability(required_mutable: bool, pointer_mutable: bool) -> bool {
+    fn pointer_satisfies_required_mutability(
+        required_mutable: bool,
+        pointer_mutable: bool,
+    ) -> bool {
         !required_mutable || pointer_mutable
     }
 
@@ -4745,7 +4791,9 @@ impl PendingMutabilityMatchRequirement {
                         parent,
                         self.context,
                         PlaceAccessKind::Deref,
-                    ).is_err() {
+                    )
+                    .is_err()
+                    {
                         // Contradiction already reported, stop here
                         return ResolveOutcome::drop(progress);
                     }

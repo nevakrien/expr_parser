@@ -26,6 +26,7 @@ Think of it as the compiler session state for one parsed input stream.
   - `implementations: Vec<ValId>` for `fn/cfn` with a body
 - `Type(TExpId)`
 - `BuildinType(TypeValue)`
+- `BuildinInterface(StrId)`
 - `Macro(Macro)`
 - `ToBeDefined` placeholder for unresolved global references
 

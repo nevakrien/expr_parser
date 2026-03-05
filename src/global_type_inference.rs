@@ -7,9 +7,9 @@ use crate::ir::VarKind;
 use crate::ir::{GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, ValId, Value};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
-    DIV_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
-    NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR, SHR_STR, SIZE_OF_STR,
-    SUB_STR, StrId, USER_FREE_STR,
+    DIV_STR, DSIZED_STR, EQ_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR,
+    NE_STR, NEG_STR, NOT_STR, POST_DEC_STR, POST_INC_STR, PRE_DEC_STR, PRE_INC_STR, SHL_STR,
+    SHR_STR, SIZE_OF_STR, SUB_STR, StrId, USER_FREE_STR,
 };
 
 use crate::program::{Defined, FunctionSet, Program};
@@ -180,6 +180,7 @@ fn global_solver(ctx: &mut InferState) {
     }
 
     full_resolve_deferred_types(ctx);
+    let _ = resolve_pending_sized_requirements(ctx);
 
     if !ctx.ex.errors.is_empty() {
         return;
@@ -400,7 +401,7 @@ fn check_and_record_function_set_types(
 ///currently when compiling type expressions we give them a type other the Type::Type
 ///we dont have a good destinction between the type of THE VALUE ITSELF and the type IT REFERS TO
 ///and this means that fn[T](){let x=T;} is technically legal and x has type Generic(0).
-fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId {
+fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> (CId, TraitInfo) {
     match ctx.ex.program.pattern(p) {
         Pattern::Bind(n, m) => {
             if m != VarKind::Const {
@@ -410,16 +411,59 @@ fn gather_generic_constraints(ctx: &mut InferState, p: PatId, id: GenId) -> CId 
                     message: "generic parameters must be const bindings",
                 });
             }
-            let t = ctx.ex.store.intern(TypeValue::Generic(id));
+            let info = TraitInfo { sized: true };
+            let t = ctx.ex.store.intern(TypeValue::Generic(id, info));
             let c = ctx.new_solved(t);
             ctx.search.insert_name(n, c, NameBindingKind::Generic, None);
             ctx.search.local_types.insert(n, c);
             ctx.bind_pat(p, c);
-            c
+            (c, info)
         }
 
-        //hack for  now
-        Pattern::LifeTime(_id) => ctx.new_cluster(),
+        Pattern::TypeAnnotation { pat, ty } => {
+            let info = match ctx.ex.program.type_expr(ty) {
+                TypeExpr::NameRef(name)
+                    if matches!(
+                        ctx.ex.program.definitions.get(&name),
+                        Some(Defined::BuildinInterface(interface_name)) if *interface_name == DSIZED_STR
+                    ) =>
+                {
+                    TraitInfo { sized: false }
+                }
+                _ => {
+                    let loc = ctx.ex.program.type_expr_loc(ty);
+                    ctx.ex.push_error(TypeError::Simple {
+                        loc,
+                        message: "unsupported generic trait bound; only `dsize` is supported",
+                    });
+                    TraitInfo { sized: true }
+                }
+            };
+
+            let Pattern::Bind(n, m) = ctx.ex.program.pattern(pat) else {
+                let loc = ctx.ex.program.pattern_loc(pat);
+                ctx.ex.push_error(TypeError::Simple {
+                    loc,
+                    message: "generic parameters must be named const bindings",
+                });
+                return (ctx.new_cluster(), info);
+            };
+
+            if m != VarKind::Const {
+                let loc = ctx.ex.program.pattern_loc(p);
+                ctx.ex.push_error(TypeError::Simple {
+                    loc,
+                    message: "generic parameters must be const bindings",
+                });
+            }
+
+            let t = ctx.ex.store.intern(TypeValue::Generic(id, info));
+            let c = ctx.new_solved(t);
+            ctx.search.insert_name(n, c, NameBindingKind::Generic, None);
+            ctx.search.local_types.insert(n, c);
+            ctx.bind_pat(p, c);
+            (c, info)
+        }
 
         _ => todo!(),
     }
@@ -639,9 +683,11 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
     }
     bind_lifetime_generics(ctx, lifetimes);
 
+    let mut trait_info = Vec::with_capacity(generics.len());
     for (i, g) in generics.ids().enumerate() {
         let gid = GenId(i);
-        let _c = gather_generic_constraints(ctx, g, gid);
+        let (_c, x) = gather_generic_constraints(ctx, g, gid);
+        trait_info.push(x);
         // todo!()
         //TODO: we probably wana do something with generics that are ints here if we have them
     }
@@ -653,6 +699,15 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         match ctx.ex.program.pattern(p) {
             Pattern::Bind(n, _) => {
                 let c = ctx.new_cluster();
+                let field_loc = ctx.ex.program.pattern_loc(p);
+                require_sized_or_enqueue(
+                    &mut ctx.ex,
+                    &mut ctx.types,
+                    &mut ctx.req.pending_sized_requirements,
+                    field_loc,
+                    c,
+                    "struct field types must be sized",
+                );
                 field_info.push((n, c));
             }
             Pattern::TypeAnnotation { pat, ty } => {
@@ -665,6 +720,15 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
                     continue;
                 };
                 let c = compile_type_expr_with_mode(ctx, ty, TypeExprCompileMode::Struct);
+                let field_loc = ctx.ex.program.type_expr_loc(ty);
+                require_sized_or_enqueue(
+                    &mut ctx.ex,
+                    &mut ctx.types,
+                    &mut ctx.req.pending_sized_requirements,
+                    field_loc,
+                    c,
+                    "struct field types must be sized",
+                );
                 field_info.push((n, c));
             }
             _ => {
@@ -687,19 +751,25 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         });
     }
 
+    let generics = (0..generics.len())
+        .map(|x| {
+            ctx.ex
+                .store
+                .intern(TypeValue::Generic(GenId(x), trait_info[x]))
+        })
+        .collect();
+    let lifetimes: Vec<_> = (0..lifetimes.len())
+        .map(|x| LifeTime::External(x as u32))
+        .collect();
+
     let rep = StructRep::new(
         field_info.iter().map(|(n, _)| *n),
-        generics.len(),
+        trait_info,
         lifetimes.len(),
         layout,
     );
+
     let sid = ctx.ex.store.new_struct(rep);
-    let generics = (0..generics.len())
-        .map(|x| ctx.ex.store.intern(TypeValue::Generic(GenId(x))))
-        .collect();
-    let lifetimes = (0..lifetimes.len())
-        .map(|x| LifeTime::External(x as u32))
-        .collect();
     let t = ctx.ex.store.intern(TypeValue::Struct {
         id: sid,
         generics,
@@ -793,6 +863,17 @@ pub(crate) fn compile_type_expr_with_mode(
                 .ids()
                 .map(|item| compile_type_expr_with_mode(ctx, item, mode))
                 .collect::<Vec<_>>();
+            for (item_expr, item_cluster) in items.ids().zip(item_clusters.iter().copied()) {
+                let item_loc = ctx.ex.program.type_expr_loc(item_expr);
+                require_sized_or_enqueue(
+                    &mut ctx.ex,
+                    &mut ctx.types,
+                    &mut ctx.req.pending_sized_requirements,
+                    item_loc,
+                    item_cluster,
+                    "tuple element types must be sized",
+                );
+            }
             ctx.new_tuple_instance(item_clusters)
         }
 
@@ -892,7 +973,7 @@ pub(crate) fn compile_type_expr_with_mode(
 
             ctx.new_func(FuncInfer {
                 calling_convention,
-                generics: 0,
+                generics: Vec::new(),
                 lifetimes: 0,
                 inputs,
                 output,
@@ -910,10 +991,11 @@ pub(crate) fn compile_type_expr_with_mode(
                 .map(|arg| compile_lifetime_specialization_arg(ctx, arg, mode))
                 .collect::<Vec<_>>();
             let args = args.generics();
-            let generics = args
+            let generic_args = args
                 .ids()
-                .map(|arg| compile_type_expr_with_mode(ctx, arg, mode))
+                .map(|arg| (arg, compile_type_expr_with_mode(ctx, arg, mode)))
                 .collect::<Vec<_>>();
+            let generics = generic_args.iter().map(|(_, c)| *c).collect::<Vec<_>>();
 
             // let ans = ctx.new_cluster();
             let Some(name) = get_type_name(ctx.ex.program, base) else {
@@ -993,8 +1075,9 @@ pub(crate) fn compile_type_expr_with_mode(
                 return ctx.new_cluster();
             };
             let sid = *sid;
+            let expected_lifetimes = expected_lifetimes.to_vec();
 
-            let expected = ctx.ex.store.struct_value(sid).gen_count;
+            let expected = ctx.ex.store.struct_value(sid).gen_info.len();
             if generics.len() != expected {
                 let loc = ctx.ex.program.type_expr_loc(texpr);
                 ctx.ex.push_error(TypeError::Simple {
@@ -1002,6 +1085,22 @@ pub(crate) fn compile_type_expr_with_mode(
                     message: "wrong number of generic arguments for struct type",
                 });
                 return ctx.new_cluster();
+            }
+
+            let generic_info = ctx.ex.store.struct_value(sid).gen_info.clone();
+            for i in 0..expected {
+                if !generic_info[i].sized {
+                    continue;
+                }
+                let arg_loc = ctx.ex.program.type_expr_loc(generic_args[i].0);
+                require_sized_or_enqueue(
+                    &mut ctx.ex,
+                    &mut ctx.types,
+                    &mut ctx.req.pending_sized_requirements,
+                    arg_loc,
+                    generics[i],
+                    "generic argument for this parameter must be sized",
+                );
             }
 
             if lifetimes.is_empty() && !expected_lifetimes.is_empty() {
@@ -1091,7 +1190,7 @@ fn mark_used_generics_and_lifetimes_from_type(
 ) {
     match store.type_value(ty) {
         TypeValue::Builtin(_) => {}
-        TypeValue::Generic(gid) => {
+        TypeValue::Generic(gid, _) => {
             if gid.0 < generic_count {
                 used_generics[gid.0] = true;
             }
@@ -1188,7 +1287,7 @@ fn mark_used_struct_signature_from_type(
 ) {
     match store.type_value(ty) {
         TypeValue::Builtin(_) => {}
-        TypeValue::Generic(gid) => {
+        TypeValue::Generic(gid, _) => {
             if gid.0 < generic_count {
                 used_generics[gid.0] = true;
             }
@@ -1287,9 +1386,9 @@ fn check_unused_struct_signature_generics_and_lifetimes(ctx: &mut InferState, ty
     };
 
     let struct_rep = ctx.ex.store.struct_value(sid);
-    if struct_rep.gen_count != generic_count || struct_rep.life_count != lifetime_count {
-        return;
-    }
+    // if struct_rep.gen_count != generic_count || struct_rep.life_count != lifetime_count {
+    //     return;
+    // }
 
     let mut used_generics = vec![false; generic_count];
     let mut used_lifetimes = vec![false; lifetime_count];
@@ -1357,8 +1456,10 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     let lids_before_inputs = ctx.types.lifetimes.life_parent.0.len();
     bind_lifetime_generics(ctx, lifetime_generics);
 
+    let mut generic_info = Vec::with_capacity(generics.len());
     for (i, pat) in generics.ids().enumerate() {
-        gather_generic_constraints(ctx, pat, GenId(i));
+        let (_, info) = gather_generic_constraints(ctx, pat, GenId(i));
+        generic_info.push(info);
     }
 
     let inputs = params
@@ -1374,6 +1475,31 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     } else {
         ctx.new_solved(BuiltinType::Void.into())
     };
+
+    for (param_pat, input_ty) in params.ids().zip(inputs.iter().copied()) {
+        let param_loc = ctx.ex.program.pattern_loc(param_pat);
+        require_sized_or_enqueue(
+            &mut ctx.ex,
+            &mut ctx.types,
+            &mut ctx.req.pending_sized_requirements,
+            param_loc,
+            input_ty,
+            "function parameter types must be sized",
+        );
+    }
+
+    let output_loc = output_type
+        .map(|texpr| ctx.ex.program.type_expr_loc(texpr))
+        .unwrap_or_else(|| ctx.ex.program.value_loc(v));
+    require_sized_or_enqueue(
+        &mut ctx.ex,
+        &mut ctx.types,
+        &mut ctx.req.pending_sized_requirements,
+        output_loc,
+        output,
+        "function return type must be sized",
+    );
+
     let lids_after_output = ctx.types.lifetimes.life_parent.0.len();
     apply_signature_elided_output_lifetime_rule(
         ctx,
@@ -1387,7 +1513,11 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
-        generics: if GLOBAL_SCOPE { generics.len() } else { 0 },
+        generics: if GLOBAL_SCOPE {
+            generic_info
+        } else {
+            Vec::new()
+        },
         lifetimes: if GLOBAL_SCOPE { lifetime_count } else { 0 },
         inputs,
         output,
@@ -1477,12 +1607,12 @@ fn is_named_struct_type_with_all_generics_free(
     };
 
     let rep = store.struct_value(*id);
-    if rep.name != Some(struct_name) || generics.len() != rep.gen_count {
+    if rep.name != Some(struct_name) || generics.len() != rep.gen_info.len() {
         return false;
     }
 
     generics.iter().enumerate().all(|(i, generic_ty)| {
-        matches!(store.type_value(*generic_ty), TypeValue::Generic(gid) if *gid == GenId(i))
+        matches!(store.type_value(*generic_ty), TypeValue::Generic(gid,_) if *gid == GenId(i))
     })
     &&
     lifetimes.iter().enumerate().all(|(i, life)| {
@@ -2008,7 +2138,7 @@ fn check_inserted_deref_pair_compatible(
 impl StructRep {
     fn new(
         names: impl Iterator<Item = NameId>,
-        gen_count: usize,
+        gen_info: Vec<TraitInfo>,
         life_count: usize,
         layout: StructLayoutSpec,
     ) -> Self {
@@ -2017,7 +2147,7 @@ impl StructRep {
             //for anonymous structs it wont exist but those are rare
             name: None,
             fields: names.map(|x| (x, UNKNOWN_TYPE)).collect(),
-            gen_count,
+            gen_info,
             life_count,
             layout,
         }

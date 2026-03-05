@@ -96,6 +96,7 @@ pub enum Defined {
     Func(FunctionSet),
     Type(TExpId),
     BuildinType(TypeValue),
+    BuildinInterface(StrId),
     Macro(Macro),
 }
 
@@ -401,7 +402,10 @@ impl Program {
             // Macro(Macro),
             Some(Defined::Macro(m)) => Some(m.loc.clone()),
 
-            Some(Defined::BuildinType(..) | Defined::ToBeDefined) | None => None,
+            Some(
+                Defined::BuildinType(..) | Defined::BuildinInterface(..) | Defined::ToBeDefined,
+            )
+            | None => None,
         }
     }
 

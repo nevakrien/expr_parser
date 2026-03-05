@@ -50,6 +50,7 @@ pub const EXTRA_HARD_CODED_NAMES: &[&str] = &[
     "__post_inc",
     "__pre_dec",
     "__post_dec",
+    "dsize",
 ];
 
 const fn const_str_eq(a: &str, b: &str) -> bool {
@@ -135,6 +136,7 @@ pub const ALIGN_OF_STR: StrId = get_known_strid("__align_of");
 pub const USER_FREE_STR: StrId = get_known_strid("__user_free");
 pub const DEREF_STR: StrId = get_known_strid("__deref");
 pub const DEREF_MUT_STR: StrId = get_known_strid("__deref_mut");
+pub const DSIZED_STR: StrId = get_known_strid("dsize");
 
 #[derive(Debug)]
 pub struct StringInterner {

@@ -42,7 +42,7 @@ These functions are the center of the entire file and appear all over inference:
   - validates compatibility with unresolved/weak/deferred states,
   - delegates to specific helpers when target is `Func`/`Struct`/`Ptr` placeholders.
 - `specialize_type(...)`:
-  - substitutes generic placeholders (`TypeValue::Generic(GenId)`) with concrete local clusters,
+  - substitutes generic placeholders (`TypeValue::Generic(GenId, TraitInfo)`) with concrete local clusters,
   - recursively specializes function/struct/pointer shapes,
   - this is the mechanism that prevents generic-id scope collisions from leaking across call sites.
 - `specialize_type(...)`:
@@ -176,10 +176,11 @@ Generic binders are intentionally constrained because generic IDs are local/sequ
 - Function generics:
   - introduced by function generic pattern list,
   - effectively allowed only in top-level generic function signatures (`gather_func_signature::<true>` in global pass),
-  - recorded directly on the function type as `TypeValue::Func { generics, ... }`.
+  - recorded directly on the function type as `TypeValue::Func { generics: Vec<TraitInfo>, ... }`.
 - Struct generics:
   - introduced in top-level struct type definitions (`compile_struct_type::<true>` in global typedef pass),
-  - stored as `TypeValue::Struct { id, generics: [Generic(GenId(...))] }` template shape.
+  - stored as `TypeValue::Struct { id, generics: [Generic(GenId(...), TraitInfo)] }` template shape,
+  - and the canonical struct rep stores the declared metadata in `StructRep.gen_info: Vec<TraitInfo>`.
 - Generic references in type expressions:
   - may appear where local generic names resolve through `local_types` mapping.
 - Explicit specialization syntax:
@@ -198,7 +199,7 @@ Specialization avoids that by replacing generic placeholders with fresh local cl
 
 ### Core specialization flow
 
-1. Start from template type (`TypeValue::Func` with non-zero `generics`, or generic struct template).
+1. Start from template type (`TypeValue::Func` with non-empty generic metadata, or generic struct template).
 2. Allocate fresh cluster list for generic arguments.
 3. Run `specialize_type` recursively to substitute every `TypeValue::Generic` occurrence.
 4. Unify/force substituted result against call-site or annotation constraints.
@@ -420,7 +421,21 @@ Other notable implemented branches:
 ### Patterns and type expressions
 
 - `gather_pattern_constraints*` handles bind/wildcard/annotated patterns and binds names to clusters.
-- `gather_generic_constraints` maps generic parameter bind names to `TypeValue::Generic(GenId)` and records them in both value-name and type-name local maps.
+- `gather_generic_constraints` maps generic parameter bind names to `TypeValue::Generic(GenId, TraitInfo)` and records them in both value-name and type-name local maps.
+  - Current bound parsing supports `:dsize` and stores it as `TraitInfo { sized: false }`; unannotated generics use `TraitInfo { sized: true }`.
+  - Type-string rendering shows `:dsize` on function signature binders (`fn[T:dsize](...)`) and keeps generic uses as plain `T` (`(T) -> T`) so bounds are displayed at declaration sites.
+- Sizedness enforcement now uses the same immediate-check + pending-queue pattern as other deferred constraints:
+  - Immediate pass calls `require_sized_or_enqueue(...)`.
+  - If sizedness is known now, emit/accept immediately.
+  - If cluster is unresolved (`ResolveKind::Nothing` or unknown sentinel types), enqueue `PendingSizedRequirement`.
+  - Verification pass runs after deferred type resolution (`resolve_pending_sized_requirements`), outside the main solve loop.
+  - This avoids solver-state noise (no dedicated `ResolveKind` for sizedness).
+- Current enforced sizedness sites:
+  - struct fields must be sized,
+  - tuple element types must be sized,
+  - generic arguments for sized generic parameters must be sized,
+  - function parameter/return types must be sized,
+  - local `let` binding type and assignment target type must be sized.
 - `compile_type_expr` lowers type syntax to clusters (name refs, wildcard, tuple, inline struct defs, pointers, specialization index).
 
 Critical type-expression fragility points:
@@ -468,7 +483,7 @@ Then `finalize_local`:
 
 - commits solved local value/pattern/member-access data into per-function `InnerFunctionTypes`,
 - writes finalized struct field types,
-- keeps generic function values as `TypeValue::Func` with a non-zero `generics` count,
+- keeps generic function values as `TypeValue::Func` with explicit per-generic `TraitInfo` metadata,
 - emits unresolved errors once per unresolved root (to reduce duplicate noise),
 - finalizes member/operator call-site method metadata and implicit deref chains into `InnerFunctionTypes`,
 - suppresses duplicate unresolved reporting between curried call-site values and unresolved full member signatures, preferring unresolved receiver/reference value sites when only the full member signature remains unresolved.
