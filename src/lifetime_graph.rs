@@ -171,39 +171,24 @@ where
     state.solve()
 }
 
-fn component_lifetime(nodes: &[LifetimeGraphId], node_lifetimes: &[LifeTime]) -> Option<LifeTime> {
-    let mut iter = nodes.iter().copied();
-    let first = iter.next()?;
-    let mut merged = node_lifetimes[first.0];
-    for node in iter {
-        merged = merge_component_lifetime(merged, node_lifetimes[node.0])?;
-    }
-    Some(merged)
-}
-
-fn merge_component_lifetime(current: LifeTime, next: LifeTime) -> Option<LifeTime> {
-    if current == next {
-        return Some(current);
-    }
-
-    match (current, next) {
-        (LifeTime::Unknown(_), other) => Some(other),
-        (other, LifeTime::Unknown(_)) => Some(other),
-        _ => None,
-    }
-}
-
 struct LifetimeSccState<'a> {
     graph: &'a LifetimeOrderingGraph,
     node_lifetimes: Vec<LifeTime>,
+
+    // lifetime known for the tentative SCC representative (stack node)
+    component_known: Vec<Option<LifeTime>>,
+
     active_edges: Vec<bool>,
     rejected_edges: Vec<LifetimeRejectedEdge>,
+
     next_index: usize,
     index: Vec<Option<usize>>,
     low: Vec<usize>,
+
     on_stack: Vec<bool>,
     stack: Vec<LifetimeGraphId>,
     stack_pos: Vec<usize>,
+
     component_of: Vec<usize>,
     components: Vec<LifetimeSccComponent>,
 }
@@ -211,9 +196,19 @@ struct LifetimeSccState<'a> {
 impl<'a> LifetimeSccState<'a> {
     fn new(graph: &'a LifetimeOrderingGraph, node_lifetimes: Vec<LifeTime>) -> Self {
         let lid_count = graph.lid_count();
+
+        let component_known = node_lifetimes
+            .iter()
+            .map(|&lt| match lt {
+                LifeTime::Unknown(_) => None,
+                other => Some(other),
+            })
+            .collect();
+
         Self {
             graph,
             node_lifetimes,
+            component_known,
             active_edges: vec![true; graph.edges.len()],
             rejected_edges: Vec::new(),
             next_index: 0,
@@ -245,21 +240,27 @@ impl<'a> LifetimeSccState<'a> {
     fn visit(&mut self, v: LifetimeGraphId) {
         let v_index = self.next_index;
         self.next_index += 1;
+
         self.index[v.0] = Some(v_index);
         self.low[v.0] = v_index;
+
         self.push_stack(v);
 
         let out_len = self.graph.outgoing(v).len();
+
         for out_i in 0..out_len {
             let edge_index = self.graph.outgoing(v)[out_i];
+
             if !self.active_edges[edge_index] {
                 continue;
             }
+
             let edge = self.graph.edges[edge_index];
             let w = edge.longer;
 
             if self.index[w.0].is_none() {
                 self.visit(w);
+
                 if !self.active_edges[edge_index] || !self.on_stack[w.0] {
                     continue;
                 }
@@ -269,7 +270,10 @@ impl<'a> LifetimeSccState<'a> {
                         self.reject_edge(edge_index);
                         continue;
                     }
+
+                    self.merge_component_state(v, w);
                 }
+
                 self.low[v.0] = self.low[v.0].min(self.low[w.0]);
                 continue;
             }
@@ -281,10 +285,16 @@ impl<'a> LifetimeSccState<'a> {
             let Some(w_index) = self.index[w.0] else {
                 continue;
             };
-            if w_index <= v_index && !self.edge_merge_allowed(v, w) {
-                self.reject_edge(edge_index);
-                continue;
+
+            if w_index <= v_index {
+                if !self.edge_merge_allowed(v, w) {
+                    self.reject_edge(edge_index);
+                    continue;
+                }
+
+                self.merge_component_state(v, w);
             }
+
             self.low[v.0] = self.low[v.0].min(w_index);
         }
 
@@ -294,27 +304,35 @@ impl<'a> LifetimeSccState<'a> {
     }
 
     fn edge_merge_allowed(&self, from: LifetimeGraphId, to: LifetimeGraphId) -> bool {
-        let from_pos = self.stack_pos[from.0];
-        let to_pos = self.stack_pos[to.0];
-        if from_pos == usize::MAX || to_pos == usize::MAX {
-            return true;
+        match (self.component_known[from.0], self.component_known[to.0]) {
+            (None, _) | (_, None) => true,
+            (Some(a), Some(b)) => a == b,
         }
+    }
 
-        let start = from_pos.min(to_pos);
-        component_lifetime(&self.stack[start..], &self.node_lifetimes).is_some()
+    fn merge_component_state(&mut self, a: LifetimeGraphId, b: LifetimeGraphId) {
+        let merged = match (self.component_known[a.0], self.component_known[b.0]) {
+            (None, x) | (x, None) => x,
+            (Some(a), Some(_b)) => Some(a), // safe because equality already checked
+        };
+
+        self.component_known[a.0] = merged;
     }
 
     fn reject_edge(&mut self, edge_index: usize) {
         self.active_edges[edge_index] = false;
+
         let edge = self.graph.edges[edge_index];
         let a = self.node_lifetimes[edge.shorter.0];
         let b = self.node_lifetimes[edge.longer.0];
+
         let reason =
             if !matches!(a, LifeTime::Unknown(_)) && !matches!(b, LifeTime::Unknown(_)) && a != b {
                 LifetimeEdgeRejectionReason::IncompatibleKnownEndpoints
             } else {
                 LifetimeEdgeRejectionReason::IncompatibleComponent
             };
+
         self.rejected_edges
             .push(LifetimeRejectedEdge { edge_index, reason });
     }
@@ -327,26 +345,32 @@ impl<'a> LifetimeSccState<'a> {
 
     fn finish_component(&mut self, root: LifetimeGraphId) {
         let mut nodes = Vec::new();
+
         loop {
             let lid = self
                 .stack
                 .pop()
                 .expect("tarjan stack must contain current root");
+
             self.stack_pos[lid.0] = usize::MAX;
             self.on_stack[lid.0] = false;
+
             nodes.push(lid);
+
             if lid == root {
                 break;
             }
         }
 
-        let lifetime = component_lifetime(&nodes, &self.node_lifetimes)
-            .expect("component lifetime should be valid after edge rejections");
+        let lifetime = self.component_known[root.0]
+            .unwrap_or(self.node_lifetimes[root.0]);
 
         let component_id = self.components.len();
+
         for lid in &nodes {
             self.component_of[lid.0] = component_id;
         }
+
         self.components
             .push(LifetimeSccComponent { nodes, lifetime });
     }
