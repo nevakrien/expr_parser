@@ -2,6 +2,7 @@ pub mod error_reporting;
 pub mod global_type_inference;
 pub mod identity_hasher;
 pub mod ir;
+pub mod lifetime_graph;
 #[cfg(feature = "solver_order_fuzz")]
 mod local_solver_order;
 pub mod local_type_inference;

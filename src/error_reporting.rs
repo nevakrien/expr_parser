@@ -1131,6 +1131,94 @@ impl ErrorReporter {
 
         Ok(())
     }
+
+    pub fn report_origin_dump(
+        &self,
+        program: &Program,
+        _store: &TypeStore,
+        solved: &SolvedTypes,
+    ) -> io::Result<()> {
+        self.report_origin_dump_in_region(program, solved, None)
+    }
+
+    pub fn report_origin_dump_in_region(
+        &self,
+        program: &Program,
+        solved: &SolvedTypes,
+        region: Option<&Loc>,
+    ) -> io::Result<()> {
+        let mut labels_by_file: HashMap<usize, Vec<(std::ops::Range<usize>, String, Color)>> =
+            HashMap::new();
+
+        for f in solved.function_values.values() {
+            let Some(inner) = &f.inner else { continue };
+
+            for (val, origin) in &inner.value_origins {
+                let Some(origin_node) = inner.origins.get(*origin) else {
+                    continue;
+                };
+                let loc = program.value_loc(*val);
+                if !loc_in_region(&loc, region) {
+                    continue;
+                }
+                let mutability = origin_node
+                    .effective_mutability
+                    .map(|m| if m { "mut" } else { "immut" })
+                    .unwrap_or("unknown");
+                labels_by_file.entry(loc.file).or_default().push((
+                    loc.range.clone(),
+                    format!("origin: {} (mut: {})", origin.0, mutability),
+                    Color::Yellow,
+                ));
+            }
+
+            for (pat, origin) in &inner.pattern_origins {
+                let Some(origin_node) = inner.origins.get(*origin) else {
+                    continue;
+                };
+                let loc = program.pattern_loc(*pat);
+                if !loc_in_region(&loc, region) {
+                    continue;
+                }
+                let mutability = origin_node
+                    .effective_mutability
+                    .map(|m| if m { "mut" } else { "immut" })
+                    .unwrap_or("unknown");
+                labels_by_file.entry(loc.file).or_default().push((
+                    loc.range.clone(),
+                    format!("origin: {} (mut: {})", origin.0, mutability),
+                    Color::Cyan,
+                ));
+            }
+        }
+
+        if labels_by_file.is_empty() {
+            return Ok(());
+        }
+
+        for (file, mut labels) in labels_by_file {
+            labels.sort_by_key(|(range, _, _)| (range.start, range.end));
+
+            let start = labels.first().map(|(r, _, _)| r.start).unwrap_or(0);
+            let mut report = Report::build(
+                ReportKind::Custom("Origin Dump", Color::Yellow),
+                file,
+                start,
+            );
+
+            for (range, message, color) in labels {
+                report = report.with_label(
+                    Label::new((file, range))
+                        .with_message(message)
+                        .with_color(color),
+                );
+            }
+
+            self.print_report(report.finish())?;
+        }
+
+        Ok(())
+    }
 }
 
 fn loc_in_region(loc: &Loc, region: Option<&Loc>) -> bool {

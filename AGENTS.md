@@ -1,29 +1,15 @@
 # Repository Guidelines
 
-## Project Structure & Module Organization
-- `src/main.rs` hosts the REPL entry point and pretty-printing helpers.
-- `src/parsing.rs` contains tokens, AST types, lexer, and parser logic.
-- `src/error_reporting.rs` centralizes error formatting with `ariadne`.
-- `src/macros.rs` implements unhygienic macro system with parameter substitution.
-- `src/program.rs` provides Program struct and high-level parsing with macro expansion.
-- `src/ir.rs` contains  first IR design (not full implemented yet).
-- `src/struct_layout.rs` calculates target-aware struct layouts from type info.
-- `src/string_intern.rs` implements the string interner.
-- `src/type_inference.rs` contains the type inference sketch and tests.
-- `src/lib.rs` is the library entry point.
-- `agent_docs/` contains agent-maintained technical documentation and deep module summaries.
-- `target/` is build output and should not be edited.
-
-## Agent Documentation Responsibility
+## Agent Responsibility
 - If a test fails you may not change it just so it works without getting explicit permission from a human
   adding new tests is fine but existing tests should be kept as is
 - Do Not add inline(always) unless you have a specific reason 
-- Do Not add clones to vectors or similar large structures unless there is no better way, if u do comment explaining why there isnt better ways.
+- Do Not add clones to vectors or similar large structures unless there is no better way, if u do comment explaining why there isnt s better way.
 - Agents should keep `agent_docs/` up to date when behavior, architecture, or important APIs change.
 - If an agent touches a complex subsystem, it should also update the relevant doc in `agent_docs/` as part of the same task when practical.
 - Treat stale docs in `agent_docs/` as a maintenance issue and refresh them proactively.
 
-## Agent Docs Usage (Read This First)
+## Agent Docs Usage
 - Before changing a subsystem, agents should check `agent_docs/` for the relevant module summary and read it first.
 - `agent_docs/` exists to capture architecture, invariants, known fragile areas, and feature-extension notes that are easy to miss in code-only scans.
 - If docs and code disagree and the code was not written by the current agent in this task, treat code as source-of-truth and update docs to match.
@@ -78,13 +64,3 @@ EOF
 - New tests should conform to the current style, usually covering more than one thing in a single test.
 - some tests should ideally check for error cases and for the information in the error to be correct (including spans)
 - tests should generally prefer unwrap to except because unwrap has more usefull debug info
-
-### Known Temporary Failures
-- Current expected failing tests (as of March 2026):
-  - `type_inference::type_infer_tests::dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_one_error_per_function`
-  - `type_inference::type_infer_tests::place_is_checked_delayed`
-  - `type_inference::type_infer_tests::pending_ptr_member_method_call_rejects_immutable_to_mut_hop_after_type_is_known`
-  - `type_inference::type_infer_tests::nested_box_mut_addr_of_member_uses_mut_deref_chain`
-  - `type_inference::type_infer_tests::ptr_member_assignment_rejects_chain_with_immutable_deref_hop`
-  - `type_inference::type_infer_tests::ptr_member_method_call_rejects_chain_with_immutable_deref_hop`
-- Keep this list in sync with `agent_docs/todo.md`.

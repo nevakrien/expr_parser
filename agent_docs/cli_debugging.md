@@ -24,6 +24,14 @@ EOF
 - Suppresses warning spam (`RUSTFLAGS=-Awarnings`).
 - Keeps output focused on diagnostics and optional type dump.
 
+Use this when you want solved origins (with mutability info):
+
+```bash
+scripts/repl_batch.sh --origin-dump <<'EOF'
+main = fn() {};
+EOF
+```
+
 ## Interactive REPL (only when needed)
 
 If you need an interactive session, run `cargo run`.
@@ -32,6 +40,8 @@ Runtime toggles:
 
 - `:show-ast <on|off>`
 - `:type-dump <on|off>`
+- `:origin-dump <on|off>`
 - `:modes`
 - `:types` / `:types-of <name>` / `:type <name...>`
+- `:origins` / `:origins-of <name>`
 - `:load <path...>` / `:reset` / `:quit`

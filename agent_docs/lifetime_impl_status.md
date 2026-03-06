@@ -38,10 +38,15 @@ Use this with:
   - reborrow/order-sensitive checks are deferred.
 - Implicit deref and pointer-style operations thread lifetime/mutability state,
   but borrow-checker-grade ordering validation is not complete.
+- `src/lifetime_graph.rs` now has an origin-parent-based ordering extractor that
+  walks `OriginNode.parent` chains, treats binding aliases / member / index
+  projections as transparent ancestry when needed, and emits `LId <= LId`
+  edges through a caller-provided pointer-to-lifetime resolver.
 
 ## Not Implemented Yet
 
-- Full local lifetime graph construction from origin/provenance edges.
+- Full local lifetime graph construction from origin/provenance edges integrated
+  into local inference.
 - SCC collapse + validation pass over local lifetime constraints.
 - Stable exported `SolvedLifetimeGraph` artifact for downstream borrow checking.
 - Global lifetime composition across function boundaries.

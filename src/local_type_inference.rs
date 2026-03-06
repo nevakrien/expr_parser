@@ -4085,12 +4085,9 @@ impl PendingIndex {
         };
 
         let current = self.implicit_deref.current;
-        self.implicit_deref.implicit_receivers = self.implicit_deref.finalize_chain(
-            ex,
-            types,
-            pending_mutability_matches,
-            current,
-        );
+        self.implicit_deref.implicit_receivers =
+            self.implicit_deref
+                .finalize_chain(ex, types, pending_mutability_matches, current);
 
         // index must be usize
         let usize_c = types.new_solved(BuiltinType::Usize.into());

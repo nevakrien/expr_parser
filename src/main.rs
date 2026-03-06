@@ -14,15 +14,17 @@ struct CliOptions {
     stdin_batch: bool,
     show_ast: bool,
     type_dump: bool,
+    origin_dump: bool,
 }
 
 fn cli_usage() -> &'static str {
-    "Usage: expr_parser [--stdin-batch] [--show-ast] [--type-dump]\n\
+    "Usage: expr_parser [--stdin-batch] [--show-ast] [--type-dump] [--origin-dump]\n\
      \n\
      Flags:\n\
        --stdin-batch  Read all stdin until EOF and compile once\n\
        --show-ast     Print parsed AST nodes while parsing\n\
        --type-dump    Print full type dump after successful typecheck\n\
+       --origin-dump  Print full origin dump after successful typecheck\n\
        -h, --help     Show this help text"
 }
 
@@ -31,6 +33,7 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
         stdin_batch: false,
         show_ast: false,
         type_dump: false,
+        origin_dump: false,
     };
 
     for arg in env::args().skip(1) {
@@ -38,6 +41,7 @@ fn parse_cli_options() -> Result<Option<CliOptions>, String> {
             "--stdin-batch" => options.stdin_batch = true,
             "--show-ast" => options.show_ast = true,
             "--type-dump" => options.type_dump = true,
+            "--origin-dump" => options.origin_dump = true,
             "-h" | "--help" => return Ok(None),
             _ => {
                 return Err(format!("Unknown argument: {arg}\n\n{}", cli_usage()));
@@ -105,10 +109,13 @@ enum ReplInput {
     Load(Vec<String>),
     SetShowAst(bool),
     SetTypeDump(bool),
+    SetOriginDump(bool),
     ShowModes,
     ShowType(Vec<String>),
     DumpTypes,
     DumpTypesOf(String),
+    DumpOrigins,
+    DumpOriginsOf(String),
     Code(String),
 }
 
@@ -348,6 +355,13 @@ fn read_repl_input() -> io::Result<ReplInput> {
                 };
                 return Ok(ReplInput::SetTypeDump(value));
             }
+            if let Some(rest) = trimmed.strip_prefix(":origin-dump") {
+                let Some(value) = parse_on_off(rest) else {
+                    eprintln!("Usage: :origin-dump <on|off>");
+                    continue;
+                };
+                return Ok(ReplInput::SetOriginDump(value));
+            }
             if trimmed == ":modes" {
                 return Ok(ReplInput::ShowModes);
             }
@@ -363,6 +377,29 @@ fn read_repl_input() -> io::Result<ReplInput> {
             }
             if trimmed == ":types" {
                 return Ok(ReplInput::DumpTypes);
+            }
+            if let Some(rest) = trimmed.strip_prefix(":types-of") {
+                let names: Vec<String> = rest.split_whitespace().map(String::from).collect();
+                match names.as_slice() {
+                    [name] => return Ok(ReplInput::DumpTypesOf(name.clone())),
+                    _ => {
+                        eprintln!("Usage: :types-of <name>");
+                        continue;
+                    }
+                }
+            }
+            if trimmed == ":origins" {
+                return Ok(ReplInput::DumpOrigins);
+            }
+            if let Some(rest) = trimmed.strip_prefix(":origins-of") {
+                let names: Vec<String> = rest.split_whitespace().map(String::from).collect();
+                match names.as_slice() {
+                    [name] => return Ok(ReplInput::DumpOriginsOf(name.clone())),
+                    _ => {
+                        eprintln!("Usage: :origins-of <name>");
+                        continue;
+                    }
+                }
             }
             if let Some(rest) = trimmed.strip_prefix(":type") {
                 let names: Vec<String> = rest.split_whitespace().map(String::from).collect();
@@ -466,10 +503,13 @@ fn run_stdin_batch(options: CliOptions) -> Result<(), Box<dyn std::error::Error>
     reporter.add_source(0, input.clone());
     let _batch = parse_source(&mut program, &input, 0, options.show_ast);
 
-    if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)?
-        && options.type_dump
-    {
-        reporter.report_type_dump(&program, &types, &solved)?;
+    if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)? {
+        if options.type_dump {
+            reporter.report_type_dump(&program, &types, &solved)?;
+        }
+        if options.origin_dump {
+            reporter.report_origin_dump(&program, &types, &solved)?;
+        }
     }
 
     Ok(())
@@ -491,12 +531,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_typecheck: Option<(TypeStore, SolvedTypes)> = None;
     let mut show_ast = options.show_ast;
     let mut type_dump = options.type_dump;
+    let mut origin_dump = options.origin_dump;
 
     println!("Expression Parser REPL");
     println!("Enter expressions; REPL waits for complete input.");
     println!("AST printing is off by default. Pass --show-ast or use :show-ast on.");
     println!(
-        "Commands: :load <path...>, :reset, :show-ast <on|off>, :type-dump <on|off>, :modes, :types, :types-of <name>, :type <name...>, :quit, :exit"
+        "Commands: :load <path...>, :reset, :show-ast <on|off>, :type-dump <on|off>, :origin-dump <on|off>, :modes, :types, :types-of <name>, :type <name...>, :origins, :origins-of <name>, :quit, :exit"
     );
 
     loop {
@@ -515,11 +556,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 type_dump = value;
                 println!("type-dump: {}", if type_dump { "on" } else { "off" });
             }
+            Ok(ReplInput::SetOriginDump(value)) => {
+                origin_dump = value;
+                println!("origin-dump: {}", if origin_dump { "on" } else { "off" });
+            }
             Ok(ReplInput::ShowModes) => {
                 println!(
-                    "modes: show-ast={}, type-dump={}",
+                    "modes: show-ast={}, type-dump={}, origin-dump={}",
                     if show_ast { "on" } else { "off" },
-                    if type_dump { "on" } else { "off" }
+                    if type_dump { "on" } else { "off" },
+                    if origin_dump { "on" } else { "off" }
                 );
             }
             Ok(ReplInput::ShowType(names)) => {
@@ -557,6 +603,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 };
 
                 reporter.report_type_dump_in_region(&program, types, solved, Some(&loc))?;
+            }
+            Ok(ReplInput::DumpOrigins) => {
+                let Some((types, solved)) = last_typecheck.as_ref() else {
+                    println!("No successful typecheck yet. Enter code first.");
+                    continue;
+                };
+                reporter.report_origin_dump(&program, &types, &solved)?;
+            }
+            Ok(ReplInput::DumpOriginsOf(name)) => {
+                let Some((types, solved)) = last_typecheck.as_ref() else {
+                    println!("No successful typecheck yet. Enter code first.");
+                    continue;
+                };
+
+                let loc = if let Some(id) = lookup_global_name_id(&program, &name) {
+                    let Some(loc) = definition_loc_for_type_dump(&program, id) else {
+                        println!("{}: <no value/type definition span>", name);
+                        continue;
+                    };
+                    loc
+                } else {
+                    let Some(loc) = member_method_loc_for_type_dump(&program, &name) else {
+                        println!("{}: <not found>", name);
+                        continue;
+                    };
+                    loc
+                };
+
+                reporter.report_origin_dump_in_region(&program, &solved, Some(&loc))?;
             }
             Ok(ReplInput::Load(paths)) => {
                 if paths.is_empty() {
@@ -596,6 +671,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if type_dump {
                         reporter.report_type_dump(&program, &types, &solved)?;
                     }
+                    if origin_dump {
+                        reporter.report_origin_dump(&program, &types, &solved)?;
+                    }
                     last_typecheck = Some((types, solved));
                 } else {
                     last_typecheck = None;
@@ -610,6 +688,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     print_expr_types(&program, &types, &solved, &batch);
                     if type_dump {
                         reporter.report_type_dump(&program, &types, &solved)?;
+                    }
+                    if origin_dump {
+                        reporter.report_origin_dump(&program, &types, &solved)?;
                     }
                     last_typecheck = Some((types, solved));
                 } else {
