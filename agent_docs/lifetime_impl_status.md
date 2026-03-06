@@ -42,6 +42,9 @@ Use this with:
   walks `OriginNode.parent` chains, treats binding aliases / member / index
   projections as transparent ancestry when needed, and emits `LId <= LId`
   edges through a caller-provided pointer-to-lifetime resolver.
+- Origin roots now distinguish place-based roots (`PlaceRoot`) from true raw
+  provenance boundaries (`RawRoot`), so raw-boundary handling does not apply to
+  ordinary `let`/borrow provenance.
 
 ## Not Implemented Yet
 

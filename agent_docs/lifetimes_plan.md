@@ -96,6 +96,7 @@ Example origin kinds that return a `CId` include:
 
 - `ArgumentRoot`
 - `CallReturnRoot`
+- `PlaceRoot`
 - `RawRoot`
 - `Reborrow`
 - `Deref`
@@ -176,6 +177,11 @@ provenance and therefore has no statically provable ordering guarantees.
 
 Unknown lifetimes may exist in the graph but should not introduce
 ordering constraints between unrelated lifetimes.
+
+`RawRoot` should be reserved for raw-pointer provenance boundaries.
+Regular place-based roots (for example simple `let p = &x` style borrows)
+should use a non-raw root kind (currently `PlaceRoot`) so provenance walks
+do not accidentally treat them as raw-pointer boundaries.
 
 ---
 

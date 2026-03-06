@@ -118,6 +118,7 @@ fn ordering_reason(kind: OriginKind) -> Option<LifetimeOrderingReason> {
         OriginKind::BindingRoot
         | OriginKind::ArgumentRoot(_)
         | OriginKind::CallReturnRoot(_)
+        | OriginKind::PlaceRoot(_)
         | OriginKind::RawRoot(_) => None,
     }
 }
@@ -171,8 +172,8 @@ mod tests {
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::{
-        CId, InferState, LId, LifeTime, PtrKind, ResolveKind, SolvedTypes, TypeStore, TypeValue,
-        find_lid_root,
+        CId, InferState, LId, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind,
+        ResolveKind, SolvedTypes, TypeStore, TypeValue, find_lid_root,
     };
     use std::collections::HashMap;
 
@@ -253,6 +254,51 @@ mod tests {
         .to_vec()
     }
 
+    fn collect_origins_from_function(src: &str, name: &str) -> OriginVec<OriginNode> {
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let function = find_value_by_name(&program, name);
+        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
+        ctx.req.owner = Some(function);
+
+        let Value::Func {
+            calling_convention,
+            generics,
+            params,
+            output_type,
+            body,
+        } = ctx.ex.program.value(function).clone()
+        else {
+            panic!("expected function value")
+        };
+
+        let _ = gather_func_constraints::<true>(
+            &mut ctx,
+            function,
+            calling_convention,
+            generics,
+            params,
+            output_type,
+            body,
+        );
+        local_solver(&mut ctx);
+        assert!(
+            ctx.ex.errors.is_empty(),
+            "unexpected type errors: {:?}",
+            ctx.ex.errors
+        );
+
+        ctx.ex
+            .ans
+            .inner_types_of_function(function)
+            .expect("expected finalized inner function types")
+            .origins
+            .clone()
+    }
+
     fn resolve_pointer_lid(
         ctx: &mut InferState<'_>,
         cid: CId,
@@ -319,10 +365,67 @@ mod tests {
     }
 
     #[test]
-    fn source_member_projection_chain_with_raw_root_emits_no_ordering() {
+    fn source_member_projection_chain_through_place_root_emits_ordering() {
         let src = "S=struct{x:int}; f=fn(s:&S){ let y = &s.x; };";
         let edges = collect_from_function(src, "f");
 
+        assert!(!edges.is_empty(), "expected ordering edges, got {edges:?}");
+    }
+
+    #[test]
+    fn source_member_projection_chain_with_place_root_emits_ordering() {
+        let mut origins = OriginVec::new();
+        let place_root = OriginId(origins.len() as u32);
+        origins.push(OriginNode {
+            kind: OriginKind::PlaceRoot(CId(0)),
+            parent: None,
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: Some(LId(1)),
+        });
+        origins.push(OriginNode {
+            kind: OriginKind::MemberProjection,
+            parent: Some(place_root),
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: Some(LId(0)),
+        });
+
+        let edges = collect_origin_lifetime_orderings(&origins, 2, |_| None)
+            .edges()
+            .to_vec();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].reason, LifetimeOrderingReason::MemberProjection);
+        assert_eq!(edges[0].shorter, LId(0));
+        assert_eq!(edges[0].longer, LId(1));
+    }
+
+    #[test]
+    fn source_member_projection_chain_with_raw_root_still_emits_no_ordering() {
+        let mut origins = OriginVec::new();
+        let raw_root = OriginId(origins.len() as u32);
+        origins.push(OriginNode {
+            kind: OriginKind::RawRoot(CId(0)),
+            parent: None,
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: Some(LId(1)),
+        });
+        origins.push(OriginNode {
+            kind: OriginKind::MemberProjection,
+            parent: Some(raw_root),
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: Some(LId(0)),
+        });
+
+        let edges = collect_origin_lifetime_orderings(&origins, 2, |_| None)
+            .edges()
+            .to_vec();
         assert!(edges.is_empty());
     }
 
@@ -332,5 +435,25 @@ mod tests {
         let edges = collect_from_function(src, "f");
 
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn simple_let_addr_of_uses_place_root_not_raw_root() {
+        let origins =
+            collect_origins_from_function("S=struct{x:int}; f=fn(s:&S){ let y = &s.x; };", "f");
+        assert!(
+            origins
+                .0
+                .iter()
+                .any(|node| matches!(node.kind, OriginKind::PlaceRoot(_))),
+            "expected at least one PlaceRoot origin in simple let addr-of case"
+        );
+        assert!(
+            !origins
+                .0
+                .iter()
+                .any(|node| matches!(node.kind, OriginKind::RawRoot(_))),
+            "did not expect RawRoot origin in simple let addr-of case"
+        );
     }
 }

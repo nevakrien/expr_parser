@@ -992,7 +992,7 @@ pub(crate) fn gather_constraints(
                 ctx.types.value_origin(base),
                 mutable,
             )
-            .or_else(|| Some(new_origin_root(ctx, OriginKind::RawRoot(ans), v, mutable)));
+            .or_else(|| Some(new_origin_root(ctx, OriginKind::PlaceRoot(ans), v, mutable)));
             ctx.bind_val_with_origin(v, ans, origin);
 
             if mutable == Some(true) {
@@ -2903,12 +2903,12 @@ impl PendingImplicitDeref {
         {
             let mut chain_parent = Some(parent_origin);
 
-            let mut append_raw_root = |cid: CId, chain_parent: &mut Option<OriginId>| {
+            let mut append_place_root = |cid: CId, chain_parent: &mut Option<OriginId>| {
                 let cid = types.root(cid);
                 let next_parent = types.new_origin(
                     ex,
                     pending_mutability_matches,
-                    OriginKind::RawRoot(cid),
+                    OriginKind::PlaceRoot(cid),
                     *chain_parent,
                     Some(OriginDeclSite::Value(self.site)),
                     None,
@@ -2918,9 +2918,9 @@ impl PendingImplicitDeref {
                 *chain_parent = Some(next_parent);
             };
 
-            append_raw_root(resolved_base, &mut chain_parent);
+            append_place_root(resolved_base, &mut chain_parent);
             for receiver in self.implicit_receivers.iter().rev().copied() {
-                append_raw_root(receiver, &mut chain_parent);
+                append_place_root(receiver, &mut chain_parent);
             }
 
             if let Some(node) = types.origin_mut(projected_origin) {

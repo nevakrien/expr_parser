@@ -14,8 +14,8 @@ const SOURCE: &str = r#"
 S=struct{x:int,y:bool};
 N=struct{n:int,s:S};
 
-// const_struct_borrow = fn(self:&const S)->&mut int { &mut self.x };
-const_two_members = fn(self:&const S){ self.x = 1; self.y = true; };
+// const_struct_borrow = fn(self:&mut S)->&mut int { &mut self.x };
+const_two_members = fn(self:&mut S){ self.x = 1; self.y = true; };
 "#;
 // const SOURCE: &str = r#"
 // Wrapper = struct {baba:[int;1]};
