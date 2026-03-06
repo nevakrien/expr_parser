@@ -2467,7 +2467,9 @@ impl TypeState {
         let origin =
             self.new_unchecked_origin(kind, parent, decl_site, declared_mutability, lifetime_seed);
 
-        if let Some(site) = site {
+        if let Some(site) = site
+            && !matches!(kind, OriginKind::Reborrow(_))
+        {
             ensure_or_enqueue_mutability_match(
                 ex,
                 self,
@@ -8492,110 +8494,63 @@ mod type_infer_tests {
         }
     }
 
-    // #[test]
-    // fn dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_one_error_per_function() {
-    //     let src = r#"
-    //         S=struct{x:int,y:bool};
-    //         N=struct{n:int,s:S};
+    #[test]
+    fn dot_member_and_tuple_writes_on_const_and_raw_const_refs_emit_per_operation_errors() {
+        let src = r#"
+            S=struct{x:int,y:bool};
+            N=struct{n:int,s:S};
 
-    //         const_struct_assign = fn(self:&const S){ self.x |= 1; };
-    //         const_struct_borrow = fn(self:&const S)->&mut int { &mut self.x };
-    //         const_tuple_assign = fn(self:&const (int,bool)){ self.0 = 1; };
-    //         const_tuple_borrow = fn(self:&const (int,bool))->&mut int { &mut self.0 };
+            const_struct_assign = fn(self:&const S){ self.x |= 1; };
+            const_struct_borrow = fn(self:&const S)->&mut int { &mut self.x };
+            const_tuple_assign = fn(self:&const (int,bool)){ self.0 = 1; };
+            const_tuple_borrow = fn(self:&const (int,bool))->&mut int { &mut self.0 };
 
-    //         raw_const_struct_assign = fn(self:&'raw const S){ self.x = 1; };
-    //         raw_const_struct_borrow = fn(self:&'raw const S)->&'raw mut int { &mut self.x };
-    //         raw_const_tuple_assign = fn(self:&'raw const (int,bool)){ self.0 = 1; };
-    //         raw_const_tuple_borrow = fn(self:&'raw const (int,bool))->&'raw mut int { &mut self.0 };
+            raw_const_struct_assign = fn(self:&'raw const S){ self.x = 1; };
+            raw_const_struct_borrow = fn(self:&'raw const S)->&'raw mut int { &mut self.x };
+            raw_const_tuple_assign = fn(self:&'raw const (int,bool)){ self.0 = 1; };
+            raw_const_tuple_borrow = fn(self:&'raw const (int,bool))->&'raw mut int { &mut self.0 };
 
-    //         const_nested_struct = fn(self:&const N)->&mut int { &mut self.s.x };
-    //         const_nested_assign = fn(self:&const N){ self.s.x = 1; };
-    //         const_two_members = fn(self:&const S){ self.x = 1; self.y = true; };
-    //         const_tuple_two_elems = fn(self:&const (int,bool)){ self.0 = 1; self.1 = true; };
-    //     "#;
+            const_nested_struct = fn(self:&const N)->&mut int { &mut self.s.x };
+            const_nested_assign = fn(self:&const N){ self.s.x = 1; };
+            const_two_members = fn(self:&const S){ self.x = 1; self.y = true; };
+            const_tuple_two_elems = fn(self:&const (int,bool)){ self.0 = 1; self.1 = true; };
+        "#;
 
-    //     let program = gather_program(src);
-    //     let mut store = TypeStore::new();
-    //     let mut solved_types = SolvedTypes::new(&program);
-    //     infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
 
-    //     let mut total_errors = 0;
-    //     for (name, expected) in [
-    //         (
-    //             "const_struct_assign",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //         (
-    //             "const_struct_borrow",
-    //             "cannot take mutable reference through immutable member access",
-    //         ),
-    //         (
-    //             "const_tuple_assign",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //         (
-    //             "const_tuple_borrow",
-    //             "cannot take mutable reference through immutable member access",
-    //         ),
-    //         (
-    //             "raw_const_struct_assign",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //         (
-    //             "raw_const_struct_borrow",
-    //             "cannot take mutable reference through immutable member access",
-    //         ),
-    //         (
-    //             "raw_const_tuple_assign",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //         (
-    //             "raw_const_tuple_borrow",
-    //             "cannot take mutable reference through immutable member access",
-    //         ),
-    //         (
-    //             "const_nested_struct",
-    //             "cannot take mutable reference through immutable member access",
-    //         ),
-    //         (
-    //             "const_nested_assign",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //         (
-    //             "const_two_members",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //         (
-    //             "const_tuple_two_elems",
-    //             "cannot assign through immutable member access",
-    //         ),
-    //     ] {
-    //         let f = find_value_by_name(&program, name);
-    //         let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
-    //             Ok(_) => panic!("expected `{name}` to fail"),
-    //             Err(errs) => errs,
-    //         };
-    //         assert_eq!(
-    //             errs.len(),
-    //             1,
-    //             "expected exactly one error for `{name}`, got {errs:?}"
-    //         );
-    //         total_errors += errs.len();
-    //         assert!(
-    //             errs.iter().any(|err| {
-    //                 matches!(
-    //                     err,
-    //                     TypeError::Simple { message, .. }
-    //                     | TypeError::SimpleRelated { message, .. }
-    //                     if *message == expected
-    //                 )
-    //             }),
-    //             "expected `{name}` to report `{expected}`, got {errs:?}`"
-    //         );
-    //     }
+        let mut total_errors = 0;
+        for (name, expected_error_count) in [
+            ("const_struct_assign", 1usize),
+            ("const_struct_borrow", 1usize),
+            ("const_tuple_assign", 1usize),
+            ("const_tuple_borrow", 1usize),
+            ("raw_const_struct_assign", 1usize),
+            ("raw_const_struct_borrow", 1usize),
+            ("raw_const_tuple_assign", 1usize),
+            ("raw_const_tuple_borrow", 1usize),
+            ("const_nested_struct", 1usize),
+            ("const_nested_assign", 1usize),
+            ("const_two_members", 2usize),
+            ("const_tuple_two_elems", 2usize),
+        ] {
+            let f = find_value_by_name(&program, name);
+            let errs = match infer_value_internals(&program, &mut store, &mut solved_types, f) {
+                Ok(_) => panic!("expected `{name}` to fail"),
+                Err(errs) => errs,
+            };
+            assert_eq!(
+                errs.len(),
+                expected_error_count,
+                "expected `{name}` to produce {expected_error_count} immutable-member write errors, got {errs:?}"
+            );
+            total_errors += errs.len();
+        }
 
-    //     assert_eq!(total_errors, 12);
-    // }
+        assert_eq!(total_errors, 14);
+    }
 
     #[test]
     fn ptr_member_assignment_allows_chain_with_mutable_deref_hop() {

@@ -997,14 +997,9 @@ pub(crate) fn gather_constraints(
             .or_else(|| Some(new_origin_root(ctx, OriginKind::RawRoot(ans), v, mutable)));
             ctx.bind_val_with_origin(v, ans, origin);
 
-            enqueue_pending_mutability_match(
-                &mut ctx.req.pending_mutability_matches,
-                PendingMutabilityMatchRequirement {
-                    site: v,
-                    context: WritablePlaceContext::AddrOfMut,
-                    projected_origin: origin.unwrap(),
-                },
-            );
+            if mutable == Some(true) {
+                let _ = require_place_writable(ctx, v, base, WritablePlaceContext::AddrOfMut);
+            }
 
             ans
         }
@@ -4647,66 +4642,6 @@ fn push_writable_place_error_(
     ex.push_error(TypeError::Simple { loc, message });
 }
 
-fn ensure_cluster_requires_mut_ptr(
-    ex: &mut ExternState,
-    types: &mut TypeState,
-    site: ValId,
-    context: WritablePlaceContext,
-    access_kind: PlaceAccessKind,
-    origin: OriginId,
-    cid: CId,
-) -> bool {
-    let root = types.root(cid);
-
-    // Helper: emit a writable-place error attributed to the origin we’re enforcing.
-    #[inline]
-    fn emit(
-        ex: &mut ExternState,
-        types: &mut TypeState,
-        site: ValId,
-        context: WritablePlaceContext,
-        access_kind: PlaceAccessKind,
-        origin: OriginId,
-    ) {
-        push_writable_place_error_(
-            ex,
-            types,
-            site,
-            writable_place_error_message(context, access_kind),
-            Some(origin),
-        );
-    }
-
-    match &mut types.core.cluster[root].state {
-        // Unresolved pointer cluster
-        ResolveKind::Ptr { mutable, .. } => match *mutable {
-            Some(true) => false,
-            Some(false) => {
-                emit(ex, types, site, context, access_kind, origin);
-                false
-            }
-            None => {
-                *mutable = Some(true);
-                true
-            }
-        },
-
-        // Solved type: if it’s a pointer type, enforce the mutability requirement
-        ResolveKind::Solved(ty) => match ex.store.type_value(*ty) {
-            TypeValue::Ptr { mutable, .. } => {
-                if !mutable {
-                    emit(ex, types, site, context, access_kind, origin);
-                }
-                false
-            }
-
-            _ => false,
-        },
-
-        _ => false,
-    }
-}
-
 fn align_origin_pointer_mutability(
     ex: &mut ExternState,
     types: &mut TypeState,
@@ -4824,27 +4759,12 @@ impl PendingMutabilityMatchRequirement {
         let mut current = self.projected_origin;
 
         loop {
-            let Some(node) = types.origin(current) else {
+            let Some(_node) = types.origin(current) else {
                 return ResolveOutcome::drop(progress);
             };
 
-            // -----------------------------------
-            // A) If this origin corresponds to a pointer,
-            //    force that pointer to be mutable.
-            // -----------------------------------
-            if let Some(cid) = node.kind.associated_pointer() {
-                if ensure_cluster_requires_mut_ptr(
-                    ex,
-                    types,
-                    self.site,
-                    self.context,
-                    PlaceAccessKind::Deref,
-                    self.projected_origin,
-                    cid,
-                ) {
-                    progress = true;
-                }
-            }
+            // Pointer mutability contradictions are emitted by
+            // align_origin_pointer_mutability() below.
 
             match align_origin_pointer_mutability(
                 ex,

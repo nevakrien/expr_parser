@@ -11,17 +11,11 @@ const SOURCE: &str = r#"
 //     p: &const int;
 // }
 
-Box = struct[T]{ptr:&'raw T};
-Box.__deref = fn[T](b:&const Box[T])->&T{&*b.ptr};
-Box.__deref_mut = fn[T](b:&mut Box[T])->&mut T{&*b.ptr};
+S=struct{x:int,y:bool};
+N=struct{n:int,s:S};
 
-S=struct{x:bool};
-
-f=fn(b:&mut Box[Box[S]])->&mut bool {
-    let ans = &mut b->x;
-    *ans=true;
-    ans
-};
+// const_struct_borrow = fn(self:&const S)->&mut int { &mut self.x };
+const_two_members = fn(self:&const S){ self.x = 1; self.y = true; };
 "#;
 // const SOURCE: &str = r#"
 // Wrapper = struct {baba:[int;1]};
