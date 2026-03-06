@@ -40,20 +40,33 @@ Use this with:
   but borrow-checker-grade ordering validation is not complete.
 - `src/lifetime_graph.rs` now has an origin-parent-based ordering extractor that
   walks `OriginNode.parent` chains, treats binding aliases / member / index
-  projections as transparent ancestry when needed, and emits `LId <= LId`
-  edges through a caller-provided pointer-to-lifetime resolver.
+  projections as transparent ancestry when needed, and emits graph-local
+  ordering edges (`LifetimeGraphId <= LifetimeGraphId`) through a
+  caller-provided pointer-to-lifetime resolver that maps inference lifetimes
+  into the graph namespace.
 - Lifetime-order edge extraction now ignores edges where either endpoint is
   marked raw-provenance, so raw-pointer flows still participate in mutability
   tracking without introducing lifetime outlives constraints.
 - Origin roots now distinguish place-based roots (`PlaceRoot`) from true raw
   provenance boundaries (`RawRoot`), so raw-boundary handling does not apply to
   ordinary `let`/borrow provenance.
+- `src/lifetime_graph.rs` now includes a reusable SCC solve pass over lifetime
+  ordering edges. It now uses a Tarjan-style DFS that validates cycle-forming
+  edges as they are discovered and immediately severs disallowed edges instead
+  of rebuilding SCCs from scratch. Component lifetime unification uses
+  `LifeTime` directly and treats `LifeTime::Unknown(_)` as an upgradeable
+  placeholder.
+- `InnerFunctionTypes` now records `lifetime_unknown_count`, i.e. how many
+  fallback `LifeTime::Unknown` lifetimes were minted during local solving for
+  that function.
 
 ## Not Implemented Yet
 
 - Full local lifetime graph construction from origin/provenance edges integrated
   into local inference.
-- SCC collapse + validation pass over local lifetime constraints.
+- SCC collapse + validation pass fully integrated into local inference
+  finalization (currently available as `lifetime_graph` solve utility but not
+  yet wired into the main local solver pipeline).
 - Stable exported `SolvedLifetimeGraph` artifact for downstream borrow checking.
 - Global lifetime composition across function boundaries.
 - Complete borrow-check pass enforcing deferred lifetime ordering legality.

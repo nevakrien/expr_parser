@@ -175,7 +175,7 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         return;
     }
 
-    finalize_local(ctx);
+    finalize_local(ctx, unknown_count);
 }
 
 #[cfg(not(feature = "solver_order_fuzz"))]
@@ -226,7 +226,7 @@ fn local_solver_stable(ctx: &mut InferState) {
         return;
     }
 
-    finalize_local(ctx);
+    finalize_local(ctx, unknown_count);
 }
 
 #[cfg(feature = "solver_order_fuzz")]
@@ -338,7 +338,7 @@ fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count:
     progress
 }
 
-fn finalize_local(ctx: &mut InferState) {
+fn finalize_local(ctx: &mut InferState, unknown_count: u32) {
     let InferState {
         search,
         req,
@@ -441,6 +441,7 @@ fn finalize_local(ctx: &mut InferState) {
     inner.origins = std::mem::take(&mut types.lifetimes.origins);
     inner.value_origins = std::mem::take(&mut types.lifetimes.value_origins);
     inner.pattern_origins = std::mem::take(&mut types.lifetimes.pattern_origins);
+    inner.lifetime_unknown_count = unknown_count;
 
     let owner = req.owner.or_else(|| {
         val_cluster

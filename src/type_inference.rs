@@ -224,6 +224,7 @@ pub enum LifeTime {
     ///basically only happens when someone derefs a raw pointer
     ///or some signatures that are basically that
     ///this one may later get unified by the borrow checker into something
+    ///so its important to check if its something else before using it
     Unknown(LifeId),
 }
 
@@ -1006,6 +1007,7 @@ pub struct InnerFunctionTypes {
     pub origins: OriginVec<OriginNode>,
     pub value_origins: IdHashMap<ValId, OriginId>,
     pub pattern_origins: IdHashMap<PatId, OriginId>,
+    pub lifetime_unknown_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

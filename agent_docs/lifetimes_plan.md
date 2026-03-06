@@ -43,7 +43,9 @@ we build a **lifetime constraint graph** and analyze it structurally.
 
 The lifetime system is represented as a directed graph.
 
-Nodes represent **lifetime variables (`LId`)**.
+Nodes represent **graph-local lifetime nodes**.
+These graph IDs are local to the constraint graph and are mapped from
+inference `LId` values at graph-construction boundaries.
 
 Edges represent **ordering constraints**.
 

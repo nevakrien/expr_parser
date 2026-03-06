@@ -1,4 +1,13 @@
-use crate::type_inference::{CId, LId, LifeVec, OriginId, OriginKind, OriginNode, OriginVec};
+use crate::type_inference::{CId, LId, LifeTime, OriginId, OriginKind, OriginNode, OriginVec};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct LifetimeGraphId(pub(crate) usize);
+
+impl LifetimeGraphId {
+    fn from_lid(lid: LId, node_count: usize) -> Option<Self> {
+        (lid.0 < node_count).then_some(Self(lid.0))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LifetimeOrderingReason {
@@ -11,8 +20,8 @@ pub(crate) enum LifetimeOrderingReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LifetimeOrdering {
-    pub(crate) shorter: LId,
-    pub(crate) longer: LId,
+    pub(crate) shorter: LifetimeGraphId,
+    pub(crate) longer: LifetimeGraphId,
     pub(crate) source_origin: OriginId,
     pub(crate) target_origin: OriginId,
     pub(crate) reason: LifetimeOrderingReason,
@@ -20,13 +29,13 @@ pub(crate) struct LifetimeOrdering {
 
 pub(crate) struct LifetimeOrderingGraph {
     edges: Vec<LifetimeOrdering>,
-    outgoing: LifeVec<Vec<usize>>,
+    outgoing: Vec<Vec<usize>>,
 }
 
 impl LifetimeOrderingGraph {
     pub(crate) fn new(lid_count: usize) -> Self {
-        let mut outgoing = LifeVec(Vec::with_capacity(lid_count));
-        outgoing.0.resize_with(lid_count, Vec::new);
+        let mut outgoing = Vec::with_capacity(lid_count);
+        outgoing.resize_with(lid_count, Vec::new);
         Self {
             edges: Vec::new(),
             outgoing,
@@ -37,9 +46,13 @@ impl LifetimeOrderingGraph {
         &self.edges
     }
 
+    pub(crate) fn lid_count(&self) -> usize {
+        self.outgoing.len()
+    }
+
     #[allow(dead_code)]
-    pub(crate) fn outgoing(&self, lid: LId) -> &[usize] {
-        &self.outgoing[lid]
+    pub(crate) fn outgoing(&self, lid: LifetimeGraphId) -> &[usize] {
+        &self.outgoing[lid.0]
     }
 
     fn push_edge(&mut self, edge: LifetimeOrdering) {
@@ -53,7 +66,7 @@ impl LifetimeOrderingGraph {
 
         let index = self.edges.len();
         self.edges.push(edge);
-        self.outgoing[edge.shorter].push(index);
+        self.outgoing[edge.shorter.0].push(index);
     }
 }
 
@@ -96,13 +109,20 @@ where
             continue;
         }
 
-        if shorter.lid == parent.lid {
+        let Some(shorter_id) = LifetimeGraphId::from_lid(shorter.lid, lid_count) else {
+            continue;
+        };
+        let Some(longer_id) = LifetimeGraphId::from_lid(parent.lid, lid_count) else {
+            continue;
+        };
+
+        if shorter_id == longer_id {
             continue;
         }
 
         graph.push_edge(LifetimeOrdering {
-            shorter: shorter.lid,
-            longer: parent.lid,
+            shorter: shorter_id,
+            longer: longer_id,
             source_origin: origin,
             target_origin: parent.origin,
             reason,
@@ -110,6 +130,226 @@ where
     }
 
     graph
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LifetimeSccComponent {
+    pub(crate) nodes: Vec<LifetimeGraphId>,
+    pub(crate) lifetime: LifeTime,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LifetimeEdgeRejectionReason {
+    IncompatibleKnownEndpoints,
+    IncompatibleComponent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LifetimeRejectedEdge {
+    pub(crate) edge_index: usize,
+    pub(crate) reason: LifetimeEdgeRejectionReason,
+}
+
+pub(crate) struct LifetimeSccSolve {
+    pub(crate) component_of: Vec<usize>,
+    pub(crate) components: Vec<LifetimeSccComponent>,
+    pub(crate) rejected_edges: Vec<LifetimeRejectedEdge>,
+}
+
+pub(crate) fn solve_lifetime_scc<F>(
+    graph: &LifetimeOrderingGraph,
+    mut node_lifetime: F,
+) -> LifetimeSccSolve
+where
+    F: FnMut(LifetimeGraphId) -> LifeTime,
+{
+    let lid_count = graph.lid_count();
+    let node_lifetimes: Vec<LifeTime> = (0..lid_count)
+        .map(|raw| node_lifetime(LifetimeGraphId(raw)))
+        .collect();
+    let state = LifetimeSccState::new(graph, node_lifetimes);
+    state.solve()
+}
+
+fn component_lifetime(nodes: &[LifetimeGraphId], node_lifetimes: &[LifeTime]) -> Option<LifeTime> {
+    let mut iter = nodes.iter().copied();
+    let first = iter.next()?;
+    let mut merged = node_lifetimes[first.0];
+    for node in iter {
+        merged = merge_component_lifetime(merged, node_lifetimes[node.0])?;
+    }
+    Some(merged)
+}
+
+fn merge_component_lifetime(current: LifeTime, next: LifeTime) -> Option<LifeTime> {
+    if current == next {
+        return Some(current);
+    }
+
+    match (current, next) {
+        (LifeTime::Unknown(_), other) => Some(other),
+        (other, LifeTime::Unknown(_)) => Some(other),
+        _ => None,
+    }
+}
+
+struct LifetimeSccState<'a> {
+    graph: &'a LifetimeOrderingGraph,
+    node_lifetimes: Vec<LifeTime>,
+    active_edges: Vec<bool>,
+    rejected_edges: Vec<LifetimeRejectedEdge>,
+    next_index: usize,
+    index: Vec<Option<usize>>,
+    low: Vec<usize>,
+    on_stack: Vec<bool>,
+    stack: Vec<LifetimeGraphId>,
+    stack_pos: Vec<usize>,
+    component_of: Vec<usize>,
+    components: Vec<LifetimeSccComponent>,
+}
+
+impl<'a> LifetimeSccState<'a> {
+    fn new(graph: &'a LifetimeOrderingGraph, node_lifetimes: Vec<LifeTime>) -> Self {
+        let lid_count = graph.lid_count();
+        Self {
+            graph,
+            node_lifetimes,
+            active_edges: vec![true; graph.edges.len()],
+            rejected_edges: Vec::new(),
+            next_index: 0,
+            index: vec![None; lid_count],
+            low: vec![0; lid_count],
+            on_stack: vec![false; lid_count],
+            stack: Vec::new(),
+            stack_pos: vec![usize::MAX; lid_count],
+            component_of: vec![usize::MAX; lid_count],
+            components: Vec::new(),
+        }
+    }
+
+    fn solve(mut self) -> LifetimeSccSolve {
+        for raw in 0..self.graph.lid_count() {
+            let lid = LifetimeGraphId(raw);
+            if self.index[lid.0].is_none() {
+                self.visit(lid);
+            }
+        }
+
+        LifetimeSccSolve {
+            component_of: self.component_of,
+            components: self.components,
+            rejected_edges: self.rejected_edges,
+        }
+    }
+
+    fn visit(&mut self, v: LifetimeGraphId) {
+        let v_index = self.next_index;
+        self.next_index += 1;
+        self.index[v.0] = Some(v_index);
+        self.low[v.0] = v_index;
+        self.push_stack(v);
+
+        let out_len = self.graph.outgoing(v).len();
+        for out_i in 0..out_len {
+            let edge_index = self.graph.outgoing(v)[out_i];
+            if !self.active_edges[edge_index] {
+                continue;
+            }
+            let edge = self.graph.edges[edge_index];
+            let w = edge.longer;
+
+            if self.index[w.0].is_none() {
+                self.visit(w);
+                if !self.active_edges[edge_index] || !self.on_stack[w.0] {
+                    continue;
+                }
+
+                if self.low[w.0] <= v_index {
+                    if !self.edge_merge_allowed(v, w) {
+                        self.reject_edge(edge_index);
+                        continue;
+                    }
+                }
+                self.low[v.0] = self.low[v.0].min(self.low[w.0]);
+                continue;
+            }
+
+            if !self.on_stack[w.0] {
+                continue;
+            }
+
+            let Some(w_index) = self.index[w.0] else {
+                continue;
+            };
+            if w_index <= v_index && !self.edge_merge_allowed(v, w) {
+                self.reject_edge(edge_index);
+                continue;
+            }
+            self.low[v.0] = self.low[v.0].min(w_index);
+        }
+
+        if self.low[v.0] == v_index {
+            self.finish_component(v);
+        }
+    }
+
+    fn edge_merge_allowed(&self, from: LifetimeGraphId, to: LifetimeGraphId) -> bool {
+        let from_pos = self.stack_pos[from.0];
+        let to_pos = self.stack_pos[to.0];
+        if from_pos == usize::MAX || to_pos == usize::MAX {
+            return true;
+        }
+
+        let start = from_pos.min(to_pos);
+        component_lifetime(&self.stack[start..], &self.node_lifetimes).is_some()
+    }
+
+    fn reject_edge(&mut self, edge_index: usize) {
+        self.active_edges[edge_index] = false;
+        let edge = self.graph.edges[edge_index];
+        let a = self.node_lifetimes[edge.shorter.0];
+        let b = self.node_lifetimes[edge.longer.0];
+        let reason =
+            if !matches!(a, LifeTime::Unknown(_)) && !matches!(b, LifeTime::Unknown(_)) && a != b {
+                LifetimeEdgeRejectionReason::IncompatibleKnownEndpoints
+            } else {
+                LifetimeEdgeRejectionReason::IncompatibleComponent
+            };
+        self.rejected_edges
+            .push(LifetimeRejectedEdge { edge_index, reason });
+    }
+
+    fn push_stack(&mut self, lid: LifetimeGraphId) {
+        self.stack_pos[lid.0] = self.stack.len();
+        self.stack.push(lid);
+        self.on_stack[lid.0] = true;
+    }
+
+    fn finish_component(&mut self, root: LifetimeGraphId) {
+        let mut nodes = Vec::new();
+        loop {
+            let lid = self
+                .stack
+                .pop()
+                .expect("tarjan stack must contain current root");
+            self.stack_pos[lid.0] = usize::MAX;
+            self.on_stack[lid.0] = false;
+            nodes.push(lid);
+            if lid == root {
+                break;
+            }
+        }
+
+        let lifetime = component_lifetime(&nodes, &self.node_lifetimes)
+            .expect("component lifetime should be valid after edge rejections");
+
+        let component_id = self.components.len();
+        for lid in &nodes {
+            self.component_of[lid.0] = component_id;
+        }
+        self.components
+            .push(LifetimeSccComponent { nodes, lifetime });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,8 +432,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        LifetimeOrdering, LifetimeOrderingReason, PointerLifetimeInfo,
-        collect_origin_lifetime_orderings,
+        LifetimeGraphId, LifetimeOrdering, LifetimeOrderingReason, PointerLifetimeInfo,
+        collect_origin_lifetime_orderings, solve_lifetime_scc,
     };
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
@@ -201,8 +441,8 @@ mod tests {
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::{
-        CId, InferState, LId, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind,
-        ResolveKind, SolvedTypes, TypeStore, TypeValue, find_lid_root,
+        CId, InferState, LId, LifeId, LifeTime, OriginId, OriginKind, OriginNode, OriginVec,
+        PtrKind, ResolveKind, SolvedTypes, TypeStore, TypeValue, find_lid_root,
     };
     use std::collections::HashMap;
 
@@ -451,8 +691,8 @@ mod tests {
             .to_vec();
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].reason, LifetimeOrderingReason::MemberProjection);
-        assert_eq!(edges[0].shorter, LId(0));
-        assert_eq!(edges[0].longer, LId(1));
+        assert_eq!(edges[0].shorter, LifetimeGraphId(0));
+        assert_eq!(edges[0].longer, LifetimeGraphId(1));
     }
 
     #[test]
@@ -582,5 +822,62 @@ mod tests {
                 .any(|node| matches!(node.kind, OriginKind::RawRoot(_))),
             "did not expect RawRoot origin in simple let addr-of case"
         );
+    }
+
+    #[test]
+    fn scc_unknown_upgrades_to_local() {
+        let mut graph = super::LifetimeOrderingGraph::new(2);
+        graph.push_edge(LifetimeOrdering {
+            shorter: LifetimeGraphId(0),
+            longer: LifetimeGraphId(1),
+            source_origin: OriginId(0),
+            target_origin: OriginId(0),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+        graph.push_edge(LifetimeOrdering {
+            shorter: LifetimeGraphId(1),
+            longer: LifetimeGraphId(0),
+            source_origin: OriginId(0),
+            target_origin: OriginId(0),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+
+        let solve = solve_lifetime_scc(&graph, |lid| match lid {
+            LifetimeGraphId(0) => LifeTime::Unknown(LifeId(0)),
+            LifetimeGraphId(1) => LifeTime::Local(LifeId(1)),
+            _ => unreachable!(),
+        });
+
+        assert_eq!(solve.components.len(), 1);
+        assert_eq!(solve.components[0].lifetime, LifeTime::Local(LifeId(1)));
+        assert!(solve.rejected_edges.is_empty());
+    }
+
+    #[test]
+    fn scc_rejects_local_external_cycle_edges() {
+        let mut graph = super::LifetimeOrderingGraph::new(2);
+        graph.push_edge(LifetimeOrdering {
+            shorter: LifetimeGraphId(0),
+            longer: LifetimeGraphId(1),
+            source_origin: OriginId(0),
+            target_origin: OriginId(0),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+        graph.push_edge(LifetimeOrdering {
+            shorter: LifetimeGraphId(1),
+            longer: LifetimeGraphId(0),
+            source_origin: OriginId(0),
+            target_origin: OriginId(0),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+
+        let solve = solve_lifetime_scc(&graph, |lid| match lid {
+            LifetimeGraphId(0) => LifeTime::Local(LifeId(0)),
+            LifetimeGraphId(1) => LifeTime::External(0),
+            _ => unreachable!(),
+        });
+
+        assert_eq!(solve.components.len(), 2);
+        assert!(!solve.rejected_edges.is_empty());
     }
 }
