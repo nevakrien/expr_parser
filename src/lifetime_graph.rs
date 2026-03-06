@@ -57,13 +57,19 @@ impl LifetimeOrderingGraph {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PointerLifetimeInfo {
+    pub(crate) lid: LId,
+    pub(crate) from_raw: bool,
+}
+
 pub(crate) fn collect_origin_lifetime_orderings<F>(
     origins: &OriginVec<OriginNode>,
     lid_count: usize,
-    mut lid_for_pointer: F,
+    mut pointer_lifetime: F,
 ) -> LifetimeOrderingGraph
 where
-    F: FnMut(CId) -> Option<LId>,
+    F: FnMut(CId) -> Option<PointerLifetimeInfo>,
 {
     let mut graph = LifetimeOrderingGraph::new(lid_count);
 
@@ -77,21 +83,25 @@ where
             continue;
         };
 
-        let Some(shorter) = lifetime_for_origin(node, &mut lid_for_pointer) else {
+        let Some(shorter) = lifetime_for_origin(node, &mut pointer_lifetime) else {
             continue;
         };
 
-        let Some(parent) = source_origin_for_ordering(origins, node.parent, &mut lid_for_pointer)
+        let Some(parent) = source_origin_for_ordering(origins, node.parent, &mut pointer_lifetime)
         else {
             continue;
         };
 
-        if shorter == parent.lid {
+        if shorter.from_raw || parent.from_raw {
+            continue;
+        }
+
+        if shorter.lid == parent.lid {
             continue;
         }
 
         graph.push_edge(LifetimeOrdering {
-            shorter,
+            shorter: shorter.lid,
             longer: parent.lid,
             source_origin: origin,
             target_origin: parent.origin,
@@ -106,6 +116,7 @@ where
 struct OriginLifetime {
     origin: OriginId,
     lid: LId,
+    from_raw: bool,
 }
 
 fn ordering_reason(kind: OriginKind) -> Option<LifetimeOrderingReason> {
@@ -123,21 +134,28 @@ fn ordering_reason(kind: OriginKind) -> Option<LifetimeOrderingReason> {
     }
 }
 
-fn lifetime_for_origin<F>(node: &OriginNode, lid_for_pointer: &mut F) -> Option<LId>
+fn lifetime_for_origin<F>(
+    node: &OriginNode,
+    pointer_lifetime: &mut F,
+) -> Option<PointerLifetimeInfo>
 where
-    F: FnMut(CId) -> Option<LId>,
+    F: FnMut(CId) -> Option<PointerLifetimeInfo>,
 {
-    node.lifetime_seed
-        .or_else(|| node.kind.associated_pointer().and_then(lid_for_pointer))
+    let pointer_info = node.kind.associated_pointer().and_then(pointer_lifetime);
+    let lid = node.lifetime_seed.or(pointer_info.map(|info| info.lid))?;
+    Some(PointerLifetimeInfo {
+        lid,
+        from_raw: pointer_info.map(|info| info.from_raw).unwrap_or(false),
+    })
 }
 
 fn source_origin_for_ordering<F>(
     origins: &OriginVec<OriginNode>,
     mut current: Option<OriginId>,
-    lid_for_pointer: &mut F,
+    pointer_lifetime: &mut F,
 ) -> Option<OriginLifetime>
 where
-    F: FnMut(CId) -> Option<LId>,
+    F: FnMut(CId) -> Option<PointerLifetimeInfo>,
 {
     while let Some(origin) = current {
         let node = origins.get(origin)?;
@@ -147,15 +165,23 @@ where
                 current = node.parent;
             }
             OriginKind::MemberProjection | OriginKind::IndexProjection => {
-                if let Some(lid) = lifetime_for_origin(node, lid_for_pointer) {
-                    return Some(OriginLifetime { origin, lid });
+                if let Some(info) = lifetime_for_origin(node, pointer_lifetime) {
+                    return Some(OriginLifetime {
+                        origin,
+                        lid: info.lid,
+                        from_raw: info.from_raw,
+                    });
                 }
                 current = node.parent;
             }
             OriginKind::RawRoot(_) => return None,
             _ => {
-                let lid = lifetime_for_origin(node, lid_for_pointer)?;
-                return Some(OriginLifetime { origin, lid });
+                let info = lifetime_for_origin(node, pointer_lifetime)?;
+                return Some(OriginLifetime {
+                    origin,
+                    lid: info.lid,
+                    from_raw: info.from_raw,
+                });
             }
         }
     }
@@ -165,7 +191,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{LifetimeOrdering, LifetimeOrderingReason, collect_origin_lifetime_orderings};
+    use super::{
+        LifetimeOrdering, LifetimeOrderingReason, PointerLifetimeInfo,
+        collect_origin_lifetime_orderings,
+    };
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
     use crate::local_type_inference::{gather_func_constraints, local_solver};
@@ -248,7 +277,7 @@ mod tests {
         let mut next_synthetic = base_lid_count;
 
         collect_origin_lifetime_orderings(&origins, base_lid_count + origins.len(), |cid| {
-            resolve_pointer_lid(&mut ctx, cid, &mut synthetic_lids, &mut next_synthetic)
+            resolve_pointer_lifetime(&mut ctx, cid, &mut synthetic_lids, &mut next_synthetic)
         })
         .edges()
         .to_vec()
@@ -299,20 +328,31 @@ mod tests {
             .clone()
     }
 
-    fn resolve_pointer_lid(
+    fn resolve_pointer_lifetime(
         ctx: &mut InferState<'_>,
         cid: CId,
         synthetic_lids: &mut HashMap<CId, LId>,
         next_synthetic: &mut usize,
-    ) -> Option<LId> {
+    ) -> Option<PointerLifetimeInfo> {
         let cid = ctx.types.root(cid);
         match ctx.types.cluster_state(cid) {
             ResolveKind::Ptr { kind, .. } => match kind {
-                PtrKind::RefInfer(lid) => {
-                    Some(find_lid_root(&mut ctx.types.lifetimes.life_parent, lid))
-                }
+                PtrKind::RefInfer(lid) => Some(PointerLifetimeInfo {
+                    lid: find_lid_root(&mut ctx.types.lifetimes.life_parent, lid),
+                    from_raw: false,
+                }),
                 PtrKind::Solved(crate::type_inference::PointerStyle::Ref(lt)) => {
-                    find_lid_for_lifetime(ctx, cid, lt, synthetic_lids, next_synthetic)
+                    let lid = find_lid_for_lifetime(ctx, cid, lt, synthetic_lids, next_synthetic)?;
+                    Some(PointerLifetimeInfo {
+                        lid,
+                        from_raw: false,
+                    })
+                }
+                PtrKind::Solved(crate::type_inference::PointerStyle::Raw(_)) => {
+                    Some(PointerLifetimeInfo {
+                        lid: LId(0),
+                        from_raw: true,
+                    })
                 }
                 _ => None,
             },
@@ -320,7 +360,20 @@ mod tests {
                 TypeValue::Ptr {
                     style: crate::type_inference::PointerStyle::Ref(lt),
                     ..
-                } => find_lid_for_lifetime(ctx, cid, lt, synthetic_lids, next_synthetic),
+                } => {
+                    let lid = find_lid_for_lifetime(ctx, cid, lt, synthetic_lids, next_synthetic)?;
+                    Some(PointerLifetimeInfo {
+                        lid,
+                        from_raw: false,
+                    })
+                }
+                TypeValue::Ptr {
+                    style: crate::type_inference::PointerStyle::Raw(_),
+                    ..
+                } => Some(PointerLifetimeInfo {
+                    lid: LId(0),
+                    from_raw: true,
+                }),
                 _ => None,
             },
             _ => None,
@@ -426,6 +479,80 @@ mod tests {
         let edges = collect_origin_lifetime_orderings(&origins, 2, |_| None)
             .edges()
             .to_vec();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn source_raw_endpoint_does_not_emit_lifetime_ordering() {
+        let mut origins = OriginVec::new();
+        let parent = OriginId(origins.len() as u32);
+        origins.push(OriginNode {
+            kind: OriginKind::Reborrow(CId(1)),
+            parent: None,
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: None,
+        });
+        origins.push(OriginNode {
+            kind: OriginKind::Reborrow(CId(0)),
+            parent: Some(parent),
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: None,
+        });
+
+        let edges = collect_origin_lifetime_orderings(&origins, 2, |cid| match cid {
+            CId(0) => Some(PointerLifetimeInfo {
+                lid: LId(0),
+                from_raw: true,
+            }),
+            CId(1) => Some(PointerLifetimeInfo {
+                lid: LId(1),
+                from_raw: false,
+            }),
+            _ => None,
+        })
+        .edges()
+        .to_vec();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn target_raw_endpoint_does_not_emit_lifetime_ordering() {
+        let mut origins = OriginVec::new();
+        let parent = OriginId(origins.len() as u32);
+        origins.push(OriginNode {
+            kind: OriginKind::Reborrow(CId(1)),
+            parent: None,
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: None,
+        });
+        origins.push(OriginNode {
+            kind: OriginKind::Reborrow(CId(0)),
+            parent: Some(parent),
+            decl_site: None,
+            declared_mutability: None,
+            effective_mutability: None,
+            lifetime_seed: None,
+        });
+
+        let edges = collect_origin_lifetime_orderings(&origins, 2, |cid| match cid {
+            CId(0) => Some(PointerLifetimeInfo {
+                lid: LId(0),
+                from_raw: false,
+            }),
+            CId(1) => Some(PointerLifetimeInfo {
+                lid: LId(1),
+                from_raw: true,
+            }),
+            _ => None,
+        })
+        .edges()
+        .to_vec();
         assert!(edges.is_empty());
     }
 
