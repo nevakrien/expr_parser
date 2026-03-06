@@ -531,9 +531,7 @@ fn infer_elided_output_lifetime(
     undeclared_before_inputs: u32,
     undeclared_after_inputs: u32,
 ) -> Option<LifeTime> {
-    let Some(out_expr) = output_type else {
-        return None;
-    };
+    let out_expr = output_type?;
     if !matches!(
         ctx.ex.program.type_expr(out_expr),
         TypeExpr::Ptr {

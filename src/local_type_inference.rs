@@ -708,7 +708,6 @@ fn new_suborigin(
     parent.map(|parent| {
         ctx.types.new_origin(
             &mut ctx.ex,
-            &mut ctx.search,
             &mut ctx.req.pending_mutability_matches,
             kind,
             Some(parent),
@@ -729,7 +728,6 @@ fn new_origin_root(
 ) -> OriginId {
     ctx.types.new_origin(
         &mut ctx.ex,
-        &mut ctx.search,
         &mut ctx.req.pending_mutability_matches,
         kind,
         None,
@@ -1416,7 +1414,6 @@ pub(crate) fn gather_constraints(
                 let output = ctx.new_cluster();
                 let output_origin = Some(ctx.types.new_origin(
                     &mut ctx.ex,
-                    &mut ctx.search,
                     &mut ctx.req.pending_mutability_matches,
                     OriginKind::CallReturnRoot(output),
                     ctx.types.value_origin(call.base),
@@ -2106,7 +2103,6 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         };
         let origin = Some(ctx.types.new_origin(
             &mut ctx.ex,
-            &mut ctx.search,
             &mut ctx.req.pending_mutability_matches,
             OriginKind::ArgumentRoot(c),
             None,
@@ -2897,7 +2893,6 @@ impl PendingImplicitDeref {
         &mut self,
         ex: &mut ExternState,
         types: &mut TypeState,
-        search: &mut SearchState,
         pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
         resolved_base: CId,
     ) -> Vec<CId> {
@@ -2912,7 +2907,6 @@ impl PendingImplicitDeref {
                 let cid = types.root(cid);
                 let next_parent = types.new_origin(
                     ex,
-                    search,
                     pending_mutability_matches,
                     OriginKind::RawRoot(cid),
                     *chain_parent,
@@ -3046,7 +3040,6 @@ impl PendingMemberAccess {
                                 implicit_receivers: self.implicit_deref.finalize_chain(
                                     ex,
                                     types,
-                                    search,
                                     pending_mutability_matches,
                                     current,
                                 ),
@@ -3077,7 +3070,6 @@ impl PendingMemberAccess {
                                 implicit_receivers: self.implicit_deref.finalize_chain(
                                     ex,
                                     types,
-                                    search,
                                     pending_mutability_matches,
                                     current,
                                 ),
@@ -3154,7 +3146,6 @@ impl PendingMemberAccess {
                             implicit_receivers: self.implicit_deref.finalize_chain(
                                 ex,
                                 types,
-                                search,
                                 pending_mutability_matches,
                                 current,
                             ),
@@ -3185,7 +3176,6 @@ impl PendingMemberAccess {
                             implicit_receivers: self.implicit_deref.finalize_chain(
                                 ex,
                                 types,
-                                search,
                                 pending_mutability_matches,
                                 current,
                             ),
@@ -4098,7 +4088,6 @@ impl PendingIndex {
         self.implicit_deref.implicit_receivers = self.implicit_deref.finalize_chain(
             ex,
             types,
-            search,
             pending_mutability_matches,
             current,
         );

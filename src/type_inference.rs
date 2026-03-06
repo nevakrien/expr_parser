@@ -1,4 +1,4 @@
-//!
+// 
 // ================================================================
 // SCOPE (Closures and Rank)
 // ================================================================
@@ -311,7 +311,8 @@ impl Program {
         }
 
         use crate::string_intern::DSIZED_STR;
-        for name in [DSIZED_STR] {
+        {
+            let name = DSIZED_STR;
             let id = self.insert_value_in_current_scope(name);
             self.definitions.insert(id, Defined::BuildinInterface(name));
             // self.set_definition_loc(id, Program::placeholder_loc());
@@ -1361,7 +1362,7 @@ fn _infer_value_hacky<'a>(
 
     value: ValId,
 ) -> Result<&'a mut SolvedTypes, Vec<TypeError>> {
-    if !ans.function_values.get(&value).is_some() {
+    if !ans.function_values.contains_key(&value) {
         ans.set_function_signature(
             value,
             SolvedFunctionTypes {
@@ -1675,6 +1676,7 @@ pub(crate) struct StructDef {
     #[allow(dead_code)]
     pub(crate) loc: TExpId,
     pub(crate) fields: Vec<(NameId, CId)>,
+    #[allow(dead_code)]
     pub(crate) sid: StructId,
 }
 
@@ -1760,6 +1762,10 @@ impl<T> OriginVec<T> {
         self.0.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn clear(&mut self) {
         self.0.clear();
     }
@@ -1808,7 +1814,6 @@ pub(crate) enum OriginKind {
     MemberProjection,
     IndexProjection,
     CastProjection(CId),
-    RawDerefLifetimeProjection,
 }
 
 impl OriginKind {
@@ -1824,7 +1829,6 @@ impl OriginKind {
             OriginKind::MemberProjection => None,
             OriginKind::IndexProjection => None,
             OriginKind::CastProjection(cid) => Some(cid),
-            OriginKind::RawDerefLifetimeProjection => None,
         }
     }
 }
@@ -2455,7 +2459,6 @@ impl TypeState {
     pub(crate) fn new_origin(
         &mut self,
         ex: &mut ExternState,
-        search: &mut SearchState,
         pending_mutability_matches: &mut Vec<PendingMutabilityMatchRequirement>,
         kind: OriginKind,
         parent: Option<OriginId>,
@@ -2527,9 +2530,7 @@ impl TypeState {
     fn compute_origin_mutability(&self, origin: OriginId) -> Option<bool> {
         let mut current = Some(origin);
         while let Some(origin) = current {
-            let Some(node) = self.origin(origin) else {
-                return None;
-            };
+            let node = self.origin(origin)?;
 
             if matches!(node.kind, OriginKind::BindingRoot) && node.parent.is_some() {
                 current = node.parent;
@@ -3737,9 +3738,7 @@ fn try_resolve_struct_type(
     for lid in site.lifetimes.iter_mut() {
         let root = find_lid_root(&mut types.lifetimes.life_parent, *lid);
         *lid = root;
-        let Some(ans) = types.lifetimes.life_known[root] else {
-            return None;
-        };
+        let ans = types.lifetimes.life_known[root]?;
         lifetimes.push(ans);
     }
 
@@ -4303,6 +4302,7 @@ pub(crate) fn extract_clash_type_string(
 // Specialization (monomorphisation into local clusters)
 // ============================================================
 
+#[allow(dead_code)]
 pub(crate) struct SpecializeCtx<'a> {
     pub(crate) generics: &'a [CId],
     pub(crate) lifetimes: &'a [LId],
@@ -4631,7 +4631,6 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             let is_mut_legal = matches!(kind, VarKind::Mut);
             let origin = Some(ctx.types.new_origin(
                 &mut ctx.ex,
-                &mut ctx.search,
                 &mut ctx.req.pending_mutability_matches,
                 OriginKind::BindingRoot,
                 None,
@@ -4659,7 +4658,6 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
             let origin = ctx.types.pattern_origin(base).map(|base_origin| {
                 ctx.types.new_origin(
                     &mut ctx.ex,
-                    &mut ctx.search,
                     &mut ctx.req.pending_mutability_matches,
                     OriginKind::Reborrow(c),
                     Some(base_origin),

@@ -751,10 +751,9 @@ impl Program {
                     .and_then(|scope| scope.0.get(&name))
                     .copied()
                 {
-                    if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined)) {
-                        id
-                    } else if allow_existing_function
-                        && matches!(self.definitions.get(&id), Some(Defined::Func(_)))
+                    if matches!(self.definitions.get(&id), Some(Defined::ToBeDefined))
+                        || (allow_existing_function
+                            && matches!(self.definitions.get(&id), Some(Defined::Func(_))))
                     {
                         id
                     } else {
