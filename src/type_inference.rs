@@ -1290,16 +1290,14 @@ type TypecheckResult = Result<TypecheckSummary, Box<dyn std::error::Error>>;
 ///runs the typechecker and reports all errors
 ///the rhs value is the total number of functions checked
 ///the lhs value is either the result or the number of errors found
-pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> TypecheckResult{
-    run_typecheck_scan(program,|program,types,e|{Ok(reporter.report_type_error(program, types, e)?)})
+pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> TypecheckResult {
+    run_typecheck_scan(program, |program, types, e| {
+        Ok(reporter.report_type_error(program, types, e)?)
+    })
 }
 pub fn run_typecheck_scan(
-    program: &Program, 
-    mut callback: impl FnMut(
-        &Program,
-        &TypeStore,
-        &TypeError,
-    )->Result<(),Box<dyn std::error::Error>>
+    program: &Program,
+    mut callback: impl FnMut(&Program, &TypeStore, &TypeError) -> Result<(), Box<dyn std::error::Error>>,
 ) -> TypecheckResult {
     let mut solved_types = SolvedTypes::new(program);
     let mut types = TypeStore::new();
@@ -7779,10 +7777,7 @@ mod type_infer_tests {
             .err()
             .expect("expected returning local reference to fail");
 
-        assert_has_simple_error(
-            &errs,
-            "lifetime mismatch: 'l0 must outlive 'a0",
-        );
+        assert_has_simple_error(&errs, "lifetime mismatch: 'l0 must outlive 'a0");
     }
 
     #[test]

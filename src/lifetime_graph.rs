@@ -325,9 +325,18 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     let graph = collect_origin_lifetime_orderings(&ctx.types.lifetimes.origins, lid_count);
     let solve = solve_lifetime_scc(&graph);
     let anchors = collect_lid_origin_anchors(&ctx.types.lifetimes.origins, lid_count);
+    let invalid_components = collect_invalid_lifetime_ordering_components(ctx, &graph, &solve);
 
-    for component in &solve.components {
+    for (component_index, component) in solve.components.iter().enumerate() {
         if component.nodes.len() < 2 {
+            continue;
+        }
+
+        if invalid_components
+            .get(component_index)
+            .copied()
+            .unwrap_or(false)
+        {
             continue;
         }
 
@@ -338,8 +347,14 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
                 continue;
             }
 
-            if report_lifetime_cycle_conflict(ctx, &graph, &solve.component_of, component, leader, lid)
-            {
+            if report_lifetime_cycle_conflict(
+                ctx,
+                &graph,
+                &solve.component_of,
+                component,
+                leader,
+                lid,
+            ) {
                 continue;
             }
 
@@ -373,6 +388,45 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
 }
 
+fn collect_invalid_lifetime_ordering_components(
+    ctx: &mut InferState,
+    graph: &LifetimeOrderingGraph,
+    solve: &LifetimeSccSolve,
+) -> Vec<bool> {
+    let mut invalid_components = vec![false; solve.components.len()];
+
+    for edge in graph.edges() {
+        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
+        let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
+
+        if shorter_root == longer_root {
+            continue;
+        }
+
+        let shorter_lt = ctx.types.lifetimes.life_known[shorter_root];
+        let longer_lt = ctx.types.lifetimes.life_known[longer_root];
+        let (Some(shorter_lt), Some(longer_lt)) = (shorter_lt, longer_lt) else {
+            continue;
+        };
+
+        if !illegal_global_lifetime_ordering(shorter_lt, longer_lt)
+            && !matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater))
+        {
+            continue;
+        }
+
+        let Some(component_id) = solve.component_of.get(edge.shorter.0).copied() else {
+            continue;
+        };
+        if solve.component_of.get(edge.longer.0).copied() != Some(component_id) {
+            continue;
+        }
+        invalid_components[component_id] = true;
+    }
+
+    invalid_components
+}
+
 fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
     let mut seen_root_pairs: Vec<(usize, usize)> = Vec::new();
 
@@ -390,7 +444,10 @@ fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrder
             continue;
         };
 
-        if !matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater)) {
+        let has_impossible_known_order =
+            matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater));
+        let has_illegal_global_order = illegal_global_lifetime_ordering(shorter_lt, longer_lt);
+        if !has_impossible_known_order && !has_illegal_global_order {
             continue;
         }
 
@@ -400,8 +457,19 @@ fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrder
         }
         seen_root_pairs.push(pair);
 
-        report_lifetime_ordering_conflict(ctx, edge);
+        if has_illegal_global_order {
+            report_illegal_global_lifetime_ordering(ctx, edge);
+        } else {
+            report_lifetime_ordering_conflict(ctx, edge);
+        }
     }
+}
+
+fn illegal_global_lifetime_ordering(shorter_lt: LifeTime, longer_lt: LifeTime) -> bool {
+    matches!(
+        (shorter_lt, longer_lt),
+        (LifeTime::External(a), LifeTime::External(b)) if a != b
+    )
 }
 
 fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
@@ -734,12 +802,10 @@ fn report_lifetime_cycle_conflict(
     let message = format!(
         "lifetime cycle requires incompatible outlives requirements between {leader_name} and {other_name}"
     );
-    let forward_label = format!(
-        "this path requires lifetime {other_name} to outlive {leader_name}"
-    );
-    let reverse_label = format!(
-        "but this path also requires lifetime {leader_name} to outlive {other_name}"
-    );
+    let forward_label =
+        format!("this path requires lifetime {other_name} to outlive {leader_name}");
+    let reverse_label =
+        format!("but this path also requires lifetime {leader_name} to outlive {other_name}");
 
     match (forward_loc, reverse_loc) {
         (Some(loc), Some(related)) => {
@@ -849,6 +915,41 @@ fn report_lifetime_ordering_conflict(ctx: &mut InferState, edge: &LifetimeOrderi
     }
 }
 
+fn report_illegal_global_lifetime_ordering(ctx: &mut InferState, edge: &LifetimeOrdering) {
+    let source_loc = origin_loc(ctx, edge.source_origin);
+    let target_loc = origin_loc(ctx, edge.target_origin);
+    let shorter_name = format_lid_name(ctx, LId(edge.shorter.0));
+    let longer_name = format_lid_name(ctx, LId(edge.longer.0));
+    let message =
+        format!("illegal global lifetime ordering: {longer_name} must outlive {shorter_name}");
+    let label = format!(
+        "this {} requires lifetime {longer_name} to outlive {shorter_name}, but both are global lifetimes",
+        ordering_reason_text(edge.reason)
+    );
+    let related_label = format!("lifetime {longer_name} is taken from here");
+
+    if let (Some(loc), Some(related)) = (source_loc.clone(), target_loc.clone()) {
+        ctx.push_error(TypeError::LifetimeError {
+            loc,
+            message,
+            label,
+            related: Some(related),
+            related_label: Some(related_label),
+        });
+        return;
+    }
+
+    if let Some(loc) = source_loc.or(target_loc) {
+        ctx.push_error(TypeError::LifetimeError {
+            loc,
+            message,
+            label,
+            related: None,
+            related_label: None,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -858,7 +959,9 @@ mod tests {
     };
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
-    use crate::local_type_inference::{gather_func_constraints, infer_value_internals, local_solver};
+    use crate::local_type_inference::{
+        gather_func_constraints, infer_value_internals, local_solver,
+    };
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::run_typecheck_scan;
@@ -1051,17 +1154,49 @@ mod tests {
             .expect("expected lifetime cycle to fail");
 
         assert!(
+            errs.iter()
+                .filter(|err| {
+                    matches!(
+                        err,
+                        TypeError::LifetimeError { message, label, .. }
+                            if message.contains("illegal global lifetime ordering")
+                                && message.contains("'a")
+                                && message.contains("'b")
+                                && label.contains("both are global lifetimes")
+                    )
+                })
+                .count()
+                == 2,
+            "expected exactly two illegal global lifetime ordering errors, got {:?}",
+            errs
+        );
+    }
+
+    #[test]
+    fn distinct_global_lifetime_ordering_is_rejected_without_cycle() {
+        let src = "f=fn['a,'b](r1:&'a &'a int)->&'b &'a int { & & * * r1 }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .expect("expected distinct global lifetime ordering to fail");
+
+        assert!(
             errs.iter().any(|err| {
                 matches!(
                     err,
-                    TypeError::LifetimeError { message, label, related_label, .. }
-                        if message.contains("'a")
+                    TypeError::LifetimeError { message, label, .. }
+                        if message.contains("illegal global lifetime ordering")
+                            && message.contains("'a")
                             && message.contains("'b")
-                            && label.contains("outlive")
-                            && related_label.as_ref().is_some_and(|text| text.contains("outlive"))
+                            && label.contains("both are global lifetimes")
                 )
             }),
-            "expected named lifetime cycle error, got {:?}",
+            "expected illegal global lifetime ordering error, got {:?}",
             errs
         );
     }
@@ -1080,7 +1215,7 @@ mod tests {
         "#;
         let program = gather_program(src);
         let (result, _checked) =
-            run_typecheck_scan(&program, |_,_,_| Ok(())).expect("typechecker should run");
+            run_typecheck_scan(&program, |_, _, _| Ok(())).expect("typechecker should run");
 
         assert!(
             matches!(result, Err(err_count) if err_count > 0),

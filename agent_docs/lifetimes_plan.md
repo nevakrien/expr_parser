@@ -392,6 +392,12 @@ Global stage responsibilities:
 - detect cycles or equality requirements introduced by composition
 - produce cross-function diagnostics
 
+At the local graph layer, diagnostics should prefer reporting the offending
+ordering edges themselves when a constraint is illegal (especially for distinct
+global/external lifetimes). SCC/cycle machinery is still useful for preventing
+bad equalization, but user-facing errors should stay focused on the specific
+unauthorized outlives requirements rather than on the existence of a cycle.
+
 ---
 
 # Integration Point

@@ -28,6 +28,12 @@ const SOURCE: &str = r#"
         & & * * r2
     }
 "#;
+
+// const SOURCE: &str = r#"
+//     f=fn['a,'b](r1:&'a &'a int)->&'b &'a int {
+//         & & * * r1
+//     }
+// "#;
 // const SOURCE: &str = r#"
 // sqrt = fn(f:float)->float;
 // Point = struct{x:float,y:float}
