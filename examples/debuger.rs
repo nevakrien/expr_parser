@@ -4,18 +4,14 @@ use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
 const SOURCE: &str = r#"
-// f=fn(){
-//     var x = 2;
-//     var p = &x;
-//     *p=3;
-//     p: &const int;
-// }
+get_static = fn()->&'static &'static void;
+weird_func = fn['a,'b,T](r:&'a &'b void,y:&'b T)->&'a T{
+    y
+}
 
-S=struct{x:int,y:bool};
-N=struct{n:int,s:S};
-
-// const_struct_borrow = fn(self:&mut S)->&mut int { &mut self.x };
-const_two_members = fn(self:&mut S){ self.x = 1; self.y = true; };
+cheat = fn['a,'b,T](x:&'a T)->&'b T {
+    weird_func(get_static(),x)
+}
 "#;
 // const SOURCE: &str = r#"
 // Wrapper = struct {baba:[int;1]};

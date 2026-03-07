@@ -34,8 +34,10 @@ Use this with:
 - `let`-introduced binding roots now seed required local lifetimes directly on
   their origin-attached `LId`s during gather, so truly local storage origins are
   explicitly represented before graph solving.
-- After graph solve, remaining unresolved lifetime roots are assigned fresh
-  unknown lifetimes (`LifeTime::Unknown`) rather than defaulting to local.
+- After graph solve, unresolved lifetime roots are finalized by constraint
+  context: roots that are constrained (directly or transitively) by `u <= l`
+  where `l` is local are promoted to fresh local lifetimes; other unresolved
+  roots are assigned fresh unknown lifetimes (`LifeTime::Unknown`).
 - Struct field signatures now reject elided reference lifetimes in inline struct
   definitions when lifetime params are required.
 

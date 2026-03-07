@@ -344,7 +344,7 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
 
     validate_known_lifetime_orderings(ctx, &graph);
 
-    assign_remaining_unresolved_lifetimes_as_unknown(ctx);
+    assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
 }
 
 fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
@@ -485,7 +485,48 @@ fn find_or_create_lid_for_lifetime(ctx: &mut InferState, lt: LifeTime) -> Option
     Some(ctx.types.new_lid_known(lt))
 }
 
-fn assign_remaining_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
+fn assign_remaining_unresolved_lifetimes_as_unknown(
+    ctx: &mut InferState,
+    graph: &LifetimeOrderingGraph,
+) {
+    let root_count = ctx.types.lifetimes.life_parent.0.len();
+    let mut predecessors: Vec<Vec<LId>> = vec![Vec::new(); root_count];
+
+    for edge in graph.edges() {
+        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
+        let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
+        if shorter_root == longer_root {
+            continue;
+        }
+        predecessors[longer_root.0].push(shorter_root);
+    }
+
+    let mut promote_to_local = vec![false; root_count];
+    let mut stack = Vec::new();
+    for root_raw in 0..root_count {
+        let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(root_raw));
+        if matches!(
+            ctx.types.lifetimes.life_known[root],
+            Some(LifeTime::Local(_))
+        ) {
+            stack.push(root);
+        }
+    }
+
+    while let Some(longer_root) = stack.pop() {
+        for &shorter_root in &predecessors[longer_root.0] {
+            if ctx.types.lifetimes.life_known[shorter_root].is_some()
+                || promote_to_local[shorter_root.0]
+            {
+                continue;
+            }
+
+            promote_to_local[shorter_root.0] = true;
+            stack.push(shorter_root);
+        }
+    }
+
+    let mut next_local = next_local_lifetime_id(ctx);
     let mut next_unknown = next_unknown_lifetime_id(ctx);
     let lids = ctx.types.lifetimes.life_parent.0.clone();
 
@@ -495,8 +536,13 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
             continue;
         }
 
-        ctx.types.lifetimes.life_known[root] = Some(LifeTime::Unknown(LifeId(next_unknown)));
-        next_unknown += 1;
+        if promote_to_local[root.0] {
+            ctx.types.lifetimes.life_known[root] = Some(LifeTime::Local(LifeId(next_local)));
+            next_local += 1;
+        } else {
+            ctx.types.lifetimes.life_known[root] = Some(LifeTime::Unknown(LifeId(next_unknown)));
+            next_unknown += 1;
+        }
     }
 }
 
@@ -641,7 +687,8 @@ fn report_lifetime_ordering_conflict(
 mod tests {
     use super::{
         LifetimeGraphId, LifetimeOrdering, LifetimeOrderingReason,
-        collect_origin_lifetime_orderings, seed_origin_lifetimes_for_graph, solve_lifetime_scc,
+        assign_remaining_unresolved_lifetimes_as_unknown, collect_origin_lifetime_orderings,
+        seed_origin_lifetimes_for_graph, solve_lifetime_scc,
     };
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
@@ -998,5 +1045,55 @@ mod tests {
         let seeded_lt = ctx.types.lifetimes.life_known[seeded_root]
             .expect("origin lifetime should resolve to pointer lifetime");
         assert_eq!(seeded_lt, LifeTime::External(42));
+    }
+
+    #[test]
+    fn unresolved_under_local_ordering_is_promoted_to_local() {
+        let program = gather_program("f=fn(){};");
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let function = find_value_by_name(&program, "f");
+        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
+        ctx.req.owner = Some(function);
+
+        let shorter_unknown = ctx.types.new_lid();
+        let unconstrained_unknown = ctx.types.new_lid();
+        let known_local = ctx
+            .types
+            .new_lid_known(LifeTime::Local(crate::type_inference::LifeId(3)));
+
+        let mut graph = super::LifetimeOrderingGraph::new(ctx.types.lifetimes.life_parent.0.len());
+        graph.push_edge(LifetimeOrdering {
+            shorter: LifetimeGraphId(shorter_unknown.0),
+            longer: LifetimeGraphId(known_local.0),
+            source_origin: OriginId(0),
+            target_origin: OriginId(0),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+
+        assign_remaining_unresolved_lifetimes_as_unknown(&mut ctx, &graph);
+
+        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, shorter_unknown);
+        let unconstrained_root =
+            find_lid_root(&mut ctx.types.lifetimes.life_parent, unconstrained_unknown);
+
+        assert!(
+            matches!(
+                ctx.types.lifetimes.life_known[shorter_root],
+                Some(LifeTime::Local(_))
+            ),
+            "expected unknown constrained by <= local to become local, got {:?}",
+            ctx.types.lifetimes.life_known[shorter_root]
+        );
+        assert!(
+            matches!(
+                ctx.types.lifetimes.life_known[unconstrained_root],
+                Some(LifeTime::Unknown(_))
+            ),
+            "expected unconstrained unresolved lifetime to remain unknown, got {:?}",
+            ctx.types.lifetimes.life_known[unconstrained_root]
+        );
     }
 }
