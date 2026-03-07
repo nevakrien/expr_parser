@@ -421,7 +421,12 @@ Other notable implemented branches:
 
 ### Patterns and type expressions
 
-- `gather_pattern_constraints*` handles bind/wildcard/annotated patterns and binds names to clusters.
+- `gather_pattern_constraints*` now threads an optional `parent_origin` through
+  recursive pattern gather, so immutable binding roots can inherit provenance
+  directly instead of relying only on later patch-up.
+- Mutable bindings intentionally do not inherit that parent origin; they remain
+  fresh writable roots and only pick up provenance through the older guarded
+  post-pass when appropriate.
 - `gather_generic_constraints` maps generic parameter bind names to `TypeValue::Generic(GenId, TraitInfo)` and records them in both value-name and type-name local maps.
   - Current bound parsing supports `:dsize` and stores it as `TraitInfo { sized: false }`; unannotated generics use `TraitInfo { sized: true }`.
   - Type-string rendering shows `:dsize` on function signature binders (`fn[T:dsize](...)`) and keeps generic uses as plain `T` (`(T) -> T`) so bounds are displayed at declaration sites.

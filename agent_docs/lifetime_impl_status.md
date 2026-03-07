@@ -76,9 +76,24 @@ Use this with:
 - Origin seeding now prefers the associated-pointer lifetime when an existing
   origin seed conflicts with that pointer lifetime, avoiding stale/conflicting
   seeds on pointer-associated origins.
+- Current origin attachment still relies heavily on `value_origins` /
+  `pattern_origins` side tables and retroactive parent relationships. The new
+  direction is to replace this with parent-origin threading during gather/type
+  compilation so nested reference structure is built in syntax order.
+- Pattern gathering now accepts a threaded `parent_origin: Option<OriginId>` and
+  uses it for immutable binding roots / nested annotated patterns, while mutable
+  bindings still intentionally avoid inheriting parent provenance so local
+  mutability is not over-constrained.
 
 ## Not Implemented Yet
 
+- Declaration-time nested-reference well-formedness checking for global
+  signatures (`&'a &'b T` requiring `'a <= 'b`).
+- Stored declared lifetime-order metadata on structs and function signatures.
+- Typedef/type-alias declaration validation for nested-reference
+  well-formedness.
+- Validation that body-induced external ordering requirements are a subset of
+  declared/allowed requirements.
 - Full local lifetime graph construction from origin/provenance edges integrated
   into local inference with per-origin `LId` seeding.
 - Stable exported `SolvedLifetimeGraph` artifact for downstream borrow checking.
@@ -98,7 +113,11 @@ Use this with:
 Current direction is:
 
 1. Keep existing lifetime identity plumbing intact.
-2. Replace fallback-heavy unresolved handling with explicit local graph edges.
-3. Solve local lifetimes via SCC collapse and validate SCC contents.
-4. Export a CId-free solved lifetime graph for borrow-check consumption.
-5. Layer global lifetime composition on top of local solved summaries.
+2. Move origin construction toward threaded parent origins instead of hash-map
+   side tables.
+3. Record declared well-formedness requirements during declaration/signature
+   compilation.
+4. Replace fallback-heavy unresolved handling with explicit local graph edges.
+5. Solve local lifetimes via SCC collapse and validate SCC contents.
+6. Export a CId-free solved lifetime graph for borrow-check consumption.
+7. Layer global lifetime composition on top of local solved summaries.

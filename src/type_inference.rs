@@ -1400,7 +1400,7 @@ fn _infer_value_hacky<'a>(
             );
         }
         _ => {
-            let c = gather_constraints(&mut ctx, value, None);
+            let c = gather_constraints(&mut ctx, value, None, None);
             ctx.bind_val(value, c);
         }
     }
@@ -4591,7 +4591,7 @@ pub(crate) enum ImplicitDerefStep {
 
 #[inline(always)]
 pub(crate) fn gather_pattern_constraints(ctx: &mut InferState, p: PatId) -> CId {
-    gather_pattern_constraints_with_generics::<false>(ctx, p)
+    gather_pattern_constraints_with_generics::<false>(ctx, p, None)
 }
 
 #[inline(always)]
@@ -4599,7 +4599,7 @@ pub(crate) fn gather_pattern_constraints_and_name(
     ctx: &mut InferState,
     p: PatId,
 ) -> (CId, Option<NameId>) {
-    gather_pattern_constraints_and_name_with_generics::<false>(ctx, p)
+    gather_pattern_constraints_and_name_with_generics::<false>(ctx, p, None)
 }
 
 pub(crate) fn pattern_bind_name(program: &Program, p: PatId) -> Option<NameId> {
@@ -4614,14 +4614,17 @@ pub(crate) fn pattern_bind_name(program: &Program, p: PatId) -> Option<NameId> {
 pub(crate) fn gather_pattern_constraints_with_generics<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     p: PatId,
+    parent_origin: Option<OriginId>,
 ) -> CId {
-    let (x, _) = gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, p);
+    let (x, _) =
+        gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, p, parent_origin);
     x
 }
 
 fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
     ctx: &mut InferState,
     p: PatId,
+    parent_origin: Option<OriginId>,
 ) -> (CId, Option<NameId>) {
     match ctx.ex.program.pattern(p) {
         Pattern::Wildcard(_) => {
@@ -4632,11 +4635,12 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         Pattern::Bind(n, kind) => {
             let c = ctx.new_cluster();
             let is_mut_legal = matches!(kind, VarKind::Mut);
+            let binding_parent = parent_origin;
             let origin = Some(ctx.types.new_origin(
                 &mut ctx.ex,
                 &mut ctx.req.pending_mutability_matches,
                 OriginKind::BindingRoot,
-                None,
+                binding_parent,
                 Some(OriginDeclSite::Pattern(p)),
                 Some(is_mut_legal),
                 None,
@@ -4649,8 +4653,11 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         }
 
         Pattern::AddrOf(base, kind) => {
-            let (tgt, n) =
-                gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, base);
+            let (tgt, n) = gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(
+                ctx,
+                base,
+                parent_origin,
+            );
             let mutable = matches!(kind, VarKind::Mut);
             let c = ctx.new_cluster();
             ctx.types.core.cluster[c].state = ResolveKind::Ptr {
@@ -4675,8 +4682,11 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         }
 
         Pattern::TypeAnnotation { pat, ty } => {
-            let (c, n) =
-                gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(ctx, pat);
+            let (c, n) = gather_pattern_constraints_and_name_with_generics::<GLOBAL_SCOPE>(
+                ctx,
+                pat,
+                parent_origin,
+            );
             let t = if GLOBAL_SCOPE {
                 compile_signature_type_expr(ctx, ty)
             } else {
@@ -4699,7 +4709,13 @@ fn gather_pattern_constraints_and_name_with_generics<const GLOBAL_SCOPE: bool>(
         Pattern::Tuple(items) => {
             let item_clusters = items
                 .ids()
-                .map(|item| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, item))
+                .map(|item| {
+                    gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(
+                        ctx,
+                        item,
+                        parent_origin,
+                    )
+                })
                 .collect::<Vec<_>>();
             let tuple = ctx.new_tuple_instance(item_clusters);
             ctx.bind_pat_with_origin(p, tuple, None);

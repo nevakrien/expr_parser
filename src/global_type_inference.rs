@@ -1461,7 +1461,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
 
     let inputs = params
         .ids()
-        .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat))
+        .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat, None))
         .collect::<Vec<_>>();
     let lids_after_inputs = ctx.types.lifetimes.life_parent.0.len();
     let implicit_input_lifetimes =

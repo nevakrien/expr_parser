@@ -24,7 +24,9 @@ EOF
 - Suppresses warning spam (`RUSTFLAGS=-Awarnings`).
 - Keeps output focused on diagnostics and optional type dump.
 
-Use this when you want solved origins (with mutability info):
+Use this when you want solved origins (currently mainly structure + mutability;
+adding lifetime info to the dump is a planned debugging improvement and should
+be kept in mind while refactoring origins):
 
 ```bash
 scripts/repl_batch.sh --origin-dump <<'EOF'

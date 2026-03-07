@@ -65,7 +65,7 @@ pub fn infer_value_internals<'a>(
             };
 
             if let Some(body) = body {
-                let body_cluster = gather_constraints(&mut ctx, body, Some(output));
+                let body_cluster = gather_constraints(&mut ctx, body, Some(output), None);
                 if let Err(clash) = ctx.unify(body_cluster, output) {
                     let found = match ctx.ex.program.value(body) {
                         Value::Block {
@@ -84,7 +84,7 @@ pub fn infer_value_internals<'a>(
 
             ctx.new_solved(known_function_ty.unwrap_or(UNKNOWN_TYPE))
         }
-        _ => gather_constraints(&mut ctx, value, None),
+        _ => gather_constraints(&mut ctx, value, None, None),
     };
 
     local_solver(&mut ctx);
@@ -476,7 +476,7 @@ pub(crate) fn gather_func_constraints<const GLOBAL_SCOPE: bool>(
         return f;
     };
 
-    let body_cluster = gather_constraints(ctx, body, Some(output));
+    let body_cluster = gather_constraints(ctx, body, Some(output), None);
 
     if let Err(clash) = ctx.unify(body_cluster, output) {
         let found = match ctx.ex.program.value(body) {
@@ -707,6 +707,7 @@ pub(crate) fn gather_constraints(
     ctx: &mut InferState,
     v: ValId,
     current_output: Option<CId>,
+    parent_origin: Option<OriginId>,
 ) -> CId {
     match ctx.ex.program.value(v) {
         Value::Literal(Literal::Num(_)) => {
@@ -819,7 +820,7 @@ pub(crate) fn gather_constraints(
             value,
             else_part,
         } => {
-            let lhs = gather_pattern_constraints(ctx, pat);
+            let lhs = gather_pattern_constraints_with_generics::<false>(ctx, pat, None);
             let let_loc = ctx.ex.program.value_loc(v);
             require_sized_or_enqueue(
                 &mut ctx.ex,
@@ -883,7 +884,7 @@ pub(crate) fn gather_constraints(
             let lhs_origin = ctx.types.pattern_origin(pat);
             ctx.bind_val_with_origin(v, lhs, lhs_origin);
 
-            let rhs = gather_constraints(ctx, value, current_output);
+            let rhs = gather_constraints(ctx, value, current_output, None);
             let rhs_origin = ctx.types.value_origin(value);
 
             if let (Some(lhs_origin), Some(rhs_origin)) = (lhs_origin, rhs_origin)
@@ -906,7 +907,7 @@ pub(crate) fn gather_constraints(
             }
 
             if let Some(e) = else_part {
-                let ec = gather_constraints(ctx, e, current_output);
+                let ec = gather_constraints(ctx, e, current_output, None);
                 if let Err(clash) = ctx.unify(ec, lhs) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason:
@@ -923,7 +924,7 @@ pub(crate) fn gather_constraints(
         }
 
         Value::TypeAnnotation { value, ty } => {
-            let rhs_cluster = gather_constraints(ctx, value, current_output);
+            let rhs_cluster = gather_constraints(ctx, value, current_output, parent_origin);
             let ann_ty = compile_type_expr(ctx, ty);
 
             if let Err(clash) = ctx.unify(rhs_cluster, ann_ty) {
@@ -941,7 +942,7 @@ pub(crate) fn gather_constraints(
         }
 
         Value::Cast { value, ty } => {
-            let _ = gather_constraints(ctx, value, current_output);
+            let _ = gather_constraints(ctx, value, current_output, parent_origin);
             // Cast produces a new type identity: the target type
             let c = compile_type_expr(ctx, ty);
             enforce_cast_pointer_mutability(ctx, v, value, c);
@@ -977,7 +978,7 @@ pub(crate) fn gather_constraints(
         }
 
         Value::AddrOf(base, kind) => {
-            let tgt = gather_constraints(ctx, base, current_output);
+            let tgt = gather_constraints(ctx, base, current_output, None);
 
             // TODO(lifetimes): once borrow checking consumes explicit ordering constraints,
             // address-of should record lifetime edges for reborrow-like cases (for example
@@ -1019,7 +1020,7 @@ pub(crate) fn gather_constraints(
 
         Value::Deref(base) => {
             let output = ctx.new_cluster();
-            let src = gather_constraints(ctx, base, current_output);
+            let src = gather_constraints(ctx, base, current_output, None);
             let origin = new_suborigin(
                 ctx,
                 OriginKind::Deref(src),
@@ -1073,7 +1074,7 @@ pub(crate) fn gather_constraints(
                 );
             }
 
-            let source = gather_constraints(ctx, base, current_output);
+            let source = gather_constraints(ctx, base, current_output, None);
             let output_origin = new_suborigin(
                 ctx,
                 OriginKind::MemberProjection,
@@ -1154,7 +1155,7 @@ pub(crate) fn gather_constraints(
         }
 
         Value::Assign { op, target } => {
-            let lhs = gather_constraints(ctx, target, current_output);
+            let lhs = gather_constraints(ctx, target, current_output, None);
             let assign_loc = ctx.ex.program.value_loc(v);
             require_sized_or_enqueue(
                 &mut ctx.ex,
@@ -1170,7 +1171,7 @@ pub(crate) fn gather_constraints(
 
             match op {
                 AssignOp::Nothing(value) => {
-                    let rhs = gather_constraints(ctx, value, current_output);
+                    let rhs = gather_constraints(ctx, value, current_output, None);
                     if let Err(clash) = ctx.unify(rhs, lhs) {
                         ctx.push_error(TypeError::ValuesContradict {
                             expectation_reason: "assignment requires both sides match",
@@ -1182,7 +1183,7 @@ pub(crate) fn gather_constraints(
                     }
                 }
                 AssignOp::Bin(bin_op, value) => {
-                    let rhs = gather_constraints(ctx, value, current_output);
+                    let rhs = gather_constraints(ctx, value, current_output, None);
                     let mut site = BinOpSite {
                         loc: v,
                         op: bin_op,
@@ -1239,12 +1240,12 @@ pub(crate) fn gather_constraints(
             return_value,
         } => {
             for s in statements.ids() {
-                gather_constraints(ctx, s, current_output);
+                gather_constraints(ctx, s, current_output, None);
             }
 
             // block aliases its return value cluster (or void)
             let c = match return_value {
-                Some(r) => gather_constraints(ctx, r, current_output),
+                Some(r) => gather_constraints(ctx, r, current_output, parent_origin),
                 None => ctx.new_solved(BuiltinType::Void.into()),
             };
 
@@ -1256,8 +1257,8 @@ pub(crate) fn gather_constraints(
         Value::BinOp { op, values } => {
             let (lhs, rhs) = values;
 
-            let lc = gather_constraints(ctx, lhs, current_output);
-            let rc = gather_constraints(ctx, rhs, current_output);
+            let lc = gather_constraints(ctx, lhs, current_output, None);
+            let rc = gather_constraints(ctx, rhs, current_output, None);
 
             let output = match op {
                 //there is no legitmate reason to overload != == to have a diffrent signature
@@ -1313,7 +1314,7 @@ pub(crate) fn gather_constraints(
             output
         }
         Value::UnOp { op, value } => {
-            let input = gather_constraints(ctx, value, current_output);
+            let input = gather_constraints(ctx, value, current_output, None);
             let output = match op {
                 UnOp::Not => ctx.new_solved(BuiltinType::Bool.into()),
                 _ => ctx.new_cluster(),
@@ -1342,7 +1343,7 @@ pub(crate) fn gather_constraints(
             output
         }
         Value::While { cond, body } => {
-            let cond_cluster = gather_constraints(ctx, cond, current_output);
+            let cond_cluster = gather_constraints(ctx, cond, current_output, None);
             if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "while condition must be bool",
@@ -1353,14 +1354,14 @@ pub(crate) fn gather_constraints(
                 });
             }
 
-            let _body_cluster = gather_constraints(ctx, body, current_output);
+            let _body_cluster = gather_constraints(ctx, body, current_output, None);
 
             let output = ctx.new_solved(BuiltinType::Bool.into());
             ctx.bind_val(v, output);
             output
         }
         Value::If { cond, then, els } => {
-            let cond_cluster = gather_constraints(ctx, cond, current_output);
+            let cond_cluster = gather_constraints(ctx, cond, current_output, None);
             if let Err(clash) = ctx.force_type(cond_cluster, BuiltinType::Bool.into()) {
                 ctx.push_error(TypeError::ValuesContradict {
                     expectation_reason: "if condition must be bool",
@@ -1371,10 +1372,10 @@ pub(crate) fn gather_constraints(
                 });
             }
 
-            let then_cluster = gather_constraints(ctx, then, current_output);
+            let then_cluster = gather_constraints(ctx, then, current_output, None);
 
             let output = if let Some(els) = els {
-                let else_cluster = gather_constraints(ctx, els, current_output);
+                let else_cluster = gather_constraints(ctx, els, current_output, None);
                 if let Err(clash) = ctx.unify(then_cluster, else_cluster) {
                     ctx.push_error(TypeError::ValuesContradict {
                         expectation_reason: "if branches must have the same type",
@@ -1418,12 +1419,12 @@ pub(crate) fn gather_constraints(
                 //we can try derive the type of base directly
                 //this makes life SOOOO much easier than named args
 
-                let base = gather_constraints(ctx, call.base, current_output);
+                let base = gather_constraints(ctx, call.base, current_output, None);
                 //TODO we probably should enforce new suborigins here no?
                 let input_pairs = call
                     .args
                     .ids()
-                    .map(|arg| (arg, gather_constraints(ctx, arg, current_output)))
+                    .map(|arg| (arg, gather_constraints(ctx, arg, current_output, None)))
                     .collect::<Vec<_>>();
                 let inputs = input_pairs.iter().map(|(_, cluster)| *cluster).collect();
                 let output = ctx.new_cluster();
@@ -1520,7 +1521,7 @@ pub(crate) fn gather_constraints(
             let Some(base_name) = try_get_name(ctx, cons.base) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg, current_output);
+                    gather_constraints(ctx, arg, current_output, None);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -1529,7 +1530,7 @@ pub(crate) fn gather_constraints(
             let Some(def) = ctx.ex.program.definitions.get(&base_name) else {
                 ctx.push_error(TypeError::ConstructorBaseNotGlobal { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg, current_output);
+                    gather_constraints(ctx, arg, current_output, None);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -1539,7 +1540,7 @@ pub(crate) fn gather_constraints(
             let Defined::Type(texp) = def else {
                 ctx.push_error(TypeError::ConstructorBaseNotTypeName { site: cons.base });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg, current_output);
+                    gather_constraints(ctx, arg, current_output, None);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -1552,7 +1553,7 @@ pub(crate) fn gather_constraints(
                     found: None,
                 });
                 for arg in cons.args.ids() {
-                    gather_constraints(ctx, arg, current_output);
+                    gather_constraints(ctx, arg, current_output, None);
                 }
                 let ans = ctx.new_cluster();
                 ctx.bind_val(v, ans);
@@ -1587,7 +1588,7 @@ pub(crate) fn gather_constraints(
                         found: Some(ctx.ex.store.get_type_string(ctx.ex.program, base_type)),
                     });
                     for arg in cons.args.ids() {
-                        gather_constraints(ctx, arg, current_output);
+                        gather_constraints(ctx, arg, current_output, None);
                     }
                     let ans = ctx.new_cluster();
                     ctx.bind_val(v, ans);
@@ -1643,7 +1644,7 @@ pub(crate) fn gather_constraints(
             let missing = CId(usize::MAX);
             let mut args = Vec::with_capacity(expected.max(provided));
             for (i, a) in cons.pos_args().ids().enumerate() {
-                let c = gather_constraints(ctx, a, current_output);
+                let c = gather_constraints(ctx, a, current_output, None);
                 args.push(c);
 
                 let (nid, t) = ctx.ex.store.struct_value(sid).fields[i];
@@ -1679,7 +1680,7 @@ pub(crate) fn gather_constraints(
                     unreachable!()
                 };
 
-                let value_c = gather_constraints(ctx, value, current_output);
+                let value_c = gather_constraints(ctx, value, current_output, None);
 
                 let spot = ctx
                     .ex
@@ -1762,7 +1763,7 @@ pub(crate) fn gather_constraints(
         }
 
         Value::IntAccess { base, id, kind } => {
-            let source = gather_constraints(ctx, base, current_output);
+            let source = gather_constraints(ctx, base, current_output, None);
             let output_origin = new_suborigin(
                 ctx,
                 OriginKind::IndexProjection,
@@ -1808,7 +1809,7 @@ pub(crate) fn gather_constraints(
             if let Some(output) = current_output {
                 match op {
                     Some(ret_value) => {
-                        let ret_cluster = gather_constraints(ctx, ret_value, current_output);
+                        let ret_cluster = gather_constraints(ctx, ret_value, current_output, None);
                         if let Err(clash) = ctx.unify(ret_cluster, output) {
                             ctx.push_error(TypeError::ValuesContradict {
                                 expectation_reason: "return value must match function return type",
@@ -1835,7 +1836,7 @@ pub(crate) fn gather_constraints(
                 }
             } else {
                 if let Some(ret_value) = op {
-                    let _ = gather_constraints(ctx, ret_value, None);
+                    let _ = gather_constraints(ctx, ret_value, None, None);
                 }
                 let loc = ctx.ex.program.value_loc(v);
                 ctx.push_error(TypeError::Simple {
@@ -1848,7 +1849,7 @@ pub(crate) fn gather_constraints(
         }
         Value::LogicOp { op: _, values } => {
             let out = ctx.new_solved(BuiltinType::Bool.into());
-            let a = gather_constraints(ctx, values.0, current_output);
+            let a = gather_constraints(ctx, values.0, current_output, None);
             if let Err(clash) = ctx.unify(a, out) {
                 ctx.push_error(TypeError::ValuesContradict {
                     site: v,
@@ -1858,7 +1859,7 @@ pub(crate) fn gather_constraints(
                     clash,
                 })
             }
-            let b = gather_constraints(ctx, values.1, current_output);
+            let b = gather_constraints(ctx, values.1, current_output, None);
             if let Err(clash) = ctx.unify(b, out) {
                 ctx.push_error(TypeError::ValuesContradict {
                     site: v,
@@ -1874,7 +1875,7 @@ pub(crate) fn gather_constraints(
         Value::Tuple(items) => {
             let item_clusters = items
                 .ids()
-                .map(|item| gather_constraints(ctx, item, current_output))
+                .map(|item| gather_constraints(ctx, item, current_output, None))
                 .collect::<Vec<_>>();
             let tuple = ctx.new_tuple_instance(item_clusters);
             ctx.bind_val(v, tuple);
@@ -1883,9 +1884,9 @@ pub(crate) fn gather_constraints(
         Value::Array(items) => {
             let values = items.ids().collect::<Vec<_>>();
             let element = if let Some(first) = values.first().copied() {
-                let element = gather_constraints(ctx, first, current_output);
+                let element = gather_constraints(ctx, first, current_output, None);
                 for item in values.iter().copied().skip(1) {
-                    let item_c = gather_constraints(ctx, item, current_output);
+                    let item_c = gather_constraints(ctx, item, current_output, None);
                     if let Err(clash) = ctx.unify(item_c, element) {
                         ctx.push_error(TypeError::ValuesContradict {
                             expectation_reason: "array elements must all have the same type",
@@ -1906,16 +1907,16 @@ pub(crate) fn gather_constraints(
             array
         }
         Value::Index(call) => {
-            let base = gather_constraints(ctx, call.base, current_output);
+            let base = gather_constraints(ctx, call.base, current_output, None);
             let pos_args = call.pos_args().ids().collect::<Vec<_>>();
             let pos_arg_clusters = pos_args
                 .iter()
                 .copied()
-                .map(|arg| gather_constraints(ctx, arg, current_output))
+                .map(|arg| gather_constraints(ctx, arg, current_output, None))
                 .collect::<Vec<_>>();
             let named_args = call.named_args().ids().collect::<Vec<_>>();
             for arg in named_args.iter().copied() {
-                let _ = gather_constraints(ctx, arg, current_output);
+                let _ = gather_constraints(ctx, arg, current_output, None);
             }
 
             let output = ctx.new_cluster();
