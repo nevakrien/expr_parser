@@ -1007,7 +1007,6 @@ pub struct InnerFunctionTypes {
     pub origins: OriginVec<OriginNode>,
     pub value_origins: IdHashMap<ValId, OriginId>,
     pub pattern_origins: IdHashMap<PatId, OriginId>,
-    pub lifetime_unknown_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

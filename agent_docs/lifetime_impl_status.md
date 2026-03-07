@@ -24,15 +24,22 @@ Use this with:
 - Function/struct specialization includes lifetime specialization plumbing so
   solved/global lifetimes are remapped to fresh local unresolved lifetimes per
   specialization site.
-- Finalization has a fallback that resolves unresolved lifetime roots to
-  `Unknown` so type solving can complete.
+- Local solve now runs a lifetime-graph pass that seeds origin nodes with
+  associated `LId`s, extracts origin-order constraints, runs SCC collapse, and
+  unifies `LId`s inside cycle components.
+- `let`-introduced binding roots now seed required local lifetimes directly on
+  their origin-attached `LId`s during gather, so truly local storage origins are
+  explicitly represented before graph solving.
+- After graph solve, remaining unresolved lifetime roots are assigned fresh
+  unknown lifetimes (`LifeTime::Unknown`) rather than defaulting to local.
 - Struct field signatures now reject elided reference lifetimes in inline struct
   definitions when lifetime params are required.
 
 ## Partially Implemented / Transitional
 
-- Lifetime-aware local inference exists, but unresolved regions still collapse to
-  `Unknown` in fallback paths.
+- Lifetime-aware local inference exists, with unresolved/non-required lifetime
+  roots now converging to `Unknown` while `let`-binding roots keep explicit
+  required-local seeds.
 - Lifetime contradiction handling is split:
   - some direct contradictions are rejected during typecheck,
   - reborrow/order-sensitive checks are deferred.
@@ -41,32 +48,22 @@ Use this with:
 - `src/lifetime_graph.rs` now has an origin-parent-based ordering extractor that
   walks `OriginNode.parent` chains, treats binding aliases / member / index
   projections as transparent ancestry when needed, and emits graph-local
-  ordering edges (`LifetimeGraphId <= LifetimeGraphId`) through a
-  caller-provided pointer-to-lifetime resolver that maps inference lifetimes
-  into the graph namespace.
-- Lifetime-order edge extraction now ignores edges where either endpoint is
-  marked raw-provenance, so raw-pointer flows still participate in mutability
-  tracking without introducing lifetime outlives constraints.
+  ordering edges (`LifetimeGraphId <= LifetimeGraphId`) from per-origin
+  lifetime seeds.
+- Lifetime-order edge extraction treats `RawRoot` as a provenance boundary in
+  parent-chain walks, so orderings are emitted only for non-raw ancestry
+  relationships instead of relying on cached per-origin raw flags.
 - Origin roots now distinguish place-based roots (`PlaceRoot`) from true raw
   provenance boundaries (`RawRoot`), so raw-boundary handling does not apply to
   ordinary `let`/borrow provenance.
 - `src/lifetime_graph.rs` now includes a reusable SCC solve pass over lifetime
-  ordering edges. It now uses a Tarjan-style DFS that validates cycle-forming
-  edges as they are discovered and immediately severs disallowed edges instead
-  of rebuilding SCCs from scratch. Component lifetime unification uses
-  `LifeTime` directly and treats `LifeTime::Unknown(_)` as an upgradeable
-  placeholder.
-- `InnerFunctionTypes` now records `lifetime_unknown_count`, i.e. how many
-  fallback `LifeTime::Unknown` lifetimes were minted during local solving for
-  that function.
+  ordering edges. It uses Tarjan DFS to produce SCC components and the local
+  solver uses SCC membership to drive `LId`-level unification checks.
 
 ## Not Implemented Yet
 
 - Full local lifetime graph construction from origin/provenance edges integrated
-  into local inference.
-- SCC collapse + validation pass fully integrated into local inference
-  finalization (currently available as `lifetime_graph` solve utility but not
-  yet wired into the main local solver pipeline).
+  into local inference with per-origin `LId` seeding.
 - Stable exported `SolvedLifetimeGraph` artifact for downstream borrow checking.
 - Global lifetime composition across function boundaries.
 - Complete borrow-check pass enforcing deferred lifetime ordering legality.

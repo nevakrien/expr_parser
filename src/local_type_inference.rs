@@ -15,6 +15,7 @@ use crate::ir::{AssignOp, BinOp, Dir, Literal, NameId, UnOp, ValId, Value};
 use crate::local_solver_order::{LocalSolverPass, SolverOrderPlanner};
 use crate::parsing::Loc;
 use crate::program::{Defined, Program};
+use crate::lifetime_graph::solve_local_lifetimes_by_graph;
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
     FORGET_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
@@ -124,8 +125,6 @@ fn local_solver_fuzz(ctx: &mut InferState) {
     //this loop only exists once ALL requirments have checked and didnt complain
     //on the state we are gona release. since there was no change
     //this is SUPER important because they are not just progressions
-    let mut unknown_count = 0;
-
     loop {
         let mut progress = false;
 
@@ -147,13 +146,7 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         //these are all assuming defualts on the type system
         //so they are mostly last resorts for that exact reason
 
-        if order_planner.use_main_loop_deferred_mode()
-            && finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count)
-        {
-            continue;
-        }
-
-        if force_unresolved_refs_to_safe(ctx, &mut unknown_count) {
+        if force_unresolved_refs_to_safe(ctx) {
             continue;
         }
 
@@ -164,10 +157,9 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         break;
     }
 
-    if !order_planner.use_main_loop_deferred_mode() {
-        finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
-        full_resolve_deferred_types(ctx);
-    }
+    solve_local_lifetimes_by_graph(ctx);
+    full_resolve_deferred_types(ctx);
+    
 
     let _ = resolve_pending_sized_requirements(ctx);
 
@@ -175,7 +167,7 @@ fn local_solver_fuzz(ctx: &mut InferState) {
         return;
     }
 
-    finalize_local(ctx, unknown_count);
+    finalize_local(ctx);
 }
 
 #[cfg(not(feature = "solver_order_fuzz"))]
@@ -183,8 +175,6 @@ fn local_solver_stable(ctx: &mut InferState) {
     //this loop only exists once ALL requirments have checked and didnt complain
     //on the state we are gona release. since there was no change
     //this is SUPER important because they are not just progressions
-    let mut unknown_count = 0;
-
     loop {
         let mut progress = false;
 
@@ -203,7 +193,7 @@ fn local_solver_stable(ctx: &mut InferState) {
         //these are all assuming defualts on the type system
         //so they are mostly last resorts for that exact reason
 
-        if force_unresolved_refs_to_safe(ctx, &mut unknown_count) {
+        if force_unresolved_refs_to_safe(ctx) {
             continue;
         }
 
@@ -217,7 +207,7 @@ fn local_solver_stable(ctx: &mut InferState) {
         break;
     }
 
-    finalize_unresolved_lifetimes_as_unknown(ctx, &mut unknown_count);
+    solve_local_lifetimes_by_graph(ctx);
 
     full_resolve_deferred_types(ctx);
     let _ = resolve_pending_sized_requirements(ctx);
@@ -226,7 +216,7 @@ fn local_solver_stable(ctx: &mut InferState) {
         return;
     }
 
-    finalize_local(ctx, unknown_count);
+    finalize_local(ctx);
 }
 
 #[cfg(feature = "solver_order_fuzz")]
@@ -244,7 +234,7 @@ fn run_local_solver_pass(pass: LocalSolverPass, ctx: &mut InferState) -> bool {
 }
 
 #[inline(always)]
-fn force_unresolved_refs_to_safe(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
+fn force_unresolved_refs_to_safe(ctx: &mut InferState) -> bool {
     let mut progress = false;
 
     for i in 0..ctx.types.core.cluster.len() {
@@ -263,15 +253,13 @@ fn force_unresolved_refs_to_safe(ctx: &mut InferState, unknown_count: &mut u32) 
             continue;
         }
 
-        // mint an unknown lifetime for display/model completion
-        let lt = LifeTime::Unknown(LifeId(*unknown_count));
-        *unknown_count += 1;
+        let lid = ctx.types.new_lid();
 
         ctx.types.set_cluster_state(
             cid,
             ResolveKind::Ptr {
                 tgt,
-                kind: PtrKind::Solved(PointerStyle::Ref(lt)),
+                kind: PtrKind::RefInfer(lid),
                 mutable,
             },
         );
@@ -317,28 +305,7 @@ fn force_unresolved_ptr_mutability_to_immut(ctx: &mut InferState) -> bool {
     progress
 }
 
-#[inline(always)]
-fn finalize_unresolved_lifetimes_as_unknown(ctx: &mut InferState, unknown_count: &mut u32) -> bool {
-    let mut progress = false;
-    //should properly increment
-
-    for lid in ctx.types.lifetimes.life_parent.0.iter() {
-        if *lid != ctx.types.lifetimes.life_parent[*lid] {
-            continue;
-        }
-
-        if ctx.types.lifetimes.life_known[*lid].is_none() {
-            let hack = LifeId(*unknown_count);
-            ctx.types.lifetimes.life_known[*lid] = Some(LifeTime::Unknown(hack));
-            *unknown_count += 1;
-            progress = true;
-        }
-    }
-
-    progress
-}
-
-fn finalize_local(ctx: &mut InferState, unknown_count: u32) {
+fn finalize_local(ctx: &mut InferState) {
     let InferState {
         search,
         req,
@@ -441,8 +408,6 @@ fn finalize_local(ctx: &mut InferState, unknown_count: u32) {
     inner.origins = std::mem::take(&mut types.lifetimes.origins);
     inner.value_origins = std::mem::take(&mut types.lifetimes.value_origins);
     inner.pattern_origins = std::mem::take(&mut types.lifetimes.pattern_origins);
-    inner.lifetime_unknown_count = unknown_count;
-
     let owner = req.owner.or_else(|| {
         val_cluster
             .iter()
@@ -866,6 +831,59 @@ pub(crate) fn gather_constraints(
                 "let binding type must be sized",
             );
             // let-expr evaluates to the bound pattern value => alias
+            let mut next_local_lifetime = ctx
+                .types
+                .lifetimes
+                .life_known
+                .0
+                .iter()
+                .copied()
+                .flatten()
+                .fold(0u32, |acc, lt| match lt {
+                    LifeTime::Local(id) => acc.max(id.0.saturating_add(1)),
+                    _ => acc,
+                });
+
+            let mut pat_stack = vec![pat];
+            while let Some(cur_pat) = pat_stack.pop() {
+                match ctx.ex.program.pattern(cur_pat).clone() {
+                    Pattern::Bind(_, _) => {
+                        if let Some(origin) = ctx.types.pattern_origin(cur_pat) {
+                            let should_seed_local = ctx
+                                .types
+                                .origin(origin)
+                                .is_some_and(|node| {
+                                    matches!(node.kind, OriginKind::BindingRoot)
+                                        && node.lifetime_seed.is_none()
+                                });
+
+                            if should_seed_local {
+                                let local_lid = ctx.types.new_lid_known(LifeTime::Local(LifeId(
+                                    next_local_lifetime,
+                                )));
+                                next_local_lifetime += 1;
+                                if let Some(node) = ctx.types.origin_mut(origin) {
+                                    node.lifetime_seed = Some(local_lid);
+                                }
+                            }
+                        }
+                    }
+                    Pattern::TypeAnnotation { pat, .. } => {
+                        pat_stack.push(pat);
+                    }
+                    Pattern::AddrOf(base, _) => {
+                        pat_stack.push(base);
+                    }
+                    Pattern::Tuple(items) => {
+                        let ids = items.ids().collect::<Vec<_>>();
+                        for item in ids.into_iter().rev() {
+                            pat_stack.push(item);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             let lhs_origin = ctx.types.pattern_origin(pat);
             ctx.bind_val_with_origin(v, lhs, lhs_origin);
 
