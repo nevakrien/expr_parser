@@ -696,7 +696,7 @@ mod tests {
     use crate::local_type_inference::{gather_func_constraints, local_solver};
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
-    use crate::type_inference::run_typechecker;
+    use crate::type_inference::run_typecheck_scan;
     use crate::type_inference::{
         InferState, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind, ResolveKind,
         SolvedTypes, TypeError, TypeStore, find_lid_root,
@@ -881,11 +881,8 @@ mod tests {
         }
         "#;
         let program = gather_program(src);
-        let mut reporter = ErrorReporter::new();
-        reporter.add_source(0, src.to_string());
-
         let (result, _checked) =
-            run_typechecker(&program, &mut reporter).expect("typechecker should run");
+            run_typecheck_scan(&program, |_,_,_| Ok(())).expect("typechecker should run");
 
         assert!(
             matches!(result, Err(err_count) if err_count > 0),

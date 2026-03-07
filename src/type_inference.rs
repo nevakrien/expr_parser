@@ -1283,7 +1283,17 @@ type TypecheckResult = Result<TypecheckSummary, Box<dyn std::error::Error>>;
 ///runs the typechecker and reports all errors
 ///the rhs value is the total number of functions checked
 ///the lhs value is either the result or the number of errors found
-pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> TypecheckResult {
+pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> TypecheckResult{
+    run_typecheck_scan(program,|program,types,e|{Ok(reporter.report_type_error(program, types, e)?)})
+}
+pub fn run_typecheck_scan(
+    program: &Program, 
+    mut callback: impl FnMut(
+        &Program,
+        &TypeStore,
+        &TypeError,
+    )->Result<(),Box<dyn std::error::Error>>
+) -> TypecheckResult {
     let mut solved_types = SolvedTypes::new(program);
     let mut types = TypeStore::new();
     let mut err_count = 0;
@@ -1299,7 +1309,7 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
         err_count += errs.len();
 
         for e in errs {
-            reporter.report_type_error(program, &types, &e)?;
+            callback(program, &types, &e)?;
         }
 
         return Ok((Err(err_count), function_checked));
@@ -1321,7 +1331,7 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
                 err_count += errs.len();
 
                 for e in errs {
-                    reporter.report_type_error(program, &types, &e)?;
+                    callback(program, &types, &e)?;
                 }
             }
         }
@@ -1340,7 +1350,7 @@ pub fn run_typechecker(program: &Program, reporter: &mut ErrorReporter) -> Typec
             err_count += errs.len();
 
             for e in errs {
-                reporter.report_type_error(program, &types, &e)?;
+                callback(program, &types, &e)?;
             }
         }
     }
