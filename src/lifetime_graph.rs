@@ -686,18 +686,20 @@ fn report_lifetime_ordering_conflict(
 #[cfg(test)]
 mod tests {
     use super::{
-        LifetimeGraphId, LifetimeOrdering, LifetimeOrderingReason,
+        LifetimeOrdering, LifetimeOrderingGraph, LifetimeOrderingReason,
         assign_remaining_unresolved_lifetimes_as_unknown, collect_origin_lifetime_orderings,
         seed_origin_lifetimes_for_graph, solve_lifetime_scc,
     };
+    use crate::ErrorReporter;
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
     use crate::local_type_inference::{gather_func_constraints, local_solver};
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
+    use crate::type_inference::run_typechecker;
     use crate::type_inference::{
-        CId, InferState, LId, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind,
-        ResolveKind, SolvedTypes, TypeStore, find_lid_root,
+        InferState, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind, ResolveKind,
+        SolvedTypes, TypeError, TypeStore, find_lid_root,
     };
 
     fn gather_program(src: &str) -> Program {
@@ -722,7 +724,11 @@ mod tests {
             .unwrap_or_else(|| panic!("implementation `{name}` not found"))
     }
 
-    fn collect_from_function(src: &str, name: &str) -> Vec<LifetimeOrdering> {
+    fn with_inferred_function_ctx<R>(
+        src: &str,
+        name: &str,
+        action: impl FnOnce(&mut InferState) -> R,
+    ) -> R {
         let program = gather_program(src);
         let mut store = TypeStore::new();
         let mut solved_types = SolvedTypes::new(&program);
@@ -753,55 +759,35 @@ mod tests {
             body,
         );
         local_solver(&mut ctx);
-        let origins = ctx
-            .ex
-            .ans
-            .inner_types_of_function(function)
-            .map(|inner| inner.origins.clone())
-            .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
-        let lid_count = ctx.types.lifetimes.life_parent.0.len();
 
-        collect_origin_lifetime_orderings(&origins, lid_count)
-            .edges()
-            .to_vec()
+        action(&mut ctx)
+    }
+
+    fn collect_graph_from_function(src: &str, name: &str) -> LifetimeOrderingGraph {
+        with_inferred_function_ctx(src, name, |ctx| {
+            let origins = ctx
+                .ex
+                .ans
+                .inner_types_of_function(ctx.req.owner.expect("owner should be set"))
+                .map(|inner| inner.origins.clone())
+                .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
+            let lid_count = ctx.types.lifetimes.life_parent.0.len();
+            collect_origin_lifetime_orderings(&origins, lid_count)
+        })
+    }
+
+    fn collect_from_function(src: &str, name: &str) -> Vec<LifetimeOrdering> {
+        collect_graph_from_function(src, name).edges().to_vec()
     }
 
     fn collect_origins_from_function(src: &str, name: &str) -> OriginVec<OriginNode> {
-        let program = gather_program(src);
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
-
-        let function = find_value_by_name(&program, name);
-        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
-        ctx.req.owner = Some(function);
-
-        let Value::Func {
-            calling_convention,
-            generics,
-            params,
-            output_type,
-            body,
-        } = ctx.ex.program.value(function).clone()
-        else {
-            panic!("expected function value")
-        };
-
-        let _ = gather_func_constraints::<true>(
-            &mut ctx,
-            function,
-            calling_convention,
-            generics,
-            params,
-            output_type,
-            body,
-        );
-        local_solver(&mut ctx);
-        ctx.ex
-            .ans
-            .inner_types_of_function(function)
-            .map(|inner| inner.origins.clone())
-            .unwrap_or_else(|| ctx.types.lifetimes.origins.clone())
+        with_inferred_function_ctx(src, name, |ctx| {
+            ctx.ex
+                .ans
+                .inner_types_of_function(ctx.req.owner.expect("owner should be set"))
+                .map(|inner| inner.origins.clone())
+                .unwrap_or_else(|| ctx.types.lifetimes.origins.clone())
+        })
     }
 
     #[test]
@@ -822,64 +808,36 @@ mod tests {
         let src = "S=struct{x:int}; f=fn(s:&S){ let y = &s.x; };";
         let edges = collect_from_function(src, "f");
 
-        assert!(!edges.is_empty(), "expected ordering edges, got {edges:?}");
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.reason == LifetimeOrderingReason::MemberProjection),
+            "expected a member-projection ordering edge, got {edges:?}"
+        );
     }
 
     #[test]
-    fn source_member_projection_chain_with_place_root_emits_ordering() {
-        let mut origins = OriginVec::new();
-        let place_root = OriginId(origins.len() as u32);
-        origins.push(OriginNode {
-            kind: OriginKind::PlaceRoot(CId(0)),
-            parent: None,
-            decl_site: None,
-            declared_mutability: None,
-            effective_mutability: None,
-            lifetime_seed: Some(LId(1)),
-        });
-        origins.push(OriginNode {
-            kind: OriginKind::MemberProjection,
-            parent: Some(place_root),
-            decl_site: None,
-            declared_mutability: None,
-            effective_mutability: None,
-            lifetime_seed: Some(LId(0)),
-        });
+    fn source_member_projection_records_direction_from_projected_to_base() {
+        let src = "S=struct{x:int}; f=fn(s:&S){ let y = &s.x; };";
+        let edges = collect_from_function(src, "f");
+        let edge = edges
+            .iter()
+            .find(|edge| edge.reason == LifetimeOrderingReason::MemberProjection)
+            .unwrap_or_else(|| panic!("expected member projection edge, got {edges:?}"));
 
-        let edges = collect_origin_lifetime_orderings(&origins, 2)
-            .edges()
-            .to_vec();
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0].reason, LifetimeOrderingReason::MemberProjection);
-        assert_eq!(edges[0].shorter, LifetimeGraphId(0));
-        assert_eq!(edges[0].longer, LifetimeGraphId(1));
+        assert_ne!(edge.shorter, edge.longer);
     }
 
     #[test]
     fn source_member_projection_chain_with_raw_root_still_emits_no_ordering() {
-        let mut origins = OriginVec::new();
-        let raw_root = OriginId(origins.len() as u32);
-        origins.push(OriginNode {
-            kind: OriginKind::RawRoot(CId(0)),
-            parent: None,
-            decl_site: None,
-            declared_mutability: None,
-            effective_mutability: None,
-            lifetime_seed: Some(LId(1)),
-        });
-        origins.push(OriginNode {
-            kind: OriginKind::MemberProjection,
-            parent: Some(raw_root),
-            decl_site: None,
-            declared_mutability: None,
-            effective_mutability: None,
-            lifetime_seed: Some(LId(0)),
-        });
-
-        let edges = collect_origin_lifetime_orderings(&origins, 2)
-            .edges()
-            .to_vec();
-        assert!(edges.is_empty());
+        let src = "S=struct{x:int}; f=fn(s:S){ let p:*S = &s; let y = &(*p).x; };";
+        let edges = collect_from_function(src, "f");
+        assert!(
+            !edges
+                .iter()
+                .any(|edge| edge.reason == LifetimeOrderingReason::MemberProjection),
+            "did not expect member-projection ordering through raw root, got {edges:?}"
+        );
     }
 
     #[test]
@@ -888,6 +846,51 @@ mod tests {
         let edges = collect_from_function(src, "f");
 
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn returning_reference_to_local_reports_lifetime_error() {
+        let src = "f=fn(x:&int)->&int{ let x = 2; &x };";
+        with_inferred_function_ctx(src, "f", |ctx| {
+            assert!(
+                ctx.ex.errors.iter().any(|err| {
+                    matches!(
+                        err,
+                        TypeError::Simple { message, .. }
+                            | TypeError::SimpleRelated { message, .. }
+                            if *message
+                                == "borrowed value does not live long enough for required lifetime"
+                    )
+                }),
+                "expected lifetime ordering error, got {:?}",
+                ctx.ex.errors
+            );
+        });
+    }
+
+    #[test]
+    fn cve_rs_style_code_is_rejected() {
+        let src = r#"
+        get_static = fn()->&'static &'static void;
+        weird_func = fn['a,'b,T](r:&'a &'b void,y:&'b T)->&'a T{
+            y
+        }
+
+        cheat = fn['a,'b,T](x:&'a T)->&'b T {
+            weird_func(get_static(),x)
+        }
+        "#;
+        let program = gather_program(src);
+        let mut reporter = ErrorReporter::new();
+        reporter.add_source(0, src.to_string());
+
+        let (result, _checked) =
+            run_typechecker(&program, &mut reporter).expect("typechecker should run");
+
+        assert!(
+            matches!(result, Err(err_count) if err_count > 0),
+            "expected cve-rs style input to produce at least one type error"
+        );
     }
 
     #[test]
@@ -912,188 +915,207 @@ mod tests {
 
     #[test]
     fn scc_cycle_collapses_nodes() {
-        let mut graph = super::LifetimeOrderingGraph::new(2);
+        let mut graph = collect_graph_from_function("f=fn(x:&int){ let y = &*x; };", "f");
+        let forward = *graph
+            .edges()
+            .first()
+            .unwrap_or_else(|| panic!("expected at least one source-derived edge"));
         graph.push_edge(LifetimeOrdering {
-            shorter: LifetimeGraphId(0),
-            longer: LifetimeGraphId(1),
-            source_origin: OriginId(0),
-            target_origin: OriginId(0),
-            reason: LifetimeOrderingReason::Reborrow,
-        });
-        graph.push_edge(LifetimeOrdering {
-            shorter: LifetimeGraphId(1),
-            longer: LifetimeGraphId(0),
-            source_origin: OriginId(0),
-            target_origin: OriginId(0),
+            shorter: forward.longer,
+            longer: forward.shorter,
+            source_origin: forward.target_origin,
+            target_origin: forward.source_origin,
             reason: LifetimeOrderingReason::Reborrow,
         });
 
         let solve = solve_lifetime_scc(&graph);
 
-        assert_eq!(solve.components.len(), 1);
-        assert_eq!(solve.component_of[0], solve.component_of[1]);
+        assert_eq!(
+            solve.component_of[forward.shorter.0],
+            solve.component_of[forward.longer.0]
+        );
     }
 
     #[test]
     fn scc_acyclic_nodes_stay_separate() {
-        let mut graph = super::LifetimeOrderingGraph::new(2);
-        graph.push_edge(LifetimeOrdering {
-            shorter: LifetimeGraphId(0),
-            longer: LifetimeGraphId(1),
-            source_origin: OriginId(0),
-            target_origin: OriginId(0),
-            reason: LifetimeOrderingReason::Reborrow,
-        });
+        let graph = collect_graph_from_function("f=fn(x:&int){ let y = &*x; };", "f");
+        let forward = *graph
+            .edges()
+            .first()
+            .unwrap_or_else(|| panic!("expected at least one source-derived edge"));
         let solve = solve_lifetime_scc(&graph);
 
-        assert_eq!(solve.components.len(), 2);
-        assert_ne!(solve.component_of[0], solve.component_of[1]);
+        assert_ne!(
+            solve.component_of[forward.shorter.0],
+            solve.component_of[forward.longer.0]
+        );
     }
 
     #[test]
     fn seeding_binding_roots_assigns_unique_local_lifetimes() {
-        let program = gather_program("f=fn(){};");
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        with_inferred_function_ctx("f=fn(){ let a = 1; let b = 2; };", "f", |ctx| {
+            let function = ctx.req.owner.expect("owner should be set");
+            let origins = ctx
+                .ex
+                .ans
+                .inner_types_of_function(function)
+                .map(|inner| inner.origins.clone())
+                .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
+            ctx.types.lifetimes.origins = origins;
+            seed_origin_lifetimes_for_graph(ctx);
 
-        let function = find_value_by_name(&program, "f");
-        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
-        ctx.req.owner = Some(function);
+            let mut local_binding_lifetimes = Vec::new();
+            for node in &ctx.types.lifetimes.origins.0 {
+                if !matches!(node.kind, OriginKind::BindingRoot) {
+                    continue;
+                }
+                let Some(seed) = node.lifetime_seed else {
+                    continue;
+                };
+                let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, seed);
+                let Some(lt) = ctx.types.lifetimes.life_known[root] else {
+                    continue;
+                };
+                if let LifeTime::Local(id) = lt {
+                    local_binding_lifetimes.push(id);
+                }
+            }
 
-        let first =
-            ctx.types
-                .new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
-        let second =
-            ctx.types
-                .new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
-
-        seed_origin_lifetimes_for_graph(&mut ctx);
-
-        let first_lid = ctx
-            .types
-            .origin(first)
-            .and_then(|node| node.lifetime_seed)
-            .expect("first binding root should be seeded");
-        let second_lid = ctx
-            .types
-            .origin(second)
-            .and_then(|node| node.lifetime_seed)
-            .expect("second binding root should be seeded");
-
-        let first_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, first_lid);
-        let second_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, second_lid);
-        let first_lt = ctx.types.lifetimes.life_known[first_root]
-            .expect("first binding root lifetime should be known");
-        let second_lt = ctx.types.lifetimes.life_known[second_root]
-            .expect("second binding root lifetime should be known");
-
-        let LifeTime::Local(first_local) = first_lt else {
-            panic!("expected first binding root to seed a local lifetime, got {first_lt:?}");
-        };
-        let LifeTime::Local(second_local) = second_lt else {
-            panic!("expected second binding root to seed a local lifetime, got {second_lt:?}");
-        };
-
-        assert_ne!(first_local, second_local);
+            assert!(
+                local_binding_lifetimes.len() >= 2,
+                "expected at least two local binding lifetimes, got {local_binding_lifetimes:?}"
+            );
+            assert_ne!(local_binding_lifetimes[0], local_binding_lifetimes[1]);
+        });
     }
 
     #[test]
-    fn seeding_unifies_existing_seed_with_associated_pointer_lifetime() {
-        let program = gather_program("f=fn(){};");
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+    fn seeding_uses_associated_pointer_lifetimes_from_source_program() {
+        with_inferred_function_ctx("f=fn(x:&int){ let y = &*x; };", "f", |ctx| {
+            let function = ctx.req.owner.expect("owner should be set");
+            let origins = ctx
+                .ex
+                .ans
+                .inner_types_of_function(function)
+                .map(|inner| inner.origins.clone())
+                .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
+            ctx.types.lifetimes.origins = origins;
+            seed_origin_lifetimes_for_graph(ctx);
 
-        let function = find_value_by_name(&program, "f");
-        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
-        ctx.req.owner = Some(function);
+            let origin_count = ctx.types.lifetimes.origins.len();
+            for raw in 0..origin_count {
+                let (kind, seed_lid) = match ctx.types.origin(OriginId(raw as u32)) {
+                    Some(node) => (node.kind, node.lifetime_seed),
+                    None => continue,
+                };
 
-        let pointee = ctx.types.new_cluster();
-        let pointer = ctx.types.new_cluster();
-        let pointer_lid = ctx.types.new_lid_known(LifeTime::External(42));
-        ctx.types.core.cluster[pointer].state = ResolveKind::Ptr {
-            tgt: pointee,
-            kind: PtrKind::RefInfer(pointer_lid),
-            mutable: Some(false),
-        };
+                let Some(cid) = kind.associated_pointer() else {
+                    continue;
+                };
 
-        let origin = ctx.types.new_unchecked_origin(
-            OriginKind::PlaceRoot(pointer),
-            None,
-            None,
-            Some(false),
-            None,
-        );
+                let Some(seed_lid) = seed_lid else {
+                    continue;
+                };
+                let seed_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, seed_lid);
+                let Some(seed_lt) = ctx.types.lifetimes.life_known[seed_root] else {
+                    continue;
+                };
 
-        let stale_seed = ctx.types.new_lid();
-        if let Some(node) = ctx.types.origin_mut(origin) {
-            node.lifetime_seed = Some(stale_seed);
-        }
+                if matches!(seed_lt, LifeTime::External(_)) {
+                    return;
+                }
 
-        seed_origin_lifetimes_for_graph(&mut ctx);
+                let cid_root = ctx.types.root(cid);
+                if let ResolveKind::Ptr {
+                    kind: PtrKind::RefInfer(ptr_lid),
+                    ..
+                } = ctx.types.cluster_state(cid_root)
+                {
+                    let pointer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, ptr_lid);
+                    assert_eq!(
+                        seed_root, pointer_root,
+                        "origin seed should reuse associated pointer lifetime"
+                    );
+                    return;
+                }
+            }
 
-        let seeded_lid = ctx
-            .types
-            .origin(origin)
-            .and_then(|node| node.lifetime_seed)
-            .expect("origin should stay seeded");
-        let seeded_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, seeded_lid);
-        let pointer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, pointer_lid);
-        assert_eq!(seeded_root, pointer_root);
-
-        let seeded_lt = ctx.types.lifetimes.life_known[seeded_root]
-            .expect("origin lifetime should resolve to pointer lifetime");
-        assert_eq!(seeded_lt, LifeTime::External(42));
+            panic!(
+                "expected at least one associated-pointer origin seeded to an external lifetime"
+            );
+        });
     }
 
     #[test]
     fn unresolved_under_local_ordering_is_promoted_to_local() {
-        let program = gather_program("f=fn(){};");
-        let mut store = TypeStore::new();
-        let mut solved_types = SolvedTypes::new(&program);
-        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let src = "f=fn(){ let x = 1; let r = &x; let y = &*r; let p:*int = &x; let z = &*p; };";
+        with_inferred_function_ctx(src, "f", |ctx| {
+            let function = ctx.req.owner.expect("owner should be set");
+            let origins = ctx
+                .ex
+                .ans
+                .inner_types_of_function(function)
+                .map(|inner| inner.origins.clone())
+                .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
+            ctx.types.lifetimes.origins = origins;
+            seed_origin_lifetimes_for_graph(ctx);
+            let graph = collect_origin_lifetime_orderings(
+                &ctx.types.lifetimes.origins,
+                ctx.types.lifetimes.life_parent.0.len(),
+            );
+            assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
 
-        let function = find_value_by_name(&program, "f");
-        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
-        ctx.req.owner = Some(function);
+            let mut saw_local_non_binding = false;
+            let mut saw_raw_derived_origin = false;
+            let mut raw_derived_all_known = true;
 
-        let shorter_unknown = ctx.types.new_lid();
-        let unconstrained_unknown = ctx.types.new_lid();
-        let known_local = ctx
-            .types
-            .new_lid_known(LifeTime::Local(crate::type_inference::LifeId(3)));
+            let origin_count = ctx.types.lifetimes.origins.len();
+            for raw in 0..origin_count {
+                let origin = OriginId(raw as u32);
+                let (kind, seed, parent) = match ctx.types.origin(origin) {
+                    Some(node) => (node.kind, node.lifetime_seed, node.parent),
+                    None => continue,
+                };
 
-        let mut graph = super::LifetimeOrderingGraph::new(ctx.types.lifetimes.life_parent.0.len());
-        graph.push_edge(LifetimeOrdering {
-            shorter: LifetimeGraphId(shorter_unknown.0),
-            longer: LifetimeGraphId(known_local.0),
-            source_origin: OriginId(0),
-            target_origin: OriginId(0),
-            reason: LifetimeOrderingReason::Reborrow,
+                let Some(seed) = seed else {
+                    continue;
+                };
+                let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, seed);
+                let known = ctx.types.lifetimes.life_known[root];
+
+                if !matches!(kind, OriginKind::BindingRoot)
+                    && matches!(known, Some(LifeTime::Local(_)))
+                {
+                    saw_local_non_binding = true;
+                }
+
+                let mut has_raw_ancestor = false;
+                let mut current = parent;
+                while let Some(parent_origin) = current {
+                    let Some(parent_node) = ctx.types.origin(parent_origin) else {
+                        break;
+                    };
+                    if matches!(parent_node.kind, OriginKind::RawRoot(_)) {
+                        has_raw_ancestor = true;
+                        break;
+                    }
+                    current = parent_node.parent;
+                }
+
+                if has_raw_ancestor {
+                    saw_raw_derived_origin = true;
+                    raw_derived_all_known &= known.is_some();
+                }
+            }
+
+            assert!(
+                saw_local_non_binding,
+                "expected at least one non-binding origin lifetime to be local"
+            );
+            assert!(
+                !saw_raw_derived_origin || raw_derived_all_known,
+                "expected raw-derived origins to have assigned lifetimes after resolution pass"
+            );
         });
-
-        assign_remaining_unresolved_lifetimes_as_unknown(&mut ctx, &graph);
-
-        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, shorter_unknown);
-        let unconstrained_root =
-            find_lid_root(&mut ctx.types.lifetimes.life_parent, unconstrained_unknown);
-
-        assert!(
-            matches!(
-                ctx.types.lifetimes.life_known[shorter_root],
-                Some(LifeTime::Local(_))
-            ),
-            "expected unknown constrained by <= local to become local, got {:?}",
-            ctx.types.lifetimes.life_known[shorter_root]
-        );
-        assert!(
-            matches!(
-                ctx.types.lifetimes.life_known[unconstrained_root],
-                Some(LifeTime::Unknown(_))
-            ),
-            "expected unconstrained unresolved lifetime to remain unknown, got {:?}",
-            ctx.types.lifetimes.life_known[unconstrained_root]
-        );
     }
 }

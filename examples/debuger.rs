@@ -3,6 +3,16 @@ use expr_parser::parsing::Parser;
 use expr_parser::program::Program;
 use expr_parser::type_inference::run_typechecker;
 
+// const SOURCE: &str = r#"
+// get_static = fn()->&'static &'static void;
+// weird_func = fn['a,'b,T](r:&'a &'b void,y:&'a T)->&'a T{
+//     y
+// }
+
+// cheat = fn[T](x:&T)->&T {
+//     weird_func(&*get_static(),x)
+// }
+// "#;
 const SOURCE: &str = r#"
 get_static = fn()->&'static &'static void;
 weird_func = fn['a,'b,T](r:&'a &'b void,y:&'b T)->&'a T{
