@@ -1069,6 +1069,13 @@ pub enum TypeError {
         related: Loc,
         related_message: &'static str,
     },
+    LifetimeError {
+        loc: Loc,
+        message: String,
+        label: String,
+        related: Option<Loc>,
+        related_label: Option<String>,
+    },
     UnknownBuiltinMemberMethod {
         site: ValId,
         method: StrId,
@@ -2122,7 +2129,7 @@ impl<'a> GenLifeNameRender<'a> {
             Self::TextNames { lifetime_names, .. } => lifetime_names
                 .get(idx as usize)
                 .map(|s| (*s).to_string())
-                .unwrap_or_else(|| idx.to_string()),
+                .unwrap_or_else(|| generated_lifetime_name(idx)),
             Self::Generate => generated_lifetime_name(idx),
         }
     }
@@ -4018,7 +4025,7 @@ pub(crate) fn simple_type_clash(ex: &ExternState<'_>, a: TypeId, b: TypeId) -> T
     }
 }
 
-fn lifetime_for_display(ex: &ExternState<'_>, lt: LifeTime) -> String {
+pub(crate) fn lifetime_for_display(ex: &ExternState<'_>, lt: LifeTime) -> String {
     match lt {
         LifeTime::Local(id) => format!("l{}", id.0),
         LifeTime::Unknown(id) => format!("idk{}", id.0),
@@ -5558,6 +5565,10 @@ mod type_infer_tests {
                     message: found_message,
                     ..
                 } => *found_message == message,
+                TypeError::LifetimeError {
+                    message: found_message,
+                    ..
+                } => found_message == message,
                 _ => false,
             }),
             "expected simple error `{message}`, got {errs:?}"
@@ -7770,7 +7781,7 @@ mod type_infer_tests {
 
         assert_has_simple_error(
             &errs,
-            "borrowed value does not live long enough for required lifetime",
+            "lifetime mismatch: 'l0 must outlive 'a0",
         );
     }
 

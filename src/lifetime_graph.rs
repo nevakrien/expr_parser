@@ -1,8 +1,10 @@
 use crate::type_inference::{
     CId, InferState, LId, LifeId, LifeTime, OriginDeclSite, OriginId, OriginKind, OriginNode,
-    OriginVec, PointerStyle, ResolveKind, TypeError, TypeValue, find_lid_root, unify_struct_lids,
+    OriginVec, PointerStyle, ResolveKind, TypeError, TypeValue, find_lid_root,
+    lifetime_for_display, unify_struct_lids,
 };
 use std::cmp::Ordering;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LifetimeGraphId(pub(crate) usize);
@@ -274,6 +276,16 @@ fn ordering_reason(kind: OriginKind) -> Option<LifetimeOrderingReason> {
     }
 }
 
+fn ordering_reason_text(reason: LifetimeOrderingReason) -> &'static str {
+    match reason {
+        LifetimeOrderingReason::Reborrow => "reborrow",
+        LifetimeOrderingReason::Deref => "dereference",
+        LifetimeOrderingReason::MemberProjection => "member access",
+        LifetimeOrderingReason::IndexProjection => "index access",
+        LifetimeOrderingReason::CastProjection => "cast",
+    }
+}
+
 fn lifetime_for_origin(origin: OriginId, node: &OriginNode) -> Option<OriginLifetime> {
     let lid = node.lifetime_seed?;
     Some(OriginLifetime { origin, lid })
@@ -326,15 +338,29 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
                 continue;
             }
 
+            if report_lifetime_cycle_conflict(ctx, &graph, &solve.component_of, component, leader, lid)
+            {
+                continue;
+            }
+
             match (anchors[leader.0], anchors[lid.0]) {
                 (Some(source), Some(target)) => {
-                    report_lifetime_cycle_conflict(ctx, source, target);
+                    report_lifetime_cycle_conflict_from_anchors(ctx, leader, lid, source, target);
                 }
                 _ => {
                     if let Some(loc) = ctx.req.owner.map(|owner| ctx.ex.program.value_loc(owner)) {
-                        ctx.push_error(TypeError::Simple {
+                        let leader_name = format_lid_name(ctx, leader);
+                        let lid_name = format_lid_name(ctx, lid);
+                        ctx.push_error(TypeError::LifetimeError {
                             loc,
-                            message: "lifetime cycle requires incompatible lifetime equality",
+                            message: format!(
+                                "lifetime cycle requires incompatible requirements between {leader_name} and {lid_name}"
+                            ),
+                            label: format!(
+                                "the graph forces {leader_name} and {lid_name} to become equal"
+                            ),
+                            related: None,
+                            related_label: None,
                         });
                     }
                 }
@@ -374,7 +400,7 @@ fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrder
         }
         seen_root_pairs.push(pair);
 
-        report_lifetime_ordering_conflict(ctx, edge.source_origin, edge.target_origin);
+        report_lifetime_ordering_conflict(ctx, edge);
     }
 }
 
@@ -603,82 +629,222 @@ fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
     next
 }
 
+fn format_lid_name(ctx: &mut InferState, lid: LId) -> String {
+    let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
+    match ctx.types.lifetimes.life_known[root] {
+        Some(lt) => format!("'{}", lifetime_for_display(&ctx.ex, lt)),
+        None => format!("lifetime#{}", root.0),
+    }
+}
+
+fn origin_loc(ctx: &InferState, origin: OriginId) -> Option<crate::parsing::Loc> {
+    ctx.types
+        .origin(origin)
+        .and_then(|node| node.decl_site)
+        .map(|site| match site {
+            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
+            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
+        })
+}
+
+fn find_path_edges(
+    graph: &LifetimeOrderingGraph,
+    component_of: &[usize],
+    start: LifetimeGraphId,
+    goal: LifetimeGraphId,
+) -> Option<Vec<usize>> {
+    if start == goal {
+        return Some(Vec::new());
+    }
+
+    let component_id = *component_of.get(start.0)?;
+    if component_of.get(goal.0).copied()? != component_id {
+        return None;
+    }
+
+    let mut queue = VecDeque::new();
+    let mut seen = vec![false; graph.lid_count()];
+    let mut prev: Vec<Option<(LifetimeGraphId, usize)>> = vec![None; graph.lid_count()];
+
+    seen[start.0] = true;
+    queue.push_back(start);
+
+    while let Some(node) = queue.pop_front() {
+        for &edge_index in graph.outgoing(node) {
+            let edge = graph.edges()[edge_index];
+            let next = edge.longer;
+            if component_of[next.0] != component_id || seen[next.0] {
+                continue;
+            }
+            seen[next.0] = true;
+            prev[next.0] = Some((node, edge_index));
+            if next == goal {
+                let mut edges = Vec::new();
+                let mut current = goal;
+                while current != start {
+                    let (previous, via_edge) = prev[current.0]?;
+                    edges.push(via_edge);
+                    current = previous;
+                }
+                edges.reverse();
+                return Some(edges);
+            }
+            queue.push_back(next);
+        }
+    }
+
+    None
+}
+
 fn report_lifetime_cycle_conflict(
     ctx: &mut InferState,
+    graph: &LifetimeOrderingGraph,
+    component_of: &[usize],
+    _component: &LifetimeSccComponent,
+    leader: LId,
+    other: LId,
+) -> bool {
+    let leader_node = LifetimeGraphId(leader.0);
+    let other_node = LifetimeGraphId(other.0);
+
+    if component_of.get(leader_node.0).copied() != component_of.get(other_node.0).copied() {
+        return false;
+    }
+
+    let forward = find_path_edges(graph, component_of, leader_node, other_node);
+    let reverse = find_path_edges(graph, component_of, other_node, leader_node);
+    let (Some(forward), Some(reverse)) = (forward, reverse) else {
+        return false;
+    };
+
+    let Some(first_forward) = forward.first().copied() else {
+        return false;
+    };
+    let Some(first_reverse) = reverse.first().copied() else {
+        return false;
+    };
+
+    let forward_edge = graph.edges()[first_forward];
+    let reverse_edge = graph.edges()[first_reverse];
+    let forward_loc = origin_loc(ctx, forward_edge.source_origin);
+    let reverse_loc = origin_loc(ctx, reverse_edge.source_origin);
+    let leader_name = format_lid_name(ctx, leader);
+    let other_name = format_lid_name(ctx, other);
+
+    let message = format!(
+        "lifetime cycle requires incompatible outlives requirements between {leader_name} and {other_name}"
+    );
+    let forward_label = format!(
+        "this path requires lifetime {other_name} to outlive {leader_name}"
+    );
+    let reverse_label = format!(
+        "but this path also requires lifetime {leader_name} to outlive {other_name}"
+    );
+
+    match (forward_loc, reverse_loc) {
+        (Some(loc), Some(related)) => {
+            ctx.push_error(TypeError::LifetimeError {
+                loc,
+                message,
+                label: forward_label,
+                related: Some(related),
+                related_label: Some(reverse_label),
+            });
+            true
+        }
+        (Some(loc), None) => {
+            ctx.push_error(TypeError::LifetimeError {
+                loc,
+                message,
+                label: forward_label,
+                related: None,
+                related_label: None,
+            });
+            true
+        }
+        (None, Some(loc)) => {
+            ctx.push_error(TypeError::LifetimeError {
+                loc,
+                message,
+                label: reverse_label,
+                related: None,
+                related_label: None,
+            });
+            true
+        }
+        (None, None) => false,
+    }
+}
+
+fn report_lifetime_cycle_conflict_from_anchors(
+    ctx: &mut InferState,
+    source_lid: LId,
+    target_lid: LId,
     source_origin: OriginId,
     target_origin: OriginId,
 ) {
-    let source_loc = ctx
-        .types
-        .origin(source_origin)
-        .and_then(|node| node.decl_site)
-        .map(|site| match site {
-            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
-            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
-        });
-    let target_loc = ctx
-        .types
-        .origin(target_origin)
-        .and_then(|node| node.decl_site)
-        .map(|site| match site {
-            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
-            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
-        });
+    let source_loc = origin_loc(ctx, source_origin);
+    let target_loc = origin_loc(ctx, target_origin);
 
-    if let (Some(loc), Some(related)) = (&source_loc, &target_loc) {
-        ctx.push_error(TypeError::SimpleRelated {
-            loc: loc.clone(),
-            message: "lifetime cycle requires incompatible lifetime equality",
-            related: related.clone(),
-            related_message: "conflicting lifetime source",
+    let source_name = format_lid_name(ctx, source_lid);
+    let target_name = format_lid_name(ctx, target_lid);
+
+    let message = format!(
+        "lifetime cycle requires incompatible requirements between {source_name} and {target_name}"
+    );
+
+    if let (Some(loc), Some(related)) = (source_loc.clone(), target_loc.clone()) {
+        ctx.push_error(TypeError::LifetimeError {
+            loc,
+            message,
+            label: "this lifetime participates in the conflicting cycle".to_string(),
+            related: Some(related),
+            related_label: Some("conflicting lifetime source".to_string()),
         });
         return;
     }
 
     if let Some(loc) = source_loc.or(target_loc) {
-        ctx.push_error(TypeError::Simple {
+        ctx.push_error(TypeError::LifetimeError {
             loc,
-            message: "lifetime cycle requires incompatible lifetime equality",
+            message,
+            label: "this lifetime participates in the conflicting cycle".to_string(),
+            related: None,
+            related_label: None,
         });
     }
 }
 
-fn report_lifetime_ordering_conflict(
-    ctx: &mut InferState,
-    source_origin: OriginId,
-    target_origin: OriginId,
-) {
-    let source_loc = ctx
-        .types
-        .origin(source_origin)
-        .and_then(|node| node.decl_site)
-        .map(|site| match site {
-            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
-            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
-        });
-    let target_loc = ctx
-        .types
-        .origin(target_origin)
-        .and_then(|node| node.decl_site)
-        .map(|site| match site {
-            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
-            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
-        });
+fn report_lifetime_ordering_conflict(ctx: &mut InferState, edge: &LifetimeOrdering) {
+    let source_loc = origin_loc(ctx, edge.source_origin);
+    let target_loc = origin_loc(ctx, edge.target_origin);
+    let shorter_name = format_lid_name(ctx, LId(edge.shorter.0));
+    let longer_name = format_lid_name(ctx, LId(edge.longer.0));
+    let message = format!("lifetime mismatch: {longer_name} must outlive {shorter_name}");
+    let label = format!(
+        "this {} requires lifetime {longer_name} to outlive {shorter_name}",
+        ordering_reason_text(edge.reason)
+    );
+    let related_label = format!("lifetime {longer_name} is taken from here");
 
-    if let (Some(loc), Some(related)) = (&source_loc, &target_loc) {
-        ctx.push_error(TypeError::SimpleRelated {
-            loc: loc.clone(),
-            message: "borrowed value does not live long enough for required lifetime",
-            related: related.clone(),
-            related_message: "borrow source lifetime is shorter than required",
+    if let (Some(loc), Some(related)) = (source_loc.clone(), target_loc.clone()) {
+        ctx.push_error(TypeError::LifetimeError {
+            loc,
+            message,
+            label,
+            related: Some(related),
+            related_label: Some(related_label),
         });
         return;
     }
 
     if let Some(loc) = source_loc.or(target_loc) {
-        ctx.push_error(TypeError::Simple {
+        ctx.push_error(TypeError::LifetimeError {
             loc,
-            message: "borrowed value does not live long enough for required lifetime",
+            message,
+            label,
+            related: None,
+            related_label: None,
         });
     }
 }
@@ -690,10 +856,9 @@ mod tests {
         assign_remaining_unresolved_lifetimes_as_unknown, collect_origin_lifetime_orderings,
         seed_origin_lifetimes_for_graph, solve_lifetime_scc,
     };
-    use crate::ErrorReporter;
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
-    use crate::local_type_inference::{gather_func_constraints, local_solver};
+    use crate::local_type_inference::{gather_func_constraints, infer_value_internals, local_solver};
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::run_typecheck_scan;
@@ -749,6 +914,11 @@ mod tests {
             panic!("expected function value")
         };
 
+        let previous_name_render = std::mem::replace(
+            &mut ctx.ex.name_render,
+            crate::type_inference::GenLifeNameRender::from_decl(ctx.ex.program, generics),
+        );
+
         let _ = gather_func_constraints::<true>(
             &mut ctx,
             function,
@@ -759,6 +929,7 @@ mod tests {
             body,
         );
         local_solver(&mut ctx);
+        ctx.ex.name_render = previous_name_render;
 
         action(&mut ctx)
     }
@@ -856,16 +1027,43 @@ mod tests {
                 ctx.ex.errors.iter().any(|err| {
                     matches!(
                         err,
-                        TypeError::Simple { message, .. }
-                            | TypeError::SimpleRelated { message, .. }
-                            if *message
-                                == "borrowed value does not live long enough for required lifetime"
+                        TypeError::LifetimeError { message, .. }
+                            if message == "lifetime mismatch: 'l0 must outlive 'a0"
                     )
                 }),
                 "expected lifetime ordering error, got {:?}",
                 ctx.ex.errors
             );
         });
+    }
+
+    #[test]
+    fn lifetime_cycle_error_mentions_named_lifetimes() {
+        let src = "f=fn['a,'b](r1:&'a &'a int,r2:&'a &'b int)->&'a &'a int { & & * * r2 }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .expect("expected lifetime cycle to fail");
+
+        assert!(
+            errs.iter().any(|err| {
+                matches!(
+                    err,
+                    TypeError::LifetimeError { message, label, related_label, .. }
+                        if message.contains("'a")
+                            && message.contains("'b")
+                            && label.contains("outlive")
+                            && related_label.as_ref().is_some_and(|text| text.contains("outlive"))
+                )
+            }),
+            "expected named lifetime cycle error, got {:?}",
+            errs
+        );
     }
 
     #[test]

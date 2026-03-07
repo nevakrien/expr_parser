@@ -69,6 +69,11 @@ Use this with:
   every `LId` inside an equality component is attempted against a single leader
   and diagnostics can anchor to representative origins when a known-lifetime
   merge is incompatible.
+- Lifetime-graph diagnostics now use a dedicated lifetime error path instead of
+  generic simple errors. Ordering failures report the concrete lifetime names
+  involved (for example `this reborrow requires lifetime 'a to outlive 'b`),
+  and cycle failures try to surface opposing outlives requirements from witness
+  paths inside the SCC.
 - Local lifetime graph solving now also validates directed ordering edges when
   both sides already have known lifetimes; impossible known orderings (for
   example requiring an external lifetime to be shorter than a local lifetime)

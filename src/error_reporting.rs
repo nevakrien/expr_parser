@@ -114,19 +114,16 @@ impl ErrorReporter {
                     return Ok(());
                 };
 
-                let mut report = Report::build(
-                    ReportKind::Error,
-                    primary.file,
-                    primary.range.start,
-                )
-                .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
-                    format!("Unresolved name '{name}'")
-                } else {
-                    format!(
+                let mut report =
+                    Report::build(ReportKind::Error, primary.file, primary.range.start)
+                        .with_message(if locs.len() < MAX_UNRESOLVED_NAME_LABELS {
+                            format!("Unresolved name '{name}'")
+                        } else {
+                            format!(
                         "Unresolved name '{name}' (showing {MAX_UNRESOLVED_NAME_LABELS}/{})",
                         locs.len()
                     )
-                });
+                        });
 
                 for loc in locs.iter().take(MAX_UNRESOLVED_NAME_LABELS) {
                     report = report.with_label(
@@ -260,6 +257,31 @@ impl ErrorReporter {
                             .with_message(*related_message)
                             .with_color(Color::Yellow),
                     );
+
+                self.print_report(report.finish())
+            }
+            TypeError::LifetimeError {
+                loc,
+                message,
+                label,
+                related,
+                related_label,
+            } => {
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(message)
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(label)
+                            .with_color(Color::Red),
+                    );
+
+                if let (Some(related), Some(related_label)) = (related, related_label.as_ref()) {
+                    report = report.with_label(
+                        Label::new((related.file, related.range.clone()))
+                            .with_message(related_label)
+                            .with_color(Color::Yellow),
+                    );
+                }
 
                 self.print_report(report.finish())
             }

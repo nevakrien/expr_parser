@@ -13,37 +13,21 @@ use expr_parser::type_inference::run_typechecker;
 //     weird_func(&*get_static(),x)
 // }
 // "#;
-const SOURCE: &str = r#"
-get_static = fn()->&'static &'static void;
-weird_func = fn['a,'b,T](r:&'a &'b void,y:&'b T)->&'a T{
-    y
-}
-
-cheat = fn['a,'b,T](x:&'a T)->&'b T {
-    weird_func(get_static(),x)
-}
-"#;
 // const SOURCE: &str = r#"
-// Wrapper = struct {baba:[int;1]};
-// Wrapper.get = fn(self:&mut Wrapper)->&mut int {&mut self.baba[0]}
+// get_static = fn()->&'static &'static void;
+// weird_func = fn['a,'b,T](r:&'a &'b void,y:&'b T)->&'a T{
+//     y
+// }
 
-// Unsafe = struct { inner: &'raw Wrapper };
-// Unsafe.__deref_mut = fn['a](self: &'raw mut Unsafe) -> &'a mut Wrapper  { &*self.inner };
-
-// RawCalc = struct { inner: &'raw Unsafe };
-// RawCalc.__deref_mut = fn(self: &'raw mut RawCalc) -> &'raw Unsafe { self.inner };
-
-// Raw = struct { inner: &'static mut RawCalc };
-// Raw.__deref_mut = fn(self: &mut Raw) -> &'static mut RawCalc { self.inner };
-
-// Safe = struct { inner: &'raw Raw };
-// Safe.__deref_mut = fn(self: &mut Safe) -> &mut Raw { &*self.inner };
-
-// f = fn(s: &mut Safe) {
-//     let out : &mut int = s->get();
-//     let arr : [int;1] = s->baba;
-// };
-// // "#;
+// cheat = fn['a,'b,T](x:&'a T)->&'b T {
+//     weird_func(get_static(),x)
+// }
+// "#;
+const SOURCE: &str = r#"
+    f=fn['a,'b](r1:&'a &'a int,r2:&'a &'b int)->&'a &'a int {
+        & & * * r2
+    }
+"#;
 // const SOURCE: &str = r#"
 // sqrt = fn(f:float)->float;
 // Point = struct{x:float,y:float}
