@@ -11,11 +11,11 @@ use crate::ir::PatternSpan;
 use crate::ir::TExpId;
 use crate::ir::VarKind;
 use crate::ir::{AssignOp, BinOp, Dir, Literal, NameId, UnOp, ValId, Value};
+use crate::lifetime_graph::solve_local_lifetimes_by_graph;
 #[cfg(feature = "solver_order_fuzz")]
 use crate::local_solver_order::{LocalSolverPass, SolverOrderPlanner};
 use crate::parsing::Loc;
 use crate::program::{Defined, Program};
-use crate::lifetime_graph::solve_local_lifetimes_by_graph;
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DIV_STR, EQ_STR,
     FORGET_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR, MUL_STR, NE_STR, NEG_STR,
@@ -159,7 +159,6 @@ fn local_solver_fuzz(ctx: &mut InferState) {
 
     solve_local_lifetimes_by_graph(ctx);
     full_resolve_deferred_types(ctx);
-    
 
     let _ = resolve_pending_sized_requirements(ctx);
 
@@ -849,18 +848,15 @@ pub(crate) fn gather_constraints(
                 match ctx.ex.program.pattern(cur_pat).clone() {
                     Pattern::Bind(_, _) => {
                         if let Some(origin) = ctx.types.pattern_origin(cur_pat) {
-                            let should_seed_local = ctx
-                                .types
-                                .origin(origin)
-                                .is_some_and(|node| {
-                                    matches!(node.kind, OriginKind::BindingRoot)
-                                        && node.lifetime_seed.is_none()
-                                });
+                            let should_seed_local = ctx.types.origin(origin).is_some_and(|node| {
+                                matches!(node.kind, OriginKind::BindingRoot)
+                                    && node.lifetime_seed.is_none()
+                            });
 
                             if should_seed_local {
-                                let local_lid = ctx.types.new_lid_known(LifeTime::Local(LifeId(
-                                    next_local_lifetime,
-                                )));
+                                let local_lid = ctx
+                                    .types
+                                    .new_lid_known(LifeTime::Local(LifeId(next_local_lifetime)));
                                 next_local_lifetime += 1;
                                 if let Some(node) = ctx.types.origin_mut(origin) {
                                     node.lifetime_seed = Some(local_lid);

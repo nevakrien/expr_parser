@@ -27,6 +27,10 @@ Use this with:
 - Local solve now runs a lifetime-graph pass that seeds origin nodes with
   associated `LId`s, extracts origin-order constraints, runs SCC collapse, and
   unifies `LId`s inside cycle components.
+- Lifetime graph seeding now also canonicalizes origin `lifetime_seed`s to
+  union-find roots, unifies seed `LId`s with associated pointer `LId`s when
+  available, and mints missing `BindingRoot` seeds as fresh
+  `LifeTime::Local` lifetimes.
 - `let`-introduced binding roots now seed required local lifetimes directly on
   their origin-attached `LId`s during gather, so truly local storage origins are
   explicitly represented before graph solving.
@@ -59,6 +63,17 @@ Use this with:
 - `src/lifetime_graph.rs` now includes a reusable SCC solve pass over lifetime
   ordering edges. It uses Tarjan DFS to produce SCC components and the local
   solver uses SCC membership to drive `LId`-level unification checks.
+- SCC-driven unification now runs per component (not per in-component edge), so
+  every `LId` inside an equality component is attempted against a single leader
+  and diagnostics can anchor to representative origins when a known-lifetime
+  merge is incompatible.
+- Local lifetime graph solving now also validates directed ordering edges when
+  both sides already have known lifetimes; impossible known orderings (for
+  example requiring an external lifetime to be shorter than a local lifetime)
+  now emit a direct local diagnostic instead of silently passing.
+- Origin seeding now prefers the associated-pointer lifetime when an existing
+  origin seed conflicts with that pointer lifetime, avoiding stale/conflicting
+  seeds on pointer-associated origins.
 
 ## Not Implemented Yet
 

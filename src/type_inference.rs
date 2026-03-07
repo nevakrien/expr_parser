@@ -7730,6 +7730,25 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn returning_reference_to_local_instead_of_input_lifetime_is_rejected() {
+        let src = "f=fn(p:&int)->&int{ let x = 2; &x }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
+            .err()
+            .expect("expected returning local reference to fail");
+
+        assert_has_simple_error(
+            &errs,
+            "borrowed value does not live long enough for required lifetime",
+        );
+    }
+
+    #[test]
     fn tuple_int_access_resolves_tuple_element_types() {
         let src = "f=fn(t:(int,bool)){ let a:int = t.0; let b:bool = t.1; };";
         let program = gather_program(src);

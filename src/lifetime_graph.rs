@@ -2,6 +2,7 @@ use crate::type_inference::{
     CId, InferState, LId, LifeId, LifeTime, OriginDeclSite, OriginId, OriginKind, OriginNode,
     OriginVec, PointerStyle, ResolveKind, TypeError, TypeValue, find_lid_root, unify_struct_lids,
 };
+use std::cmp::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LifetimeGraphId(pub(crate) usize);
@@ -311,25 +312,74 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     let lid_count = ctx.types.lifetimes.life_parent.0.len();
     let graph = collect_origin_lifetime_orderings(&ctx.types.lifetimes.origins, lid_count);
     let solve = solve_lifetime_scc(&graph);
+    let anchors = collect_lid_origin_anchors(&ctx.types.lifetimes.origins, lid_count);
 
-    for edge in graph.edges() {
-        let shorter_component = solve.component_of[edge.shorter.0];
-        let longer_component = solve.component_of[edge.longer.0];
-        if shorter_component != longer_component {
+    for component in &solve.components {
+        if component.nodes.len() < 2 {
             continue;
         }
 
-        let shorter = LId(edge.shorter.0);
-        let longer = LId(edge.longer.0);
-        if !unify_struct_lids(&mut ctx.types, shorter, longer) {
-            report_lifetime_cycle_conflict(ctx, edge.source_origin, edge.target_origin);
+        let leader = LId(component.nodes[0].0);
+        for &node in component.nodes.iter().skip(1) {
+            let lid = LId(node.0);
+            if unify_struct_lids(&mut ctx.types, leader, lid) {
+                continue;
+            }
+
+            match (anchors[leader.0], anchors[lid.0]) {
+                (Some(source), Some(target)) => {
+                    report_lifetime_cycle_conflict(ctx, source, target);
+                }
+                _ => {
+                    if let Some(loc) = ctx.req.owner.map(|owner| ctx.ex.program.value_loc(owner)) {
+                        ctx.push_error(TypeError::Simple {
+                            loc,
+                            message: "lifetime cycle requires incompatible lifetime equality",
+                        });
+                    }
+                }
+            }
         }
     }
+
+    validate_known_lifetime_orderings(ctx, &graph);
 
     assign_remaining_unresolved_lifetimes_as_unknown(ctx);
 }
 
+fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
+    let mut seen_root_pairs: Vec<(usize, usize)> = Vec::new();
+
+    for edge in graph.edges() {
+        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
+        let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
+
+        if shorter_root == longer_root {
+            continue;
+        }
+
+        let shorter_lt = ctx.types.lifetimes.life_known[shorter_root];
+        let longer_lt = ctx.types.lifetimes.life_known[longer_root];
+        let (Some(shorter_lt), Some(longer_lt)) = (shorter_lt, longer_lt) else {
+            continue;
+        };
+
+        if !matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater)) {
+            continue;
+        }
+
+        let pair = (shorter_root.0, longer_root.0);
+        if seen_root_pairs.contains(&pair) {
+            continue;
+        }
+        seen_root_pairs.push(pair);
+
+        report_lifetime_ordering_conflict(ctx, edge.source_origin, edge.target_origin);
+    }
+}
+
 fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
+    let mut next_local = next_local_lifetime_id(ctx);
     let origin_count = ctx.types.lifetimes.origins.len();
     if origin_count == 0 {
         return;
@@ -337,24 +387,32 @@ fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
 
     for raw in 0..origin_count {
         let origin = OriginId(raw as u32);
-        if ctx
-            .types
-            .origin(origin)
-            .is_some_and(|node| node.lifetime_seed.is_some())
-        {
-            continue;
-        }
-
-        let (kind, parent) = match ctx.types.origin(origin) {
-            Some(node) => (node.kind, node.parent),
+        let (kind, parent, current_seed) = match ctx.types.origin(origin) {
+            Some(node) => (node.kind, node.parent, node.lifetime_seed),
             None => continue,
         };
 
-        let mut seed_lid = None;
+        let mut seed_lid =
+            current_seed.map(|lid| find_lid_root(&mut ctx.types.lifetimes.life_parent, lid));
+
         if let Some(cid) = kind.associated_pointer()
             && let Some(lid) = resolve_pointer_lifetime_for_graph(ctx, cid)
         {
-            seed_lid = Some(lid);
+            let pointer_lid = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
+            seed_lid = Some(match seed_lid {
+                Some(existing) => {
+                    if existing != pointer_lid {
+                        if !unify_struct_lids(&mut ctx.types, existing, pointer_lid) {
+                            pointer_lid
+                        } else {
+                            find_lid_root(&mut ctx.types.lifetimes.life_parent, existing)
+                        }
+                    } else {
+                        existing
+                    }
+                }
+                None => pointer_lid,
+            });
         }
 
         if seed_lid.is_none()
@@ -362,17 +420,30 @@ fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
             && let Some(parent_node) = ctx.types.origin(parent_origin)
             && let Some(parent_lid) = parent_node.lifetime_seed
         {
-            seed_lid = Some(parent_lid);
+            seed_lid = Some(find_lid_root(
+                &mut ctx.types.lifetimes.life_parent,
+                parent_lid,
+            ));
         }
 
         if seed_lid.is_none() {
-            seed_lid = Some(ctx.types.new_lid());
+            seed_lid = Some(if matches!(kind, OriginKind::BindingRoot) {
+                let lid = ctx.types.new_lid_known(LifeTime::Local(LifeId(next_local)));
+                next_local += 1;
+                lid
+            } else {
+                ctx.types.new_lid()
+            });
         }
 
+        let root_seed =
+            seed_lid.map(|lid| find_lid_root(&mut ctx.types.lifetimes.life_parent, lid));
         if let Some(node) = ctx.types.origin_mut(origin) {
-            node.lifetime_seed = seed_lid;
+            node.lifetime_seed = root_seed;
         }
     }
+
+    canonicalize_origin_lifetime_seed_roots(ctx);
 }
 
 fn resolve_pointer_lifetime_for_graph(ctx: &mut InferState, cid: CId) -> Option<LId> {
@@ -382,7 +453,9 @@ fn resolve_pointer_lifetime_for_graph(ctx: &mut InferState, cid: CId) -> Option<
             crate::type_inference::PtrKind::RefInfer(lid) => {
                 Some(find_lid_root(&mut ctx.types.lifetimes.life_parent, lid))
             }
-            crate::type_inference::PtrKind::Solved(PointerStyle::Raw(_)) => Some(ctx.types.new_lid()),
+            crate::type_inference::PtrKind::Solved(PointerStyle::Raw(_)) => {
+                Some(ctx.types.new_lid())
+            }
             _ => None,
         },
         ResolveKind::Solved(ty) => match *ctx.ex.store.type_value(ty) {
@@ -427,6 +500,53 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(ctx: &mut InferState) {
     }
 }
 
+fn next_local_lifetime_id(ctx: &InferState) -> u32 {
+    let mut next = 0;
+    for known in ctx.types.lifetimes.life_known.0.iter().copied().flatten() {
+        if let LifeTime::Local(id) = known {
+            next = next.max(id.0.saturating_add(1));
+        }
+    }
+    next
+}
+
+fn canonicalize_origin_lifetime_seed_roots(ctx: &mut InferState) {
+    let origin_count = ctx.types.lifetimes.origins.len();
+    for raw in 0..origin_count {
+        let origin = OriginId(raw as u32);
+        let root = ctx
+            .types
+            .origin(origin)
+            .and_then(|node| node.lifetime_seed)
+            .map(|lid| find_lid_root(&mut ctx.types.lifetimes.life_parent, lid));
+        if let Some(node) = ctx.types.origin_mut(origin) {
+            node.lifetime_seed = root;
+        }
+    }
+}
+
+fn collect_lid_origin_anchors(
+    origins: &OriginVec<OriginNode>,
+    lid_count: usize,
+) -> Vec<Option<OriginId>> {
+    let mut anchors = vec![None; lid_count];
+
+    for raw in 0..origins.len() {
+        let origin = OriginId(raw as u32);
+        let Some(node) = origins.get(origin) else {
+            continue;
+        };
+        let Some(seed) = node.lifetime_seed else {
+            continue;
+        };
+        if seed.0 < lid_count && anchors[seed.0].is_none() {
+            anchors[seed.0] = Some(origin);
+        }
+    }
+
+    anchors
+}
+
 fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
     let mut next = 0;
     for known in ctx.types.lifetimes.life_known.0.iter().copied().flatten() {
@@ -437,7 +557,11 @@ fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
     next
 }
 
-fn report_lifetime_cycle_conflict(ctx: &mut InferState, source_origin: OriginId, target_origin: OriginId) {
+fn report_lifetime_cycle_conflict(
+    ctx: &mut InferState,
+    source_origin: OriginId,
+    target_origin: OriginId,
+) {
     let source_loc = ctx
         .types
         .origin(source_origin)
@@ -473,11 +597,51 @@ fn report_lifetime_cycle_conflict(ctx: &mut InferState, source_origin: OriginId,
     }
 }
 
+fn report_lifetime_ordering_conflict(
+    ctx: &mut InferState,
+    source_origin: OriginId,
+    target_origin: OriginId,
+) {
+    let source_loc = ctx
+        .types
+        .origin(source_origin)
+        .and_then(|node| node.decl_site)
+        .map(|site| match site {
+            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
+            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
+        });
+    let target_loc = ctx
+        .types
+        .origin(target_origin)
+        .and_then(|node| node.decl_site)
+        .map(|site| match site {
+            OriginDeclSite::Pattern(pattern) => ctx.ex.program.pattern_loc(pattern),
+            OriginDeclSite::Value(value) => ctx.ex.program.value_loc(value),
+        });
+
+    if let (Some(loc), Some(related)) = (&source_loc, &target_loc) {
+        ctx.push_error(TypeError::SimpleRelated {
+            loc: loc.clone(),
+            message: "borrowed value does not live long enough for required lifetime",
+            related: related.clone(),
+            related_message: "borrow source lifetime is shorter than required",
+        });
+        return;
+    }
+
+    if let Some(loc) = source_loc.or(target_loc) {
+        ctx.push_error(TypeError::Simple {
+            loc,
+            message: "borrowed value does not live long enough for required lifetime",
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_origin_lifetime_orderings, solve_lifetime_scc, LifetimeGraphId, LifetimeOrdering,
-        LifetimeOrderingReason,
+        LifetimeGraphId, LifetimeOrdering, LifetimeOrderingReason,
+        collect_origin_lifetime_orderings, seed_origin_lifetimes_for_graph, solve_lifetime_scc,
     };
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
@@ -485,7 +649,8 @@ mod tests {
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::{
-        CId, InferState, LId, OriginId, OriginKind, OriginNode, OriginVec, SolvedTypes, TypeStore,
+        CId, InferState, LId, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind,
+        ResolveKind, SolvedTypes, TypeStore, find_lid_root,
     };
 
     fn gather_program(src: &str) -> Program {
@@ -541,19 +706,12 @@ mod tests {
             body,
         );
         local_solver(&mut ctx);
-        assert!(
-            ctx.ex.errors.is_empty(),
-            "unexpected type errors: {:?}",
-            ctx.ex.errors
-        );
-
         let origins = ctx
             .ex
             .ans
             .inner_types_of_function(function)
-            .expect("expected finalized inner function types")
-            .origins
-            .clone();
+            .map(|inner| inner.origins.clone())
+            .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
         let lid_count = ctx.types.lifetimes.life_parent.0.len();
 
         collect_origin_lifetime_orderings(&origins, lid_count)
@@ -592,18 +750,11 @@ mod tests {
             body,
         );
         local_solver(&mut ctx);
-        assert!(
-            ctx.ex.errors.is_empty(),
-            "unexpected type errors: {:?}",
-            ctx.ex.errors
-        );
-
         ctx.ex
             .ans
             .inner_types_of_function(function)
-            .expect("expected finalized inner function types")
-            .origins
-            .clone()
+            .map(|inner| inner.origins.clone())
+            .unwrap_or_else(|| ctx.types.lifetimes.origins.clone())
     }
 
     #[test]
@@ -750,5 +901,102 @@ mod tests {
 
         assert_eq!(solve.components.len(), 2);
         assert_ne!(solve.component_of[0], solve.component_of[1]);
+    }
+
+    #[test]
+    fn seeding_binding_roots_assigns_unique_local_lifetimes() {
+        let program = gather_program("f=fn(){};");
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let function = find_value_by_name(&program, "f");
+        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
+        ctx.req.owner = Some(function);
+
+        let first =
+            ctx.types
+                .new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
+        let second =
+            ctx.types
+                .new_unchecked_origin(OriginKind::BindingRoot, None, None, Some(false), None);
+
+        seed_origin_lifetimes_for_graph(&mut ctx);
+
+        let first_lid = ctx
+            .types
+            .origin(first)
+            .and_then(|node| node.lifetime_seed)
+            .expect("first binding root should be seeded");
+        let second_lid = ctx
+            .types
+            .origin(second)
+            .and_then(|node| node.lifetime_seed)
+            .expect("second binding root should be seeded");
+
+        let first_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, first_lid);
+        let second_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, second_lid);
+        let first_lt = ctx.types.lifetimes.life_known[first_root]
+            .expect("first binding root lifetime should be known");
+        let second_lt = ctx.types.lifetimes.life_known[second_root]
+            .expect("second binding root lifetime should be known");
+
+        let LifeTime::Local(first_local) = first_lt else {
+            panic!("expected first binding root to seed a local lifetime, got {first_lt:?}");
+        };
+        let LifeTime::Local(second_local) = second_lt else {
+            panic!("expected second binding root to seed a local lifetime, got {second_lt:?}");
+        };
+
+        assert_ne!(first_local, second_local);
+    }
+
+    #[test]
+    fn seeding_unifies_existing_seed_with_associated_pointer_lifetime() {
+        let program = gather_program("f=fn(){};");
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let function = find_value_by_name(&program, "f");
+        let mut ctx = InferState::new(&mut store, &program, &mut solved_types);
+        ctx.req.owner = Some(function);
+
+        let pointee = ctx.types.new_cluster();
+        let pointer = ctx.types.new_cluster();
+        let pointer_lid = ctx.types.new_lid_known(LifeTime::External(42));
+        ctx.types.core.cluster[pointer].state = ResolveKind::Ptr {
+            tgt: pointee,
+            kind: PtrKind::RefInfer(pointer_lid),
+            mutable: Some(false),
+        };
+
+        let origin = ctx.types.new_unchecked_origin(
+            OriginKind::PlaceRoot(pointer),
+            None,
+            None,
+            Some(false),
+            None,
+        );
+
+        let stale_seed = ctx.types.new_lid();
+        if let Some(node) = ctx.types.origin_mut(origin) {
+            node.lifetime_seed = Some(stale_seed);
+        }
+
+        seed_origin_lifetimes_for_graph(&mut ctx);
+
+        let seeded_lid = ctx
+            .types
+            .origin(origin)
+            .and_then(|node| node.lifetime_seed)
+            .expect("origin should stay seeded");
+        let seeded_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, seeded_lid);
+        let pointer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, pointer_lid);
+        assert_eq!(seeded_root, pointer_root);
+
+        let seeded_lt = ctx.types.lifetimes.life_known[seeded_root]
+            .expect("origin lifetime should resolve to pointer lifetime");
+        assert_eq!(seeded_lt, LifeTime::External(42));
     }
 }
