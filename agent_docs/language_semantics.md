@@ -69,7 +69,24 @@ Closure support:
 - Current typechecking support:
   - `[T; N]` resolves to `TypeValue::Array(T, ArrayType::Sized(N))`.
   - `[T]` resolves in type expressions to `TypeValue::Array(T, ArrayType::Unsized)`.
-  - Value/index semantics are still array-focused and evolving; unsized arrays are currently a type-level form, not a fully general runtime container model.
+- Value/index semantics are still array-focused and evolving; unsized arrays are currently a type-level form, not a fully general runtime container model.
+
+## Generic Declaration `where` Clauses (Lowering Shape)
+
+- Generic declaration brackets on `fn`/`struct`-like forms now allow an inline `where` split point:
+  - Example: `fn['a, 'b, T, where T<'a, T<'b](...) { ... }`.
+- Lowering stores declaration parts in `GenDec` as:
+  - lifetime/generic declaration patterns (`parts` + `lifetime_end`), and
+  - `where` constraints as a dedicated type-expression span (`where_clause`).
+- Parsing detail:
+  - The first `where ...` item inside the bracket list starts the where-clause section.
+  - Any remaining comma-separated items after that are also lowered as where constraints.
+
+## Type-Expression `<` Constraints
+
+- Type expressions now accept binary `<` in lowering and represent it as `TypeExpr::Lt { lhs, rhs }`.
+- This is primarily intended for generic where-constraint forms (for example `T<'a`).
+- Other binary operators in type expressions remain unsupported and continue to emit lowering errors.
 
 ## Lifetimes and Reference Kinds (Planned Contract)
 

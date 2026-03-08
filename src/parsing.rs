@@ -87,7 +87,7 @@ impl fmt::Display for Token {
 pub const KEYWORDS: &[&str] = &[
     "let", "var", "const", "mut", "type", "struct", "cstruct", "union", "enum", "fn", "cfn",
     "macro", "if", "else", "while", "for", "match", "return", "break", "continue", "goto", "as",
-    "true", "false", "null", "nil",
+    "true", "false", "null", "nil", "where",
 ];
 
 ///greedy match
@@ -226,6 +226,7 @@ const fn match_keyword(input: &str) -> Option<&'static str> {
             b"macro" => Some("macro"),
             b"break" => Some("break"),
             b"false" => Some("false"),
+            b"where" => Some("where"),
 
             _ => None,
         },
@@ -291,12 +292,14 @@ const BP_CALL: u32 = 860; // (), []
 const BP_POSTFIX_INC: u32 = 850;
 const BP_PREFIX: u32 = 840;
 const BP_LIFETIME: u32 = BP_PATH + 2;
+const BP_WHERE: u32 = 50; // weakest prefix, weaker than assignment
 
 #[inline]
 fn prefix_bp(op: &str, _: NonTerm) -> Option<u32> {
     Some(match op {
         "'" | "`" => BP_LIFETIME,
         "!" | "-" | "*" | "&" | "~" | "++" | "--" | "const" | "mut" => BP_PREFIX,
+        "where" => BP_WHERE,
         _ => return None,
     })
 }

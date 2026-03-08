@@ -319,6 +319,7 @@ pub struct GenDec {
     pub parts: PatternSpan,
     ///exclusive
     pub lifetime_end: usize,
+    pub where_clause: TypeExprSpan,
 }
 
 impl GenDec {
@@ -334,6 +335,10 @@ impl GenDec {
             _start: PatId(self.parts._start.0 + self.lifetime_end),
             _count: self.parts._count - self.lifetime_end,
         }
+    }
+
+    pub fn where_clause(&self) -> TypeExprSpan {
+        self.where_clause
     }
 }
 
@@ -574,6 +579,11 @@ pub enum TypeExpr {
     Index {
         base: TExpId,
         args: GenIndex,
+    },
+
+    Lt {
+        lhs: TExpId,
+        rhs: TExpId,
     },
 
     Ptr {
@@ -1147,6 +1157,89 @@ impl Program {
         }
     }
 
+    fn lower_generic_dec(&mut self, generics_expr: Option<LExpr>) -> GenDec {
+        let items_vec = match generics_expr {
+            Some(gen_expr) => {
+                let Expr::Prefix(open, items) = gen_expr.value else {
+                    debug_assert!(false, "fn generics must use brackets");
+                    return GenDec {
+                        parts: self.reserve_pattern_span(0),
+                        lifetime_end: 0,
+                        where_clause: self.reserve_type_expr_span(0),
+                    };
+                };
+                debug_assert!(open.value == "[", "fn generics must use brackets");
+
+                Some(items)
+            }
+            None => None,
+        };
+
+        match items_vec {
+            Some(items) => {
+                let mut where_start = items.len();
+                let mut where_prefix_count = 0;
+                for (index, expr) in items.iter().enumerate() {
+                    if let Expr::Prefix(op, nested_items) = &expr.value
+                        && op.value == "where"
+                    {
+                        where_start = index;
+                        where_prefix_count = nested_items.len();
+                        break;
+                    }
+                }
+
+                let parts = self.reserve_pattern_span(where_start);
+                let where_count = if where_start == items.len() {
+                    0
+                } else {
+                    where_prefix_count + (items.len() - where_start - 1)
+                };
+                let where_clause = self.reserve_type_expr_span(where_count);
+
+                let mut where_index = 0;
+                for (index, expr) in items.into_iter().enumerate() {
+                    if index < where_start {
+                        let target = parts.at(index);
+                        self.lower_pattern_into(target, expr, VarKind::Const);
+                        continue;
+                    }
+
+                    if index == where_start {
+                        let Expr::Prefix(op, nested_items) = expr.value else {
+                            unreachable!();
+                        };
+                        debug_assert!(op.value == "where");
+                        for nested in nested_items {
+                            let target = where_clause.at(where_index);
+                            self.lower_type_expr_into(target, nested);
+                            where_index += 1;
+                        }
+                        continue;
+                    }
+
+                    let target = where_clause.at(where_index);
+                    self.lower_type_expr_into(target, expr);
+                    where_index += 1;
+                }
+
+                debug_assert_eq!(where_index, where_clause.len());
+
+                let lifetime_end = self.find_lifetime_end_in_pattern_span(parts);
+                GenDec {
+                    parts,
+                    lifetime_end,
+                    where_clause,
+                }
+            }
+            None => GenDec {
+                parts: self.reserve_pattern_span(0),
+                lifetime_end: 0,
+                where_clause: self.reserve_type_expr_span(0),
+            },
+        }
+    }
+
     fn lower_fn_expr_inner(
         &mut self,
         loc: Loc,
@@ -1156,38 +1249,8 @@ impl Program {
         ret_expr: Option<LExpr>,
         body_expr: Option<LExpr>,
     ) -> Value {
-        let items_vec = match generics_expr {
-            Some(gen_expr) => {
-                let Expr::Prefix(open, items) = gen_expr.value else {
-                    debug_assert!(false, "fn generics must use brackets");
-                    return Value::Poison;
-                };
-                debug_assert!(open.value == "[", "fn generics must use brackets");
-
-                Some(items)
-            }
-            None => None,
-        };
-
         self.with_scope_value(|this| {
-            let generics = match items_vec {
-                Some(items) => {
-                    let parts = this.reserve_pattern_span(items.len());
-                    for (index, expr) in items.into_iter().enumerate() {
-                        let target = parts.at(index);
-                        this.lower_pattern_into(target, expr, VarKind::Const);
-                    }
-                    let lifetime_end = this.find_lifetime_end_in_pattern_span(parts);
-                    GenDec {
-                        parts,
-                        lifetime_end,
-                    }
-                }
-                None => GenDec {
-                    parts: this.reserve_pattern_span(0),
-                    lifetime_end: 0,
-                },
-            };
+            let generics = this.lower_generic_dec(generics_expr);
 
             let params_span = this.reserve_pattern_span(param_items.len());
             for (index, param) in param_items.into_iter().enumerate() {
@@ -1981,6 +2044,14 @@ impl Program {
                 TypeExpr::Poison
             }
 
+            Expr::Bin(op, pair) if op.value == "<" => {
+                let (lhs, rhs) = *pair;
+                TypeExpr::Lt {
+                    lhs: self.lower_type_expr(lhs),
+                    rhs: self.lower_type_expr(rhs),
+                }
+            }
+
             Expr::Bin(op, _) => {
                 self.push_lowering_error(CompileError::UnsupportedForm {
                     loc,
@@ -2108,35 +2179,7 @@ impl Program {
             return TypeExpr::Poison;
         }
 
-        let generics = match generics_expr {
-            Some(gen_expr) => {
-                let Expr::Prefix(open, items) = gen_expr.value else {
-                    self.push_lowering_error(CompileError::UnsupportedForm {
-                        loc: gen_expr.loc,
-                        op_loc: Some(kw.loc),
-                        op: Some(kw.value),
-                        message: "generic parameters on type literals are not supported",
-                    });
-                    return TypeExpr::Poison;
-                };
-                debug_assert!(open.value == "[");
-
-                let parts = self.reserve_pattern_span(items.len());
-                for (index, item) in items.into_iter().enumerate() {
-                    let target = parts.at(index);
-                    self.lower_pattern_into(target, item, VarKind::Const);
-                }
-                let lifetime_end = self.find_lifetime_end_in_pattern_span(parts);
-                GenDec {
-                    parts,
-                    lifetime_end,
-                }
-            }
-            None => GenDec {
-                parts: self.reserve_pattern_span(0),
-                lifetime_end: 0,
-            },
-        };
+        let generics = self.lower_generic_dec(generics_expr);
 
         let fields = match fields_expr.value {
             Expr::Prefix(open, items) if open.value == "{" => {
@@ -3345,6 +3388,50 @@ mod lowering_tests {
                     Value::Func { generics, .. } => {
                         assert_eq!(generics.lifetimes().len(), 1);
                         assert_eq!(generics.generics().len(), 1);
+                        assert!(generics.where_clause().is_empty());
+                    }
+                    _ => panic!("expected function value"),
+                }
+            }
+            _ => panic!("expected value definition"),
+        }
+    }
+
+    #[test]
+    fn fn_generics_with_where_clause() {
+        let src = "f = fn['a, 'b, T, where T<'a, T<'b](x: T) -> T { x }";
+        let mut parser = Parser::new(src, 0);
+        let mut program = Program::new();
+        program.lower_all(&mut parser).unwrap();
+
+        let f_name = program.str_intern.intern("f");
+        let f_id = *program
+            .scopes
+            .first()
+            .and_then(|scope| scope.0.get(&f_name))
+            .expect("missing f binding");
+        let defined = program.definitions.get(&f_id).expect("missing definition");
+
+        match defined {
+            Defined::Func(funcs) => {
+                let value = funcs
+                    .implementations
+                    .first()
+                    .copied()
+                    .expect("expected function implementation");
+                match program.value(value) {
+                    Value::Func { generics, .. } => {
+                        assert_eq!(generics.lifetimes().len(), 2);
+                        assert_eq!(generics.generics().len(), 1);
+                        assert_eq!(generics.where_clause().len(), 2);
+
+                        for constraint in generics.where_clause().ids() {
+                            let TypeExpr::Lt { lhs, rhs } = program.type_expr(constraint) else {
+                                panic!("expected `<` type expression in where clause");
+                            };
+                            assert!(matches!(program.type_expr(lhs), TypeExpr::NameRef(_)));
+                            assert!(matches!(program.type_expr(rhs), TypeExpr::LifeTime(_)));
+                        }
                     }
                     _ => panic!("expected function value"),
                 }
