@@ -269,6 +269,9 @@ Current local inference mutability is driven by a single pending-constraint queu
   - function types also carry declaration-side where-clause metadata for both
     lifetime ordering edges (`'a < 'b`) and generic-lifetime requirements
     (`T<'a`), used today for storage/printing and unused-parameter checks.
+  - stored lifetime-order metadata is currently only the explicit edges, not a
+    transitive closure; that is intentional until declaration-side diagnostics
+    stop iterating stored edges directly.
 - `TypeStore`: interned type arena + struct table.
   - builtins are interned first,
   - structural equality is intern identity,
@@ -280,6 +283,8 @@ Current local inference mutability is driven by a single pending-constraint queu
 - `StructRep` contains optional name, field list, generic count, and a layout spec (`Hot` vs `C` for `cstruct`).
 - `StructRep` also stores declaration-side where-clause metadata for both
   lifetime-order edges and `T<'a`-style generic lifetime requirements.
+- Like functions, structs currently keep explicit where-clause lifetime edges
+  rather than a pre-expanded closure.
 - Typedef-driven struct names are now assigned during typedef compilation (`do_typedef`), by checking the compiled cluster for either `ResolveKind::Struct` or a solved `TypeValue::Struct` and setting `StructRep.name` only when currently unset.
 - Recursive structs are supported by creating struct ids early, then resolving field types in `finalize`.
 

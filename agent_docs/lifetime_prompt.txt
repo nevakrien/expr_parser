@@ -1,0 +1,213 @@
+We recently added support for lifetime ordering where clauses to the parser and IR,
+but the type checker does not yet enforce them.
+
+The syntax looks like:
+
+    ['a,'b where 'a < 'b]
+
+This means the declaration explicitly states that lifetime 'a must be shorter
+than lifetime 'b.
+
+Parsing and IR support already exist in the most recent commit. The next step
+is implementing the behavior in the type checker.
+
+The goal is to enforce lifetime ordering constraints declared in where clauses
+and ensure they propagate correctly through specialization.
+
+This affects both struct declarations and function signatures.
+
+There are several important architectural constraints to keep in mind while
+implementing this.
+
+The lifetime solver currently relies on a graph + SCC (Tarjan) based approach.
+The algorithm must remain O(1) amortized per inserted edge so the overall solve
+remains O(n). Any solution that requires recomputing the graph or performing
+global scans per edge is not acceptable.
+
+
+----------------------------------------------------------------
+
+First requirement: declarations must store lifetime ordering graphs.
+
+Struct declarations and function signatures must store a lifetime ordering DAG
+derived from their where clause. This graph represents ordering edges such as
+'a < 'b between the lifetimes declared on that item.
+
+Example:
+
+    X = struct['a,'b where 'a < 'b] { r: &'a &'b int }
+
+    Y = struct['a,'b,'c where 'a < 'b] {
+        x: X['a,'c],
+        b: &'b int
+    }
+
+This must produce an error.
+
+Explanation:
+
+    X declares the constraint 'a < 'b.
+
+    When we instantiate X['a,'c], the constraint becomes 'a < 'c.
+
+    But Y only declares 'a < 'b.
+
+    Therefore Y does not satisfy the constraint required by the
+    specialization of X.
+
+Important detail:
+
+The ordering edges coming from X must NOT use global lifetime ids.
+They must use specialized lifetime ids corresponding to the
+instantiation site.
+
+The same validation logic must also be implemented for function
+signatures.
+
+
+----------------------------------------------------------------
+
+Second requirement: solver changes for where clauses.
+
+Currently the lifetime solver treats any new ordering edges affecting
+global lifetimes as illegal and immediately errors.
+
+Where clauses are allowed to introduce ordering relationships that
+affect global lifetimes. Therefore the solver must be modified.
+
+Add a new solve phase before the existing inference edges are applied.
+
+    Phase 1:
+        unify edges coming from where clauses
+
+        These edges must be inserted into the lifetime graph and unified
+        without validation.
+
+    Phase 2:
+        unify edges produced by inference
+        (reborrows, storage requirements, projections, etc)
+
+        If these edges introduce illegal orderings, produce an error.
+
+This preserves the Tarjan SCC solve and keeps the complexity amortized
+O(n), meaning each inserted edge must remain O(1) amortized.
+
+
+----------------------------------------------------------------
+
+Third requirement: specialization must propagate constraints.
+
+Whenever a global rank1 type is specialized into a local rank0 instance,
+the lifetime ordering constraints of that global item must be transferred
+to the local lifetime graph.
+
+Example:
+
+    global declaration:
+        X<'a,'b where 'a < 'b>
+
+    specialization site:
+        X['p,'q]
+
+This must produce the constraint:
+
+        'p < 'q
+
+This constraint must be inserted into the local lifetime graph.
+
+This propagation must happen at every specialization site, including
+structs and functions.
+
+
+----------------------------------------------------------------
+
+Fourth requirement: global signature solving vs local solving.
+
+Currently the global signature solving phase does not actually solve
+lifetimes at all.
+
+We want to extend the global phase so that it processes where-clause
+lifetime graphs for declarations and produces a validated lifetime
+ordering DAG for each declaration.
+
+The result of this global phase should be stored on the declaration so
+that the local phase can simply load the allowed ordering relationships
+instead of recomputing them.
+
+In other words:
+
+    global phase:
+        validates declaration lifetime constraints
+        produces and stores a lifetime ordering DAG
+
+    local phase:
+        loads this DAG and instantiates it when the declaration
+        is specialized
+
+
+----------------------------------------------------------------
+
+Fifth requirement: structs live in the global solve space.
+
+Struct declarations are solved in a global solve space, unlike function
+bodies which have a local lifetime graph.
+
+Because of this there is a risk that lifetime ids from different contexts
+could accidentally mix.
+
+The implementation must ensure that:
+
+    declaration lifetime ids are distinct from local lifetime ids
+
+    specialization correctly remaps declaration lifetimes to the
+    local lifetime ids
+
+    no edges are inserted that directly reference the original
+    declaration ids
+
+All edges inserted into the local graph must refer to the specialized ids.
+
+
+----------------------------------------------------------------
+
+Sixth requirement: struct construction and method currying must be validated.
+
+Struct construction and member method currying currently go through
+slightly hacky code paths that may bypass normal validation.
+
+We must ensure that lifetime ordering constraints are enforced in these
+paths as well.
+
+Specifically verify that:
+
+    struct construction correctly enforces the lifetime constraints
+    required by the struct definition
+
+    member method currying correctly propagates lifetime constraints
+
+    any specialization performed during these operations inserts the
+    correct ordering edges
+
+If these paths currently bypass specialization logic, they must be
+updated to reuse the same constraint propagation mechanism used
+elsewhere.
+
+
+----------------------------------------------------------------
+
+Final invariants that must always hold:
+
+    every declaration with a where clause owns a lifetime ordering DAG
+
+    the global solve phase validates and stores these DAGs
+
+    specializing a global item remaps that DAG into the local
+    lifetime graph
+
+    all inserted edges remain O(1) amortized
+
+    where-clause edges are applied before inference edges
+    in the solver
+
+    illegal ordering errors only occur when inference edges
+    conflict with already established ordering relationships

@@ -5,6 +5,9 @@ use crate::ir::StructLayoutSpec;
 use crate::ir::StructLike;
 use crate::ir::VarKind;
 use crate::ir::{GenDec, NameId, PatId, Pattern, PatternSpan, TExpId, TypeExpr, ValId, Value};
+use crate::lifetime_graph::{
+    LifetimeGraphId, collect_decl_lifetime_orderings, solve_where_clause_lifetime_scc,
+};
 use crate::string_intern::{
     ADD_STR, ALIGN_OF_STR, BITAND_STR, BITNOT_STR, BITOR_STR, BITXOR_STR, DEREF_MUT_STR, DEREF_STR,
     DIV_STR, DSIZED_STR, EQ_STR, FORGET_STR, FREE_STR, GE_STR, GT_STR, LE_STR, LT_STR, MOD_STR,
@@ -187,6 +190,357 @@ fn global_solver(ctx: &mut InferState) {
     }
 
     finalize_global(ctx);
+    validate_global_where_clause_requirements(ctx);
+}
+
+fn validate_global_where_clause_requirements(ctx: &mut InferState) {
+    validate_struct_storage_where_clause_requirements(ctx);
+    validate_function_argument_where_clause_requirements(ctx);
+}
+
+fn validate_struct_storage_where_clause_requirements(ctx: &mut InferState) {
+    for (_name, def) in ctx.ex.program.definitions.iter() {
+        let Defined::Type(type_expr) = def else {
+            continue;
+        };
+        let TypeExpr::Struct(def) = ctx.ex.program.type_expr(*type_expr) else {
+            continue;
+        };
+        let Some(ty) = ctx.ex.ans.typedef_types.get(type_expr).copied() else {
+            continue;
+        };
+        let TypeValue::Struct { id, .. } = *ctx.ex.store.type_value(ty) else {
+            continue;
+        };
+
+        let previous_name_render = std::mem::replace(
+            &mut ctx.ex.name_render,
+            GenLifeNameRender::from_decl(ctx.ex.program, def.generics),
+        );
+
+        let (life_count, field_len, solve, reachability) = {
+            let struct_rep = ctx.ex.store.struct_value(id);
+            let life_count = struct_rep.life_count;
+            let field_len = struct_rep.fields.len();
+            let (_graph, solve, reachability) =
+                solve_decl_where_clause_graph(life_count, &struct_rep.lifetime_orderings);
+            (life_count, field_len, solve, reachability)
+        };
+
+        for field_index in 0..field_len {
+            let field_pat = def.fields.at(field_index);
+            let field_ty = ctx.ex.store.struct_value(id).fields[field_index].1;
+            let field_loc = match ctx.ex.program.pattern(field_pat) {
+                Pattern::TypeAnnotation { ty, .. } => ctx.ex.program.type_expr_loc(ty),
+                _ => ctx.ex.program.pattern_loc(field_pat),
+            };
+            validate_type_uses_allowed_lifetime_orderings(
+                ctx,
+                &field_loc,
+                field_ty,
+                &solve.component_of,
+                &reachability,
+                life_count,
+                "struct field type",
+            );
+        }
+
+        ctx.ex.name_render = previous_name_render;
+    }
+}
+
+fn validate_function_argument_where_clause_requirements(ctx: &mut InferState) {
+    for (_name, def) in ctx.ex.program.definitions.iter() {
+        let Defined::Func(funcs) = def else {
+            continue;
+        };
+        for function in funcs.values() {
+            validate_single_function_argument_where_clause_requirements(ctx, function);
+        }
+    }
+
+    for (_struct_name, methods) in ctx.ex.program.member_methods.iter() {
+        for (_method_name, method_set) in methods.iter() {
+            for function in method_set.values() {
+                validate_single_function_argument_where_clause_requirements(ctx, function);
+            }
+        }
+    }
+}
+
+fn validate_single_function_argument_where_clause_requirements(
+    ctx: &mut InferState,
+    function: ValId,
+) {
+    let Value::Func {
+        generics, params, ..
+    } = ctx.ex.program.value(function)
+    else {
+        return;
+    };
+
+    let Some(ty) = ctx.ex.ans.function_types_by_value(function).map(|f| f.ty) else {
+        return;
+    };
+    let (lifetime_count, param_len, solve, reachability) = {
+        let TypeValue::Func {
+            lifetimes,
+            lifetime_orderings,
+            params: solved_params,
+            ..
+        } = ctx.ex.store.type_value(ty)
+        else {
+            return;
+        };
+        let (_graph, solve, reachability) =
+            solve_decl_where_clause_graph(*lifetimes, lifetime_orderings);
+        (*lifetimes, solved_params.len(), solve, reachability)
+    };
+
+    let previous_name_render = std::mem::replace(
+        &mut ctx.ex.name_render,
+        GenLifeNameRender::from_decl(ctx.ex.program, generics),
+    );
+
+    for param_index in 0..param_len {
+        let param_pat = params.at(param_index);
+        let param_ty = match ctx.ex.store.type_value(ty) {
+            TypeValue::Func { params, .. } => params[param_index],
+            _ => unreachable!(),
+        };
+        let param_loc = ctx.ex.program.pattern_loc(param_pat);
+        validate_type_uses_allowed_lifetime_orderings(
+            ctx,
+            &param_loc,
+            param_ty,
+            &solve.component_of,
+            &reachability,
+            lifetime_count,
+            "function parameter type",
+        );
+    }
+
+    ctx.ex.name_render = previous_name_render;
+}
+
+fn solve_decl_where_clause_graph(
+    lifetime_count: usize,
+    lifetime_orderings: &[LifetimeOrderingEdge],
+) -> (
+    crate::lifetime_graph::LifetimeOrderingGraph,
+    crate::lifetime_graph::LifetimeSccSolve,
+    Vec<Vec<bool>>,
+) {
+    let graph = collect_decl_lifetime_orderings(lifetime_count, lifetime_orderings);
+    let solve = solve_where_clause_lifetime_scc(&graph);
+    let component_count = solve.components.len();
+    let mut reachability = vec![vec![false; component_count]; component_count];
+
+    for component_index in 0..component_count {
+        reachability[component_index][component_index] = true;
+    }
+
+    for edge in graph.where_clause_edges() {
+        let shorter_component = solve.component_of[edge.shorter.0];
+        let longer_component = solve.component_of[edge.longer.0];
+        reachability[shorter_component][longer_component] = true;
+    }
+
+    for mid in 0..component_count {
+        for src in 0..component_count {
+            if !reachability[src][mid] {
+                continue;
+            }
+            for dst in 0..component_count {
+                reachability[src][dst] |= reachability[mid][dst];
+            }
+        }
+    }
+
+    (graph, solve, reachability)
+}
+
+fn validate_type_uses_allowed_lifetime_orderings(
+    ctx: &mut InferState,
+    loc: &crate::parsing::Loc,
+    ty: TypeId,
+    component_of: &[usize],
+    reachability: &[Vec<bool>],
+    owner_lifetime_count: usize,
+    site_kind: &'static str,
+) {
+    match ctx.ex.store.type_value(ty) {
+        TypeValue::Struct {
+            id,
+            generics,
+            lifetimes,
+        } => {
+            let generic_len = generics.len();
+            {
+                let struct_rep = ctx.ex.store.struct_value(*id);
+                let mut missing_edges = Vec::with_capacity(struct_rep.lifetime_orderings.len());
+                for edge in &struct_rep.lifetime_orderings {
+                    let Some(shorter) = lifetimes.get(edge.shorter.0).copied() else {
+                        continue;
+                    };
+                    let Some(longer) = lifetimes.get(edge.longer.0).copied() else {
+                        continue;
+                    };
+                    if declaration_allows_lifetime_ordering(
+                        shorter,
+                        longer,
+                        component_of,
+                        reachability,
+                        owner_lifetime_count,
+                    ) {
+                        continue;
+                    }
+                    missing_edges.push((shorter, longer));
+                }
+
+                for (shorter, longer) in missing_edges {
+                    let shorter_name = lifetime_name_for_decl_error(ctx, shorter);
+                    let longer_name = lifetime_name_for_decl_error(ctx, longer);
+                    let found_ty = ctx.ex.store.get_type_string(ctx.ex.program, ty);
+                    ctx.push_error(TypeError::LifetimeError {
+                        loc: loc.clone(),
+                        message: format!(
+                            "missing where-clause requirement '{shorter_name} < '{longer_name} for {site_kind} `{found_ty}`"
+                        ),
+                        label: format!(
+                            "`{found_ty}` requires '{shorter_name} < '{longer_name}"
+                        ),
+                        related: None,
+                        related_label: None,
+                    });
+                }
+            }
+
+            for generic_index in 0..generic_len {
+                let generic = match ctx.ex.store.type_value(ty) {
+                    TypeValue::Struct { generics, .. } => generics[generic_index],
+                    _ => unreachable!(),
+                };
+                validate_type_uses_allowed_lifetime_orderings(
+                    ctx,
+                    loc,
+                    generic,
+                    component_of,
+                    reachability,
+                    owner_lifetime_count,
+                    site_kind,
+                );
+            }
+        }
+        TypeValue::Tuple(items) => {
+            let item_len = items.len();
+            for item_index in 0..item_len {
+                let item = match ctx.ex.store.type_value(ty) {
+                    TypeValue::Tuple(items) => items[item_index],
+                    _ => unreachable!(),
+                };
+                validate_type_uses_allowed_lifetime_orderings(
+                    ctx,
+                    loc,
+                    item,
+                    component_of,
+                    reachability,
+                    owner_lifetime_count,
+                    site_kind,
+                );
+            }
+        }
+        TypeValue::Array(element, _) => {
+            let element = *element;
+            validate_type_uses_allowed_lifetime_orderings(
+                ctx,
+                loc,
+                element,
+                component_of,
+                reachability,
+                owner_lifetime_count,
+                site_kind,
+            )
+        }
+        TypeValue::Ptr { tgt, .. } => {
+            let tgt = *tgt;
+            validate_type_uses_allowed_lifetime_orderings(
+                ctx,
+                loc,
+                tgt,
+                component_of,
+                reachability,
+                owner_lifetime_count,
+                site_kind,
+            )
+        }
+        TypeValue::Func { params, ret, .. } => {
+            let ret = *ret;
+            let param_len = params.len();
+            for param_index in 0..param_len {
+                let param = match ctx.ex.store.type_value(ty) {
+                    TypeValue::Func { params, .. } => params[param_index],
+                    _ => unreachable!(),
+                };
+                validate_type_uses_allowed_lifetime_orderings(
+                    ctx,
+                    loc,
+                    param,
+                    component_of,
+                    reachability,
+                    owner_lifetime_count,
+                    site_kind,
+                );
+            }
+            validate_type_uses_allowed_lifetime_orderings(
+                ctx,
+                loc,
+                ret,
+                component_of,
+                reachability,
+                owner_lifetime_count,
+                site_kind,
+            );
+        }
+        TypeValue::Builtin(_) | TypeValue::Generic(_, _) => {}
+    }
+}
+
+fn declaration_allows_lifetime_ordering(
+    shorter: LifeTime,
+    longer: LifeTime,
+    component_of: &[usize],
+    reachability: &[Vec<bool>],
+    owner_lifetime_count: usize,
+) -> bool {
+    if shorter == longer {
+        return true;
+    }
+
+    if matches!(
+        shorter.partial_cmp(&longer),
+        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+    ) {
+        return true;
+    }
+
+    let (LifeTime::External(shorter), LifeTime::External(longer)) = (shorter, longer) else {
+        return false;
+    };
+
+    let shorter = shorter as usize;
+    let longer = longer as usize;
+    if shorter >= owner_lifetime_count || longer >= owner_lifetime_count {
+        return false;
+    }
+
+    let shorter_component = component_of[LifetimeGraphId(shorter).0];
+    let longer_component = component_of[LifetimeGraphId(longer).0];
+    reachability[shorter_component][longer_component]
+}
+
+fn lifetime_name_for_decl_error(ctx: &InferState, lt: LifeTime) -> String {
+    lifetime_for_display(&ctx.ex, lt)
 }
 
 #[inline(always)]
@@ -503,15 +857,15 @@ fn collect_decl_where_requirements(
         }
     }
 
-    let mut orderings = Vec::new();
-    let mut generic_lifetime_requirements = Vec::new();
+    let mut orderings = Vec::with_capacity(generics.where_clause().len());
+    let mut generic_lifetime_requirements = Vec::with_capacity(generics.where_clause().len());
     for constraint in generics.where_clause().ids() {
         let TypeExpr::Lt { lhs, rhs } = ctx.ex.program.type_expr(constraint) else {
             continue;
         };
 
         let resolve_lifetime = |expr: TExpId| match ctx.ex.program.type_expr(expr) {
-            TypeExpr::LifeTime(id) => lifetime_indexes.get(&id).copied(),
+            TypeExpr::LifeTime(id) => lifetime_indexes.get(&id).copied().map(LifetimeGraphId),
             TypeExpr::NameRef(name) => {
                 generics
                     .lifetimes()
@@ -522,7 +876,7 @@ fn collect_decl_where_requirements(
                             if ctx.ex.program.lifetime_string(id)
                                 == ctx.ex.program.name_string(name) =>
                         {
-                            Some(index)
+                            Some(LifetimeGraphId(index))
                         }
                         _ => None,
                     })
@@ -632,7 +986,7 @@ fn apply_signature_elided_output_lifetime_rule(
     };
 
     let mut seen_output_roots = vec![false; ctx.types.lifetimes.life_parent.0.len()];
-    let mut output_elided_roots = Vec::new();
+    let mut output_elided_roots = Vec::with_capacity(lids_after_output - lids_before_output);
     for lid in lids_before_output..lids_after_output {
         let root = ctx.types.find_lid_root(LId(lid));
         if seen_output_roots[root.0] {
@@ -669,7 +1023,7 @@ fn assign_signature_implicit_input_lifetimes(
     lids_after_inputs: usize,
 ) -> Vec<LifeTime> {
     let mut seen_input_roots = vec![false; ctx.types.lifetimes.life_parent.0.len()];
-    let mut implicit_input_roots = Vec::new();
+    let mut implicit_input_roots = Vec::with_capacity(lids_after_inputs - lids_before_inputs);
     for lid in lids_before_inputs..lids_after_inputs {
         let root = ctx.types.find_lid_root(LId(lid));
         if seen_input_roots[root.0] {
@@ -1312,19 +1666,19 @@ fn mark_used_generics_and_lifetimes_from_type(
                 used_lifetimes,
             );
             for edge in lifetime_orderings {
-                if edge.shorter < lifetime_count {
-                    used_lifetimes[edge.shorter] = true;
+                if edge.shorter.0 < lifetime_count {
+                    used_lifetimes[edge.shorter.0] = true;
                 }
-                if edge.longer < lifetime_count {
-                    used_lifetimes[edge.longer] = true;
+                if edge.longer.0 < lifetime_count {
+                    used_lifetimes[edge.longer.0] = true;
                 }
             }
             for requirement in generic_lifetime_requirements {
                 if requirement.generic < generic_count {
                     used_generics[requirement.generic] = true;
                 }
-                if requirement.lifetime < lifetime_count {
-                    used_lifetimes[requirement.lifetime] = true;
+                if requirement.lifetime.0 < lifetime_count {
+                    used_lifetimes[requirement.lifetime.0] = true;
                 }
             }
         }
@@ -1427,19 +1781,19 @@ fn mark_used_struct_signature_from_type(
                 used_lifetimes,
             );
             for edge in lifetime_orderings {
-                if edge.shorter < used_lifetimes.len() {
-                    used_lifetimes[edge.shorter] = true;
+                if edge.shorter.0 < used_lifetimes.len() {
+                    used_lifetimes[edge.shorter.0] = true;
                 }
-                if edge.longer < used_lifetimes.len() {
-                    used_lifetimes[edge.longer] = true;
+                if edge.longer.0 < used_lifetimes.len() {
+                    used_lifetimes[edge.longer.0] = true;
                 }
             }
             for requirement in generic_lifetime_requirements {
                 if requirement.generic < generic_count {
                     used_generics[requirement.generic] = true;
                 }
-                if requirement.lifetime < used_lifetimes.len() {
-                    used_lifetimes[requirement.lifetime] = true;
+                if requirement.lifetime.0 < used_lifetimes.len() {
+                    used_lifetimes[requirement.lifetime.0] = true;
                 }
             }
         }
@@ -1517,19 +1871,19 @@ fn check_unused_struct_signature_generics_and_lifetimes(ctx: &mut InferState, ty
     }
 
     for edge in &struct_rep.lifetime_orderings {
-        if edge.shorter < used_lifetimes.len() {
-            used_lifetimes[edge.shorter] = true;
+        if edge.shorter.0 < used_lifetimes.len() {
+            used_lifetimes[edge.shorter.0] = true;
         }
-        if edge.longer < used_lifetimes.len() {
-            used_lifetimes[edge.longer] = true;
+        if edge.longer.0 < used_lifetimes.len() {
+            used_lifetimes[edge.longer.0] = true;
         }
     }
     for requirement in &struct_rep.generic_lifetime_requirements {
         if requirement.generic < used_generics.len() {
             used_generics[requirement.generic] = true;
         }
-        if requirement.lifetime < used_lifetimes.len() {
-            used_lifetimes[requirement.lifetime] = true;
+        if requirement.lifetime.0 < used_lifetimes.len() {
+            used_lifetimes[requirement.lifetime.0] = true;
         }
     }
 

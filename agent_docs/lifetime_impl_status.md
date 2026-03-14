@@ -40,6 +40,12 @@ Use this with:
   roots are assigned fresh unknown lifetimes (`LifeTime::Unknown`).
 - Struct field signatures now reject elided reference lifetimes in inline struct
   definitions when lifetime params are required.
+- Global solve now validates declared where-clause lifetime orderings for
+  struct field storage and function parameter types. This reuses the Tarjan SCC
+  pass from `src/lifetime_graph.rs` over declaration-local where-clause edges,
+  computes reachability once per declaration, and rejects nested specialized
+  struct types whose required ordering is not implied by the owner's where
+  clause DAG.
 
 ## Partially Implemented / Transitional
 
@@ -69,12 +75,12 @@ Use this with:
   every `LId` inside an equality component is attempted against a single leader
   and diagnostics can anchor to representative origins when a known-lifetime
   merge is incompatible.
-- Lifetime-graph diagnostics now use a dedicated lifetime error path instead of
-  generic simple errors. Ordering failures report the concrete lifetime names
-  involved (for example `this reborrow requires lifetime 'a to outlive 'b`),
-  and invalid global-vs-global outlives requirements are now reported at the
-  individual offending edge sites instead of being surfaced primarily as SCC
-  cycle diagnostics.
+- Lifetime-graph diagnostics now use dedicated lifetime-specific error variants
+  instead of generic simple errors. Direct ordering failures and illegal
+  global-vs-global outlives requirements are both reported at the offending
+  edge site, preserving the concrete operation reason (for example reborrow,
+  dereference, member access, index access, or cast) instead of relying on a
+  separate cycle-style summary diagnostic.
 - Local lifetime graph solving now also validates directed ordering edges when
   both sides already have known lifetimes; impossible known orderings (for
   example requiring an external lifetime to be shorter than a local lifetime)
@@ -93,8 +99,9 @@ Use this with:
 
 ## Not Implemented Yet
 
-- Declaration-time nested-reference well-formedness checking for global
-  signatures (`&'a &'b T` requiring `'a <= 'b`).
+- Declaration-time nested-reference well-formedness checking for global return
+  types / typedef aliases beyond the currently enforced struct-field and
+  function-parameter cases.
 - Enforcement/propagation of declared lifetime-order metadata through
   specialization and local solving.
 - Typedef/type-alias declaration validation for nested-reference
@@ -129,7 +136,7 @@ Target behavior for this slice:
 Planned representation direction:
 
 - Store declaration edges in terms of declaration lifetime parameter indexes
-  (for example `shorter: usize, longer: usize`) rather than global/local `LId`s.
+  using `LifetimeGraphId` wrappers rather than global/local `LId`s.
 - After global validation, store the transitive-reduced or otherwise validated
   DAG on `StructRep` and on solved function-signature metadata.
 - At specialization time, translate those declaration indexes through the
@@ -172,6 +179,15 @@ types in plain sorted/deduped forms:
 - Type printers now render both lifetime-order edges and `T<'a`-style
   requirements using the language syntax shape, including the `, where ...`
   separator inside the generic/lifetime list.
+- Body/local lifetime solving still does not consume declared where-clause
+  orderings as solver inputs. A direct reborrow using a declared edge such as
+  `where 'a < 'b` can work today, but transitive body cases like
+  `where 'a < 'b, 'b < 'c` implying `'a < 'c` are not yet discharged through
+  the local graph.
+- We deliberately do not expand/store transitive closure yet. Doing that at
+  interning/storage time would currently make declaration-side
+  `missing where-clause requirement` diagnostics noisier because that validator
+  iterates stored edges directly.
 
 This slice only stores and prints the declaration metadata. It does not yet
 enforce those edges during specialization or lifetime solving.

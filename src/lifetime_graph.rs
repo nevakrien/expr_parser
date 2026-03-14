@@ -1,13 +1,12 @@
 use crate::type_inference::{
-    CId, InferState, LId, LifeId, LifeTime, OriginDeclSite, OriginId, OriginKind, OriginNode,
-    OriginVec, PointerStyle, ResolveKind, TypeError, TypeValue, find_lid_root,
-    lifetime_for_display, unify_struct_lids,
+    CId, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge, OriginDeclSite, OriginId,
+    OriginKind, OriginNode, OriginVec, PointerStyle, ResolveKind, TypeError, TypeValue,
+    find_lid_root, lifetime_for_display, unify_struct_lids,
 };
 use std::cmp::Ordering;
-use std::collections::VecDeque;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct LifetimeGraphId(pub(crate) usize);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LifetimeGraphId(pub usize);
 
 impl LifetimeGraphId {
     fn from_lid(lid: LId, node_count: usize) -> Option<Self> {
@@ -33,18 +32,30 @@ pub(crate) struct LifetimeOrdering {
     pub(crate) reason: LifetimeOrderingReason,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WhereClauseLifetimeOrdering {
+    pub(crate) shorter: LifetimeGraphId,
+    pub(crate) longer: LifetimeGraphId,
+}
+
 pub(crate) struct LifetimeOrderingGraph {
     edges: Vec<LifetimeOrdering>,
+    where_clause_edges: Vec<WhereClauseLifetimeOrdering>,
     outgoing: Vec<Vec<usize>>,
+    where_clause_outgoing: Vec<Vec<usize>>,
 }
 
 impl LifetimeOrderingGraph {
     pub(crate) fn new(lid_count: usize) -> Self {
         let mut outgoing = Vec::with_capacity(lid_count);
         outgoing.resize_with(lid_count, Vec::new);
+        let mut where_clause_outgoing = Vec::with_capacity(lid_count);
+        where_clause_outgoing.resize_with(lid_count, Vec::new);
         Self {
             edges: Vec::new(),
+            where_clause_edges: Vec::new(),
             outgoing,
+            where_clause_outgoing,
         }
     }
 
@@ -61,6 +72,14 @@ impl LifetimeOrderingGraph {
         &self.outgoing[lid.0]
     }
 
+    pub(crate) fn where_clause_edges(&self) -> &[WhereClauseLifetimeOrdering] {
+        &self.where_clause_edges
+    }
+
+    pub(crate) fn where_clause_outgoing(&self, lid: LifetimeGraphId) -> &[usize] {
+        &self.where_clause_outgoing[lid.0]
+    }
+
     fn push_edge(&mut self, edge: LifetimeOrdering) {
         if self
             .edges
@@ -74,6 +93,40 @@ impl LifetimeOrderingGraph {
         self.edges.push(edge);
         self.outgoing[edge.shorter.0].push(index);
     }
+
+    pub(crate) fn push_where_clause_edge(
+        &mut self,
+        shorter: LifetimeGraphId,
+        longer: LifetimeGraphId,
+    ) {
+        if shorter == longer || shorter.0 >= self.lid_count() || longer.0 >= self.lid_count() {
+            return;
+        }
+
+        if self
+            .where_clause_edges
+            .iter()
+            .any(|existing| existing.shorter == shorter && existing.longer == longer)
+        {
+            return;
+        }
+
+        let index = self.where_clause_edges.len();
+        self.where_clause_edges
+            .push(WhereClauseLifetimeOrdering { shorter, longer });
+        self.where_clause_outgoing[shorter.0].push(index);
+    }
+}
+
+pub(crate) fn collect_decl_lifetime_orderings(
+    lid_count: usize,
+    edges: &[LifetimeOrderingEdge],
+) -> LifetimeOrderingGraph {
+    let mut graph = LifetimeOrderingGraph::new(lid_count);
+    for edge in edges {
+        graph.push_where_clause_edge(edge.shorter, edge.longer);
+    }
+    graph
 }
 
 pub(crate) fn collect_origin_lifetime_orderings(
@@ -134,11 +187,25 @@ pub(crate) struct LifetimeSccSolve {
 }
 
 pub(crate) fn solve_lifetime_scc(graph: &LifetimeOrderingGraph) -> LifetimeSccSolve {
-    LifetimeSccState::new(graph).solve()
+    solve_lifetime_scc_with_modes(graph, true, true)
+}
+
+pub(crate) fn solve_where_clause_lifetime_scc(graph: &LifetimeOrderingGraph) -> LifetimeSccSolve {
+    solve_lifetime_scc_with_modes(graph, false, true)
+}
+
+fn solve_lifetime_scc_with_modes(
+    graph: &LifetimeOrderingGraph,
+    include_origin_edges: bool,
+    include_where_clause_edges: bool,
+) -> LifetimeSccSolve {
+    LifetimeSccState::new(graph, include_origin_edges, include_where_clause_edges).solve()
 }
 
 struct LifetimeSccState<'a> {
     graph: &'a LifetimeOrderingGraph,
+    include_origin_edges: bool,
+    include_where_clause_edges: bool,
 
     next_index: usize,
     index: Vec<Option<usize>>,
@@ -152,11 +219,17 @@ struct LifetimeSccState<'a> {
 }
 
 impl<'a> LifetimeSccState<'a> {
-    fn new(graph: &'a LifetimeOrderingGraph) -> Self {
+    fn new(
+        graph: &'a LifetimeOrderingGraph,
+        include_origin_edges: bool,
+        include_where_clause_edges: bool,
+    ) -> Self {
         let lid_count = graph.lid_count();
 
         Self {
             graph,
+            include_origin_edges,
+            include_where_clause_edges,
             next_index: 0,
             index: vec![None; lid_count],
             low: vec![0; lid_count],
@@ -190,31 +263,22 @@ impl<'a> LifetimeSccState<'a> {
 
         self.push_stack(v);
 
-        let out_len = self.graph.outgoing(v).len();
-
-        for out_i in 0..out_len {
-            let edge_index = self.graph.outgoing(v)[out_i];
-            let edge = self.graph.edges[edge_index];
-            let w = edge.longer;
-
-            if self.index[w.0].is_none() {
-                self.visit(w);
-
-                if self.on_stack[w.0] {
-                    self.low[v.0] = self.low[v.0].min(self.low[w.0]);
-                }
-                continue;
+        if self.include_origin_edges {
+            let out_len = self.graph.outgoing(v).len();
+            for out_i in 0..out_len {
+                let edge_index = self.graph.outgoing(v)[out_i];
+                let edge = self.graph.edges[edge_index];
+                self.visit_target(v, edge.longer);
             }
+        }
 
-            if !self.on_stack[w.0] {
-                continue;
+        if self.include_where_clause_edges {
+            let out_len = self.graph.where_clause_outgoing(v).len();
+            for out_i in 0..out_len {
+                let edge_index = self.graph.where_clause_outgoing(v)[out_i];
+                let edge = self.graph.where_clause_edges[edge_index];
+                self.visit_target(v, edge.longer);
             }
-
-            let Some(w_index) = self.index[w.0] else {
-                continue;
-            };
-
-            self.low[v.0] = self.low[v.0].min(w_index);
         }
 
         if self.low[v.0] == v_index {
@@ -225,6 +289,27 @@ impl<'a> LifetimeSccState<'a> {
     fn push_stack(&mut self, lid: LifetimeGraphId) {
         self.stack.push(lid);
         self.on_stack[lid.0] = true;
+    }
+
+    fn visit_target(&mut self, v: LifetimeGraphId, w: LifetimeGraphId) {
+        if self.index[w.0].is_none() {
+            self.visit(w);
+
+            if self.on_stack[w.0] {
+                self.low[v.0] = self.low[v.0].min(self.low[w.0]);
+            }
+            return;
+        }
+
+        if !self.on_stack[w.0] {
+            return;
+        }
+
+        let Some(w_index) = self.index[w.0] else {
+            return;
+        };
+
+        self.low[v.0] = self.low[v.0].min(w_index);
     }
 
     fn finish_component(&mut self, root: LifetimeGraphId) {
@@ -324,7 +409,6 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     let lid_count = ctx.types.lifetimes.life_parent.0.len();
     let graph = collect_origin_lifetime_orderings(&ctx.types.lifetimes.origins, lid_count);
     let solve = solve_lifetime_scc(&graph);
-    let anchors = collect_lid_origin_anchors(&ctx.types.lifetimes.origins, lid_count);
     let invalid_components = collect_invalid_lifetime_ordering_components(ctx, &graph, &solve);
 
     for (component_index, component) in solve.components.iter().enumerate() {
@@ -343,43 +427,7 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
         let leader = LId(component.nodes[0].0);
         for &node in component.nodes.iter().skip(1) {
             let lid = LId(node.0);
-            if unify_struct_lids(&mut ctx.types, leader, lid) {
-                continue;
-            }
-
-            if report_lifetime_cycle_conflict(
-                ctx,
-                &graph,
-                &solve.component_of,
-                component,
-                leader,
-                lid,
-            ) {
-                continue;
-            }
-
-            match (anchors[leader.0], anchors[lid.0]) {
-                (Some(source), Some(target)) => {
-                    report_lifetime_cycle_conflict_from_anchors(ctx, leader, lid, source, target);
-                }
-                _ => {
-                    if let Some(loc) = ctx.req.owner.map(|owner| ctx.ex.program.value_loc(owner)) {
-                        let leader_name = format_lid_name(ctx, leader);
-                        let lid_name = format_lid_name(ctx, lid);
-                        ctx.push_error(TypeError::LifetimeError {
-                            loc,
-                            message: format!(
-                                "lifetime cycle requires incompatible requirements between {leader_name} and {lid_name}"
-                            ),
-                            label: format!(
-                                "the graph forces {leader_name} and {lid_name} to become equal"
-                            ),
-                            related: None,
-                            related_label: None,
-                        });
-                    }
-                }
-            }
+            let _ = unify_struct_lids(&mut ctx.types, leader, lid);
         }
     }
 
@@ -428,7 +476,7 @@ fn collect_invalid_lifetime_ordering_components(
 }
 
 fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
-    let mut seen_root_pairs: Vec<(usize, usize)> = Vec::new();
+    let mut seen_root_pairs: Vec<(usize, usize)> = Vec::with_capacity(graph.edges().len());
 
     for edge in graph.edges() {
         let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
@@ -596,7 +644,7 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(
     }
 
     let mut promote_to_local = vec![false; root_count];
-    let mut stack = Vec::new();
+    let mut stack = Vec::with_capacity(root_count);
     for root_raw in 0..root_count {
         let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(root_raw));
         if matches!(
@@ -622,10 +670,9 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(
 
     let mut next_local = next_local_lifetime_id(ctx);
     let mut next_unknown = next_unknown_lifetime_id(ctx);
-    let lids = ctx.types.lifetimes.life_parent.0.clone();
 
-    for lid in lids {
-        let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
+    for lid_index in 0..root_count {
+        let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(lid_index));
         if ctx.types.lifetimes.life_known[root].is_some() {
             continue;
         }
@@ -665,28 +712,6 @@ fn canonicalize_origin_lifetime_seed_roots(ctx: &mut InferState) {
     }
 }
 
-fn collect_lid_origin_anchors(
-    origins: &OriginVec<OriginNode>,
-    lid_count: usize,
-) -> Vec<Option<OriginId>> {
-    let mut anchors = vec![None; lid_count];
-
-    for raw in 0..origins.len() {
-        let origin = OriginId(raw as u32);
-        let Some(node) = origins.get(origin) else {
-            continue;
-        };
-        let Some(seed) = node.lifetime_seed else {
-            continue;
-        };
-        if seed.0 < lid_count && anchors[seed.0].is_none() {
-            anchors[seed.0] = Some(origin);
-        }
-    }
-
-    anchors
-}
-
 fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
     let mut next = 0;
     for known in ctx.types.lifetimes.life_known.0.iter().copied().flatten() {
@@ -715,202 +740,31 @@ fn origin_loc(ctx: &InferState, origin: OriginId) -> Option<crate::parsing::Loc>
         })
 }
 
-fn find_path_edges(
-    graph: &LifetimeOrderingGraph,
-    component_of: &[usize],
-    start: LifetimeGraphId,
-    goal: LifetimeGraphId,
-) -> Option<Vec<usize>> {
-    if start == goal {
-        return Some(Vec::new());
-    }
-
-    let component_id = *component_of.get(start.0)?;
-    if component_of.get(goal.0).copied()? != component_id {
-        return None;
-    }
-
-    let mut queue = VecDeque::new();
-    let mut seen = vec![false; graph.lid_count()];
-    let mut prev: Vec<Option<(LifetimeGraphId, usize)>> = vec![None; graph.lid_count()];
-
-    seen[start.0] = true;
-    queue.push_back(start);
-
-    while let Some(node) = queue.pop_front() {
-        for &edge_index in graph.outgoing(node) {
-            let edge = graph.edges()[edge_index];
-            let next = edge.longer;
-            if component_of[next.0] != component_id || seen[next.0] {
-                continue;
-            }
-            seen[next.0] = true;
-            prev[next.0] = Some((node, edge_index));
-            if next == goal {
-                let mut edges = Vec::new();
-                let mut current = goal;
-                while current != start {
-                    let (previous, via_edge) = prev[current.0]?;
-                    edges.push(via_edge);
-                    current = previous;
-                }
-                edges.reverse();
-                return Some(edges);
-            }
-            queue.push_back(next);
-        }
-    }
-
-    None
-}
-
-fn report_lifetime_cycle_conflict(
-    ctx: &mut InferState,
-    graph: &LifetimeOrderingGraph,
-    component_of: &[usize],
-    _component: &LifetimeSccComponent,
-    leader: LId,
-    other: LId,
-) -> bool {
-    let leader_node = LifetimeGraphId(leader.0);
-    let other_node = LifetimeGraphId(other.0);
-
-    if component_of.get(leader_node.0).copied() != component_of.get(other_node.0).copied() {
-        return false;
-    }
-
-    let forward = find_path_edges(graph, component_of, leader_node, other_node);
-    let reverse = find_path_edges(graph, component_of, other_node, leader_node);
-    let (Some(forward), Some(reverse)) = (forward, reverse) else {
-        return false;
-    };
-
-    let Some(first_forward) = forward.first().copied() else {
-        return false;
-    };
-    let Some(first_reverse) = reverse.first().copied() else {
-        return false;
-    };
-
-    let forward_edge = graph.edges()[first_forward];
-    let reverse_edge = graph.edges()[first_reverse];
-    let forward_loc = origin_loc(ctx, forward_edge.source_origin);
-    let reverse_loc = origin_loc(ctx, reverse_edge.source_origin);
-    let leader_name = format_lid_name(ctx, leader);
-    let other_name = format_lid_name(ctx, other);
-
-    let message = format!(
-        "lifetime cycle requires incompatible outlives requirements between {leader_name} and {other_name}"
-    );
-    let forward_label =
-        format!("this path requires lifetime {other_name} to outlive {leader_name}");
-    let reverse_label =
-        format!("but this path also requires lifetime {leader_name} to outlive {other_name}");
-
-    match (forward_loc, reverse_loc) {
-        (Some(loc), Some(related)) => {
-            ctx.push_error(TypeError::LifetimeError {
-                loc,
-                message,
-                label: forward_label,
-                related: Some(related),
-                related_label: Some(reverse_label),
-            });
-            true
-        }
-        (Some(loc), None) => {
-            ctx.push_error(TypeError::LifetimeError {
-                loc,
-                message,
-                label: forward_label,
-                related: None,
-                related_label: None,
-            });
-            true
-        }
-        (None, Some(loc)) => {
-            ctx.push_error(TypeError::LifetimeError {
-                loc,
-                message,
-                label: reverse_label,
-                related: None,
-                related_label: None,
-            });
-            true
-        }
-        (None, None) => false,
-    }
-}
-
-fn report_lifetime_cycle_conflict_from_anchors(
-    ctx: &mut InferState,
-    source_lid: LId,
-    target_lid: LId,
-    source_origin: OriginId,
-    target_origin: OriginId,
-) {
-    let source_loc = origin_loc(ctx, source_origin);
-    let target_loc = origin_loc(ctx, target_origin);
-
-    let source_name = format_lid_name(ctx, source_lid);
-    let target_name = format_lid_name(ctx, target_lid);
-
-    let message = format!(
-        "lifetime cycle requires incompatible requirements between {source_name} and {target_name}"
-    );
-
-    if let (Some(loc), Some(related)) = (source_loc.clone(), target_loc.clone()) {
-        ctx.push_error(TypeError::LifetimeError {
-            loc,
-            message,
-            label: "this lifetime participates in the conflicting cycle".to_string(),
-            related: Some(related),
-            related_label: Some("conflicting lifetime source".to_string()),
-        });
-        return;
-    }
-
-    if let Some(loc) = source_loc.or(target_loc) {
-        ctx.push_error(TypeError::LifetimeError {
-            loc,
-            message,
-            label: "this lifetime participates in the conflicting cycle".to_string(),
-            related: None,
-            related_label: None,
-        });
-    }
-}
-
 fn report_lifetime_ordering_conflict(ctx: &mut InferState, edge: &LifetimeOrdering) {
     let source_loc = origin_loc(ctx, edge.source_origin);
     let target_loc = origin_loc(ctx, edge.target_origin);
     let shorter_name = format_lid_name(ctx, LId(edge.shorter.0));
     let longer_name = format_lid_name(ctx, LId(edge.longer.0));
-    let message = format!("lifetime mismatch: {longer_name} must outlive {shorter_name}");
-    let label = format!(
-        "this {} requires lifetime {longer_name} to outlive {shorter_name}",
-        ordering_reason_text(edge.reason)
-    );
-    let related_label = format!("lifetime {longer_name} is taken from here");
+    let operation = ordering_reason_text(edge.reason);
 
     if let (Some(loc), Some(related)) = (source_loc.clone(), target_loc.clone()) {
-        ctx.push_error(TypeError::LifetimeError {
+        ctx.push_error(TypeError::LifetimeOrderingConflict {
             loc,
-            message,
-            label,
+            operation,
+            shorter: shorter_name,
+            longer: longer_name,
             related: Some(related),
-            related_label: Some(related_label),
         });
         return;
     }
 
     if let Some(loc) = source_loc.or(target_loc) {
-        ctx.push_error(TypeError::LifetimeError {
+        ctx.push_error(TypeError::LifetimeOrderingConflict {
             loc,
-            message,
-            label,
+            operation,
+            shorter: shorter_name,
+            longer: longer_name,
             related: None,
-            related_label: None,
         });
     }
 }
@@ -920,32 +774,26 @@ fn report_illegal_global_lifetime_ordering(ctx: &mut InferState, edge: &Lifetime
     let target_loc = origin_loc(ctx, edge.target_origin);
     let shorter_name = format_lid_name(ctx, LId(edge.shorter.0));
     let longer_name = format_lid_name(ctx, LId(edge.longer.0));
-    let message =
-        format!("illegal global lifetime ordering: {longer_name} must outlive {shorter_name}");
-    let label = format!(
-        "this {} requires lifetime {longer_name} to outlive {shorter_name}, but both are global lifetimes",
-        ordering_reason_text(edge.reason)
-    );
-    let related_label = format!("lifetime {longer_name} is taken from here");
+    let operation = ordering_reason_text(edge.reason);
 
     if let (Some(loc), Some(related)) = (source_loc.clone(), target_loc.clone()) {
-        ctx.push_error(TypeError::LifetimeError {
+        ctx.push_error(TypeError::IllegalGlobalLifetimeOrdering {
             loc,
-            message,
-            label,
+            operation,
+            shorter: shorter_name,
+            longer: longer_name,
             related: Some(related),
-            related_label: Some(related_label),
         });
         return;
     }
 
     if let Some(loc) = source_loc.or(target_loc) {
-        ctx.push_error(TypeError::LifetimeError {
+        ctx.push_error(TypeError::IllegalGlobalLifetimeOrdering {
             loc,
-            message,
-            label,
+            operation,
+            shorter: shorter_name,
+            longer: longer_name,
             related: None,
-            related_label: None,
         });
     }
 }
@@ -1130,8 +978,8 @@ mod tests {
                 ctx.ex.errors.iter().any(|err| {
                     matches!(
                         err,
-                        TypeError::LifetimeError { message, .. }
-                            if message == "lifetime mismatch: 'l0 must outlive 'a0"
+                        TypeError::LifetimeOrderingConflict { shorter, longer, .. }
+                            if shorter == "'a0" && longer == "'l0"
                     )
                 }),
                 "expected lifetime ordering error, got {:?}",
@@ -1158,11 +1006,9 @@ mod tests {
                 .filter(|err| {
                     matches!(
                         err,
-                        TypeError::LifetimeError { message, label, .. }
-                            if message.contains("illegal global lifetime ordering")
-                                && message.contains("'a")
-                                && message.contains("'b")
-                                && label.contains("both are global lifetimes")
+                        TypeError::IllegalGlobalLifetimeOrdering { shorter, longer, .. }
+                            if shorter.contains("'a") && longer.contains("'b")
+                                || shorter.contains("'b") && longer.contains("'a")
                     )
                 })
                 .count()
@@ -1189,11 +1035,9 @@ mod tests {
             errs.iter().any(|err| {
                 matches!(
                     err,
-                    TypeError::LifetimeError { message, label, .. }
-                        if message.contains("illegal global lifetime ordering")
-                            && message.contains("'a")
-                            && message.contains("'b")
-                            && label.contains("both are global lifetimes")
+                    TypeError::IllegalGlobalLifetimeOrdering { shorter, longer, .. }
+                        if (shorter.contains("'a") || shorter.contains("'b"))
+                            && (longer.contains("'a") || longer.contains("'b"))
                 )
             }),
             "expected illegal global lifetime ordering error, got {:?}",

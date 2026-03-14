@@ -288,6 +288,66 @@ impl ErrorReporter {
 
                 self.print_report(report.finish())
             }
+            TypeError::LifetimeOrderingConflict {
+                loc,
+                operation,
+                shorter,
+                longer,
+                related,
+            } => {
+                let message = format!("lifetime mismatch: {longer} must outlive {shorter}");
+                let label =
+                    format!("this {operation} requires lifetime {longer} to outlive {shorter}");
+                let related_label = format!("lifetime {longer} is taken from here");
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(message)
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(label)
+                            .with_color(Color::Red),
+                    );
+
+                if let Some(related) = related {
+                    report = report.with_label(
+                        Label::new((related.file, related.range.clone()))
+                            .with_message(related_label)
+                            .with_color(Color::Yellow),
+                    );
+                }
+
+                self.print_report(report.finish())
+            }
+            TypeError::IllegalGlobalLifetimeOrdering {
+                loc,
+                operation,
+                shorter,
+                longer,
+                related,
+            } => {
+                let message =
+                    format!("illegal global lifetime ordering: {longer} must outlive {shorter}");
+                let label = format!(
+                    "this {operation} requires lifetime {longer} to outlive {shorter}, but both are global lifetimes"
+                );
+                let related_label = format!("lifetime {longer} is taken from here");
+                let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
+                    .with_message(message)
+                    .with_label(
+                        Label::new((loc.file, loc.range.clone()))
+                            .with_message(label)
+                            .with_color(Color::Red),
+                    );
+
+                if let Some(related) = related {
+                    report = report.with_label(
+                        Label::new((related.file, related.range.clone()))
+                            .with_message(related_label)
+                            .with_color(Color::Yellow),
+                    );
+                }
+
+                self.print_report(report.finish())
+            }
             TypeError::UnknownBuiltinMemberMethod { site, method } => {
                 let loc = program.value_loc(*site);
                 let method_name = program.str_intern.resolve(*method);

@@ -229,6 +229,8 @@ pub enum LifeTime {
 }
 
 use std::cmp::Ordering;
+
+use crate::lifetime_graph::LifetimeGraphId;
 impl PartialOrd for LifeTime {
     fn partial_cmp(&self, other: &LifeTime) -> Option<Ordering> {
         use LifeTime::*;
@@ -299,14 +301,14 @@ pub enum TypeValue {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LifetimeOrderingEdge {
-    pub shorter: usize,
-    pub longer: usize,
+    pub shorter: LifetimeGraphId,
+    pub longer: LifetimeGraphId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct GenericLifetimeRequirement {
     pub generic: usize,
-    pub lifetime: usize,
+    pub lifetime: LifetimeGraphId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -537,16 +539,16 @@ impl TypeStore {
                 }
                 self.mark_used_function_lifetime_indexes(*ret, lifetime_count, used);
                 for edge in lifetime_orderings {
-                    if edge.shorter < lifetime_count {
-                        used[edge.shorter] = true;
+                    if edge.shorter.0 < lifetime_count {
+                        used[edge.shorter.0] = true;
                     }
-                    if edge.longer < lifetime_count {
-                        used[edge.longer] = true;
+                    if edge.longer.0 < lifetime_count {
+                        used[edge.longer.0] = true;
                     }
                 }
                 for requirement in generic_lifetime_requirements {
-                    if requirement.lifetime < lifetime_count {
-                        used[requirement.lifetime] = true;
+                    if requirement.lifetime.0 < lifetime_count {
+                        used[requirement.lifetime.0] = true;
                     }
                 }
             }
@@ -853,8 +855,8 @@ impl TypeStore {
             .map(|edge| {
                 format!(
                     "'a{} < 'a{}",
-                    life_offset + edge.shorter,
-                    life_offset + edge.longer
+                    life_offset + edge.shorter.0,
+                    life_offset + edge.longer.0
                 )
             })
             .collect::<Vec<_>>()
@@ -872,7 +874,7 @@ impl TypeStore {
                 format!(
                     "T{}<'a{}",
                     gen_offset + requirement.generic,
-                    life_offset + requirement.lifetime
+                    life_offset + requirement.lifetime.0
                 )
             })
             .collect::<Vec<_>>()
@@ -948,6 +950,11 @@ impl TypeStore {
 
 #[inline(always)]
 pub fn canonicalize_lifetime_orderings(orderings: &mut Vec<LifetimeOrderingEdge>) {
+    // TODO(lifetimes): if we start storing transitive closure here (for example
+    // `'a < 'c` implied by `'a < 'b, 'b < 'c`), audit declaration-side
+    // diagnostics first. `validate_type_uses_allowed_lifetime_orderings` walks
+    // stored edges directly today, so closure storage would currently turn one
+    // missing base requirement into multiple distinct error reports.
     orderings.sort_unstable();
     orderings.dedup();
 }
@@ -1227,6 +1234,20 @@ pub enum TypeError {
         label: String,
         related: Option<Loc>,
         related_label: Option<String>,
+    },
+    LifetimeOrderingConflict {
+        loc: Loc,
+        operation: &'static str,
+        shorter: String,
+        longer: String,
+        related: Option<Loc>,
+    },
+    IllegalGlobalLifetimeOrdering {
+        loc: Loc,
+        operation: &'static str,
+        shorter: String,
+        longer: String,
+        related: Option<Loc>,
     },
     UnknownBuiltinMemberMethod {
         site: ValId,
@@ -4225,15 +4246,15 @@ fn format_decl_where_clause_with_names(
     parts.extend(orderings.iter().map(|edge| {
         format!(
             "{} < {}",
-            lifetime_name(life_offset + edge.shorter),
-            lifetime_name(life_offset + edge.longer)
+            lifetime_name(life_offset + edge.shorter.0),
+            lifetime_name(life_offset + edge.longer.0)
         )
     }));
     parts.extend(requirements.iter().map(|requirement| {
         format!(
             "{}<{}",
             generic_name(gen_offset + requirement.generic),
-            lifetime_name(life_offset + requirement.lifetime)
+            lifetime_name(life_offset + requirement.lifetime.0)
         )
     }));
     parts.join(", ")
@@ -5799,9 +5820,35 @@ mod type_infer_tests {
                     message: found_message,
                     ..
                 } => found_message == message,
+                TypeError::LifetimeOrderingConflict {
+                    shorter, longer, ..
+                } => format!("lifetime mismatch: {longer} must outlive {shorter}") == message,
+                TypeError::IllegalGlobalLifetimeOrdering {
+                    shorter, longer, ..
+                } => {
+                    format!("illegal global lifetime ordering: {longer} must outlive {shorter}")
+                        == message
+                }
                 _ => false,
             }),
             "expected simple error `{message}`, got {errs:?}"
+        );
+    }
+
+    fn assert_has_lifetime_error_containing(errs: &[TypeError], needle: &str) {
+        assert!(
+            errs.iter().any(|err| match err {
+                TypeError::LifetimeError { message, .. } => message.contains(needle),
+                TypeError::LifetimeOrderingConflict {
+                    shorter, longer, ..
+                } => format!("lifetime mismatch: {longer} must outlive {shorter}").contains(needle),
+                TypeError::IllegalGlobalLifetimeOrdering {
+                    shorter, longer, ..
+                } => format!("illegal global lifetime ordering: {longer} must outlive {shorter}")
+                    .contains(needle),
+                _ => false,
+            }),
+            "expected lifetime error containing `{needle}`, got {errs:?}"
         );
     }
 
@@ -6466,16 +6513,16 @@ mod type_infer_tests {
             lifetimes: 3,
             lifetime_orderings: vec![
                 LifetimeOrderingEdge {
-                    shorter: 1,
-                    longer: 2,
+                    shorter: LifetimeGraphId(1),
+                    longer: LifetimeGraphId(2),
                 },
                 LifetimeOrderingEdge {
-                    shorter: 0,
-                    longer: 1,
+                    shorter: LifetimeGraphId(0),
+                    longer: LifetimeGraphId(1),
                 },
                 LifetimeOrderingEdge {
-                    shorter: 1,
-                    longer: 2,
+                    shorter: LifetimeGraphId(1),
+                    longer: LifetimeGraphId(2),
                 },
             ],
             generic_lifetime_requirements: Vec::new(),
@@ -6488,12 +6535,12 @@ mod type_infer_tests {
             lifetimes: 3,
             lifetime_orderings: vec![
                 LifetimeOrderingEdge {
-                    shorter: 0,
-                    longer: 1,
+                    shorter: LifetimeGraphId(0),
+                    longer: LifetimeGraphId(1),
                 },
                 LifetimeOrderingEdge {
-                    shorter: 1,
-                    longer: 2,
+                    shorter: LifetimeGraphId(1),
+                    longer: LifetimeGraphId(2),
                 },
             ],
             generic_lifetime_requirements: Vec::new(),
@@ -6512,12 +6559,12 @@ mod type_infer_tests {
             lifetime_orderings,
             &vec![
                 LifetimeOrderingEdge {
-                    shorter: 0,
-                    longer: 1,
+                    shorter: LifetimeGraphId(0),
+                    longer: LifetimeGraphId(1),
                 },
                 LifetimeOrderingEdge {
-                    shorter: 1,
-                    longer: 2,
+                    shorter: LifetimeGraphId(1),
+                    longer: LifetimeGraphId(2),
                 },
             ]
         );
@@ -6534,15 +6581,15 @@ mod type_infer_tests {
             generic_lifetime_requirements: vec![
                 GenericLifetimeRequirement {
                     generic: 1,
-                    lifetime: 1,
+                    lifetime: LifetimeGraphId(1),
                 },
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 0,
+                    lifetime: LifetimeGraphId(0),
                 },
                 GenericLifetimeRequirement {
                     generic: 1,
-                    lifetime: 1,
+                    lifetime: LifetimeGraphId(1),
                 },
             ],
             params: vec![BuiltinType::Int.into()],
@@ -6556,11 +6603,11 @@ mod type_infer_tests {
             generic_lifetime_requirements: vec![
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 0,
+                    lifetime: LifetimeGraphId(0),
                 },
                 GenericLifetimeRequirement {
                     generic: 1,
-                    lifetime: 1,
+                    lifetime: LifetimeGraphId(1),
                 },
             ],
             params: vec![BuiltinType::Int.into()],
@@ -6580,11 +6627,11 @@ mod type_infer_tests {
             &vec![
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 0,
+                    lifetime: LifetimeGraphId(0),
                 },
                 GenericLifetimeRequirement {
                     generic: 1,
-                    lifetime: 1,
+                    lifetime: LifetimeGraphId(1),
                 },
             ]
         );
@@ -6610,8 +6657,8 @@ mod type_infer_tests {
         assert_eq!(
             lifetime_orderings,
             &vec![LifetimeOrderingEdge {
-                shorter: 0,
-                longer: 1,
+                shorter: LifetimeGraphId(0),
+                longer: LifetimeGraphId(1),
             }]
         );
         assert_eq!(
@@ -6643,11 +6690,11 @@ mod type_infer_tests {
             &vec![
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 0,
+                    lifetime: LifetimeGraphId(0),
                 },
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 1,
+                    lifetime: LifetimeGraphId(1),
                 },
             ]
         );
@@ -6673,8 +6720,8 @@ mod type_infer_tests {
         assert_eq!(
             store.struct_value(*id).lifetime_orderings,
             vec![LifetimeOrderingEdge {
-                shorter: 0,
-                longer: 1,
+                shorter: LifetimeGraphId(0),
+                longer: LifetimeGraphId(1),
             }]
         );
         assert_eq!(
@@ -6714,11 +6761,11 @@ mod type_infer_tests {
             vec![
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 0,
+                    lifetime: LifetimeGraphId(0),
                 },
                 GenericLifetimeRequirement {
                     generic: 0,
-                    lifetime: 1,
+                    lifetime: LifetimeGraphId(1),
                 },
             ]
         );
@@ -6739,6 +6786,34 @@ mod type_infer_tests {
             type_string_from_type_id(&ex, s_ty),
             "S['a0, 'a1, T0, where T0<'a0, T0<'a1]"
         );
+    }
+
+    #[test]
+    fn struct_field_type_requires_owner_where_clause_ordering() {
+        let errs = infer_global_errs(
+            "type Inner = struct['a,'b where 'a < 'b] { x:&'a int, y:&'b int }; type Outer = struct['a,'b] { inner:Inner['a,'b] };",
+        );
+
+        assert_has_lifetime_error_containing(&errs, "missing where-clause requirement 'a < 'b");
+    }
+
+    #[test]
+    fn function_parameter_type_requires_owner_where_clause_ordering() {
+        let errs = infer_global_errs(
+            "type Inner = struct['a,'b where 'a < 'b] { x:&'a int, y:&'b int }; f = fn['a,'b](inner:Inner['a,'b])->void {};",
+        );
+
+        assert_has_lifetime_error_containing(&errs, "missing where-clause requirement 'a < 'b");
+    }
+
+    #[test]
+    fn owner_where_clause_can_satisfy_nested_struct_requirement() {
+        let src = "type Inner = struct['a,'b where 'a < 'b] { x:&'a int, y:&'b int }; type Outer = struct['a,'b where 'a < 'b] { inner:Inner['a,'b] }; f = fn['a,'b where 'a < 'b](inner:Inner['a,'b], outer:Outer['a,'b])->void {};";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
     }
 
     #[test]
