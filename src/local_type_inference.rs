@@ -1622,6 +1622,13 @@ pub(crate) fn gather_constraints(
             let generic_clusters = (0..glen).map(|_| ctx.new_cluster()).collect::<Vec<_>>();
             let lifetime_clusters = (0..llen).map(|_| ctx.types.new_lid()).collect::<Vec<_>>();
 
+            import_specialized_lifetime_orderings(
+                &mut ctx.types,
+                &ctx.ex.store.struct_value(sid).lifetime_orderings,
+                &lifetime_clusters,
+                ctx.ex.program.value_loc(v),
+            );
+
             let mut field_type_clusters = None;
             if glen != 0 || llen != 0 {
                 let flen = ctx.ex.store.struct_value(sid).fields.len();
@@ -1630,6 +1637,7 @@ pub(crate) fn gather_constraints(
                     (0..flen)
                         .map(|f| {
                             let (_, t) = ctx.ex.store.struct_value(sid).fields[f];
+                            let loc = ctx.ex.program.value_loc(v);
                             specialize_type(
                                 &mut ctx.ex,
                                 &mut ctx.types,
@@ -1637,6 +1645,7 @@ pub(crate) fn gather_constraints(
                                 &generic_clusters,
                                 &lifetime_clusters,
                                 v,
+                                loc,
                             )
                         })
                         .collect::<Vec<_>>(),
@@ -2179,6 +2188,10 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         .map_or(0, |known| known.lifetime_parameters.len());
 
     for i in 0..lifetime_param_count {
+        // **CRITICAL INVARIANT:** local function-body lifetime binders must be
+        // recreated in declaration order so `LifeTime::External(i)` continues to
+        // match both the lifetime parameter index and the declaration-local
+        // `LifetimeGraphId(i)` used by stored where-clause metadata.
         let lid = ctx.types.new_lid_known(LifeTime::External(i as u32));
         if let Some((pat, maybe_lt_name)) = ctx
             .ex
@@ -2371,7 +2384,7 @@ fn solved_type_to_specialized_local(
             }
         }
 
-        return specialize_type(ex, types, t, &gens, &lifes, loc);
+        return specialize_type(ex, types, t, &gens, &lifes, loc, ex.program.value_loc(loc));
     }
 
     let id = CId(types.core.parent.len());
@@ -2980,7 +2993,7 @@ fn specialize_struct_field_type(
     generics: &[CId],
     lifetimes: &[LId],
 ) -> CId {
-    specialize_type(ex, types, field_ty, generics, lifetimes, site)
+    specialize_type(ex, types, field_ty, generics, lifetimes, site, ex.program.value_loc(site))
 }
 
 impl PendingMemberAccess {

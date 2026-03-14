@@ -215,6 +215,11 @@ pub enum LifeTime {
     ///either from an argument or something we output
     //these can only really be created by type-inference level propagation
     //borrow checking itself looks at these as "longer than anything local okay sure"
+    ///
+    /// **CRITICAL INVARIANT:** for declaration-local lifetimes, every named
+    /// `LifeTime::External(i)` must keep `i` equal to the declaration lifetime
+    /// parameter index. Large parts of specialization and lifetime-graph import
+    /// currently rely on that direct index correspondence.
     External(u32),
     ///for now no real use but it is technically a distinct category
     ///would probably add these for real once we actually have constants
@@ -309,6 +314,13 @@ pub struct LifetimeOrderingEdge {
 pub struct GenericLifetimeRequirement {
     pub generic: usize,
     pub lifetime: LifetimeGraphId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ImportedLifetimeOrdering {
+    pub(crate) shorter: LId,
+    pub(crate) longer: LId,
+    pub(crate) site: Loc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2491,6 +2503,7 @@ pub(crate) struct LifetimeState {
     pub(crate) origins: OriginVec<OriginNode>,
     pub(crate) value_origins: IdHashMap<ValId, OriginId>,
     pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
+    pub(crate) imported_orderings: Vec<ImportedLifetimeOrdering>,
     pub(crate) life_parent: LifeVec<LId>,
     pub(crate) life_known: LifeVec<Option<LifeTime>>,
     pub(crate) next_undeclared_lifetime: u32,
@@ -2502,6 +2515,7 @@ impl LifetimeState {
             origins: OriginVec::new(),
             value_origins: IdHashMap::default(),
             pattern_origins: IdHashMap::default(),
+            imported_orderings: Vec::new(),
             life_parent: LifeVec(Vec::new()),
             life_known: LifeVec(Vec::new()),
             next_undeclared_lifetime: 0,
@@ -2512,6 +2526,7 @@ impl LifetimeState {
         self.origins.clear();
         self.value_origins.clear();
         self.pattern_origins.clear();
+        self.imported_orderings.clear();
         self.life_parent.0.clear();
         self.life_known.0.clear();
         self.next_undeclared_lifetime = 0;
@@ -4568,14 +4583,16 @@ pub(crate) fn extract_clash_type_string(
 pub(crate) struct SpecializeCtx<'a> {
     pub(crate) generics: &'a [CId],
     pub(crate) lifetimes: &'a [LId],
-    pub(crate) loc: ValId,
+    pub(crate) site: ValId,
+    pub(crate) loc: Loc,
 }
 
 impl<'a> SpecializeCtx<'a> {
-    fn new(generics: &'a [CId], lifetimes: &'a [LId], loc: ValId) -> Self {
+    fn new(generics: &'a [CId], lifetimes: &'a [LId], site: ValId, loc: Loc) -> Self {
         Self {
             generics,
             lifetimes,
+            site,
             loc,
         }
     }
@@ -4589,6 +4606,76 @@ fn specialize_lifetime(types: &mut TypeState, ctx: &mut SpecializeCtx<'_>, lt: L
             debug_assert!(false, "bad lifetime");
             types.new_lid()
         }
+    }
+}
+
+fn specialize_decl_lifetime_graph_id(
+    types: &mut TypeState,
+    ctx: &mut SpecializeCtx<'_>,
+    lt: LifetimeGraphId,
+) -> LId {
+    specialize_lifetime(types, ctx, LifeTime::External(lt.0 as u32))
+}
+
+pub(crate) fn import_specialized_lifetime_orderings(
+    types: &mut TypeState,
+    decl_edges: &[LifetimeOrderingEdge],
+    lifetimes: &[LId],
+    site: Loc,
+) {
+    // **CRITICAL INVARIANT:** `LifetimeOrderingEdge` stores declaration-local
+    // lifetime parameter indexes, not arbitrary graph ids. That only works
+    // because named `LifeTime::External(i)` values are required to use the same
+    // `i` as their declaration lifetime slot. Callers must pass `lifetimes`
+    // already normalized into declaration order before importing edges here.
+    for edge in decl_edges {
+        let Some(&shorter) = lifetimes.get(edge.shorter.0) else {
+            continue;
+        };
+        let Some(&longer) = lifetimes.get(edge.longer.0) else {
+            continue;
+        };
+
+        let shorter = find_lid_root(&mut types.lifetimes.life_parent, shorter);
+        let longer = find_lid_root(&mut types.lifetimes.life_parent, longer);
+        if shorter == longer {
+            continue;
+        }
+
+        types
+            .lifetimes
+            .imported_orderings
+            .push(ImportedLifetimeOrdering {
+                shorter,
+                longer,
+                site: site.clone(),
+            });
+    }
+}
+
+fn import_specialized_lifetime_orderings_from_ctx(
+    types: &mut TypeState,
+    decl_edges: &[LifetimeOrderingEdge],
+    ctx: &mut SpecializeCtx<'_>,
+) {
+    for edge in decl_edges {
+        let shorter = specialize_decl_lifetime_graph_id(types, ctx, edge.shorter);
+        let longer = specialize_decl_lifetime_graph_id(types, ctx, edge.longer);
+
+        let shorter = find_lid_root(&mut types.lifetimes.life_parent, shorter);
+        let longer = find_lid_root(&mut types.lifetimes.life_parent, longer);
+        if shorter == longer {
+            continue;
+        }
+
+        types
+            .lifetimes
+            .imported_orderings
+            .push(ImportedLifetimeOrdering {
+                shorter,
+                longer,
+                site: ctx.loc.clone(),
+            });
     }
 }
 
@@ -4623,6 +4710,13 @@ fn specialize_type_inner(
             }
 
             let output = specialize_type_inner(ex, types, ret, ctx);
+
+            if let TypeValue::Func {
+                lifetime_orderings, ..
+            } = ex.store.type_value(ty)
+            {
+                import_specialized_lifetime_orderings_from_ctx(types, lifetime_orderings, ctx);
+            }
 
             // create FuncInfer
             let call_id = FuncInferId(types.extra.func_defs.len());
@@ -4675,6 +4769,12 @@ fn specialize_type_inner(
                 };
                 resolved_lifetimes.push(specialize_lifetime(types, ctx, lifetimes[i]))
             }
+
+            import_specialized_lifetime_orderings_from_ctx(
+                types,
+                &ex.store.struct_value(id).lifetime_orderings,
+                ctx,
+            );
 
             let call_id = StructInferId(types.extra.struct_infers.len());
             types.extra.struct_infers.push(StructInfer {
@@ -4777,9 +4877,10 @@ pub(crate) fn specialize_type(
     ty: TypeId,
     generics: &[CId],
     lifetimes: &[LId],
-    loc: ValId,
+    site: ValId,
+    loc: Loc,
 ) -> CId {
-    let mut ctx = SpecializeCtx::new(generics, lifetimes, loc);
+    let mut ctx = SpecializeCtx::new(generics, lifetimes, site, loc);
     specialize_type_inner(ex, types, ty, &mut ctx)
 }
 
@@ -5415,6 +5516,13 @@ pub(crate) fn resolve_pending_specializations(ctx: &mut InferState) -> bool {
             return false;
         }
 
+        import_specialized_lifetime_orderings(
+            types,
+            &ex.store.struct_value(sid).lifetime_orderings,
+            &p.lifetimes,
+            ex.program.type_expr_loc(p.global),
+        );
+
         let found = types.new_struct_instance(sid, p.generics.clone(), p.lifetimes.clone());
         if let Err(clash) = types.unify(ex, found, p.output) {
             ex.push_error(TypeError::TypeClashBeforeMentioned {
@@ -5856,6 +5964,20 @@ mod type_infer_tests {
         let mut store = TypeStore::new();
         let errs = infer_fn_body(src, &mut store).unwrap_err();
         assert_has_simple_error(&errs, message);
+    }
+
+    fn assert_function_lifetime_error_containing(src: &str, name: &str, needle: &str) {
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let function = find_value_by_name(&program, name);
+        let errs = match infer_value_internals(&program, &mut store, &mut solved_types, function) {
+            Ok(_) => panic!("expected function body to fail"),
+            Err(errs) => errs,
+        };
+        assert_has_lifetime_error_containing(&errs, needle);
     }
 
     macro_rules! assert_fn_type {
@@ -9281,6 +9403,51 @@ mod type_infer_tests {
                 if *message == "implicit `__deref_mut` step requires mutable source"
             )
         }));
+    }
+
+    #[test]
+    fn local_struct_construction_rejects_imported_reversed_declared_ordering() {
+        assert_function_lifetime_error_containing(
+            "type S = struct['a,'b where 'a < 'b] { short:&'a int, long:&'b int }; f = fn['a,'b](x:&'a int, y:&'b int) { let _s:S['b,'a] = S{ y, x }; };",
+            "f",
+            "illegal global lifetime ordering",
+        );
+    }
+
+    #[test]
+    fn local_function_call_rejects_imported_reversed_declared_ordering() {
+        assert_function_lifetime_error_containing(
+            "g = fn['a,'b where 'a < 'b](x:&'a int, y:&'b int)->void {}; f = fn['a](x:&'a int, y:&int) { g(y, x); };",
+            "f",
+            "illegal global lifetime ordering",
+        );
+    }
+
+    #[test]
+    fn implicit_deref_rejects_imported_reversed_declared_ordering() {
+        assert_function_lifetime_error_containing(
+            "type Inner = struct['a,'b where 'a < 'b] { short:&'a int, long:&'b int }; Box = struct['a,'b] { tag:&'a int, extra:&'b int }; Box.__deref = fn['a,'b where 'b < 'a](self:&Box['a,'b])->&Inner['b,'a]; f = fn['a,'b](b:Box['a,'b]) { let _out:&'a int = b.long; };",
+            "f",
+            "illegal global lifetime ordering",
+        );
+    }
+
+    #[test]
+    fn nested_implicit_deref_chain_rejects_imported_reversed_declared_orderings() {
+        assert_function_lifetime_error_containing(
+            "type Inner = struct['a,'b where 'a < 'b] { long:&'b int }; type Mid = struct['a,'b] { tag:&'a int, extra:&'b int }; Mid.__deref = fn['a,'b where 'b < 'a](self:&Mid['a,'b])->&Inner['b,'a]; f = fn['a,'b](m:Mid['a,'b]) { let _out:&'a int = m.long; };",
+            "f",
+            "illegal global lifetime ordering",
+        );
+    }
+
+    #[test]
+    fn function_call_rejects_imported_external_to_local_ordering() {
+        assert_function_lifetime_error_containing(
+            "g = fn['a,'b where 'a < 'b](x:&'a int, y:&'b int){}; f = fn(x:&int) { let y = 0; g(x, &y); };",
+            "f",
+            "illegal global lifetime ordering",
+        );
     }
 
     #[test]

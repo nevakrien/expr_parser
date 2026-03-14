@@ -62,6 +62,9 @@ Use this with:
   projections as transparent ancestry when needed, and emits graph-local
   ordering edges (`LifetimeGraphId <= LifetimeGraphId`) from per-origin
   lifetime seeds.
+- In `LifetimeOrderingGraph`, `origin_edges()` refers specifically to
+  origin/provenance-derived edges; where-clause imports are tracked separately
+  in `where_clause_edges()` and should not be mentally grouped together.
 - Lifetime-order edge extraction treats `RawRoot` as a provenance boundary in
   parent-chain walks, so orderings are emitted only for non-raw ancestry
   relationships instead of relying on cached per-origin raw flags.
@@ -199,6 +202,15 @@ enforce those edges during specialization or lifetime solving.
 - Do not erase origin/provenance information needed by planned graph extraction.
 - Keep diagnostics stable when adding lifetime checks (`found` vs `wanted`
   orientation should stay consistent).
+- **Critical invariant:** declaration-local named `LifeTime::External(i)` values
+  are not just symbolic names; we currently hard-rely on `i` being the exact
+  declaration lifetime parameter index, which also means it must line up with
+  declaration-local `LifetimeGraphId(i)` positions.
+- Stored where-clause lifetime edges on `TypeValue::Func` / `StructRep` are
+  therefore declaration-index based, not arbitrary local-solver graph ids.
+  Any specialization/import path that replays those edges must first normalize
+  the specialized lifetime argument list into declaration order before creating
+  local `LId`-based constraints.
 
 ## Migration Direction
 

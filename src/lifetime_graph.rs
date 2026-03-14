@@ -1,9 +1,10 @@
 use crate::type_inference::{
-    CId, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge, OriginDeclSite, OriginId,
-    OriginKind, OriginNode, OriginVec, PointerStyle, ResolveKind, TypeError, TypeValue,
-    find_lid_root, lifetime_for_display, unify_struct_lids,
+    CId, ImportedLifetimeOrdering, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge,
+    OriginDeclSite, OriginId, OriginKind, OriginNode, OriginVec, PointerStyle, ResolveKind,
+    TypeError, TypeValue, find_lid_root, lifetime_for_display, unify_struct_lids,
 };
 use std::cmp::Ordering;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LifetimeGraphId(pub usize);
@@ -39,10 +40,12 @@ pub(crate) struct WhereClauseLifetimeOrdering {
 }
 
 pub(crate) struct LifetimeOrderingGraph {
-    edges: Vec<LifetimeOrdering>,
+    origin_edges: Vec<LifetimeOrdering>,
     where_clause_edges: Vec<WhereClauseLifetimeOrdering>,
     outgoing: Vec<Vec<usize>>,
     where_clause_outgoing: Vec<Vec<usize>>,
+    seen_edges: HashSet<(usize, usize)>,
+    seen_where_clause_edges: HashSet<(usize, usize)>,
 }
 
 impl LifetimeOrderingGraph {
@@ -52,15 +55,17 @@ impl LifetimeOrderingGraph {
         let mut where_clause_outgoing = Vec::with_capacity(lid_count);
         where_clause_outgoing.resize_with(lid_count, Vec::new);
         Self {
-            edges: Vec::new(),
+            origin_edges: Vec::new(),
             where_clause_edges: Vec::new(),
             outgoing,
             where_clause_outgoing,
+            seen_edges: HashSet::new(),
+            seen_where_clause_edges: HashSet::new(),
         }
     }
 
-    pub(crate) fn edges(&self) -> &[LifetimeOrdering] {
-        &self.edges
+    pub(crate) fn origin_edges(&self) -> &[LifetimeOrdering] {
+        &self.origin_edges
     }
 
     pub(crate) fn lid_count(&self) -> usize {
@@ -81,16 +86,12 @@ impl LifetimeOrderingGraph {
     }
 
     fn push_edge(&mut self, edge: LifetimeOrdering) {
-        if self
-            .edges
-            .iter()
-            .any(|existing| existing.shorter == edge.shorter && existing.longer == edge.longer)
-        {
+        if !self.seen_edges.insert((edge.shorter.0, edge.longer.0)) {
             return;
         }
 
-        let index = self.edges.len();
-        self.edges.push(edge);
+        let index = self.origin_edges.len();
+        self.origin_edges.push(edge);
         self.outgoing[edge.shorter.0].push(index);
     }
 
@@ -103,11 +104,7 @@ impl LifetimeOrderingGraph {
             return;
         }
 
-        if self
-            .where_clause_edges
-            .iter()
-            .any(|existing| existing.shorter == shorter && existing.longer == longer)
-        {
+        if !self.seen_where_clause_edges.insert((shorter.0, longer.0)) {
             return;
         }
 
@@ -267,7 +264,7 @@ impl<'a> LifetimeSccState<'a> {
             let out_len = self.graph.outgoing(v).len();
             for out_i in 0..out_len {
                 let edge_index = self.graph.outgoing(v)[out_i];
-                let edge = self.graph.edges[edge_index];
+                let edge = self.graph.origin_edges[edge_index];
                 self.visit_target(v, edge.longer);
             }
         }
@@ -407,7 +404,17 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     seed_origin_lifetimes_for_graph(ctx);
 
     let lid_count = ctx.types.lifetimes.life_parent.0.len();
-    let graph = collect_origin_lifetime_orderings(&ctx.types.lifetimes.origins, lid_count);
+    let mut graph = LifetimeOrderingGraph::new(lid_count);
+    collect_imported_lifetime_orderings(
+        &mut graph,
+        &mut ctx.types.lifetimes.life_parent,
+        &ctx.types.lifetimes.imported_orderings,
+        lid_count,
+    );
+    let origin_graph = collect_origin_lifetime_orderings(&ctx.types.lifetimes.origins, lid_count);
+    for edge in origin_graph.origin_edges() {
+        graph.push_edge(*edge);
+    }
     let solve = solve_lifetime_scc(&graph);
     let invalid_components = collect_invalid_lifetime_ordering_components(ctx, &graph, &solve);
 
@@ -432,6 +439,7 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     }
 
     validate_known_lifetime_orderings(ctx, &graph);
+    validate_imported_lifetime_orderings(ctx);
 
     assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
 }
@@ -443,7 +451,7 @@ fn collect_invalid_lifetime_ordering_components(
 ) -> Vec<bool> {
     let mut invalid_components = vec![false; solve.components.len()];
 
-    for edge in graph.edges() {
+    for edge in graph.origin_edges() {
         let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
         let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
 
@@ -476,11 +484,52 @@ fn collect_invalid_lifetime_ordering_components(
 }
 
 fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
-    let mut seen_root_pairs: Vec<(usize, usize)> = Vec::with_capacity(graph.edges().len());
+    let mut seen_root_pairs: HashSet<(usize, usize)> =
+        HashSet::with_capacity(graph.origin_edges().len());
 
-    for edge in graph.edges() {
+    for edge in graph.origin_edges() {
         let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
         let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
+
+        if shorter_root == longer_root {
+            continue;
+        }
+
+        let shorter_lt = ctx.types.lifetimes.life_known[shorter_root];
+        let longer_lt = ctx.types.lifetimes.life_known[longer_root];
+        let (Some(shorter_lt), Some(longer_lt)) = (shorter_lt, longer_lt) else {
+            continue;
+        };
+
+        let has_impossible_known_order =
+            matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater));
+        let has_illegal_global_order = illegal_global_lifetime_ordering(shorter_lt, longer_lt)
+            && !where_clause_ordering_implies(graph, shorter_root, longer_root);
+        if !has_impossible_known_order && !has_illegal_global_order {
+            continue;
+        }
+
+        let pair = (shorter_root.0, longer_root.0);
+        if !seen_root_pairs.insert(pair) {
+            continue;
+        }
+
+        if has_illegal_global_order {
+            report_illegal_global_lifetime_ordering(ctx, edge);
+        } else {
+            report_lifetime_ordering_conflict(ctx, edge);
+        }
+    }
+}
+
+fn validate_imported_lifetime_orderings(ctx: &mut InferState) {
+    let mut seen_root_pairs: HashSet<(usize, usize, crate::parsing::Loc)> =
+        HashSet::with_capacity(ctx.types.lifetimes.imported_orderings.len());
+
+    for idx in 0..ctx.types.lifetimes.imported_orderings.len() {
+        let edge = ctx.types.lifetimes.imported_orderings[idx].clone();
+        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, edge.shorter);
+        let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, edge.longer);
 
         if shorter_root == longer_root {
             continue;
@@ -499,16 +548,30 @@ fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrder
             continue;
         }
 
-        let pair = (shorter_root.0, longer_root.0);
-        if seen_root_pairs.contains(&pair) {
+        let pair = (shorter_root.0, longer_root.0, edge.site.clone());
+        if !seen_root_pairs.insert(pair) {
             continue;
         }
-        seen_root_pairs.push(pair);
 
+        let loc = edge.site.clone();
+        let shorter = format_lid_name(ctx, shorter_root);
+        let longer = format_lid_name(ctx, longer_root);
         if has_illegal_global_order {
-            report_illegal_global_lifetime_ordering(ctx, edge);
+            ctx.push_error(TypeError::IllegalGlobalLifetimeOrdering {
+                loc,
+                operation: "imported where-clause bound",
+                shorter,
+                longer,
+                related: None,
+            });
         } else {
-            report_lifetime_ordering_conflict(ctx, edge);
+            ctx.push_error(TypeError::LifetimeOrderingConflict {
+                loc,
+                operation: "imported where-clause bound",
+                shorter,
+                longer,
+                related: None,
+            });
         }
     }
 }
@@ -634,7 +697,16 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(
     let root_count = ctx.types.lifetimes.life_parent.0.len();
     let mut predecessors: Vec<Vec<LId>> = vec![Vec::new(); root_count];
 
-    for edge in graph.edges() {
+    for edge in graph.origin_edges() {
+        let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
+        let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
+        if shorter_root == longer_root {
+            continue;
+        }
+        predecessors[longer_root.0].push(shorter_root);
+    }
+
+    for edge in graph.where_clause_edges() {
         let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.shorter.0));
         let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(edge.longer.0));
         if shorter_root == longer_root {
@@ -720,6 +792,54 @@ fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
         }
     }
     next
+}
+
+fn collect_imported_lifetime_orderings(
+    graph: &mut LifetimeOrderingGraph,
+    life_parent: &mut crate::type_inference::LifeVec<LId>,
+    imported_orderings: &[ImportedLifetimeOrdering],
+    lid_count: usize,
+) {
+    for edge in imported_orderings {
+        let shorter = find_lid_root(life_parent, edge.shorter);
+        let longer = find_lid_root(life_parent, edge.longer);
+        let Some(shorter) = LifetimeGraphId::from_lid(shorter, lid_count) else {
+            continue;
+        };
+        let Some(longer) = LifetimeGraphId::from_lid(longer, lid_count) else {
+            continue;
+        };
+        graph.push_where_clause_edge(shorter, longer);
+    }
+}
+
+fn where_clause_ordering_implies(graph: &LifetimeOrderingGraph, shorter: LId, longer: LId) -> bool {
+    if shorter == longer {
+        return true;
+    }
+
+    let start = LifetimeGraphId(shorter.0);
+    let target = LifetimeGraphId(longer.0);
+    let mut stack = Vec::new();
+    let mut visited = vec![false; graph.lid_count()];
+    stack.push(start);
+    visited[start.0] = true;
+
+    while let Some(current) = stack.pop() {
+        for &edge_index in graph.where_clause_outgoing(current) {
+            let next = graph.where_clause_edges()[edge_index].longer;
+            if next == target {
+                return true;
+            }
+            if visited[next.0] {
+                continue;
+            }
+            visited[next.0] = true;
+            stack.push(next);
+        }
+    }
+
+    false
 }
 
 fn format_lid_name(ctx: &mut InferState, lid: LId) -> String {
@@ -899,7 +1019,9 @@ mod tests {
     }
 
     fn collect_from_function(src: &str, name: &str) -> Vec<LifetimeOrdering> {
-        collect_graph_from_function(src, name).edges().to_vec()
+        collect_graph_from_function(src, name)
+            .origin_edges()
+            .to_vec()
     }
 
     fn collect_origins_from_function(src: &str, name: &str) -> OriginVec<OriginNode> {
@@ -1091,7 +1213,7 @@ mod tests {
     fn scc_cycle_collapses_nodes() {
         let mut graph = collect_graph_from_function("f=fn(x:&int){ let y = &*x; };", "f");
         let forward = *graph
-            .edges()
+            .origin_edges()
             .first()
             .unwrap_or_else(|| panic!("expected at least one source-derived edge"));
         graph.push_edge(LifetimeOrdering {
@@ -1114,7 +1236,7 @@ mod tests {
     fn scc_acyclic_nodes_stay_separate() {
         let graph = collect_graph_from_function("f=fn(x:&int){ let y = &*x; };", "f");
         let forward = *graph
-            .edges()
+            .origin_edges()
             .first()
             .unwrap_or_else(|| panic!("expected at least one source-derived edge"));
         let solve = solve_lifetime_scc(&graph);
