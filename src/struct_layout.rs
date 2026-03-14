@@ -536,6 +536,8 @@ mod tests {
             fields: vec![(value, generic)],
             gen_info: vec![TraitInfo { sized: true }],
             life_count: 0,
+            lifetime_orderings: Vec::new(),
+            generic_lifetime_requirements: Vec::new(),
             layout: StructLayoutSpec::Hot,
         };
         let sid = store.new_struct(rep);
@@ -566,6 +568,8 @@ mod tests {
             fields: vec![(value, generic)],
             gen_info: vec![TraitInfo { sized: true }],
             life_count: 0,
+            lifetime_orderings: Vec::new(),
+            generic_lifetime_requirements: Vec::new(),
             layout: StructLayoutSpec::Hot,
         };
         let sid = store.new_struct(rep);

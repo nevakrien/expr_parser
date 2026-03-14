@@ -95,7 +95,8 @@ Use this with:
 
 - Declaration-time nested-reference well-formedness checking for global
   signatures (`&'a &'b T` requiring `'a <= 'b`).
-- Stored declared lifetime-order metadata on structs and function signatures.
+- Enforcement/propagation of declared lifetime-order metadata through
+  specialization and local solving.
 - Typedef/type-alias declaration validation for nested-reference
   well-formedness.
 - Validation that body-induced external ordering requirements are a subset of
@@ -105,6 +106,75 @@ Use this with:
 - Stable exported `SolvedLifetimeGraph` artifact for downstream borrow checking.
 - Global lifetime composition across function boundaries.
 - Complete borrow-check pass enforcing deferred lifetime ordering legality.
+
+## Next Implementation Slice: Declared Where-Clause Ordering DAGs
+
+The next lifetime task is to make explicit declaration where clauses such as
+`['a, 'b where 'a < 'b]` participate in typechecking instead of being parser/IR
+only metadata.
+
+Target behavior for this slice:
+
+- Every struct declaration and solved function signature should own a validated
+  declaration-local lifetime ordering DAG derived from its where clause.
+- The global solve phase should build and validate that DAG once, then store it
+  on declaration metadata so local/body inference does not recompute it.
+- When a global item is specialized, its declaration DAG must be remapped onto
+  the specialized lifetime ids at the use site. No local graph edge should ever
+  directly reference the original declaration lifetime ids.
+- This remapping must be used consistently for all specialization paths,
+  including struct construction, member-method currying, operator/member
+  overload resolution, and smart-deref helper paths.
+
+Planned representation direction:
+
+- Store declaration edges in terms of declaration lifetime parameter indexes
+  (for example `shorter: usize, longer: usize`) rather than global/local `LId`s.
+- After global validation, store the transitive-reduced or otherwise validated
+  DAG on `StructRep` and on solved function-signature metadata.
+- At specialization time, translate those declaration indexes through the
+  specialization lifetime argument list into concrete specialized `LId` pairs,
+  then insert those edges into the local lifetime graph as where-clause edges.
+
+Solver constraints for this slice:
+
+- Local lifetime solving needs two edge phases:
+  - phase 1: declaration/where-clause edges, inserted without the current
+    global-order legality rejection,
+  - phase 2: inference/body edges, where illegal newly-required global ordering
+    still reports errors.
+- The SCC/Tarjan solve remains the same core algorithm. The implementation must
+  preserve O(1) amortized insertion per edge and avoid per-edge global scans or
+  graph recomputation.
+
+Important invariants to preserve while implementing:
+
+- declaration lifetime ids stay declaration-local and never leak into local
+  solve graphs,
+- specialization always remaps declaration DAGs through specialized lifetime
+  ids,
+- illegal ordering errors should come from inference/body pressure that exceeds
+  the already-established declaration relationships, not from loading the
+  declaration relationships themselves.
+
+## Current Status Update
+
+The parser/IR where-clause metadata is now stored on solved global declaration
+types in plain sorted/deduped forms:
+
+- `TypeValue::Func` stores `lifetime_orderings`, canonicalized during interning
+  so equivalent function signatures share the same `TypeId` regardless of edge
+  insertion order or duplicates.
+- `TypeValue::Func` also stores `generic_lifetime_requirements` for
+  `T<'a`-style where-clause requirements.
+- `StructRep` stores both `lifetime_orderings` and
+  `generic_lifetime_requirements`, canonicalized at construction time.
+- Type printers now render both lifetime-order edges and `T<'a`-style
+  requirements using the language syntax shape, including the `, where ...`
+  separator inside the generic/lifetime list.
+
+This slice only stores and prints the declaration metadata. It does not yet
+enforce those edges during specialization or lifetime solving.
 
 ## Practical Constraints For Contributors
 

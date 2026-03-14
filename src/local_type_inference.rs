@@ -1443,6 +1443,8 @@ pub(crate) fn gather_constraints(
                     calling_convention: CallingConvention::Unknown,
                     generics: Vec::new(),
                     lifetimes: 0,
+                    lifetime_orderings: Vec::new(),
+                    generic_lifetime_requirements: Vec::new(),
                     inputs,
                     output,
                 });
@@ -2546,6 +2548,8 @@ fn resolve_any_type_builtin_member_access(
         calling_convention: CallingConvention::Unknown,
         generics: Vec::new(),
         lifetimes: 0,
+        lifetime_orderings: Vec::new(),
+        generic_lifetime_requirements: Vec::new(),
         inputs: vec![self_param],
         output,
     });
@@ -3345,6 +3349,8 @@ fn make_member_closure(
         calling_convention: CallingConvention::Unknown,
         generics: Vec::new(),
         lifetimes: 0,
+        lifetime_orderings: Vec::new(),
+        generic_lifetime_requirements: Vec::new(),
         inputs: params,
         output: ret,
     }))
@@ -3445,6 +3451,8 @@ fn resolve_operator_site(
                     calling_convention: CallingConvention::Unknown,
                     generics: Vec::new(),
                     lifetimes: 0,
+                    lifetime_orderings: Vec::new(),
+                    generic_lifetime_requirements: Vec::new(),
                     inputs: vec![rhs],
                     output: out,
                 });
@@ -3753,6 +3761,8 @@ fn resolve_unary_operator_site(
                     calling_convention: CallingConvention::Unknown,
                     generics: Vec::new(),
                     lifetimes: 0,
+                    lifetime_orderings: Vec::new(),
+                    generic_lifetime_requirements: Vec::new(),
                     inputs: Vec::new(),
                     output: out,
                 });
@@ -3917,6 +3927,8 @@ fn resolve_assign_pre_post_site(
                     calling_convention: CallingConvention::Unknown,
                     generics: Vec::new(),
                     lifetimes: 0,
+                    lifetime_orderings: Vec::new(),
+                    generic_lifetime_requirements: Vec::new(),
                     inputs: Vec::new(),
                     output: target,
                 });

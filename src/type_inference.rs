@@ -275,6 +275,8 @@ pub enum TypeValue {
         // generics: usize,
         generics: Vec<TraitInfo>,
         lifetimes: usize,
+        lifetime_orderings: Vec<LifetimeOrderingEdge>,
+        generic_lifetime_requirements: Vec<GenericLifetimeRequirement>,
         params: Vec<TypeId>,
         ret: TypeId,
     },
@@ -293,6 +295,18 @@ pub enum TypeValue {
         generics: Vec<TypeId>,
         lifetimes: Vec<LifeTime>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LifetimeOrderingEdge {
+    pub shorter: usize,
+    pub longer: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GenericLifetimeRequirement {
+    pub generic: usize,
+    pub lifetime: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -363,7 +377,17 @@ impl TypeStore {
     }
 
     #[inline]
-    pub fn intern(&mut self, ty: TypeValue) -> TypeId {
+    pub fn intern(&mut self, mut ty: TypeValue) -> TypeId {
+        if let TypeValue::Func {
+            lifetime_orderings,
+            generic_lifetime_requirements,
+            ..
+        } = &mut ty
+        {
+            canonicalize_lifetime_orderings(lifetime_orderings);
+            canonicalize_generic_lifetime_requirements(generic_lifetime_requirements);
+        }
+
         if let Some(&id) = self.intern.get(&ty) {
             return id;
         }
@@ -371,6 +395,8 @@ impl TypeStore {
         let unused_generics = match &ty {
             TypeValue::Func {
                 generics,
+                lifetime_orderings: _,
+                generic_lifetime_requirements: _,
                 params,
                 ret,
                 ..
@@ -455,11 +481,21 @@ impl TypeStore {
             TypeValue::Array(inner, _) => {
                 self.mark_used_function_generic_indexes(*inner, generic_count, used);
             }
-            TypeValue::Func { params, ret, .. } => {
+            TypeValue::Func {
+                params,
+                ret,
+                generic_lifetime_requirements,
+                ..
+            } => {
                 for &param in params {
                     self.mark_used_function_generic_indexes(param, generic_count, used);
                 }
                 self.mark_used_function_generic_indexes(*ret, generic_count, used);
+                for requirement in generic_lifetime_requirements {
+                    if requirement.generic < generic_count {
+                        used[requirement.generic] = true;
+                    }
+                }
             }
             TypeValue::Ptr { tgt, .. } => {
                 self.mark_used_function_generic_indexes(*tgt, generic_count, used);
@@ -489,11 +525,30 @@ impl TypeStore {
             TypeValue::Array(inner, _) => {
                 self.mark_used_function_lifetime_indexes(*inner, lifetime_count, used);
             }
-            TypeValue::Func { params, ret, .. } => {
+            TypeValue::Func {
+                params,
+                ret,
+                lifetime_orderings,
+                generic_lifetime_requirements,
+                ..
+            } => {
                 for &param in params {
                     self.mark_used_function_lifetime_indexes(param, lifetime_count, used);
                 }
                 self.mark_used_function_lifetime_indexes(*ret, lifetime_count, used);
+                for edge in lifetime_orderings {
+                    if edge.shorter < lifetime_count {
+                        used[edge.shorter] = true;
+                    }
+                    if edge.longer < lifetime_count {
+                        used[edge.longer] = true;
+                    }
+                }
+                for requirement in generic_lifetime_requirements {
+                    if requirement.lifetime < lifetime_count {
+                        used[requirement.lifetime] = true;
+                    }
+                }
             }
             TypeValue::Ptr { tgt, style, .. } => {
                 if let PointerStyle::Ref(LifeTime::External(i)) = style
@@ -540,6 +595,8 @@ impl TypeStore {
             fields,
             gen_info: Vec::new(),
             life_count: 0,
+            lifetime_orderings: Vec::new(),
+            generic_lifetime_requirements: Vec::new(),
             layout: StructLayoutSpec::Hot,
         };
         let sid = self.new_struct(rep);
@@ -652,6 +709,8 @@ impl TypeStore {
                 calling_convention,
                 generics,
                 lifetimes,
+                lifetime_orderings,
+                generic_lifetime_requirements,
                 params,
                 ret,
             } => {
@@ -686,7 +745,18 @@ impl TypeStore {
                 let signature_params = if sig_parts.is_empty() {
                     String::new()
                 } else {
-                    format!("[{}]", sig_parts.join(", "))
+                    let mut signature = sig_parts.join(", ");
+                    let where_clause = Self::format_decl_where_clause(
+                        lifetime_orderings,
+                        generic_lifetime_requirements,
+                        gen_count,
+                        life_count,
+                    );
+                    if !where_clause.is_empty() {
+                        signature.push_str(", where ");
+                        signature.push_str(&where_clause);
+                    }
+                    format!("[{signature}]")
                 };
                 format!(
                     "{}{}({}) -> {}",
@@ -777,6 +847,58 @@ impl TypeStore {
         }
     }
 
+    fn format_lifetime_orderings(orderings: &[LifetimeOrderingEdge], life_offset: usize) -> String {
+        orderings
+            .iter()
+            .map(|edge| {
+                format!(
+                    "'a{} < 'a{}",
+                    life_offset + edge.shorter,
+                    life_offset + edge.longer
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn format_generic_lifetime_requirements(
+        requirements: &[GenericLifetimeRequirement],
+        gen_offset: usize,
+        life_offset: usize,
+    ) -> String {
+        requirements
+            .iter()
+            .map(|requirement| {
+                format!(
+                    "T{}<'a{}",
+                    gen_offset + requirement.generic,
+                    life_offset + requirement.lifetime
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn format_decl_where_clause(
+        orderings: &[LifetimeOrderingEdge],
+        requirements: &[GenericLifetimeRequirement],
+        gen_offset: usize,
+        life_offset: usize,
+    ) -> String {
+        let mut parts = Vec::new();
+        if !orderings.is_empty() {
+            parts.push(Self::format_lifetime_orderings(orderings, life_offset));
+        }
+        if !requirements.is_empty() {
+            parts.push(Self::format_generic_lifetime_requirements(
+                requirements,
+                gen_offset,
+                life_offset,
+            ));
+        }
+        parts.join(", ")
+    }
+
     fn format_struct_display(
         &self,
         program: &Program,
@@ -786,28 +908,56 @@ impl TypeStore {
         gen_count: usize,
         life_count: usize,
     ) -> String {
-        let base = match self.struct_value(sid).name {
+        let struct_rep = self.struct_value(sid);
+        let base = match struct_rep.name {
             Some(name) => program.name_string(name),
             None => "UnamedStruct",
         };
         let mut base = base.to_string();
         if !lifetimes.is_empty() || !generics.is_empty() {
-            let mut args = lifetimes
+            let mut signature = lifetimes
                 .iter()
                 .map(|lt| format!("'{}", self.format_lifetime(*lt)))
                 .collect::<Vec<_>>();
-            args.extend(
+            signature.extend(
                 generics
                     .iter()
                     .map(|id| self.get_type_string_nested(program, *id, gen_count, life_count))
                     .collect::<Vec<_>>(),
             );
+            let mut signature = signature.join(", ");
+            let where_clause = Self::format_decl_where_clause(
+                &struct_rep.lifetime_orderings,
+                &struct_rep.generic_lifetime_requirements,
+                gen_count,
+                life_count,
+            );
+            if !where_clause.is_empty() {
+                if !signature.is_empty() {
+                    signature.push_str(", ");
+                }
+                signature.push_str(&format!("where {where_clause}"));
+            }
             base.push('[');
-            base.push_str(&args.join(", "));
+            base.push_str(&signature);
             base.push(']');
         }
         base
     }
+}
+
+#[inline(always)]
+pub fn canonicalize_lifetime_orderings(orderings: &mut Vec<LifetimeOrderingEdge>) {
+    orderings.sort_unstable();
+    orderings.dedup();
+}
+
+#[inline(always)]
+pub fn canonicalize_generic_lifetime_requirements(
+    requirements: &mut Vec<GenericLifetimeRequirement>,
+) {
+    requirements.sort_unstable();
+    requirements.dedup();
 }
 
 pub struct SolvedTypes {
@@ -1050,6 +1200,8 @@ pub struct StructRep {
     // pub gen_count: usize,
     pub gen_info: Vec<TraitInfo>,
     pub life_count: usize,
+    pub lifetime_orderings: Vec<LifetimeOrderingEdge>,
+    pub generic_lifetime_requirements: Vec<GenericLifetimeRequirement>,
     pub layout: StructLayoutSpec,
 }
 
@@ -1671,6 +1823,8 @@ pub(crate) struct FuncInfer {
     pub(crate) calling_convention: CallingConvention,
     pub(crate) generics: Vec<TraitInfo>,
     pub(crate) lifetimes: usize,
+    pub(crate) lifetime_orderings: Vec<LifetimeOrderingEdge>,
+    pub(crate) generic_lifetime_requirements: Vec<GenericLifetimeRequirement>,
     pub(crate) inputs: Vec<CId>,
     pub(crate) output: CId,
 }
@@ -3469,6 +3623,8 @@ pub(crate) fn unify_func_with_type(
             calling_convention,
             generics,
             lifetimes,
+            lifetime_orderings: _,
+            generic_lifetime_requirements: _,
             params,
             ret,
         } => (
@@ -3723,11 +3879,15 @@ fn try_resolve_func_type(
     let calling_convention = func.calling_convention;
     let lifetimes = func.lifetimes;
     let generics = std::mem::take(&mut func.generics);
+    let lifetime_orderings = std::mem::take(&mut func.lifetime_orderings);
+    let generic_lifetime_requirements = std::mem::take(&mut func.generic_lifetime_requirements);
 
     Some(ex.store.intern(TypeValue::Func {
         calling_convention,
         generics,
         lifetimes,
+        lifetime_orderings,
+        generic_lifetime_requirements,
         params,
         ret,
     }))
@@ -3897,6 +4057,8 @@ fn type_string_from_type_id_nested(
             calling_convention,
             generics,
             lifetimes,
+            lifetime_orderings,
+            generic_lifetime_requirements,
             params,
             ret,
         } => {
@@ -3928,7 +4090,25 @@ fn type_string_from_type_id_nested(
             let signature_params = if sig_parts.is_empty() {
                 String::new()
             } else {
-                format!("[{}]", sig_parts.join(", "))
+                let mut signature = sig_parts.join(", ");
+                let where_clause = format_decl_where_clause_with_names(
+                    lifetime_orderings,
+                    generic_lifetime_requirements,
+                    |lifetime_index| {
+                        format!(
+                            "'{}",
+                            ex.name_render.external_lifetime_name(lifetime_index as u32)
+                        )
+                    },
+                    |generic_index| ex.name_render.generic_name(generic_index),
+                    gen_count,
+                    life_count,
+                );
+                if !where_clause.is_empty() {
+                    signature.push_str(", where ");
+                    signature.push_str(&where_clause);
+                }
+                format!("[{signature}]")
             };
 
             format!(
@@ -3993,7 +4173,8 @@ fn type_string_from_type_id_nested(
             generics,
             lifetimes,
         } => {
-            let mut base = match ex.store.struct_value(*id).name {
+            let struct_rep = ex.store.struct_value(*id);
+            let mut base = match struct_rep.name {
                 Some(name) => ex.program.name_string(name).to_string(),
                 None => "UnamedStruct".to_string(),
             };
@@ -4007,6 +4188,22 @@ fn type_string_from_type_id_nested(
                         .iter()
                         .map(|id| type_string_from_type_id_nested(ex, *id, gen_count, life_count)),
                 );
+                let where_clause = format_decl_where_clause_with_names(
+                    &struct_rep.lifetime_orderings,
+                    &struct_rep.generic_lifetime_requirements,
+                    |lifetime_index| {
+                        format!(
+                            "'{}",
+                            ex.name_render.external_lifetime_name(lifetime_index as u32)
+                        )
+                    },
+                    |generic_index| ex.name_render.generic_name(generic_index),
+                    gen_count,
+                    life_count,
+                );
+                if !where_clause.is_empty() {
+                    args.push(format!("where {}", where_clause));
+                }
                 base.push('[');
                 base.push_str(&args.join(", "));
                 base.push(']');
@@ -4014,6 +4211,32 @@ fn type_string_from_type_id_nested(
             base
         }
     }
+}
+
+fn format_decl_where_clause_with_names(
+    orderings: &[LifetimeOrderingEdge],
+    requirements: &[GenericLifetimeRequirement],
+    mut lifetime_name: impl FnMut(usize) -> String,
+    mut generic_name: impl FnMut(usize) -> String,
+    gen_offset: usize,
+    life_offset: usize,
+) -> String {
+    let mut parts = Vec::new();
+    parts.extend(orderings.iter().map(|edge| {
+        format!(
+            "{} < {}",
+            lifetime_name(life_offset + edge.shorter),
+            lifetime_name(life_offset + edge.longer)
+        )
+    }));
+    parts.extend(requirements.iter().map(|requirement| {
+        format!(
+            "{}<{}",
+            generic_name(gen_offset + requirement.generic),
+            lifetime_name(life_offset + requirement.lifetime)
+        )
+    }));
+    parts.join(", ")
 }
 
 pub(crate) fn simple_type_clash(ex: &ExternState<'_>, a: TypeId, b: TypeId) -> TypeClash {
@@ -4362,6 +4585,8 @@ fn specialize_type_inner(
             calling_convention,
             generics: _,
             lifetimes: _,
+            lifetime_orderings: _,
+            generic_lifetime_requirements: _,
             params,
             ret,
         } => {
@@ -4383,6 +4608,8 @@ fn specialize_type_inner(
             types.extra.func_defs.push(FuncInfer {
                 generics: Vec::new(),
                 lifetimes: 0,
+                lifetime_orderings: Vec::new(),
+                generic_lifetime_requirements: Vec::new(),
                 inputs,
                 output,
                 calling_convention,
@@ -5025,10 +5252,15 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
                 let calling_convention = func.calling_convention;
                 let lifetimes = func.lifetimes;
                 let generics = std::mem::take(&mut func.generics);
+                let lifetime_orderings = std::mem::take(&mut func.lifetime_orderings);
+                let generic_lifetime_requirements =
+                    std::mem::take(&mut func.generic_lifetime_requirements);
                 ctx.ex.store.intern(TypeValue::Func {
                     calling_convention,
                     generics,
                     lifetimes,
+                    lifetime_orderings,
+                    generic_lifetime_requirements,
                     params,
                     ret,
                 })
@@ -6084,6 +6316,8 @@ mod type_infer_tests {
             calling_convention,
             generics: _,
             lifetimes: _,
+            lifetime_orderings: _,
+            generic_lifetime_requirements: _,
             params,
             ret,
         } = store.type_value(f_ty)
@@ -6214,11 +6448,297 @@ mod type_infer_tests {
             calling_convention: CallingConvention::Unknown,
             generics: Vec::new(),
             lifetimes: 0,
+            lifetime_orderings: Vec::new(),
+            generic_lifetime_requirements: Vec::new(),
             params: vec![BuiltinType::Int.into()],
             ret: BuiltinType::Int.into(),
         });
 
         assert_eq!(store.get_type_string(&program, ty), "fn?(int) -> int");
+    }
+
+    #[test]
+    fn function_interning_canonicalizes_lifetime_orderings() {
+        let mut store = TypeStore::new();
+        let a = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: Vec::new(),
+            lifetimes: 3,
+            lifetime_orderings: vec![
+                LifetimeOrderingEdge {
+                    shorter: 1,
+                    longer: 2,
+                },
+                LifetimeOrderingEdge {
+                    shorter: 0,
+                    longer: 1,
+                },
+                LifetimeOrderingEdge {
+                    shorter: 1,
+                    longer: 2,
+                },
+            ],
+            generic_lifetime_requirements: Vec::new(),
+            params: vec![BuiltinType::Int.into()],
+            ret: BuiltinType::Int.into(),
+        });
+        let b = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: Vec::new(),
+            lifetimes: 3,
+            lifetime_orderings: vec![
+                LifetimeOrderingEdge {
+                    shorter: 0,
+                    longer: 1,
+                },
+                LifetimeOrderingEdge {
+                    shorter: 1,
+                    longer: 2,
+                },
+            ],
+            generic_lifetime_requirements: Vec::new(),
+            params: vec![BuiltinType::Int.into()],
+            ret: BuiltinType::Int.into(),
+        });
+
+        assert_eq!(a, b);
+        let TypeValue::Func {
+            lifetime_orderings, ..
+        } = store.type_value(a)
+        else {
+            panic!("expected function type")
+        };
+        assert_eq!(
+            lifetime_orderings,
+            &vec![
+                LifetimeOrderingEdge {
+                    shorter: 0,
+                    longer: 1,
+                },
+                LifetimeOrderingEdge {
+                    shorter: 1,
+                    longer: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn function_interning_canonicalizes_generic_lifetime_requirements() {
+        let mut store = TypeStore::new();
+        let a = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: vec![TraitInfo { sized: true }, TraitInfo { sized: true }],
+            lifetimes: 2,
+            lifetime_orderings: Vec::new(),
+            generic_lifetime_requirements: vec![
+                GenericLifetimeRequirement {
+                    generic: 1,
+                    lifetime: 1,
+                },
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 0,
+                },
+                GenericLifetimeRequirement {
+                    generic: 1,
+                    lifetime: 1,
+                },
+            ],
+            params: vec![BuiltinType::Int.into()],
+            ret: BuiltinType::Int.into(),
+        });
+        let b = store.intern(TypeValue::Func {
+            calling_convention: CallingConvention::Hot,
+            generics: vec![TraitInfo { sized: true }, TraitInfo { sized: true }],
+            lifetimes: 2,
+            lifetime_orderings: Vec::new(),
+            generic_lifetime_requirements: vec![
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 0,
+                },
+                GenericLifetimeRequirement {
+                    generic: 1,
+                    lifetime: 1,
+                },
+            ],
+            params: vec![BuiltinType::Int.into()],
+            ret: BuiltinType::Int.into(),
+        });
+
+        assert_eq!(a, b);
+        let TypeValue::Func {
+            generic_lifetime_requirements,
+            ..
+        } = store.type_value(a)
+        else {
+            panic!("expected function type")
+        };
+        assert_eq!(
+            generic_lifetime_requirements,
+            &vec![
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 0,
+                },
+                GenericLifetimeRequirement {
+                    generic: 1,
+                    lifetime: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn function_where_clause_orderings_are_stored_and_printed() {
+        let src = "f = fn['a,'b where 'a < 'b](x:&'a int, y:&'b int)->&'b int { y }";
+        let mut store = TypeStore::new();
+        let program = gather_program(src);
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = extract_single_fn(&program);
+        let f_ty = solved_types.type_of(f).unwrap();
+        let TypeValue::Func {
+            lifetime_orderings, ..
+        } = store.type_value(f_ty)
+        else {
+            panic!("expected function type")
+        };
+
+        assert_eq!(
+            lifetime_orderings,
+            &vec![LifetimeOrderingEdge {
+                shorter: 0,
+                longer: 1,
+            }]
+        );
+        assert_eq!(
+            store.get_type_string(&program, f_ty),
+            "fn['a0, 'a1, where 'a0 < 'a1](&'a0 int, &'a1 int) -> &'a1 int"
+        );
+    }
+
+    #[test]
+    fn function_where_clause_generic_lifetime_requirements_are_stored_and_printed() {
+        let src = "f = fn['a,'b,T where T<'a, T<'b](x:T)->T { x }";
+        let mut store = TypeStore::new();
+        let program = gather_program(src);
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = extract_single_fn(&program);
+        let f_ty = solved_types.type_of(f).unwrap();
+        let TypeValue::Func {
+            generic_lifetime_requirements,
+            ..
+        } = store.type_value(f_ty)
+        else {
+            panic!("expected function type")
+        };
+
+        assert_eq!(
+            generic_lifetime_requirements,
+            &vec![
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 0,
+                },
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            store.get_type_string(&program, f_ty),
+            "fn['a0, 'a1, T0, where T0<'a0, T0<'a1](T0) -> T0"
+        );
+    }
+
+    #[test]
+    fn struct_where_clause_orderings_are_stored_and_printed() {
+        let src = "type S = struct['a,'b where 'a < 'b] { x:&'a int, y:&'b int }; f = fn(x:S['static,'static])->void {}";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
+        let TypeValue::Struct { id, .. } = store.type_value(s_ty) else {
+            panic!("expected struct type")
+        };
+
+        assert_eq!(
+            store.struct_value(*id).lifetime_orderings,
+            vec![LifetimeOrderingEdge {
+                shorter: 0,
+                longer: 1,
+            }]
+        );
+        assert_eq!(
+            store.get_type_string(&program, s_ty),
+            "S['a0, 'a1, where 'a0 < 'a1]"
+        );
+
+        let mut solved_for_display = SolvedTypes::new(&program);
+        let ex = ExternState {
+            store: &mut store,
+            program: &program,
+            name_render: GenLifeNameRender::Generate,
+            errors: Vec::new(),
+            ans: &mut solved_for_display,
+        };
+        assert_eq!(
+            type_string_from_type_id(&ex, s_ty),
+            "S['a0, 'a1, where 'a0 < 'a1]"
+        );
+    }
+
+    #[test]
+    fn struct_where_clause_generic_lifetime_requirements_are_stored_and_printed() {
+        let src = "type S = struct['a,'b,T where T<'a, T<'b] { value:T }; f = fn(x:S['static,'static,int])->void {}";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let s_ty = find_typedef_type_by_name(&program, &solved_types, "S");
+        let TypeValue::Struct { id, .. } = store.type_value(s_ty) else {
+            panic!("expected struct type")
+        };
+
+        assert_eq!(
+            store.struct_value(*id).generic_lifetime_requirements,
+            vec![
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 0,
+                },
+                GenericLifetimeRequirement {
+                    generic: 0,
+                    lifetime: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            store.get_type_string(&program, s_ty),
+            "S['a0, 'a1, T0, where T0<'a0, T0<'a1]"
+        );
+
+        let mut solved_for_display = SolvedTypes::new(&program);
+        let ex = ExternState {
+            store: &mut store,
+            program: &program,
+            name_render: GenLifeNameRender::Generate,
+            errors: Vec::new(),
+            ans: &mut solved_for_display,
+        };
+        assert_eq!(
+            type_string_from_type_id(&ex, s_ty),
+            "S['a0, 'a1, T0, where T0<'a0, T0<'a1]"
+        );
     }
 
     #[test]

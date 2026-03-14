@@ -266,6 +266,9 @@ Current local inference mutability is driven by a single pending-constraint queu
 - `BuiltinType`: primitive set (`int`, sized ints, floats, `bool`, `str`, `void`, `Type`).
 - `TypeValue`: builtins, tuple, array, function, pointer, generic param (`Generic`), struct instance (`Struct`).
   - function types now carry an explicit calling convention (`Hot`, `C`, `Unknown`), so diagnostics can print `fn`, `cfn`, or `fn?`.
+  - function types also carry declaration-side where-clause metadata for both
+    lifetime ordering edges (`'a < 'b`) and generic-lifetime requirements
+    (`T<'a`), used today for storage/printing and unused-parameter checks.
 - `TypeStore`: interned type arena + struct table.
   - builtins are interned first,
   - structural equality is intern identity,
@@ -275,6 +278,8 @@ Current local inference mutability is driven by a single pending-constraint queu
 ### Struct representation
 
 - `StructRep` contains optional name, field list, generic count, and a layout spec (`Hot` vs `C` for `cstruct`).
+- `StructRep` also stores declaration-side where-clause metadata for both
+  lifetime-order edges and `T<'a`-style generic lifetime requirements.
 - Typedef-driven struct names are now assigned during typedef compilation (`do_typedef`), by checking the compiled cluster for either `ResolveKind::Struct` or a solved `TypeValue::Struct` and setting `StructRep.name` only when currently unset.
 - Recursive structs are supported by creating struct ids early, then resolving field types in `finalize`.
 

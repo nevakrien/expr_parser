@@ -485,6 +485,71 @@ fn bind_lifetime_generics(ctx: &mut InferState, generics: PatternSpan) {
     }
 }
 
+fn collect_decl_where_requirements(
+    ctx: &mut InferState,
+    generics: GenDec,
+) -> (Vec<LifetimeOrderingEdge>, Vec<GenericLifetimeRequirement>) {
+    let mut lifetime_indexes: IdHashMap<LifeTimeId, usize> = IdHashMap::default();
+    for (index, lifetime_pat) in generics.lifetimes().ids().enumerate() {
+        if let Pattern::LifeTime(id) = ctx.ex.program.pattern(lifetime_pat) {
+            lifetime_indexes.insert(id, index);
+        }
+    }
+
+    let mut generic_indexes: IdHashMap<NameId, usize> = IdHashMap::default();
+    for (index, generic_pat) in generics.generics().ids().enumerate() {
+        if let Pattern::Bind(name, _) = ctx.ex.program.pattern(generic_pat) {
+            generic_indexes.insert(name, index);
+        }
+    }
+
+    let mut orderings = Vec::new();
+    let mut generic_lifetime_requirements = Vec::new();
+    for constraint in generics.where_clause().ids() {
+        let TypeExpr::Lt { lhs, rhs } = ctx.ex.program.type_expr(constraint) else {
+            continue;
+        };
+
+        let resolve_lifetime = |expr: TExpId| match ctx.ex.program.type_expr(expr) {
+            TypeExpr::LifeTime(id) => lifetime_indexes.get(&id).copied(),
+            TypeExpr::NameRef(name) => {
+                generics
+                    .lifetimes()
+                    .ids()
+                    .enumerate()
+                    .find_map(|(index, pat)| match ctx.ex.program.pattern(pat) {
+                        Pattern::LifeTime(id)
+                            if ctx.ex.program.lifetime_string(id)
+                                == ctx.ex.program.name_string(name) =>
+                        {
+                            Some(index)
+                        }
+                        _ => None,
+                    })
+            }
+            _ => None,
+        };
+
+        let resolve_generic = |expr: TExpId| match ctx.ex.program.type_expr(expr) {
+            TypeExpr::NameRef(name) => generic_indexes.get(&name).copied(),
+            _ => None,
+        };
+
+        if let (Some(shorter), Some(longer)) = (resolve_lifetime(lhs), resolve_lifetime(rhs)) {
+            orderings.push(LifetimeOrderingEdge { shorter, longer });
+            continue;
+        }
+
+        if let (Some(generic), Some(lifetime)) = (resolve_generic(lhs), resolve_lifetime(rhs)) {
+            generic_lifetime_requirements.push(GenericLifetimeRequirement { generic, lifetime });
+        }
+    }
+
+    canonicalize_lifetime_orderings(&mut orderings);
+    canonicalize_generic_lifetime_requirements(&mut generic_lifetime_requirements);
+    (orderings, generic_lifetime_requirements)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TypeExprCompileMode {
     Signature,
@@ -663,6 +728,7 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         fields,
     }: StructLike,
 ) -> CId {
+    let decl_generics = generics;
     let lifetimes = generics.lifetimes();
     let generics = generics.generics();
     // Reject struct definitions in local scope.
@@ -760,10 +826,14 @@ fn compile_struct_type<const GLOBAL_SCOPE: bool>(
         .map(|x| LifeTime::External(x as u32))
         .collect();
 
+    let (lifetime_orderings, generic_lifetime_requirements) =
+        collect_decl_where_requirements(ctx, decl_generics);
     let rep = StructRep::new(
         field_info.iter().map(|(n, _)| *n),
         trait_info,
         lifetimes.len(),
+        lifetime_orderings,
+        generic_lifetime_requirements,
         layout,
     );
 
@@ -973,6 +1043,8 @@ pub(crate) fn compile_type_expr_with_mode(
                 calling_convention,
                 generics: Vec::new(),
                 lifetimes: 0,
+                lifetime_orderings: Vec::new(),
+                generic_lifetime_requirements: Vec::new(),
                 inputs,
                 output,
             })
@@ -1214,7 +1286,13 @@ fn mark_used_generics_and_lifetimes_from_type(
                 used_lifetimes,
             );
         }
-        TypeValue::Func { params, ret, .. } => {
+        TypeValue::Func {
+            params,
+            ret,
+            lifetime_orderings,
+            generic_lifetime_requirements,
+            ..
+        } => {
             for &param in params {
                 mark_used_generics_and_lifetimes_from_type(
                     store,
@@ -1233,6 +1311,22 @@ fn mark_used_generics_and_lifetimes_from_type(
                 used_generics,
                 used_lifetimes,
             );
+            for edge in lifetime_orderings {
+                if edge.shorter < lifetime_count {
+                    used_lifetimes[edge.shorter] = true;
+                }
+                if edge.longer < lifetime_count {
+                    used_lifetimes[edge.longer] = true;
+                }
+            }
+            for requirement in generic_lifetime_requirements {
+                if requirement.generic < generic_count {
+                    used_generics[requirement.generic] = true;
+                }
+                if requirement.lifetime < lifetime_count {
+                    used_lifetimes[requirement.lifetime] = true;
+                }
+            }
         }
         TypeValue::Ptr { tgt, style, .. } => {
             if let PointerStyle::Ref(LifeTime::External(i)) = style
@@ -1309,7 +1403,13 @@ fn mark_used_struct_signature_from_type(
                 used_lifetimes,
             );
         }
-        TypeValue::Func { params, ret, .. } => {
+        TypeValue::Func {
+            params,
+            ret,
+            lifetime_orderings,
+            generic_lifetime_requirements,
+            ..
+        } => {
             for &param in params {
                 mark_used_struct_signature_from_type(
                     store,
@@ -1326,6 +1426,22 @@ fn mark_used_struct_signature_from_type(
                 used_generics,
                 used_lifetimes,
             );
+            for edge in lifetime_orderings {
+                if edge.shorter < used_lifetimes.len() {
+                    used_lifetimes[edge.shorter] = true;
+                }
+                if edge.longer < used_lifetimes.len() {
+                    used_lifetimes[edge.longer] = true;
+                }
+            }
+            for requirement in generic_lifetime_requirements {
+                if requirement.generic < generic_count {
+                    used_generics[requirement.generic] = true;
+                }
+                if requirement.lifetime < used_lifetimes.len() {
+                    used_lifetimes[requirement.lifetime] = true;
+                }
+            }
         }
         TypeValue::Ptr { tgt, style, .. } => {
             if let PointerStyle::Ref(LifeTime::External(i)) = style
@@ -1400,6 +1516,23 @@ fn check_unused_struct_signature_generics_and_lifetimes(ctx: &mut InferState, ty
         );
     }
 
+    for edge in &struct_rep.lifetime_orderings {
+        if edge.shorter < used_lifetimes.len() {
+            used_lifetimes[edge.shorter] = true;
+        }
+        if edge.longer < used_lifetimes.len() {
+            used_lifetimes[edge.longer] = true;
+        }
+    }
+    for requirement in &struct_rep.generic_lifetime_requirements {
+        if requirement.generic < used_generics.len() {
+            used_generics[requirement.generic] = true;
+        }
+        if requirement.lifetime < used_lifetimes.len() {
+            used_lifetimes[requirement.lifetime] = true;
+        }
+    }
+
     for (generic_index, used) in used_generics.into_iter().enumerate() {
         if !used {
             ctx.push_error(TypeError::UnusedStructGeneric {
@@ -1427,6 +1560,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     params: PatternSpan,
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
+    let decl_generics = generics;
     let lifetime_before_signature = ctx.types.lifetimes.life_parent.0.len();
     let lifetime_generics = generics.lifetimes();
     let generics = generics.generics();
@@ -1507,6 +1641,11 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     );
 
     let lifetime_count = lids_before_output - lifetime_before_signature;
+    let (lifetime_orderings, generic_lifetime_requirements) = if GLOBAL_SCOPE {
+        collect_decl_where_requirements(ctx, decl_generics)
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     let f = ctx.new_func(FuncInfer {
         calling_convention,
@@ -1516,6 +1655,8 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
             Vec::new()
         },
         lifetimes: if GLOBAL_SCOPE { lifetime_count } else { 0 },
+        lifetime_orderings,
+        generic_lifetime_requirements,
         inputs,
         output,
     });
@@ -2149,6 +2290,8 @@ impl StructRep {
         names: impl Iterator<Item = NameId>,
         gen_info: Vec<TraitInfo>,
         life_count: usize,
+        lifetime_orderings: Vec<LifetimeOrderingEdge>,
+        generic_lifetime_requirements: Vec<GenericLifetimeRequirement>,
         layout: StructLayoutSpec,
     ) -> Self {
         Self {
@@ -2158,6 +2301,8 @@ impl StructRep {
             fields: names.map(|x| (x, UNKNOWN_TYPE)).collect(),
             gen_info,
             life_count,
+            lifetime_orderings,
+            generic_lifetime_requirements,
             layout,
         }
     }
