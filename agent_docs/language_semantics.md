@@ -88,53 +88,30 @@ Closure support:
 - This is primarily intended for generic where-constraint forms (for example `T<'a`).
 - Other binary operators in type expressions remain unsupported and continue to emit lowering errors.
 
-## Lifetimes and Reference Kinds (Planned Contract)
+## Lifetimes and Reference Kinds (Refactor Contract)
 
-This is the intended language contract for upcoming lifetime-aware typing and borrow checking.
+The active implementation is expected to move toward the clean-room type-system
+refactor described in `agent_docs/type_inference.md` and
+`agent_docs/lifetimes_plan.md`. Treat older detailed lifetime behavior as
+legacy reference material.
+
+Language-level intent to preserve:
 
 - Normal references are lifetime-checked borrows (`&'a T`, `&mut 'a T`).
-- `'raw` is a separate lifetime state representing non-null pointer-style access (`&'raw T`, `&mut 'raw T`).
-- `&'a T` and `&'raw T` are distinct; type inference must not silently upgrade/downgrade between them.
+- Raw/reference style is distinct from normal safe references and should not be
+  silently upgraded or downgraded by shape solving.
+- Reborrows and implicit deref/member/index projections should record
+  obligations for later lifetime/provenance checking.
+- Lifetime ordering such as `'a < 'b` is not type-shape equality; it belongs to a
+  later graph/order phase.
+- Unnamed/elided lifetime behavior is still an open design area for the new
+  solver and should not be copied from old finalization hacks without review.
 
-Downcasting/reborrowing:
+Parser note:
 
-- No implicit lifetime downcast for user-level references.
-- Users must spell reborrow/downcast explicitly (for example `&*var`).
-- Reborrow relationships are tracked as lifetime bounds (for example `'b < 'a`) and validated later in borrow analysis.
-
-Smart-pointer method signatures:
-
-- Safe/tied deref shape: fn['a](&'a self)->&'a out.
-- Raw receiver deref shape: fn['a](&'raw self)->&'a out.
-  - This allows producing arbitrary output lifetimes from a raw receiver.
-- Address exposure shape: fn['a](&'raw self)->&'raw out.
-  - This intentionally disables normal borrow guarantees along that path.
-
-Implicit references created by desugaring:
-
-- Member access, index access, and deref-chain resolution can synthesize fresh reference temporaries.
-- Those temporaries include implicit lifetime casts and must be recorded in solved metadata for later borrow-check pass consumption.
-- Temporary policy: these implicit casts may target any lifetime (for example: a -> 'raw, a -> 'static).
-- Future policy: borrow analysis will reject illegal casts and enforce the real lattice.
-
-Early vs deferred lifetime errors:
-
-- Immediate typecheck rejection is allowed when constraints are directly contradictory in one signature/body typing step.
-  - Example: f(x:&'a t)->&'b t{x} is immediately invalid if no reborrow relation justifies 'b.
-- Constraints introduced by explicit reborrows should remain recorded for borrow analysis (not necessarily rejected in the first typing phase).
-
-Unnamed lifetimes:
-
-- In global signatures:
-  - unnamed input-side lifetimes are treated as independent fresh lifetimes,
-  - unnamed output-side lifetimes are intended as joins over input lifetimes (for example: 'a+'b+...).
-  - temporary implementation rule: if exactly one input lifetime exists, pick it; otherwise emit `not implemented yet`.
-- In bodies:
-  - every unresolved/unnamed lifetime site mints a fresh lifetime id,
-  - minted ids are tracked explicitly so later borrow analysis can index per-lifetime data in dense vectors.
-- Parser note:
-  - lifetime tokens in reference syntax are parsed atomically (`&'a T` keeps `'a` as just the lifetime name),
-  - postfix/path continuations are not consumed as part of the lifetime node.
+- Lifetime tokens in reference syntax are parsed atomically (`&'a T` keeps `'a`
+  as just the lifetime name).
+- Postfix/path continuations are not consumed as part of the lifetime node.
 
 ## Member Access Semantics (`.`, `::`, `->`)
 
@@ -152,7 +129,7 @@ Type-inference behavior:
 - For smart-pointer-like structs, lookup prefers direct members first; only then falls back to `__deref`/`__deref_mut` targets.
 - Integer member access is reserved for tuples: the index is resolved against tuple arity after implicit deref.
 - `::` is not valid for tuple integer member access (`tuple element access does not support \`::\``).
-- Implicit deref hops are recorded in `SolvedTypes.member_access_implicit_derefs` for later lowering/rewrite stages.
+- Implicit deref hops are recorded in solved data as a chain of `(KindId, Projection)` entries; this keeps the old per-hop chain model while preserving which projection kind produced each step.
 
 Method access/currying:
 

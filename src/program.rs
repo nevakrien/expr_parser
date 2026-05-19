@@ -9,8 +9,8 @@ use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
 use crate::string_intern::StrId;
 use crate::string_intern::StringInterner;
-use crate::string_intern::{RAW_STR, STATIC_STR, WILDCARD_STR};
-use crate::type_inference::TypeValue;
+use crate::string_intern::{DSIZED_STR, RAW_STR, STATIC_STR, WILDCARD_STR};
+use crate::type_kinds::{BUILTINS, BuiltinKind};
 use thiserror::Error;
 
 pub type CResult<T> = Result<T, CompileError>;
@@ -95,7 +95,7 @@ pub enum Defined {
     // Value(ValId),
     Func(FunctionSet),
     Type(TExpId),
-    BuildinType(TypeValue),
+    BuildinType(BuiltinKind),
     BuildinInterface(StrId),
     Macro(Macro),
 }
@@ -192,6 +192,18 @@ impl Program {
 
     pub fn push_lowering_error(&mut self, err: CompileError) {
         self.lowering_errors.push(err);
+    }
+
+    pub(crate) fn insert_builtin_types(&mut self) {
+        for &(name, builtin) in BUILTINS {
+            let name = self.str_intern.intern(name);
+            let id = self.insert_value_in_current_scope(name);
+            self.definitions.insert(id, Defined::BuildinType(builtin));
+        }
+
+        let id = self.insert_value_in_current_scope(DSIZED_STR);
+        self.definitions
+            .insert(id, Defined::BuildinInterface(DSIZED_STR));
     }
 
     pub fn lower_all(&mut self, parser: &mut Parser<'_>) -> Result<(), Vec<CompileError>> {

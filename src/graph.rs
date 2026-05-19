@@ -1,0 +1,530 @@
+use crate::index::Idx;
+use crate::index::IndexVec;
+use std::ops::Range;
+
+pub trait DirectedGraph {
+    type Node: Idx;
+
+    fn num_nodes(&self) -> usize;
+    fn iter_nodes(
+        &self,
+    ) -> impl Iterator<Item = Self::Node> + DoubleEndedIterator + ExactSizeIterator {
+        (0..self.num_nodes()).map(<Self::Node as Idx>::new)
+    }
+
+    fn edges(&self, node: Self::Node) -> impl Iterator<Item = Self::Node>;
+}
+
+#[derive(Debug, Clone)]
+pub struct BasicGraph<Node: Idx> {
+    pub edges: IndexVec<Node, Vec<Node>>,
+}
+
+impl<N: Idx> DirectedGraph for BasicGraph<N> {
+    type Node = N;
+    fn num_nodes(&self) -> usize {
+        self.edges.len()
+    }
+    fn edges(&self, i: Self::Node) -> impl Iterator<Item = Self::Node> {
+        self.edges[i].iter().copied()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VecGraph<Node: Idx> {
+    nodes: IndexVec<Node, Range<usize>>,
+    edges: Vec<Node>,
+}
+
+impl<Node: Idx> VecGraph<Node> {
+    pub fn new_empty() -> Self {
+        Self {
+            nodes: IndexVec::new(),
+            edges: Vec::new(),
+        }
+    }
+    pub fn num_edges(&self) -> usize {
+        self.edges.len()
+    }
+}
+
+impl<N: Idx> DirectedGraph for VecGraph<N> {
+    type Node = N;
+    fn num_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+    fn edges(&self, i: Self::Node) -> impl Iterator<Item = Self::Node> {
+        let r = self.nodes[i].clone();
+        self.edges[r.start..r.end].iter().copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisitState {
+    NotSeen,
+    Working {
+        index: usize,
+        min_val: usize,
+    },
+    Done {
+        index: usize,
+        min_val: usize,
+        scc_id: usize,
+    },
+}
+
+impl VisitState {
+    fn get_min(&self) -> usize {
+        match self {
+            VisitState::NotSeen => unreachable!("bad call"),
+            VisitState::Working { min_val, .. } | VisitState::Done { min_val, .. } => *min_val,
+        }
+    }
+    fn update_min(&mut self, other: usize) {
+        match self {
+            VisitState::NotSeen => unreachable!("bad call"),
+            VisitState::Working { min_val, .. } | VisitState::Done { min_val, .. } => {
+                if *min_val > other {
+                    *min_val = other;
+                }
+            }
+        }
+    }
+
+    fn to_done<Node: Idx>(&mut self, cid: CId<Node>) {
+        let VisitState::Working { index, min_val, .. } = *self else {
+            return;
+        };
+        *self = VisitState::Done {
+            index,
+            min_val,
+            scc_id: cid.index(),
+        };
+    }
+}
+
+struct WorkFrame<Node: Idx, I: Iterator<Item = Node>> {
+    node: Node,
+    edges: I,
+    successor_len: usize,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CId<Node: Idx>(Node);
+
+impl<Node: Idx> Idx for CId<Node> {
+    fn new(idx: usize) -> Self {
+        CId(Node::new(idx))
+    }
+
+    fn index(self) -> usize {
+        self.0.index()
+    }
+}
+
+pub struct SCCS<Node: Idx> {
+    pub map: IndexVec<Node, CId<Node>>,
+    pub comps: IndexVec<CId<Node>, Vec<Node>>,
+    ///a DAG ordered in reverse topologiacl order
+    pub o_dag: VecGraph<CId<Node>>,
+}
+
+pub fn tarjan<G: DirectedGraph>(graph: &G) -> SCCS<G::Node> {
+    let mut scc_stack = Vec::new();
+    let mut successor_stack = Vec::new();
+    let mut successor_dedup = foldhash::HashSet::default();
+
+    let mut call_stack = Vec::new();
+    let mut states: IndexVec<G::Node, _> =
+        graph.iter_nodes().map(|_| VisitState::NotSeen).collect();
+
+    let mut map: IndexVec<G::Node, CId<G::Node>> =
+        graph.iter_nodes().map(|_| CId::new(0)).collect();
+    let mut comps: IndexVec<CId<G::Node>, Vec<G::Node>> = IndexVec::new();
+    let mut o_dag = VecGraph::new_empty();
+
+    let mut index = 0;
+
+    for node in graph.iter_nodes() {
+        let VisitState::NotSeen = states[node] else {
+            debug_assert!(matches!(states[node], VisitState::Done { .. }));
+            continue;
+        };
+
+        call_stack.push(WorkFrame {
+            node,
+            edges: graph.edges(node),
+            successor_len: successor_stack.len(),
+        });
+        states[node] = VisitState::Working {
+            index,
+            min_val: index,
+        };
+        index = index + 1;
+        scc_stack.push(node);
+
+        'recurse: while let Some(frame) = call_stack.last_mut() {
+            while let Some(next) = frame.edges.next() {
+                match states[next] {
+                    VisitState::NotSeen => {
+                        call_stack.push(WorkFrame {
+                            node: next,
+                            edges: graph.edges(next),
+                            successor_len: successor_stack.len(),
+                        });
+                        states[next] = VisitState::Working {
+                            index,
+                            min_val: index,
+                        };
+                        index = index + 1;
+                        scc_stack.push(next);
+
+                        continue 'recurse;
+                    }
+                    VisitState::Working { index, .. } => {
+                        states[frame.node].update_min(index);
+                    }
+                    VisitState::Done { scc_id, .. } => {
+                        successor_stack.push(CId::new(scc_id));
+                    }
+                }
+            }
+
+            let frame = call_stack.pop().unwrap();
+
+            if let VisitState::Working {
+                index: i, min_val, ..
+            } = states[frame.node]
+            {
+                if i == min_val {
+                    let cid = CId::new(comps.len());
+
+                    //first gather members
+                    let mut members = Vec::new();
+                    loop {
+                        let c = scc_stack
+                            .pop()
+                            .expect("SCC root must be present on SCC stack");
+
+                        states[c].to_done(cid);
+                        map[c] = cid;
+                        members.push(c);
+
+                        if c == frame.node {
+                            break;
+                        }
+                    }
+                    comps.push(members);
+
+                    //now gather the o_dag edges
+                    successor_dedup.clear();
+
+                    let start = o_dag.num_edges();
+                    o_dag.edges.extend(
+                        successor_stack
+                            .drain(frame.successor_len..)
+                            .filter(|s| successor_dedup.insert(*s)),
+                    );
+                    let end = o_dag.num_edges();
+
+                    o_dag.nodes.push(start..end);
+
+                    //we are done but a calling parent needs to have us as a successor
+                    if call_stack.last().is_some() {
+                        successor_stack.push(cid);
+                    }
+                }
+            };
+
+            if let Some(pf) = call_stack.last() {
+                let m = states[frame.node].get_min();
+                states[pf.node].update_min(m);
+            }
+        }
+    }
+    SCCS { comps, map, o_dag }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type Set = BTreeSet<usize>;
+    type Edge = (Set, Set);
+
+    fn graph(num_nodes: usize, edges: &[(usize, usize)]) -> BasicGraph<usize> {
+        let mut g = BasicGraph {
+            edges: (0..num_nodes).map(|_| Vec::new()).collect(),
+        };
+
+        for &(from, to) in edges {
+            g.edges[from].push(to);
+        }
+
+        g
+    }
+
+    fn set(nodes: &[usize]) -> Set {
+        nodes.iter().copied().collect()
+    }
+
+    fn sets(comps: &[&[usize]]) -> BTreeSet<Set> {
+        comps.iter().map(|comp| set(comp)).collect()
+    }
+
+    fn actual_comps(sccs: &SCCS<usize>) -> BTreeSet<Set> {
+        sccs.comps.iter().map(|comp| set(comp)).collect()
+    }
+
+    fn actual_dag_edges(sccs: &SCCS<usize>) -> BTreeSet<Edge> {
+        let mut edges = BTreeSet::new();
+
+        for raw_from in 0..sccs.comps.len() {
+            let from = CId::new(raw_from);
+            let from_set = set(&sccs.comps[from]);
+            let range = sccs.o_dag.nodes[from].clone();
+
+            for &to in &sccs.o_dag.edges[range] {
+                edges.insert((from_set.clone(), set(&sccs.comps[to])));
+            }
+        }
+
+        edges
+    }
+
+    fn expected_dag_edges(edges: &[(&[usize], &[usize])]) -> BTreeSet<Edge> {
+        edges
+            .iter()
+            .map(|(from, to)| (set(from), set(to)))
+            .collect()
+    }
+
+    fn assert_invariants(graph: &BasicGraph<usize>, sccs: &SCCS<usize>) {
+        // map agrees with comps, and each node appears once.
+        let mut seen = BTreeMap::new();
+
+        for (raw_cid, comp) in sccs.comps.iter().enumerate() {
+            let cid = CId::new(raw_cid);
+
+            for &node in comp {
+                assert_eq!(sccs.map[node], cid, "map[{node:?}] points to wrong SCC");
+
+                let old = seen.insert(node, cid);
+                assert!(
+                    old.is_none(),
+                    "node {node:?} appeared in multiple SCCs: {old:?} and {cid:?}"
+                );
+            }
+        }
+
+        for node in graph.iter_nodes() {
+            assert!(
+                seen.contains_key(&node),
+                "node {node:?} did not appear in any SCC"
+            );
+        }
+
+        assert_eq!(
+            sccs.o_dag.nodes.len(),
+            sccs.comps.len(),
+            "DAG should have exactly one node per SCC"
+        );
+
+        for raw_from in 0..sccs.comps.len() {
+            let from = CId::new(raw_from);
+            let range = sccs.o_dag.nodes[from].clone();
+
+            for &to in &sccs.o_dag.edges[range] {
+                assert_ne!(
+                    from, to,
+                    "SCC DAG should not contain self-edge {from:?} -> {to:?}"
+                );
+            }
+        }
+    }
+
+    fn assert_sccs(
+        graph: &BasicGraph<usize>,
+        expected_comps: &[&[usize]],
+        expected_edges: &[(&[usize], &[usize])],
+    ) {
+        let sccs = tarjan(graph);
+
+        assert_eq!(
+            actual_comps(&sccs),
+            sets(expected_comps),
+            "wrong SCC partition"
+        );
+
+        assert_invariants(graph, &sccs);
+
+        assert_eq!(
+            actual_dag_edges(&sccs),
+            expected_dag_edges(expected_edges),
+            "wrong SCC DAG edges"
+        );
+    }
+
+    #[test]
+    fn empty_graph() {
+        let g = graph(0, &[]);
+        assert_sccs(&g, &[], &[]);
+    }
+
+    #[test]
+    fn found_hard_graph() {
+        let g = graph(3, &[(1, 2)]);
+
+        let dag = tarjan(&g).o_dag;
+        eprintln!("{dag:?}");
+        for node in dag.iter_nodes() {
+            println!("in node {node:?}");
+            for edge in dag.edges(node) {
+                println!("has edge ({node:?},{edge:?})");
+            }
+        }
+
+        assert_sccs(&g, &[&[0], &[1], &[2]], &[(&[1], &[2])]);
+    }
+
+    #[test]
+    fn isolated_nodes() {
+        let g = graph(4, &[]);
+        assert_sccs(&g, &[&[0], &[1], &[2], &[3]], &[]);
+    }
+
+    #[test]
+    fn simple_chain() {
+        let g = graph(4, &[(0, 1), (1, 2), (2, 3)]);
+
+        assert_sccs(
+            &g,
+            &[&[0], &[1], &[2], &[3]],
+            &[(&[0], &[1]), (&[1], &[2]), (&[2], &[3])],
+        );
+    }
+
+    #[test]
+    fn simple_cycle() {
+        let g = graph(3, &[(0, 1), (1, 2), (2, 0)]);
+        assert_sccs(&g, &[&[0, 1, 2]], &[]);
+    }
+
+    #[test]
+    fn self_loop() {
+        let g = graph(1, &[(0, 0)]);
+        assert_sccs(&g, &[&[0]], &[]);
+    }
+
+    #[test]
+    fn disconnected_cycles() {
+        let g = graph(5, &[(0, 1), (1, 0), (2, 3), (3, 4), (4, 2)]);
+
+        assert_sccs(&g, &[&[0, 1], &[2, 3, 4]], &[]);
+    }
+
+    #[test]
+    fn edge_between_sccs_does_not_merge_them() {
+        let g = graph(4, &[(0, 1), (1, 0), (1, 2), (2, 3), (3, 2)]);
+
+        assert_sccs(&g, &[&[0, 1], &[2, 3]], &[(&[0, 1], &[2, 3])]);
+    }
+
+    #[test]
+    fn diamond_without_back_edges() {
+        let g = graph(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]);
+
+        assert_sccs(
+            &g,
+            &[&[0], &[1], &[2], &[3]],
+            &[(&[0], &[1]), (&[0], &[2]), (&[1], &[3]), (&[2], &[3])],
+        );
+    }
+
+    #[test]
+    fn diamond_with_back_edge() {
+        let g = graph(4, &[(0, 1), (0, 2), (1, 3), (2, 3), (3, 0)]);
+
+        assert_sccs(&g, &[&[0, 1, 2, 3]], &[]);
+    }
+
+    #[test]
+    fn cycle_reaching_tail() {
+        let g = graph(5, &[(0, 1), (1, 2), (2, 0), (2, 3), (3, 4)]);
+
+        assert_sccs(
+            &g,
+            &[&[0, 1, 2], &[3], &[4]],
+            &[(&[0, 1, 2], &[3]), (&[3], &[4])],
+        );
+    }
+
+    #[test]
+    fn tail_reaching_cycle() {
+        let g = graph(4, &[(0, 1), (1, 2), (2, 3), (3, 1)]);
+
+        assert_sccs(&g, &[&[0], &[1, 2, 3]], &[(&[0], &[1, 2, 3])]);
+    }
+
+    #[test]
+    fn cross_edge_to_done_scc_does_not_corrupt_lowlink() {
+        let g = graph(4, &[(0, 1), (1, 0), (2, 3), (3, 2), (2, 0)]);
+
+        assert_sccs(&g, &[&[0, 1], &[2, 3]], &[(&[2, 3], &[0, 1])]);
+    }
+
+    #[test]
+    fn dag_deduplicates_many_edges_between_same_sccs() {
+        let g = graph(
+            4,
+            &[
+                (0, 1),
+                (1, 0),
+                (2, 3),
+                (3, 2),
+                (0, 2),
+                (0, 3),
+                (1, 2),
+                (1, 3),
+            ],
+        );
+
+        assert_sccs(&g, &[&[0, 1], &[2, 3]], &[(&[0, 1], &[2, 3])]);
+    }
+
+    #[test]
+    fn branching_scc_dag() {
+        let g = graph(
+            6,
+            &[
+                (0, 1),
+                (1, 0),
+                (0, 2),
+                (1, 3),
+                (2, 4),
+                (3, 5),
+                (4, 5),
+                (5, 4),
+            ],
+        );
+
+        assert_sccs(
+            &g,
+            &[&[0, 1], &[2], &[3], &[4, 5]],
+            &[
+                (&[0, 1], &[2]),
+                (&[0, 1], &[3]),
+                (&[2], &[4, 5]),
+                (&[3], &[4, 5]),
+            ],
+        );
+    }
+
+    #[test]
+    fn child_scc_edge_is_recorded_after_child_finishes() {
+        let g = graph(2, &[(0, 1)]);
+
+        assert_sccs(&g, &[&[0], &[1]], &[(&[0], &[1])]);
+    }
+}

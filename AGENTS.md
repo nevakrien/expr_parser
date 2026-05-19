@@ -17,7 +17,7 @@
 - When adding a new complex subsystem, add a new `agent_docs/<subsystem>.md` file so future agents have a focused starting point.
 
 ### Current docs index
-- `agent_docs/type_inference.md`: detailed guide to `src/type_inference.rs`, including unification/clash behavior, specialization, generic-scope risks, and gather-layer fragility/extension points.
+- `agent_docs/type_inference.md`: active clean-room type-system refactor direction; old implementation details live in the local detached snapshot at `/home/user/Desktop/rust_stuff/expr_parser/expr_parse_pre`.
 - `agent_docs/cli_debugging.md`: practical guide to using the REPL/CLI to inspect parsed AST shape, inferred types, and typechecker diagnostics while investigating behavior.
 - `agent_docs/language_semantics.md`: language-level behavior across parser/lowering/type inference, including `fn` vs `cfn`, `struct` vs `cstruct`, and `. / :: / ->` member-access semantics.
 - `agent_docs/ir_lowering.md`: IR data model and lowering behavior in `src/ir.rs`, including span arenas, expression lowering rules, and control-flow edge cases.
@@ -26,9 +26,11 @@
 - `agent_docs/struct_layout.md`: layout computation model in `src/struct_layout.rs`, including recursion detection and generic specialization handling.
 - `agent_docs/string_intern_and_ids.md`: intern table internals and `IdHashMap`/`IdentityHasher` conventions for ID-keyed maps.
 - `agent_docs/low_ir_sketch.md`: current status and intent for the unfinished low-level IR sketch in `src/low_ir.rs`.
-- `agent_docs/lifetimes_plan.md`: primary lifetime plan focused on local lifetime ordering via origin-derived constraints, SCC solving, raw-vs-ref handling, and a CId-free solved graph boundary for borrow checking.
-- `agent_docs/lifetime_impl_status.md`: current implementation status for lifetime/type-inference work (implemented pieces, transitional behavior, and remaining stages).
-- `agent_docs/todo.md`: short-lived implementation notes (including active refactor items and known temporary failures).
+- `agent_docs/lifetimes_plan.md`: high-level lifetime phase direction for the clean-room type-system rewrite.
+- `agent_docs/lifetime_impl_status.md`: intentionally gutted status note explaining that the old lifetime implementation is legacy reference material.
+- `agent_docs/origin_graph_plan.md`: high-level origin/provenance direction for the clean-room rewrite.
+- `agent_docs/mutability_fuzzing.md`: high-level mutability testing direction after the new obligation layer exists.
+- `agent_docs/todo.md`: short-lived implementation notes for the active clean-room type-system refactor.
 
 ## Commands
 - First step for quick compile/typecheck checks: run `scripts/repl_batch.sh` with stdin + EOF.

@@ -1,34 +1,26 @@
-# Mutability Fuzzing Sketch
+# Mutability Testing Direction
 
-This note documents a practical first step toward mutability fuzzing without needing a full language-level validity oracle.
+The previous mutability fuzzing sketch was tied to the old solver. Keep the
+testing idea, but do not treat the old implementation details as current
+architecture.
 
-## Why template fuzzing first
+## Useful Idea To Preserve
 
-A full grammar fuzzer would need to decide whether a generated program should typecheck, which is hard while semantics are evolving.
+Template-generated programs are still a good way to test mutability behavior
+without needing a full semantic oracle.
 
-Instead, start with **template-generated programs** whose expected outcome is known by construction:
+Useful axes after the refactor:
 
-- same shape, different root mutability (`var` vs `let`),
-- direct vs aliased vs generic-identity transport paths,
-- expected result decided from the root mutability and pointer mutability semantics.
+- root binding kind: immutable vs mutable storage,
+- pointer style: shared, mutable, raw,
+- transport path: direct borrow, reborrow, function identity, struct/tuple wrap,
+- write site: deref write, field write, index write,
+- expected result: accepted, rejected by obligation check, or rejected by borrow
+  checking.
 
-This catches regressions like mutability laundering through inference paths, while staying cheap to maintain.
+## Refactor Boundary
 
-## Example scaffold
+Mutability should be checked as pointer-style/provenance obligations after shape
+solving, not by forcing shape unification to carry mutable-place semantics.
 
-- `examples/mutability_fuzz_sketch.rs` runs a small oracle-backed matrix.
-- It prints whether each case matches the expected accept/reject result.
-- Use strict mode in CI-like runs:
-
-```bash
-cargo run --example mutability_fuzz_sketch -- --strict
-```
-
-## Suggested next expansion
-
-- Add combinatorial generators over:
-  - root binding kind (`let` / `var`),
-  - transport path (`&x`, `&*p`, `id(&x)`, tuple/struct wrappers),
-  - write site (`*p = ...`, `(*p).field = ...`, index writes).
-- Keep each generated case small (single function) and label the expected oracle rule for easy triage.
-- Store mismatching programs to disk so they can be promoted to unit tests.
+Recreate fuzzing once the new obligation layer exists.

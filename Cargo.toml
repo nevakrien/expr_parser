@@ -11,6 +11,7 @@ yansi = "1.0.1"
 simdutf8 = "0.1.5"
 foldhash = "0.2.0"
 rand = "0.9.2"
+thin-vec = "0.2.18"
 # bump-scope = "1.5.1"
 # arrayvec = "0.7"
 

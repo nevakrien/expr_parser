@@ -3,7 +3,7 @@ use expr_parser::ir::NameId;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_inference::{SolvedTypes, TypeStore, run_typechecker};
+use expr_parser::type_kinds::{SolvedTypes, TypeUniverse, run_typechecker};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -175,7 +175,7 @@ fn lookup_global_name_id(program: &Program, name: &str) -> Option<NameId> {
 
 fn def_type_string(
     program: &Program,
-    types: &TypeStore,
+    types: &TypeUniverse,
     solved: &SolvedTypes,
     id: NameId,
 ) -> Option<String> {
@@ -183,13 +183,13 @@ fn def_type_string(
     match def {
         Defined::Func(_funcs) => solved
             .function_types_by_name(id)
-            .and_then(|f| (f.ty != expr_parser::type_inference::UNKNOWN_TYPE).then_some(f.ty))
-            .map(|ty| types.get_type_string(program, ty)),
+            .map(|f| f.ty)
+            .map(|ty| types.kind_to_string(program, ty)),
         Defined::Type(texp) => solved
             .typedef_types
             .get(texp)
             .copied()
-            .map(|ty| types.get_type_string(program, ty)),
+            .map(|ty| types.kind_to_string(program, ty)),
         Defined::BuildinType(_) => Some("builtin type".to_string()),
         Defined::BuildinInterface(_) => Some("builtin interface".to_string()),
         Defined::Macro(_) => Some("macro".to_string()),
@@ -199,7 +199,7 @@ fn def_type_string(
 
 fn print_expr_types(
     program: &Program,
-    types: &TypeStore,
+    types: &TypeUniverse,
     solved: &SolvedTypes,
     batch: &ParseBatch,
 ) {
@@ -214,7 +214,7 @@ fn print_expr_types(
             .clone()
             .next_back()
             .and_then(|idx| solved.type_of(expr_parser::ir::ValId(idx)))
-            .map(|ty| types.get_type_string(program, ty))
+            .map(|ty| types.kind_to_string(program, ty))
             .unwrap_or_else(|| "<unknown>".to_string());
 
         println!(
@@ -231,7 +231,12 @@ fn print_expr_types(
     }
 }
 
-fn print_named_types(program: &Program, types: &TypeStore, solved: &SolvedTypes, names: &[String]) {
+fn print_named_types(
+    program: &Program,
+    types: &TypeUniverse,
+    solved: &SolvedTypes,
+    names: &[String],
+) {
     for name in names {
         let Some(id) = lookup_global_name_id(program, name) else {
             println!("{}: <not found>", name);
@@ -476,7 +481,7 @@ fn report_all_errors(reporter: &mut ErrorReporter, program: &mut Program) -> boo
 fn finalize_program(
     reporter: &mut ErrorReporter,
     program: &mut Program,
-) -> Result<Option<(TypeStore, SolvedTypes)>, Box<dyn std::error::Error>> {
+) -> Result<Option<(TypeUniverse, SolvedTypes)>, Box<dyn std::error::Error>> {
     program.check_pending_names();
     if report_all_errors(reporter, program) {
         return Ok(None);
@@ -528,7 +533,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reporter = ErrorReporter::new();
     let mut program = Program::new();
     let mut next_file_id = 0usize;
-    let mut last_typecheck: Option<(TypeStore, SolvedTypes)> = None;
+    let mut last_typecheck: Option<(TypeUniverse, SolvedTypes)> = None;
     let mut show_ast = options.show_ast;
     let mut type_dump = options.type_dump;
     let mut origin_dump = options.origin_dump;
@@ -612,7 +617,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 reporter.report_origin_dump(&program, &types, &solved)?;
             }
             Ok(ReplInput::DumpOriginsOf(name)) => {
-                let Some((types, solved)) = last_typecheck.as_ref() else {
+                let Some((_types, solved)) = last_typecheck.as_ref() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };

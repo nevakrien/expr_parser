@@ -35,3 +35,6 @@ perf*.data.old
 perf*.data.*
 massif.out.*
 profile.json.gz
+
+# In-repo reference snapshot for the pre-refactor type system
+/expr_parse_pre/

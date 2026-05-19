@@ -219,13 +219,25 @@ it should be fairly straight forward to add operators and behivior as the AST re
 the main issue is that later you would still need to run a few checks on the outputs because some operators dont really make sense in some places, and there is no enum for them.
 
 ## Type Checking
-currently we have basic generics and automatic inference,
-with everything being required to be monomorphic in the end so we can get C++/Rust level inlining everywhere.
+currently type checking is other a major refactor: we used to do hindly-miller and bi-directional typing where casts borrowing etc are checked after being inferred. but since it was TYPE based store it was essentially impossible to fully split borrow checking out. 
+and the code had a lot of weird seprate checks that were needed to be done all over the place.
 
-we use hindly-miller and bi-directional typing where casts borrowing etc are checked after being inferred.
-this keeps the system simple enough with union-find rules. for example all casts are assumed to always be legal for unioning purposes, and they are later verified to be what we think it should be.
+instead what we do now is mix kinds and types, and factor out parts of kind for seprate infrence. This allows us to avoid the issue of needing to do a lot of seprate unifications of all sorts of concepts.
 
-this already lets us have a smart pointer with something like this 
+the aproch can also greatly simplify figuring out traits and overloads. earlier we had a pending list and kind of mixed all infrence steps togehter. now we can instead solve for shape first and then solve the rest. for overloads we have 
+```
+typeA op typeB
+```
+
+and previously we just kind of did a lot of messy special case stuff. but with shape seperation we can always require that A is somewhat kind solved (ie not None).
+and then this alone already handles all cases except for specifically int? as a kind. for that kind we simply wait for B to be kind solved.
+or we can even simply return the kind of B. since in all cases that are legal that would be the answer.
+
+for auto derefs this again greatly simplifies the entire question as pointer now are allowed to infrence by just checking for the Kind being not specifically Unsolved. and we can gurntee that all the relvents parts match by adding them as simple connections in the union find.
+
+
+
+example of code
 ```
 
 

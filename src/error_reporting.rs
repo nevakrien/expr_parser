@@ -1,7 +1,7 @@
 use crate::ir::{BinOp, UnOp};
 use crate::parsing::{Loc, OTok, ParseError};
 use crate::program::{CompileError, Program};
-use crate::type_inference::{SolvedTypes, TypeClash, TypeError, TypeStore, UNKNOWN_TYPE};
+use crate::type_kinds::{SolvedTypes, TypeClash, TypeError, TypeUniverse};
 use ariadne::{Cache, Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
@@ -231,7 +231,7 @@ impl ErrorReporter {
     pub fn report_type_error(
         &self,
         program: &Program,
-        store: &TypeStore,
+        store: &TypeUniverse,
         error: &TypeError,
     ) -> io::Result<()> {
         match error {
@@ -1035,7 +1035,7 @@ impl ErrorReporter {
     pub fn report_type_dump(
         &self,
         program: &Program,
-        store: &TypeStore,
+        store: &TypeUniverse,
         solved: &SolvedTypes,
     ) -> io::Result<()> {
         self.report_type_dump_in_region(program, store, solved, None)
@@ -1044,7 +1044,7 @@ impl ErrorReporter {
     pub fn report_type_dump_in_region(
         &self,
         program: &Program,
-        store: &TypeStore,
+        store: &TypeUniverse,
         solved: &SolvedTypes,
         region: Option<&Loc>,
     ) -> io::Result<()> {
@@ -1059,16 +1059,13 @@ impl ErrorReporter {
         typedef_entries.sort_unstable_by_key(|(texp, _)| texp.0);
 
         for (texp, t) in typedef_entries {
-            if t == UNKNOWN_TYPE {
-                continue;
-            }
             let loc = program.type_expr_loc(texp);
             if !loc_in_region(&loc, region) {
                 continue;
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("type expr: {}", store.get_type_string(program, t)),
+                format!("type expr: {}", store.kind_to_string(program, t)),
                 Color::Green,
             ));
         }
@@ -1098,7 +1095,7 @@ impl ErrorReporter {
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("pattern: {}", store.get_type_string(program, t)),
+                format!("pattern: {}", store.kind_to_string(program, t)),
                 Color::Cyan,
             ));
         }
@@ -1153,7 +1150,7 @@ impl ErrorReporter {
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("value: {}", store.get_type_string(program, t)),
+                format!("value: {}", store.kind_to_string(program, t)),
                 Color::Yellow,
             ));
         }
@@ -1169,7 +1166,7 @@ impl ErrorReporter {
                 format!(
                     "member method `{}`: {}",
                     member_name,
-                    store.get_type_string(program, member.full_type)
+                    store.kind_to_string(program, member.full_type)
                 ),
                 Color::Magenta,
             ));
@@ -1180,14 +1177,12 @@ impl ErrorReporter {
             if !loc_in_region(&loc, region) {
                 continue;
             }
-            let chain_types = chain
-                .iter()
-                .map(|t| store.get_type_string(program, *t))
-                .collect::<Vec<_>>()
-                .join(" -> ");
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("implicit deref chain: {chain_types}"),
+                format!(
+                    "implicit deref chain: {}",
+                    store.deref_chain_to_string(program, chain)
+                ),
                 Color::Blue,
             ));
         }
@@ -1220,7 +1215,7 @@ impl ErrorReporter {
     pub fn report_origin_dump(
         &self,
         program: &Program,
-        _store: &TypeStore,
+        _store: &TypeUniverse,
         solved: &SolvedTypes,
     ) -> io::Result<()> {
         self.report_origin_dump_in_region(program, solved, None)
@@ -1316,7 +1311,11 @@ fn loc_in_region(loc: &Loc, region: Option<&Loc>) -> bool {
         && loc.range.end <= region.range.end
 }
 
-fn clash_messages(_program: &Program, _store: &TypeStore, clash: &TypeClash) -> (String, String) {
+fn clash_messages(
+    _program: &Program,
+    _store: &TypeUniverse,
+    clash: &TypeClash,
+) -> (String, String) {
     let found = clash.found().unwrap_or("unknown");
     let wanted = clash.wanted().unwrap_or("unknown");
     (format!("found {found}"), format!("expected {wanted}"))
@@ -1324,7 +1323,7 @@ fn clash_messages(_program: &Program, _store: &TypeStore, clash: &TypeClash) -> 
 
 fn operand_type_message(
     _program: &Program,
-    _store: &TypeStore,
+    _store: &TypeUniverse,
     label: &str,
     ty: Option<&str>,
 ) -> String {
