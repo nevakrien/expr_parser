@@ -7,6 +7,7 @@ pub mod macros;
 pub mod operator_solver;
 pub mod parsing;
 pub mod program;
+pub mod requirment;
 pub mod string_intern;
 pub mod type_kinds;
 

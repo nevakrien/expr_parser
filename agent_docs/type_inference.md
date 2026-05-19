@@ -45,12 +45,21 @@ the rest of the compiler prints and stores. Do not reintroduce the old
 `TypeUniverse` owns two deliberately separate halves:
 
 - `KindStorage`: immutable/interned shape storage and per-id payload stores.
-- `KindLookUp`: union-finds for `KindId`, `PtrId`, `LifeId`, and `MutId`.
+- `KindLookUp`: union-finds for `KindId`/`PtrId`, lifetime ordering, and the
+  mutability implication solver.
 
 This split is important for Rust borrowing: common code should be able to hold a
 reference into storage while mutably path-compressing a union-find, using
 signatures like `&TypeUniverse.storage` plus `&mut TypeUniverse.look` or narrower
 field borrows.
+
+Mutability is no longer stored as `Option<bool>` in `KindStorage`. Pointer shapes
+still carry a `MutId`, but the meaning of that id lives in `KindLookUp.mutable`
+(`MutInfo`): `MutId::FALSE`, `MutId::TRUE`, or an unknown node with implication
+edges. `TypeUniverse::kind_to_string` defaults unresolved mutability to const for
+final display, while `kind_to_string_with_mut_guess(...,
+MutGuessMode::UnknownAsUnknown)` renders unresolved pointer mutability as `?mut`
+for diagnostics that run before all limitations/defaults have been inserted.
 
 `TypeIntern` is structural hash-consing:
 

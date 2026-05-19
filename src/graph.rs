@@ -1,3 +1,4 @@
+use crate::identity_hasher::IdHashMap;
 use crate::index::Idx;
 use crate::index::IndexVec;
 use std::ops::Range;
@@ -243,6 +244,38 @@ pub fn tarjan<G: DirectedGraph>(graph: &G) -> SCCS<G::Node> {
         }
     }
     SCCS { comps, map, o_dag }
+}
+
+///similar to a classic union find but with A >= B style edges as well
+#[derive(Debug)]
+pub struct BasicOrder<I: Idx> {
+    edges: IndexVec<I, IdHashMap<I, ()>>,
+}
+
+impl<I: Idx> BasicOrder<I> {
+    pub fn new() -> Self {
+        BasicOrder {
+            edges: IndexVec::new(),
+        }
+    }
+
+    pub fn add_node(&mut self) -> I {
+        self.edges.push(IdHashMap::default())
+    }
+
+    pub fn add_edge(&mut self, from: I, to: I) {
+        self.edges[from].insert(to, ());
+    }
+}
+
+impl<I: Idx> DirectedGraph for BasicOrder<I> {
+    type Node = I;
+    fn num_nodes(&self) -> usize {
+        self.edges.len()
+    }
+    fn edges(&self, idx: I) -> impl Iterator<Item = I> {
+        self.edges[idx].iter().map(|(i, _)| *i)
+    }
 }
 
 #[cfg(test)]

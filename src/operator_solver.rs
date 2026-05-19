@@ -1,4 +1,11 @@
+use crate::ir::ValId;
 use crate::type_kinds::{KindId, MutId, PtrId};
+
+#[derive(Debug, PartialEq, Hash)]
+pub struct UseUn {
+    pub src: KindId,
+    pub tgt: KindId,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Projection {
@@ -27,11 +34,11 @@ pub struct DerefStep {
     pub id: KindId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Hash)]
 pub struct DerefTo {
     pub parent: KindId,
     pub style: PtrId,
     pub tgt: KindId,
     pub mutable: MutId,
-    pub next_in_chain: Option<Option<DerefStep>>,
+    pub val: ValId,
 }

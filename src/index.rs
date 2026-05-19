@@ -398,6 +398,7 @@ impl<I: Idx, T> FromIterator<T> for IndexVec<I, T> {
     }
 }
 
+#[derive(Debug)]
 pub struct UnionFind<I: Idx>(IndexVec<I, I>);
 impl<I: Idx> UnionFind<I> {
     pub fn new() -> Self {

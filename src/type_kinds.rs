@@ -1,4 +1,5 @@
 use crate::error_reporting::ErrorReporter;
+use crate::graph::BasicOrder;
 use crate::identity_hasher::IdHashMap;
 /**!
  * this is specifically a storage of KINDs and not TYPES
@@ -20,6 +21,7 @@ use crate::parsing::Loc;
 use crate::program::Program;
 use crate::string_intern::StrId;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::ops::Index;
 use std::ops::IndexMut;
@@ -278,13 +280,6 @@ pub struct TypeUniverse {
     pub storage: KindStorage,
 }
 
-pub struct KindLookUp {
-    pub kinds: UnionFind<KindId>,
-    pub ptr: UnionFind<PtrId>,
-    pub mutable: UnionFind<MutId>,
-    pub life: UnionFind<LifeId>,
-}
-
 pub struct TypeIntern {
     map: IdHashMap<TypeKind, KindId>,
     pub storage: IndexVec<KindId, Option<TypeKind>>,
@@ -335,11 +330,343 @@ impl IndexMut<KindId> for TypeIntern {
     }
 }
 
-pub struct KindStorage {
-    pub types: TypeIntern,
-    pub ptr: IndexVec<PtrId, Option<PointerStyle>>,
-    pub life: IndexVec<LifeId, Option<LifeKind>>,
-    pub mutable: IndexVec<MutId, Option<bool>>,
+///placeholder, explains why A derives B mut.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MutReason {
+    ///used to disambigate order so its not random
+    pub num: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutReasonPath {
+    Direct(MutReason),
+    Implied {
+        from: Box<MutReasonPath>,
+        edge: MutReason,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutConflict {
+    pub mut_reason: MutReasonPath,
+    pub const_reason: MutReasonPath,
+}
+
+///this struct handles mutability tracking for all code
+///it heavily abuses the fact mutability is a true/false fact
+///and that its all a mut => b mut connections
+///thus we dont need an O(N^2) iteration process or SCC to solve mutability
+#[derive(Debug)]
+pub struct MutInfo {
+    nodes: IndexVec<MutId, MutInner>,
+}
+
+#[derive(Debug)]
+struct MutInner {
+    parent: MutId,
+    notify: IdHashMap<MutId, MutReason>,
+    true_reason: Option<MutReasonPath>,
+    false_reason: Option<MutReasonPath>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutGuessMode {
+    UnknownAsConst,
+    UnknownAsUnknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutGuess {
+    Const,
+    Mut,
+    Unknown,
+}
+
+impl MutId {
+    pub const FALSE: MutId = MutId(0);
+    pub const TRUE: MutId = MutId(1);
+
+    fn try_answer(&self) -> Option<bool> {
+        match *self {
+            MutId::FALSE => Some(false),
+            MutId::TRUE => Some(true),
+            _ => None,
+        }
+    }
+}
+
+impl MutInfo {
+    pub fn new() -> Self {
+        let mut nodes = IndexVec::new();
+        nodes.push(MutInner {
+            parent: MutId::FALSE,
+            notify: IdHashMap::default(),
+            true_reason: None,
+            false_reason: Some(MutReasonPath::Direct(MutReason { num: 0 })),
+        });
+        nodes.push(MutInner {
+            parent: MutId::TRUE,
+            notify: IdHashMap::default(),
+            true_reason: Some(MutReasonPath::Direct(MutReason { num: 1 })),
+            false_reason: None,
+        });
+
+        Self { nodes }
+    }
+
+    pub fn add_unknown(&mut self) -> MutId {
+        let id = self.nodes.push(MutInner {
+            parent: MutId::new(self.nodes.len()),
+            notify: IdHashMap::default(),
+            true_reason: None,
+            false_reason: None,
+        });
+        debug_assert_eq!(id, self.nodes[id].parent);
+        id
+    }
+
+    pub fn must_mut(&mut self, idx: MutId) -> bool {
+        self.get_repr(idx).try_answer().unwrap_or(false)
+    }
+
+    ///this method sometimes returns None instead of Some(false)
+    ///this happens for longer cycles we dont want to solve for in O(N^2)
+    ///if all requirments are inserted than None
+    ///can just be viewed as a Some(false) to default to imutable
+    ///this is anyway the behivior we want
+    pub fn get_guess(&mut self, idx: MutId) -> Option<bool> {
+        self.get_repr(idx).try_answer()
+    }
+
+    pub fn guess(&self, idx: MutId, mode: MutGuessMode) -> MutGuess {
+        match self.find_repr(idx).try_answer() {
+            Some(false) => MutGuess::Const,
+            Some(true) => MutGuess::Mut,
+            None => match mode {
+                MutGuessMode::UnknownAsConst => MutGuess::Const,
+                MutGuessMode::UnknownAsUnknown => MutGuess::Unknown,
+            },
+        }
+    }
+
+    fn find_repr(&self, idx: MutId) -> MutId {
+        let mut cur = idx;
+        loop {
+            let parent = self.nodes[cur].parent;
+            if parent == cur {
+                return cur;
+            }
+            cur = parent;
+        }
+    }
+
+    pub fn get_repr(&mut self, idx: MutId) -> MutId {
+        let p = self.nodes[idx].parent;
+        if p == idx {
+            return idx;
+        }
+        let root = self.get_repr(p);
+        self.merge_into(idx, root);
+
+        root
+    }
+
+    fn merge_into(&mut self, idx: MutId, root: MutId) {
+        //make sure we never overide TRUE and FALSE
+        if idx.try_answer().is_some() {
+            if root.try_answer().is_none() {
+                self.nodes[root].parent = idx;
+            }
+
+            return;
+        }
+
+        //update the union find
+        self.nodes[idx].parent = root;
+
+        if self.nodes[root].true_reason.is_none() {
+            self.nodes[root].true_reason = self.nodes[idx].true_reason.take();
+        }
+        if self.nodes[root].false_reason.is_none() {
+            self.nodes[root].false_reason = self.nodes[idx].false_reason.take();
+        }
+
+        //clear the exostomg notify set
+        let mut my_map = std::mem::take(&mut self.nodes[idx].notify);
+        if root.try_answer().is_none() {
+            for (tgt, reason) in my_map.drain() {
+                match self.nodes[root].notify.entry(tgt) {
+                    Entry::Occupied(mut o) => {
+                        if *o.get() > reason {
+                            o.insert(reason);
+                        }
+                    }
+                    Entry::Vacant(v) => {
+                        v.insert(reason);
+                    }
+                }
+            }
+        };
+    }
+
+    pub fn try_unify(&mut self, src: MutId, dst: MutId) -> Option<(bool, bool)> {
+        let src = self.get_repr(src);
+        let dst = self.get_repr(dst);
+
+        let ans = (|| {
+            let s = src.try_answer()?;
+            let d = dst.try_answer()?;
+
+            if s == d {
+                return None;
+            }
+
+            Some((s, d))
+        })();
+
+        if ans.is_none() {
+            self.merge_into(src, dst);
+        };
+
+        ans
+    }
+
+    pub fn add_edge(&mut self, src: MutId, dst: MutId, reason: MutReason) -> Option<MutConflict> {
+        let original_dst = dst;
+        let src = self.get_repr(src);
+        let dst = self.get_repr(dst);
+
+        if matches!(src.try_answer(), Some(false)) || matches!(dst.try_answer(), Some(true)) {
+            return None;
+        }
+
+        if matches!(src.try_answer(), Some(true)) {
+            let source_reason = self.nodes[src]
+                .true_reason
+                .clone()
+                .unwrap_or(MutReasonPath::Direct(MutReason { num: 1 }));
+            let implied_reason = MutReasonPath::Implied {
+                from: Box::new(source_reason),
+                edge: reason,
+            };
+            return match self.set_true(original_dst, implied_reason) {
+                MutSetRes::Conflict(conflict) => Some(conflict),
+                MutSetRes::Ok(_) => None,
+            };
+        }
+
+        match self.nodes[src].notify.entry(dst) {
+            Entry::Occupied(mut o) => {
+                if *o.get() > reason {
+                    o.insert(reason);
+                }
+
+                return None;
+            }
+            Entry::Vacant(v) => {
+                v.insert(reason);
+            }
+        };
+
+        if !self.nodes[dst].notify.contains_key(&src) {
+            return None;
+        }
+
+        self.nodes[dst].notify.remove(&src);
+        self.nodes[src].notify.remove(&dst);
+
+        if let Some((src_answer, _dst_answer)) = self.try_unify(src, dst) {
+            let (mut_idx, const_idx) = if src_answer { (src, dst) } else { (dst, src) };
+            return Some(MutConflict {
+                mut_reason: self.nodes[mut_idx]
+                    .true_reason
+                    .clone()
+                    .unwrap_or(MutReasonPath::Direct(MutReason { num: 1 })),
+                const_reason: self.nodes[const_idx]
+                    .false_reason
+                    .clone()
+                    .unwrap_or(MutReasonPath::Direct(MutReason { num: 0 })),
+            });
+        }
+
+        None
+    }
+
+    pub fn set_true(&mut self, idx: MutId, reason: MutReasonPath) -> MutSetRes {
+        let original = idx;
+        let idx = self.get_repr(idx);
+        match idx.try_answer() {
+            Some(false) => {
+                return MutSetRes::Conflict(MutConflict {
+                    mut_reason: reason,
+                    const_reason: self.nodes[original]
+                        .false_reason
+                        .clone()
+                        .or_else(|| self.nodes[idx].false_reason.clone())
+                        .unwrap_or(MutReasonPath::Direct(MutReason { num: 0 })),
+                });
+            }
+            Some(true) => return MutSetRes::Ok(false),
+            _ => {
+                self.nodes[idx].true_reason = Some(reason.clone());
+                self.nodes[idx].parent = MutId::TRUE;
+            }
+        };
+
+        let mut my_map = std::mem::take(&mut self.nodes[idx].notify);
+        for (dst, edge_reason) in my_map.drain() {
+            let implied_reason = MutReasonPath::Implied {
+                from: Box::new(reason.clone()),
+                edge: edge_reason,
+            };
+            if let MutSetRes::Conflict(conflict) = self.set_true(dst, implied_reason) {
+                return MutSetRes::Conflict(conflict);
+            }
+        }
+
+        MutSetRes::Ok(true)
+    }
+
+    pub fn set_false(&mut self, idx: MutId, reason: MutReasonPath) -> Result<bool, MutConflict> {
+        let original = idx;
+        let idx = self.get_repr(idx);
+        match idx.try_answer() {
+            Some(false) => Ok(false),
+            Some(true) => Err(MutConflict {
+                mut_reason: self.nodes[original]
+                    .true_reason
+                    .clone()
+                    .or_else(|| self.nodes[idx].true_reason.clone())
+                    .unwrap_or(MutReasonPath::Direct(MutReason { num: 1 })),
+                const_reason: reason,
+            }),
+            _ => {
+                let _old_map = std::mem::take(&mut self.nodes[idx].notify);
+                self.nodes[idx].false_reason = Some(reason);
+                self.nodes[idx].parent = MutId::FALSE;
+                Ok(true)
+            }
+        }
+    }
+}
+
+impl Default for MutInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[must_use]
+pub enum MutSetRes {
+    Conflict(MutConflict),
+    Ok(bool),
+}
+
+pub struct KindLookUp {
+    pub kinds: UnionFind<KindId>,
+    pub ptr: UnionFind<PtrId>,
+    pub mutable: MutInfo,
+    pub life: BasicOrder<LifeId>,
 }
 
 impl KindLookUp {
@@ -347,8 +674,8 @@ impl KindLookUp {
         Self {
             kinds: UnionFind::new(),
             ptr: UnionFind::new(),
-            mutable: UnionFind::new(),
-            life: UnionFind::new(),
+            mutable: MutInfo::new(),
+            life: BasicOrder::new(),
         }
     }
 }
@@ -359,13 +686,18 @@ impl Default for KindLookUp {
     }
 }
 
+pub struct KindStorage {
+    pub types: TypeIntern,
+    pub ptr: IndexVec<PtrId, Option<PointerStyle>>,
+    pub life: IndexVec<LifeId, Option<LifeKind>>,
+}
+
 impl KindStorage {
     pub fn new() -> Self {
         Self {
             types: TypeIntern::new(),
             ptr: IndexVec::new(),
             life: IndexVec::new(),
-            mutable: IndexVec::new(),
         }
     }
 }
@@ -411,8 +743,17 @@ impl TypeUniverse {
     }
 
     pub fn kind_to_string(&self, program: &Program, id: KindId) -> String {
+        self.kind_to_string_with_mut_guess(program, id, MutGuessMode::UnknownAsConst)
+    }
+
+    pub fn kind_to_string_with_mut_guess(
+        &self,
+        program: &Program,
+        id: KindId,
+        mut_guess_mode: MutGuessMode,
+    ) -> String {
         let mut out = String::new();
-        self.write_kind(program, id, &mut out);
+        self.write_kind(program, id, mut_guess_mode, &mut out);
         out
     }
 
@@ -434,7 +775,13 @@ impl TypeUniverse {
             .join(" -> ")
     }
 
-    fn write_kind(&self, program: &Program, id: KindId, out: &mut String) {
+    fn write_kind(
+        &self,
+        program: &Program,
+        id: KindId,
+        mut_guess_mode: MutGuessMode,
+        out: &mut String,
+    ) {
         match self.get(id) {
             None => out.push('_'),
             Some(TypeKind::Builtin(builtin)) => out.push_str(builtin.name()),
@@ -445,7 +792,7 @@ impl TypeUniverse {
                     if idx > 0 {
                         out.push_str(", ");
                     }
-                    self.write_kind(program, *item, out);
+                    self.write_kind(program, *item, mut_guess_mode, out);
                 }
                 out.push(')');
             }
@@ -453,7 +800,7 @@ impl TypeUniverse {
                 out.push_str(&format!("struct#{}", id.0));
                 if let Some(gens) = gens {
                     write_angle_list(out, gens.iter().copied(), |out, item| {
-                        self.write_kind(program, item, out);
+                        self.write_kind(program, item, mut_guess_mode, out);
                     });
                 }
                 if let Some(lifes) = lifes {
@@ -468,14 +815,14 @@ impl TypeUniverse {
                     if idx > 0 {
                         out.push_str(", ");
                     }
-                    self.write_kind(program, *param, out);
+                    self.write_kind(program, *param, mut_guess_mode, out);
                 }
                 out.push_str(") -> ");
-                self.write_kind(program, *ret, out);
+                self.write_kind(program, *ret, mut_guess_mode, out);
             }
             Some(TypeKind::Array { inner, size }) => {
                 out.push('[');
-                self.write_kind(program, *inner, out);
+                self.write_kind(program, *inner, mut_guess_mode, out);
                 match size {
                     Some(ArraySize::Sized(size)) => out.push_str(&format!("; {size}")),
                     Some(ArraySize::Unsized) => out.push_str("; _"),
@@ -502,17 +849,12 @@ impl TypeUniverse {
                     }
                     None => out.push_str("ptr "),
                 }
-                if self
-                    .storage
-                    .mutable
-                    .get(*mutable)
-                    .copied()
-                    .flatten()
-                    .unwrap_or(false)
-                {
-                    out.push_str("mut ");
+                match self.look.mutable.guess(*mutable, mut_guess_mode) {
+                    MutGuess::Const => {}
+                    MutGuess::Mut => out.push_str("mut "),
+                    MutGuess::Unknown => out.push_str("?mut "),
                 }
-                self.write_kind(program, *tgt, out);
+                self.write_kind(program, *tgt, mut_guess_mode, out);
             }
         }
     }
@@ -609,6 +951,78 @@ impl BuiltinKind {
             BuiltinKind::Void => "void",
             BuiltinKind::Type => "Type",
         }
+    }
+}
+
+#[cfg(test)]
+mod mutability_tests {
+    use super::*;
+
+    fn reason(num: u32) -> MutReasonPath {
+        MutReasonPath::Direct(MutReason { num })
+    }
+
+    #[test]
+    fn mut_conflict_reports_mut_and_const_reasons() {
+        let mut muts = MutInfo::new();
+        let src = muts.add_unknown();
+        let dst = muts.add_unknown();
+        muts.add_edge(src, dst, MutReason { num: 20 });
+
+        muts.set_false(dst, reason(30)).unwrap();
+        let conflict = match muts.set_true(src, reason(10)) {
+            MutSetRes::Conflict(conflict) => conflict,
+            MutSetRes::Ok(_) => panic!("expected mutability conflict"),
+        };
+
+        assert_eq!(conflict.const_reason, reason(30));
+        assert_eq!(
+            conflict.mut_reason,
+            MutReasonPath::Implied {
+                from: Box::new(reason(10)),
+                edge: MutReason { num: 20 },
+            }
+        );
+    }
+
+    #[test]
+    fn edge_from_known_mut_propagates_immediately() {
+        let mut muts = MutInfo::new();
+        let dst = muts.add_unknown();
+
+        muts.set_false(dst, reason(30)).unwrap();
+        let conflict = muts
+            .add_edge(MutId::TRUE, dst, MutReason { num: 20 })
+            .expect("expected mutability conflict");
+
+        assert_eq!(conflict.const_reason, reason(30));
+        assert_eq!(
+            conflict.mut_reason,
+            MutReasonPath::Implied {
+                from: Box::new(reason(1)),
+                edge: MutReason { num: 20 },
+            }
+        );
+    }
+
+    #[test]
+    fn kind_string_can_show_unknown_mutability_or_default_const() {
+        let mut types = TypeUniverse::new();
+        let bool_ty = types.intern_builtin(BuiltinKind::Bool);
+        let ptr_style = types.storage.ptr.push(Some(PointerStyle::Raw(None)));
+        let mutable = types.look.mutable.add_unknown();
+        let ptr_ty = types.intern(TypeKind::Ptr {
+            tgt: bool_ty,
+            style: ptr_style,
+            mutable,
+        });
+        let program = Program::new();
+
+        assert_eq!(types.kind_to_string(&program, ptr_ty), "*bool");
+        assert_eq!(
+            types.kind_to_string_with_mut_guess(&program, ptr_ty, MutGuessMode::UnknownAsUnknown),
+            "*?mut bool"
+        );
     }
 }
 
