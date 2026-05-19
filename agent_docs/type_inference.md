@@ -37,10 +37,21 @@ legality are not shape equality.
 
 ## Current Scaffold
 
-The active crate now has the first clean-room scaffold in `src/type_kinds.rs`.
-The core shape id is `KindId`; a solved-enough `TypeKind`/`KindId` is the type
-the rest of the compiler prints and stores. Do not reintroduce the old
-`TypeId`/`UNKNOWN_TYPE` sentinel scheme.
+The active crate now has the first clean-room scaffold under `src/type_kinds/`,
+with `src/type_kinds.rs` acting as the public re-export facade. The core shape
+id is `KindId`; a solved-enough `TypeKind`/`KindId` is the type the rest of the
+compiler prints and stores. Do not reintroduce the old `TypeId`/`UNKNOWN_TYPE`
+sentinel scheme.
+
+The module layout keeps related data grouped:
+
+- `src/type_kinds/kinds.rs`: kind ids, primitive kind enums, pointer/lifetime
+  shape enums, `TypeKind`, builtins, and kind naming helpers.
+- `src/type_kinds/solving.rs`: `TypeUniverse`, intern/storage/lookup state,
+  mutability solver data, solved-type result records, origin records, and kind
+  display helpers that need solver state.
+- `src/type_kinds/errors.rs`: typechecker diagnostic payloads (`TypeError` and
+  `TypeClash`).
 
 `TypeUniverse` owns two deliberately separate halves:
 
@@ -60,6 +71,11 @@ edges. `TypeUniverse::kind_to_string` defaults unresolved mutability to const fo
 final display, while `kind_to_string_with_mut_guess(...,
 MutGuessMode::UnknownAsUnknown)` renders unresolved pointer mutability as `?mut`
 for diagnostics that run before all limitations/defaults have been inserted.
+Pending implication edges are stored as deterministic `BTreeSet<MutId>`
+destinations only; diagnostic reasons are node-owned. Each node keeps at most one
+reason path, preferring a lower-depth path when a better explanation is found, so
+conflicts report one mut side and one const side rather than every callsite that
+flowed through the same node.
 
 `TypeIntern` is structural hash-consing:
 

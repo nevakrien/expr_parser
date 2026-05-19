@@ -27,7 +27,11 @@ The active scaffold now keeps pointer mutability in `KindLookUp.mutable`
 (`MutInfo`) rather than `KindStorage`. Unknown mutability can be printed as
 `?mut` during early diagnostics with `MutGuessMode::UnknownAsUnknown`, then
 treated as const for final/defaulted display with `MutGuessMode::UnknownAsConst`.
-Conflicts should preserve both sides: the reason something had to be mutable and
-the reason it had to be const.
+Pending mutability implications are a deterministic `BTreeSet<MutId>` of target
+nodes, not edge-owned reason records. Reasons are stored on nodes, with implied
+paths pointing at the parent node and recording depth; a node keeps only one
+reason, preferring lower depth, to avoid duplicate reporting. Conflicts should
+preserve both sides: the reason something had to be mutable and the reason it had
+to be const.
 
 Recreate fuzzing once the new obligation layer exists.
