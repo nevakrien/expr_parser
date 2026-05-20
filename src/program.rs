@@ -10,7 +10,7 @@ use crate::ir::{LabelId, VarKind};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
-use crate::type_system::{BUILTINS, BuiltinKind};
+use crate::type_system::{BUILTINS, KindId};
 use thiserror::Error;
 
 pub type CResult<T> = Result<T, CompileError>;
@@ -95,7 +95,7 @@ pub enum Defined {
     // Value(ValId),
     Func(FunctionSet),
     Type(TExpId),
-    BuildinType(BuiltinKind),
+    BuildinType(KindId),
     BuildinInterface(StrId),
     Macro(Macro),
 }
@@ -195,10 +195,10 @@ impl Program {
     }
 
     pub(crate) fn insert_builtin_types(&mut self) {
-        for &(name, builtin) in BUILTINS {
+        for &(name, kind) in BUILTINS {
             let name = self.str_intern.intern(name);
             let id = self.insert_value_in_current_scope(name);
-            self.definitions.insert(id, Defined::BuildinType(builtin));
+            self.definitions.insert(id, Defined::BuildinType(kind));
         }
 
         let id = self.insert_value_in_current_scope(DSIZED_STR);

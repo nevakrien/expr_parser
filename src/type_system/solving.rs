@@ -1,7 +1,7 @@
 use super::Projection;
 use super::{
-    ArraySize, BuiltinKind, KindId, LifeId, LifeKind, MutId, Nullable, PointerStyle, PtrId,
-    TypeKind,
+    ArraySize, BuiltinKind, HARD_CODED_BUILTIN_KINDS, KindId, LifeId, LifeKind, MutId, Nullable,
+    PointerStyle, PtrId, TypeKind,
 };
 use crate::data_structures::graph::BasicOrder;
 use crate::data_structures::identity_hasher::IdHashMap;
@@ -30,17 +30,21 @@ impl TypeIntern {
         }
     }
 
-    pub fn intern(&mut self, ty: TypeKind) -> KindId {
+    pub fn intern(&mut self, uf: &mut UnionFind<KindId>, ty: TypeKind) -> KindId {
         if let Some(id) = self.map.get(&ty).copied() {
             return id;
         }
 
         let id = self.storage.push(Some(ty.clone()));
         self.map.insert(ty, id);
+        let uf_id = uf.push_singleton();
+        debug_assert_eq!(id, uf_id);
+
         id
     }
 
-    pub fn add_empty(&mut self) -> KindId {
+    pub fn add_empty(&mut self, uf: &mut UnionFind<KindId>) -> KindId {
+        uf.push_singleton();
         self.storage.push(None)
     }
 }
@@ -448,32 +452,31 @@ impl Default for KindStorage {
 
 impl TypeUniverse {
     pub fn new() -> Self {
-        Self {
+        let mut ans = Self {
             look: KindLookUp::new(),
             storage: KindStorage::new(),
-        }
+        };
+        ans.insert_hard_coded_builtin_kinds();
+        ans
     }
 
-    pub fn intern(&mut self, ty: TypeKind) -> KindId {
-        if let Some(id) = self.storage.types.map.get(&ty).copied() {
-            return id;
+    fn insert_hard_coded_builtin_kinds(&mut self) {
+        for (idx, builtin) in HARD_CODED_BUILTIN_KINDS.iter().copied().enumerate() {
+            let id = self.intern_builtin(builtin);
+            debug_assert_eq!(id, KindId::new(idx));
         }
-
-        let id = self.storage.types.intern(ty);
-        let uf_id = self.look.kinds.push_singleton();
-        debug_assert_eq!(id, uf_id);
-        id
     }
 
     pub fn intern_builtin(&mut self, builtin: BuiltinKind) -> KindId {
         self.intern(TypeKind::Builtin(builtin))
     }
 
+    pub fn intern(&mut self, ty: TypeKind) -> KindId {
+        self.storage.types.intern(&mut self.look.kinds, ty)
+    }
+
     pub fn add_empty(&mut self) -> KindId {
-        let id = self.storage.types.add_empty();
-        let uf_id = self.look.kinds.push_singleton();
-        debug_assert_eq!(id, uf_id);
-        id
+        self.storage.types.add_empty(&mut self.look.kinds)
     }
 
     pub fn get(&self, id: KindId) -> Option<&TypeKind> {
@@ -670,11 +673,10 @@ mod mutability_tests {
     #[test]
     fn kind_string_can_show_unknown_mutability_or_default_const() {
         let mut types = TypeUniverse::new();
-        let bool_ty = types.intern_builtin(BuiltinKind::Bool);
         let ptr_style = types.storage.ptr.push(Some(PointerStyle::Raw(None)));
         let mutable = types.look.mutable.add_unknown();
         let ptr_ty = types.intern(TypeKind::Ptr {
-            tgt: bool_ty,
+            tgt: KindId::BOOL,
             style: ptr_style,
             mutable,
         });
@@ -684,6 +686,30 @@ mod mutability_tests {
         assert_eq!(
             types.kind_to_string_with_mut_guess(&program, ptr_ty, MutGuessMode::UnknownAsUnknown),
             "*?mut bool"
+        );
+    }
+
+    #[test]
+    fn hard_coded_builtin_kind_ids_match_storage() {
+        let mut types = TypeUniverse::new();
+
+        for (idx, builtin) in HARD_CODED_BUILTIN_KINDS.iter().copied().enumerate() {
+            let id = KindId::new(idx);
+            assert_eq!(types.get(id), Some(&TypeKind::Builtin(builtin)));
+            assert_eq!(types.intern_builtin(builtin), id);
+        }
+
+        assert_eq!(
+            types.get(KindId::BOOL),
+            Some(&TypeKind::Builtin(BuiltinKind::Bool))
+        );
+        assert_eq!(
+            types.get(KindId::STR),
+            Some(&TypeKind::Builtin(BuiltinKind::Str))
+        );
+        assert_eq!(
+            types.get(KindId::VOID),
+            Some(&TypeKind::Builtin(BuiltinKind::Void))
         );
     }
 }

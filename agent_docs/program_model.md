@@ -25,12 +25,14 @@ Think of it as the compiler session state for one parsed input stream.
   - `declarations: Vec<ValId>` for `fn/cfn` without a body
   - `implementations: Vec<ValId>` for `fn/cfn` with a body
 - `Type(TExpId)`
-- `BuildinType(TypeValue)`
+- `BuildinType(KindId)`
 - `BuildinInterface(StrId)`
 - `Macro(Macro)`
 - `ToBeDefined` placeholder for unresolved global references
 
-Builtins are inserted during `Program::new()` via `insert_builtin_types()` (implemented in `type_inference.rs`).
+Builtins are inserted during `Program::new()` via `insert_builtin_types()`. Builtin
+type definitions store fixed `KindId` constants directly, so consumers can plug
+them into the new type universe without re-interning a `BuiltinKind` first.
 
 ## Scope Stack and Name Resolution
 

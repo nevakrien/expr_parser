@@ -83,118 +83,127 @@ pub enum BuiltinKind {
     Type,
 }
 
-pub const BUILTINS: &[(&str, BuiltinKind)] = {
+impl KindId {
+    pub const INT: Self = Self(0);
+    pub const UINT: Self = Self(1);
+    pub const I8: Self = Self(2);
+    pub const I16: Self = Self(3);
+    pub const I32: Self = Self(4);
+    pub const I64: Self = Self(5);
+    pub const I128: Self = Self(6);
+    pub const ISIZE: Self = Self(7);
+    pub const U8: Self = Self(8);
+    pub const U16: Self = Self(9);
+    pub const U32: Self = Self(10);
+    pub const U64: Self = Self(11);
+    pub const U128: Self = Self(12);
+    pub const USIZE: Self = Self(13);
+    pub const F16: Self = Self(14);
+    pub const F32: Self = Self(15);
+    pub const F64: Self = Self(16);
+    pub const FLOAT: Self = Self::F64;
+    pub const BOOL: Self = Self(17);
+    pub const STR: Self = Self(18);
+    pub const VOID: Self = Self(19);
+    pub const TYPE: Self = Self(20);
+}
+
+pub const HARD_CODED_BUILTIN_KINDS: &[BuiltinKind] = {
     use FloatSize::*;
     use IntSign::*;
     use IntSize::*;
 
     &[
-        (
-            "int",
-            BuiltinKind::Int(IntKind {
-                size: Some(Int),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "uint",
-            BuiltinKind::Int(IntKind {
-                size: Some(Int),
-                sign: Some(Unsigned),
-            }),
-        ),
-        (
-            "i8",
-            BuiltinKind::Int(IntKind {
-                size: Some(I8),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "i16",
-            BuiltinKind::Int(IntKind {
-                size: Some(I16),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "i32",
-            BuiltinKind::Int(IntKind {
-                size: Some(I32),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "i64",
-            BuiltinKind::Int(IntKind {
-                size: Some(I64),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "i128",
-            BuiltinKind::Int(IntKind {
-                size: Some(I128),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "isize",
-            BuiltinKind::Int(IntKind {
-                size: Some(Isize),
-                sign: Some(Signed),
-            }),
-        ),
-        (
-            "u8",
-            BuiltinKind::Int(IntKind {
-                size: Some(I8),
-                sign: Some(Unsigned),
-            }),
-        ),
-        (
-            "u16",
-            BuiltinKind::Int(IntKind {
-                size: Some(I16),
-                sign: Some(Unsigned),
-            }),
-        ),
-        (
-            "u32",
-            BuiltinKind::Int(IntKind {
-                size: Some(I32),
-                sign: Some(Unsigned),
-            }),
-        ),
-        (
-            "u64",
-            BuiltinKind::Int(IntKind {
-                size: Some(I64),
-                sign: Some(Unsigned),
-            }),
-        ),
-        (
-            "u128",
-            BuiltinKind::Int(IntKind {
-                size: Some(I128),
-                sign: Some(Unsigned),
-            }),
-        ),
-        (
-            "usize",
-            BuiltinKind::Int(IntKind {
-                size: Some(Isize),
-                sign: Some(Unsigned),
-            }),
-        ),
-        ("f16", BuiltinKind::Float(FloatKind { size: Some(F16) })),
-        ("f32", BuiltinKind::Float(FloatKind { size: Some(F32) })),
-        ("f64", BuiltinKind::Float(FloatKind { size: Some(F64) })),
-        ("float", BuiltinKind::Float(FloatKind { size: Some(F64) })),
-        ("bool", BuiltinKind::Bool),
-        ("str", BuiltinKind::Str),
-        ("void", BuiltinKind::Void),
-        ("Type", BuiltinKind::Type),
+        BuiltinKind::Int(IntKind {
+            size: Some(Int),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(Int),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I8),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I16),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I32),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I64),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I128),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(Isize),
+            sign: Some(Signed),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I8),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I16),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I32),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I64),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(I128),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Int(IntKind {
+            size: Some(Isize),
+            sign: Some(Unsigned),
+        }),
+        BuiltinKind::Float(FloatKind { size: Some(F16) }),
+        BuiltinKind::Float(FloatKind { size: Some(F32) }),
+        BuiltinKind::Float(FloatKind { size: Some(F64) }),
+        BuiltinKind::Bool,
+        BuiltinKind::Str,
+        BuiltinKind::Void,
+        BuiltinKind::Type,
+    ]
+};
+
+pub const BUILTINS: &[(&str, KindId)] = {
+    &[
+        ("int", KindId::INT),
+        ("uint", KindId::UINT),
+        ("i8", KindId::I8),
+        ("i16", KindId::I16),
+        ("i32", KindId::I32),
+        ("i64", KindId::I64),
+        ("i128", KindId::I128),
+        ("isize", KindId::ISIZE),
+        ("u8", KindId::U8),
+        ("u16", KindId::U16),
+        ("u32", KindId::U32),
+        ("u64", KindId::U64),
+        ("u128", KindId::U128),
+        ("usize", KindId::USIZE),
+        ("f16", KindId::F16),
+        ("f32", KindId::F32),
+        ("f64", KindId::F64),
+        ("float", KindId::FLOAT),
+        ("bool", KindId::BOOL),
+        ("str", KindId::STR),
+        ("void", KindId::VOID),
+        ("Type", KindId::TYPE),
     ]
 };
 

@@ -46,7 +46,8 @@ of the compiler prints and stores. Do not reintroduce the old
 The module layout keeps related data grouped:
 
 - `src/type_system/kinds.rs`: kind ids, primitive kind enums, pointer/lifetime
-  shape enums, `TypeKind`, builtins, and kind naming helpers.
+  shape enums, `TypeKind`, builtins, hardcoded builtin `KindId` constants, and
+  kind naming helpers.
 - `src/type_system/solving.rs`: `TypeUniverse`, intern/storage/lookup state,
   mutability solver data, solved-type result records, origin records, and kind
   display helpers that need solver state.
@@ -90,6 +91,15 @@ participate in structural interning because one unknown may later resolve to man
 contradictory concrete shapes. If solving refines shape, it should intern the
 refined shape and connect ids through union-find rather than mutating a hashmap
 key in place.
+
+`TypeUniverse::new()` pre-interns `HARD_CODED_BUILTIN_KINDS` before allocating any
+unknown/user kinds. `KindId` associated constants (`KindId::VOID`, `KindId::STR`,
+`KindId::BOOL`, integer kinds, float kinds, etc.) rely on that fixed order,
+similar to the string interner's hardcoded-name contract. Keep aliases such as
+language-level `float` out of `HARD_CODED_BUILTIN_KINDS`; aliases should resolve
+through `BUILTINS` to the same underlying builtin shape, so `KindId::FLOAT` is
+currently `KindId::F64`. `BUILTINS` maps source-level builtin type names directly
+to these fixed `KindId`s for `Defined::BuildinType` entries.
 
 `SolvedTypes` intentionally preserves the old result shape used by diagnostics
 and debug dumps: `function_values`, inner value/pattern types, member method
