@@ -1,5 +1,6 @@
 mod errors;
 mod kinds;
+mod operator_solver;
 mod solving;
 
 pub use errors::{TypeClash, TypeError};
@@ -7,6 +8,7 @@ pub use kinds::{
     ArraySize, BUILTINS, BuiltinKind, FloatKind, FloatSize, GenId, IntKind, IntSign, IntSize,
     KindId, LifeId, LifeKind, MutId, Nullable, PointerStyle, PtrId, StructId, TypeKind,
 };
+pub use operator_solver::{DerefStep, DerefTo, Projection, UseUn};
 pub use solving::{
     InnerFunctionTypes, KindLookUp, KindStorage, MutConflict, MutGuess, MutGuessMode, MutInfo,
     MutReason, MutReasonPath, MutSetRes, OriginId, OriginNode, OriginVec, SolvedFunctionTypes,

@@ -1,7 +1,7 @@
 use crate::ir::{BinOp, UnOp};
 use crate::parsing::{Loc, OTok, ParseError};
 use crate::program::{CompileError, Program};
-use crate::type_kinds::{SolvedTypes, TypeClash, TypeError, TypeUniverse};
+use crate::type_system::{SolvedTypes, TypeClash, TypeError, TypeUniverse};
 use ariadne::{Cache, Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;

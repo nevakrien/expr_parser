@@ -1,4 +1,4 @@
-use crate::type_kinds::TypeUniverse;
+use crate::type_system::TypeUniverse;
 
 pub struct ReqResult {
     pub done: bool,

@@ -1,5 +1,5 @@
+use super::{KindId, MutId, PtrId};
 use crate::ir::ValId;
-use crate::type_kinds::{KindId, MutId, PtrId};
 
 #[derive(Debug, PartialEq, Hash)]
 pub struct UseUn {

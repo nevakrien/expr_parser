@@ -1,9 +1,16 @@
-# String Interning and ID Maps (`src/string_intern.rs`, `src/identity_hasher.rs`)
+# String Interning and ID Maps
 
-This doc covers two related low-level utilities:
+This doc covers related low-level utilities under `src/data_structures/`:
 
 - stable string IDs (`StrId`) via `StringInterner`
 - fast ID-keyed hash maps (`IdHashMap`) via `IdentityHasher`
+
+Current file layout:
+
+- `src/data_structures/string_intern.rs`: `StrId`, `StringInterner`, hardcoded names
+- `src/data_structures/identity_hasher.rs`: `IdHashMap` and hasher choice
+- `src/data_structures/index.rs`: `Idx`, `IndexVec`, `UnionFind`
+- `src/data_structures/graph.rs`: graph traits, SCC/topological helpers, basic graph storage
 
 ## `StrId` Stability Contract
 

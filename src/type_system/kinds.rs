@@ -1,4 +1,4 @@
-use crate::index::Idx;
+use crate::data_structures::index::Idx;
 use thin_vec::ThinVec;
 
 macro_rules! impl_idx {

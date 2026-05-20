@@ -1,6 +1,6 @@
+use crate::data_structures::string_intern::StrId;
 use crate::ir::{BinOp, NameId, PatId, TExpId, UnOp, ValId};
 use crate::parsing::Loc;
-use crate::string_intern::StrId;
 
 #[derive(Debug)]
 pub enum TypeError {

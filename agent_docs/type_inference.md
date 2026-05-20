@@ -37,20 +37,20 @@ legality are not shape equality.
 
 ## Current Scaffold
 
-The active crate now has the first clean-room scaffold under `src/type_kinds/`,
-with `src/type_kinds.rs` acting as the public re-export facade. The core shape
-id is `KindId`; a solved-enough `TypeKind`/`KindId` is the type the rest of the
-compiler prints and stores. Do not reintroduce the old `TypeId`/`UNKNOWN_TYPE`
-sentinel scheme.
+The active crate now has the first clean-room scaffold under `src/type_system/`,
+with `src/type_system/mod.rs` acting as the public re-export facade. The core
+shape id is `KindId`; a solved-enough `TypeKind`/`KindId` is the type the rest
+of the compiler prints and stores. Do not reintroduce the old
+`TypeId`/`UNKNOWN_TYPE` sentinel scheme.
 
 The module layout keeps related data grouped:
 
-- `src/type_kinds/kinds.rs`: kind ids, primitive kind enums, pointer/lifetime
+- `src/type_system/kinds.rs`: kind ids, primitive kind enums, pointer/lifetime
   shape enums, `TypeKind`, builtins, and kind naming helpers.
-- `src/type_kinds/solving.rs`: `TypeUniverse`, intern/storage/lookup state,
+- `src/type_system/solving.rs`: `TypeUniverse`, intern/storage/lookup state,
   mutability solver data, solved-type result records, origin records, and kind
   display helpers that need solver state.
-- `src/type_kinds/errors.rs`: typechecker diagnostic payloads (`TypeError` and
+- `src/type_system/errors.rs`: typechecker diagnostic payloads (`TypeError` and
   `TypeClash`).
 
 `TypeUniverse` owns two deliberately separate halves:
@@ -98,7 +98,7 @@ old type ids are now `KindId`s and printing goes through `TypeUniverse::kind_to_
 Implicit derefs currently use the old solved-data model again: each recorded hop
 is stored as `(KindId, Projection)` in `SolvedTypes`, preserving the deref-chain
 list while attaching the projection kind for each step. The projection data model
-now lives in `src/operator_solver.rs` rather than in `TypeKind`.
+now lives in `src/type_system/operator_solver.rs` rather than in `TypeKind`.
 
 ## Shape Solver
 

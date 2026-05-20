@@ -1,14 +1,14 @@
+use super::Projection;
 use super::{
     ArraySize, BuiltinKind, KindId, LifeId, LifeKind, MutId, Nullable, PointerStyle, PtrId,
     TypeKind,
 };
-use crate::graph::BasicOrder;
-use crate::identity_hasher::IdHashMap;
-use crate::index::{Idx, IndexVec, UnionFind};
+use crate::data_structures::graph::BasicOrder;
+use crate::data_structures::identity_hasher::IdHashMap;
+use crate::data_structures::index::{Idx, IndexVec, UnionFind};
+use crate::data_structures::string_intern::StrId;
 use crate::ir::{LifeTimeId, NameId, PatId, TExpId, ValId};
-use crate::operator_solver::Projection;
 use crate::program::Program;
-use crate::string_intern::StrId;
 use std::collections::{BTreeSet, HashMap};
 use std::ops::{Index, IndexMut};
 

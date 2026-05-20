@@ -1,15 +1,11 @@
+pub mod data_structures;
 pub mod error_reporting;
-pub mod graph;
-pub mod identity_hasher;
-pub mod index;
 pub mod ir;
 pub mod macros;
-pub mod operator_solver;
 pub mod parsing;
 pub mod program;
 pub mod requirment;
-pub mod string_intern;
-pub mod type_kinds;
+pub mod type_system;
 
 //this we fixup later
 // pub mod struct_layout;

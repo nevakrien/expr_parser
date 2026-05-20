@@ -1,4 +1,7 @@
-use crate::identity_hasher::IdHashMap;
+use crate::data_structures::identity_hasher::IdHashMap;
+use crate::data_structures::string_intern::StrId;
+use crate::data_structures::string_intern::StringInterner;
+use crate::data_structures::string_intern::{DSIZED_STR, RAW_STR, STATIC_STR, WILDCARD_STR};
 use crate::ir::{
     LABEL_ALREADY_DEFINED_MSG, LifeTimeId, Literal, MEMBER_METHOD_COLLISION_MSG, NameId, PatId,
     Pattern, PatternSpan, ValId, Value, ValueSpan,
@@ -7,10 +10,7 @@ use crate::ir::{LabelId, VarKind};
 use crate::ir::{TExpId, TypeExpr, TypeExprSpan};
 use crate::macros::{Macro, expand_macros_recursive};
 use crate::parsing::{Expr, LExpr, Loc, Located, Parser, Token};
-use crate::string_intern::StrId;
-use crate::string_intern::StringInterner;
-use crate::string_intern::{DSIZED_STR, RAW_STR, STATIC_STR, WILDCARD_STR};
-use crate::type_kinds::{BUILTINS, BuiltinKind};
+use crate::type_system::{BUILTINS, BuiltinKind};
 use thiserror::Error;
 
 pub type CResult<T> = Result<T, CompileError>;

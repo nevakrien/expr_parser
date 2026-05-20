@@ -3,7 +3,7 @@ use expr_parser::ir::NameId;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_kinds::{SolvedTypes, TypeUniverse, run_typechecker};
+use expr_parser::type_system::{SolvedTypes, TypeUniverse, run_typechecker};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};

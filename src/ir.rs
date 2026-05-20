@@ -1,3 +1,4 @@
+use crate::data_structures::string_intern::StrId;
 /**
  * TODO: Convert IR from tree-shaped to flat list with ids.
  *    all in the outer level function.
@@ -9,7 +10,6 @@
  */
 use crate::parsing::{Expr, LExpr, LFixed, Loc, Located, Token};
 use crate::program::{CompileError, Program};
-use crate::string_intern::StrId;
 
 //this file needs to move Value and Pattern into a dense array
 //note that currently the only major diffrence between Value and Pattern is Bind
