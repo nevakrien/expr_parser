@@ -1,4 +1,5 @@
 use crate::data_structures::index::Idx;
+use crate::ir::ValId;
 use thin_vec::ThinVec;
 
 macro_rules! impl_idx {
@@ -36,7 +37,13 @@ pub struct LifeId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MutId(pub u32);
 
-impl_idx!(StructId, GenId, KindId, PtrId, LifeId, MutId);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OrigId(pub u32);
+
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+// pub struct FKId(pub u32);
+
+impl_idx!(StructId, OrigId, GenId, KindId, PtrId, LifeId, MutId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IntKind {
@@ -232,6 +239,12 @@ pub enum PointerStyle {
     Ref(LifeId),
 }
 
+// #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// pub enum FuncStyle {
+//     Simple,
+//     Closure(ValId)
+// }
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeKind {
     Builtin(BuiltinKind),
@@ -246,6 +259,7 @@ pub enum TypeKind {
     Func {
         params: ThinVec<KindId>,
         ret: KindId,
+        // call_style:FKId,
     },
     Array {
         inner: KindId,

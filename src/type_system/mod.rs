@@ -4,18 +4,11 @@ mod operator_solver;
 mod origin;
 mod solving;
 
-pub use errors::{TypeClash, TypeError};
-pub use kinds::{
-    ArraySize, BUILTINS, BuiltinKind, FloatKind, FloatSize, GenId, HARD_CODED_BUILTIN_KINDS,
-    IntKind, IntSign, IntSize, KindId, LifeId, LifeKind, MutId, Nullable, PointerStyle, PtrId,
-    StructId, TypeKind,
-};
-pub use operator_solver::{DerefStep, DerefTo, Projection, UseUn};
-pub use solving::{
-    InnerFunctionTypes, KindLookUp, KindStorage, MutConflict, MutGuess, MutGuessMode, MutInfo,
-    MutReason, MutReasonPath, MutSetRes, OriginId, OriginNode, OriginVec, SolvedFunctionTypes,
-    SolvedMemberMethodAccessType, SolvedTypes, TypeIntern, TypeUniverse,
-};
+pub use errors::*;
+pub use kinds::*;
+pub use operator_solver::*;
+pub use origin::*;
+pub use solving::*;
 
 use crate::error_reporting::ErrorReporter;
 use crate::program::Program;

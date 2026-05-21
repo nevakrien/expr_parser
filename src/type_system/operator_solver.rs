@@ -1,31 +1,10 @@
-use super::{KindId, MutId, PtrId};
+use super::{KindId, MutId, Projection, PtrId};
 use crate::ir::ValId;
 
 #[derive(Debug, PartialEq, Hash)]
 pub struct UseUn {
     pub src: KindId,
     pub tgt: KindId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Projection {
-    /// &T -> T
-    SimpleDeref,
-
-    /// &s -> &s.x
-    FieldReref(u32),
-
-    /// *T -> &T
-    RawReref,
-
-    /// &T -> *T
-    ForgetSafe,
-
-    /// T -> f(T)
-    SmartCall,
-
-    /// T -> S
-    Casted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,7 +1,7 @@
 use super::Projection;
 use super::{
     ArraySize, BuiltinKind, HARD_CODED_BUILTIN_KINDS, KindId, LifeId, LifeKind, MutId, Nullable,
-    PointerStyle, PtrId, TypeKind,
+    PointerStyle, PtrId, StructId, TypeKind,
 };
 use crate::data_structures::graph::BasicOrder;
 use crate::data_structures::identity_hasher::IdHashMap;
@@ -430,17 +430,33 @@ impl Default for KindLookUp {
 
 pub struct KindStorage {
     pub types: TypeIntern,
+    pub structs: IndexVec<StructId, StructInfo>,
     pub ptr: IndexVec<PtrId, Option<PointerStyle>>,
     pub life: IndexVec<LifeId, Option<LifeKind>>,
+    // pub func_style:IndexVec<FKId,Option<>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructInfo {
+    pub name: Option<NameId>,
 }
 
 impl KindStorage {
     pub fn new() -> Self {
         Self {
             types: TypeIntern::new(),
+            structs: IndexVec::new(),
             ptr: IndexVec::new(),
             life: IndexVec::new(),
         }
+    }
+
+    pub fn new_struct(&mut self, info: StructInfo) -> StructId {
+        self.structs.push(info)
+    }
+
+    pub fn struct_info(&self, id: StructId) -> Option<&StructInfo> {
+        self.structs.get(id)
     }
 }
 
@@ -538,16 +554,35 @@ impl TypeUniverse {
                 out.push(')');
             }
             Some(TypeKind::Struct { id, gens, lifes }) => {
-                out.push_str(&format!("struct#{}", id.0));
-                if let Some(gens) = gens {
-                    write_angle_list(out, gens.iter().copied(), |out, item| {
-                        self.write_kind(program, item, mut_guess_mode, out);
-                    });
+                match self.storage.struct_info(*id).and_then(|info| info.name) {
+                    Some(name) => out.push_str(program.name_string(name)),
+                    None => out.push_str("UnnamedStruct"),
                 }
-                if let Some(lifes) = lifes {
-                    write_angle_list(out, lifes.iter().copied(), |out, life| {
-                        self.write_life(program, life, out);
-                    });
+
+                let has_lifes = lifes.as_ref().is_some_and(|lifes| !lifes.is_empty());
+                let has_gens = gens.as_ref().is_some_and(|gens| !gens.is_empty());
+                if has_lifes || has_gens {
+                    out.push('[');
+                    let mut needs_sep = false;
+                    if let Some(lifes) = lifes {
+                        for life in lifes {
+                            if needs_sep {
+                                out.push_str(", ");
+                            }
+                            self.write_life(program, *life, out);
+                            needs_sep = true;
+                        }
+                    }
+                    if let Some(gens) = gens {
+                        for item in gens {
+                            if needs_sep {
+                                out.push_str(", ");
+                            }
+                            self.write_kind(program, *item, mut_guess_mode, out);
+                            needs_sep = true;
+                        }
+                    }
+                    out.push(']');
                 }
             }
             Some(TypeKind::Func { params, ret }) => {
@@ -576,25 +611,46 @@ impl TypeUniverse {
                 style,
                 mutable,
             }) => {
-                match self.storage.ptr.get(*style).and_then(|style| *style) {
+                let style = self.storage.ptr.get(*style).copied().flatten();
+                let mutable = match self.look.mutable.find_repr(*mutable).try_answer() {
+                    Some(false) => MutGuess::Const,
+                    Some(true) => MutGuess::Mut,
+                    None => match mut_guess_mode {
+                        MutGuessMode::UnknownAsUnknown => MutGuess::Unknown,
+                        MutGuessMode::UnknownAsConst => match style {
+                            Some(PointerStyle::Ref(_)) => MutGuess::Const,
+                            Some(PointerStyle::Raw(_)) | None => MutGuess::Mut,
+                        },
+                    },
+                };
+                let write_mutability = |out: &mut String| match mutable {
+                    MutGuess::Const => out.push_str("const "),
+                    MutGuess::Mut => {}
+                    MutGuess::Unknown => out.push_str("?mut "),
+                };
+
+                match style {
+                    Some(PointerStyle::Raw(Some(Nullable::No))) => {
+                        out.push_str("&'raw ");
+                        write_mutability(out);
+                    }
                     Some(PointerStyle::Ref(life)) => {
                         out.push('&');
                         self.write_life(program, life, out);
                         out.push(' ');
-                    }
-                    Some(PointerStyle::Raw(nullable)) => {
-                        out.push('*');
-                        if matches!(nullable, Some(Nullable::Yes)) {
-                            out.push('?');
+                        match mutable {
+                            MutGuess::Const => {}
+                            MutGuess::Mut => out.push_str("mut "),
+                            MutGuess::Unknown => out.push_str("?mut "),
                         }
                     }
-                    None => out.push_str("ptr "),
+                    Some(PointerStyle::Raw(Some(Nullable::Yes)) | PointerStyle::Raw(None))
+                    | None => {
+                        out.push('*');
+                        write_mutability(out);
+                    }
                 }
-                match self.look.mutable.guess(*mutable, mut_guess_mode) {
-                    MutGuess::Const => {}
-                    MutGuess::Mut => out.push_str("mut "),
-                    MutGuess::Unknown => out.push_str("?mut "),
-                }
+
                 self.write_kind(program, *tgt, mut_guess_mode, out);
             }
         }
@@ -603,8 +659,8 @@ impl TypeUniverse {
     fn write_life(&self, _program: &Program, id: LifeId, out: &mut String) {
         match self.storage.life.get(id).copied().flatten() {
             Some(LifeKind::Static) => out.push_str("'static"),
-            Some(LifeKind::Univeral(Some(id))) => out.push_str(&format!("'u{id}")),
-            Some(LifeKind::Univeral(None)) => out.push_str("'u"),
+            Some(LifeKind::Univeral(Some(id))) => out.push_str(&format!("'a{id}")),
+            Some(LifeKind::Univeral(None)) => out.push_str("'a"),
             Some(LifeKind::Local) => out.push_str("'local"),
             None => out.push_str("'_"),
         }
@@ -690,6 +746,119 @@ mod mutability_tests {
     }
 
     #[test]
+    fn kind_string_formats_pointer_styles_with_default_mutability() {
+        let mut types = TypeUniverse::new();
+        let raw_nullable = types
+            .storage
+            .ptr
+            .push(Some(PointerStyle::Raw(Some(Nullable::Yes))));
+        let raw_non_null = types
+            .storage
+            .ptr
+            .push(Some(PointerStyle::Raw(Some(Nullable::No))));
+        let life = types.storage.life.push(Some(LifeKind::Static));
+        let safe_ref = types.storage.ptr.push(Some(PointerStyle::Ref(life)));
+        let program = Program::new();
+
+        let mut_raw_ptr = types.intern(TypeKind::Ptr {
+            tgt: KindId::BOOL,
+            style: raw_nullable,
+            mutable: MutId::TRUE,
+        });
+        let const_raw_ptr = types.intern(TypeKind::Ptr {
+            tgt: KindId::BOOL,
+            style: raw_nullable,
+            mutable: MutId::FALSE,
+        });
+        let mut_raw_ref = types.intern(TypeKind::Ptr {
+            tgt: KindId::BOOL,
+            style: raw_non_null,
+            mutable: MutId::TRUE,
+        });
+        let const_raw_ref = types.intern(TypeKind::Ptr {
+            tgt: KindId::BOOL,
+            style: raw_non_null,
+            mutable: MutId::FALSE,
+        });
+        let const_safe_ref = types.intern(TypeKind::Ptr {
+            tgt: KindId::BOOL,
+            style: safe_ref,
+            mutable: MutId::FALSE,
+        });
+        let mut_safe_ref = types.intern(TypeKind::Ptr {
+            tgt: KindId::BOOL,
+            style: safe_ref,
+            mutable: MutId::TRUE,
+        });
+
+        assert_eq!(types.kind_to_string(&program, mut_raw_ptr), "*bool");
+        assert_eq!(types.kind_to_string(&program, const_raw_ptr), "*const bool");
+        assert_eq!(types.kind_to_string(&program, mut_raw_ref), "&'raw bool");
+        assert_eq!(
+            types.kind_to_string(&program, const_raw_ref),
+            "&'raw const bool"
+        );
+        assert_eq!(
+            types.kind_to_string(&program, const_safe_ref),
+            "&'static bool"
+        );
+        assert_eq!(
+            types.kind_to_string(&program, mut_safe_ref),
+            "&'static mut bool"
+        );
+    }
+
+    #[test]
+    fn kind_string_formats_struct_names() {
+        let mut program = Program::new();
+        let widget_name = program.str_intern.intern("Widget");
+        let widget_name = program.insert_value_in_global_scope(widget_name);
+
+        let mut types = TypeUniverse::new();
+        let widget = types.storage.new_struct(StructInfo {
+            name: Some(widget_name),
+        });
+        let anon = types.storage.new_struct(StructInfo { name: None });
+
+        let widget_ty = types.intern(TypeKind::Struct {
+            id: widget,
+            gens: None,
+            lifes: None,
+        });
+        let anon_ty = types.intern(TypeKind::Struct {
+            id: anon,
+            gens: None,
+            lifes: None,
+        });
+
+        assert_eq!(types.kind_to_string(&program, widget_ty), "Widget");
+        assert_eq!(types.kind_to_string(&program, anon_ty), "UnnamedStruct");
+    }
+
+    #[test]
+    fn kind_string_formats_struct_parameters_after_name() {
+        let mut program = Program::new();
+        let box_name = program.str_intern.intern("Box");
+        let box_name = program.insert_value_in_global_scope(box_name);
+
+        let mut types = TypeUniverse::new();
+        let sid = types.storage.new_struct(StructInfo {
+            name: Some(box_name),
+        });
+        let life = types.storage.life.push(Some(LifeKind::Static));
+        let boxed_bool = types.intern(TypeKind::Struct {
+            id: sid,
+            gens: Some([KindId::BOOL].into_iter().collect()),
+            lifes: Some([life].into_iter().collect()),
+        });
+
+        assert_eq!(
+            types.kind_to_string(&program, boxed_bool),
+            "Box['static, bool]"
+        );
+    }
+
+    #[test]
     fn hard_coded_builtin_kind_ids_match_storage() {
         let mut types = TypeUniverse::new();
 
@@ -723,20 +892,6 @@ fn projection_name(projection: Projection) -> &'static str {
         Projection::SmartCall => "smart_call",
         Projection::Casted => "casted",
     }
-}
-
-fn write_angle_list<T, F>(out: &mut String, items: impl Iterator<Item = T>, mut write: F)
-where
-    F: FnMut(&mut String, T),
-{
-    out.push('<');
-    for (idx, item) in items.enumerate() {
-        if idx > 0 {
-            out.push_str(", ");
-        }
-        write(out, item);
-    }
-    out.push('>');
 }
 
 #[derive(Debug)]

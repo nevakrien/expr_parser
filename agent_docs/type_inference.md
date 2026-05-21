@@ -49,8 +49,8 @@ The module layout keeps related data grouped:
   shape enums, `TypeKind`, builtins, hardcoded builtin `KindId` constants, and
   kind naming helpers.
 - `src/type_system/solving.rs`: `TypeUniverse`, intern/storage/lookup state,
-  mutability solver data, solved-type result records, origin records, and kind
-  display helpers that need solver state.
+  struct metadata (`StructInfo`), mutability solver data, solved-type result
+  records, origin records, and kind display helpers that need solver state.
 - `src/type_system/errors.rs`: typechecker diagnostic payloads (`TypeError` and
   `TypeClash`).
 
@@ -68,10 +68,14 @@ field borrows.
 Mutability is no longer stored as `Option<bool>` in `KindStorage`. Pointer shapes
 still carry a `MutId`, but the meaning of that id lives in `KindLookUp.mutable`
 (`MutInfo`): `MutId::FALSE`, `MutId::TRUE`, or an unknown node with implication
-edges. `TypeUniverse::kind_to_string` defaults unresolved mutability to const for
-final display, while `kind_to_string_with_mut_guess(...,
+edges. `TypeUniverse::kind_to_string` defaults unresolved pointer mutability by
+pointer style for final display, while `kind_to_string_with_mut_guess(...,
 MutGuessMode::UnknownAsUnknown)` renders unresolved pointer mutability as `?mut`
 for diagnostics that run before all limitations/defaults have been inserted.
+Pointer display follows the language defaults: nullable raw pointers use `*T` for
+mutable and `*const T` for const, non-null raw pointers use `&'raw T` for mutable
+and `&'raw const T` for const, and safe references use `&'a T` for const and
+`&'a mut T` for mutable.
 Pending implication edges are stored as deterministic `BTreeSet<MutId>`
 destinations only; diagnostic reasons are node-owned. Each node keeps at most one
 reason path, preferring a lower-depth path when a better explanation is found, so
@@ -91,6 +95,12 @@ participate in structural interning because one unknown may later resolve to man
 contradictory concrete shapes. If solving refines shape, it should intern the
 refined shape and connect ids through union-find rather than mutating a hashmap
 key in place.
+
+`KindStorage.structs` is the side table for `StructId` metadata that should not
+be part of structural equality. Struct type display uses `StructInfo.name` when
+present (`Box`) and falls back to `UnnamedStruct` for anonymous shapes, then
+prints lifetime and generic arguments in source-style brackets (`Box['static,
+bool]`).
 
 `TypeUniverse::new()` pre-interns `HARD_CODED_BUILTIN_KINDS` before allocating any
 unknown/user kinds. `KindId` associated constants (`KindId::VOID`, `KindId::STR`,
