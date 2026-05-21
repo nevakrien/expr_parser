@@ -1,6 +1,5 @@
 use crate::data_structures::index::Idx;
-use crate::ir::ValId;
-use thin_vec::ThinVec;
+use crate::data_structures::index::IndexSpan;
 
 macro_rules! impl_idx {
     ($($id:ty),* $(,)?) => {
@@ -32,6 +31,12 @@ pub struct KindId(pub u32);
 pub struct PtrId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KindArgId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LifeArgId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LifeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -44,6 +49,27 @@ pub struct OrigId(pub u32);
 // pub struct FKId(pub u32);
 
 impl_idx!(StructId, OrigId, GenId, KindId, PtrId, LifeId, MutId);
+
+macro_rules! impl_usize_idx {
+    ($($id:ty),* $(,)?) => {
+        $(
+            impl Idx for $id {
+                fn new(idx: usize) -> Self {
+                    Self(idx)
+                }
+
+                fn index(self) -> usize {
+                    self.0
+                }
+            }
+        )*
+    };
+}
+
+impl_usize_idx!(KindArgId, LifeArgId);
+
+pub type KindSpan = IndexSpan<KindArgId>;
+pub type LifeSpan = IndexSpan<LifeArgId>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IntKind {
@@ -245,19 +271,19 @@ pub enum PointerStyle {
 //     Closure(ValId)
 // }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeKind {
     Builtin(BuiltinKind),
     Generic(GenId),
 
-    Tuple(ThinVec<KindId>),
+    Tuple(KindSpan),
     Struct {
         id: StructId,
-        gens: Option<ThinVec<KindId>>,
-        lifes: Option<ThinVec<LifeId>>,
+        gens: KindSpan,
+        lifes: LifeSpan,
     },
     Func {
-        params: ThinVec<KindId>,
+        params: KindSpan,
         ret: KindId,
         // call_style:FKId,
     },

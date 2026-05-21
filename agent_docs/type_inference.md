@@ -92,9 +92,14 @@ IndexVec<KindId, Option<TypeKind>>
 Equal immutable concrete shapes intern to the same `KindId`. `None` slots are
 allowed in storage for completely unsolved kinds, but those unknown slots do not
 participate in structural interning because one unknown may later resolve to many
-contradictory concrete shapes. If solving refines shape, it should intern the
-refined shape and connect ids through union-find rather than mutating a hashmap
-key in place.
+contradictory concrete shapes. `TypeKind` is deliberately `Copy`; variable-length
+payloads such as tuple items, function parameters, struct generic arguments, and
+struct lifetime arguments are stored in `KindStorage` side arenas and referenced
+by `IndexSpan`s. Those side-arena spans are interned before being embedded in a
+`TypeKind`, so equal argument lists reuse the same span and keep `TypeKind`
+hashing cheap without heap-owned vectors. If solving refines shape, it should
+intern the refined shape and connect ids through union-find rather than mutating
+a hashmap key in place.
 
 `KindStorage.structs` is the side table for `StructId` metadata that should not
 be part of structural equality. Struct type display uses `StructInfo.name` when
@@ -132,6 +137,20 @@ Shape solving should answer questions like:
 
 Shape solving should not prove borrow legality, lifetime ordering, or mutable
 access permission.
+
+Baseline `unify` is still the old solver's core operation, but translated onto
+the new representation: operate on `KindId`/kind data only, not on a duplicated
+type-vs-kind split. Equality unification should recursively merge equal shape and
+then delegate non-shape equality to the relevant variable systems. For example,
+pointer mutability should merge through `MutInfo`, and lifetime equality should
+merge through the lifetime solver state, rather than every caller manually
+checking `Option<bool>` or lifetime sentinel cases.
+
+Directional relations should not be folded into baseline `unify`. A future
+subtyping/coercion operation should be a separate mutating constraint method,
+named `require_subtype` rather than `subtype_of`, because it will probably emit
+ordered mutability/lifetime constraints such as `actual <= expected` instead of
+simply answering a predicate.
 
 A compact shape state is preferred, with larger payloads behind arena ids:
 

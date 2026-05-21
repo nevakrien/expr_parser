@@ -27,6 +27,9 @@ The lowering pipeline reserves contiguous slots before lowering subexpressions:
 Then lowering fills those exact indices with `set_*` calls. This avoids temporary vectors and keeps stable IDs during recursive lowering.
 
 Practical invariant: a span is always contiguous and indexable by arithmetic (`start + i`).
+The three IR span names are aliases of the shared `IndexSpan` helper over the
+usize-backed IR ids (`ValId`, `PatId`, `TExpId`), rather than separate local span
+structs.
 
 ## `Value` Design Notes
 

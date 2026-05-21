@@ -44,6 +44,60 @@ impl Idx for u32 {
     }
 }
 
+//INDEX SPAN
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct IndexSpan<I:Idx> {
+    _start: I,
+    _count: I,
+}
+
+
+impl<I:Idx>  IndexSpan<I>  {
+    #[inline]
+    pub fn new(start: I, count: usize) -> Self {
+        Self {
+            _start: start,
+            _count: I::new(count),
+        }
+    }
+
+    #[inline]
+    pub fn start(&self) -> I {
+        self._start
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self._count.index()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn at(&self, index: usize) -> I {
+        debug_assert!(index < self.len() , "IndexSpan index out of bounds");
+        self._start.plus(index)
+    }
+
+    #[inline]
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + '_ {
+        (0.. self.len()).map(|i| self._start.plus(i))
+    }
+
+    #[inline]
+    pub fn subslice(&self, offset: usize, count: usize) -> Self {
+        debug_assert!(offset <= self.len(), "IndexSpan offset out of bounds");
+        debug_assert!(
+            offset + count <= self.len(),
+            "IndexSpan length out of bounds"
+        );
+        Self::new(self._start.plus(offset), count)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // IndexSlice
 // -----------------------------------------------------------------------------

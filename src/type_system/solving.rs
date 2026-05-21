@@ -1,7 +1,7 @@
 use super::Projection;
 use super::{
-    ArraySize, BuiltinKind, HARD_CODED_BUILTIN_KINDS, KindId, LifeId, LifeKind, MutId, Nullable,
-    PointerStyle, PtrId, StructId, TypeKind,
+    ArraySize, BuiltinKind, HARD_CODED_BUILTIN_KINDS, KindArgId, KindId, KindSpan, LifeArgId,
+    LifeId, LifeKind, LifeSpan, MutId, Nullable, PointerStyle, PtrId, StructId, TypeKind,
 };
 use crate::data_structures::graph::BasicOrder;
 use crate::data_structures::identity_hasher::IdHashMap;
@@ -35,7 +35,7 @@ impl TypeIntern {
             return id;
         }
 
-        let id = self.storage.push(Some(ty.clone()));
+        let id = self.storage.push(Some(ty));
         self.map.insert(ty, id);
         let uf_id = uf.push_singleton();
         debug_assert_eq!(id, uf_id);
@@ -433,6 +433,10 @@ pub struct KindStorage {
     pub structs: IndexVec<StructId, StructInfo>,
     pub ptr: IndexVec<PtrId, Option<PointerStyle>>,
     pub life: IndexVec<LifeId, Option<LifeKind>>,
+    pub kind_args: IndexVec<KindArgId, KindId>,
+    pub life_args: IndexVec<LifeArgId, LifeId>,
+    kind_arg_spans: HashMap<Vec<KindId>, KindSpan>,
+    life_arg_spans: HashMap<Vec<LifeId>, LifeSpan>,
     // pub func_style:IndexVec<FKId,Option<>>,
 }
 
@@ -448,6 +452,10 @@ impl KindStorage {
             structs: IndexVec::new(),
             ptr: IndexVec::new(),
             life: IndexVec::new(),
+            kind_args: IndexVec::new(),
+            life_args: IndexVec::new(),
+            kind_arg_spans: HashMap::new(),
+            life_arg_spans: HashMap::new(),
         }
     }
 
@@ -457,6 +465,44 @@ impl KindStorage {
 
     pub fn struct_info(&self, id: StructId) -> Option<&StructInfo> {
         self.structs.get(id)
+    }
+
+    pub fn intern_kind_span(&mut self, items: impl IntoIterator<Item = KindId>) -> KindSpan {
+        let items: Vec<_> = items.into_iter().collect();
+        if let Some(span) = self.kind_arg_spans.get(&items).copied() {
+            return span;
+        }
+
+        let span = KindSpan::new(self.kind_args.next_index(), items.len());
+        for item in items.iter().copied() {
+            self.kind_args.push(item);
+        }
+        self.kind_arg_spans.insert(items, span);
+        span
+    }
+
+    pub fn intern_life_span(&mut self, items: impl IntoIterator<Item = LifeId>) -> LifeSpan {
+        let items: Vec<_> = items.into_iter().collect();
+        if let Some(span) = self.life_arg_spans.get(&items).copied() {
+            return span;
+        }
+
+        let span = LifeSpan::new(self.life_args.next_index(), items.len());
+        for item in items.iter().copied() {
+            self.life_args.push(item);
+        }
+        self.life_arg_spans.insert(items, span);
+        span
+    }
+
+    pub fn kind_span_items(&self, span: KindSpan) -> &[KindId] {
+        let start = span.start().index();
+        &self.kind_args.raw()[start..start + span.len()]
+    }
+
+    pub fn life_span_items(&self, span: LifeSpan) -> &[LifeId] {
+        let start = span.start().index();
+        &self.life_args.raw()[start..start + span.len()]
     }
 }
 
@@ -545,7 +591,7 @@ impl TypeUniverse {
             Some(TypeKind::Generic(gen_id)) => out.push_str(&format!("T{}", gen_id.0)),
             Some(TypeKind::Tuple(items)) => {
                 out.push('(');
-                for (idx, item) in items.iter().enumerate() {
+                for (idx, item) in self.storage.kind_span_items(*items).iter().enumerate() {
                     if idx > 0 {
                         out.push_str(", ");
                     }
@@ -559,35 +605,33 @@ impl TypeUniverse {
                     None => out.push_str("UnnamedStruct"),
                 }
 
-                let has_lifes = lifes.as_ref().is_some_and(|lifes| !lifes.is_empty());
-                let has_gens = gens.as_ref().is_some_and(|gens| !gens.is_empty());
+                let lifes = self.storage.life_span_items(*lifes);
+                let gens = self.storage.kind_span_items(*gens);
+                let has_lifes = !lifes.is_empty();
+                let has_gens = !gens.is_empty();
                 if has_lifes || has_gens {
                     out.push('[');
                     let mut needs_sep = false;
-                    if let Some(lifes) = lifes {
-                        for life in lifes {
-                            if needs_sep {
-                                out.push_str(", ");
-                            }
-                            self.write_life(program, *life, out);
-                            needs_sep = true;
+                    for life in lifes {
+                        if needs_sep {
+                            out.push_str(", ");
                         }
+                        self.write_life(program, *life, out);
+                        needs_sep = true;
                     }
-                    if let Some(gens) = gens {
-                        for item in gens {
-                            if needs_sep {
-                                out.push_str(", ");
-                            }
-                            self.write_kind(program, *item, mut_guess_mode, out);
-                            needs_sep = true;
+                    for item in gens {
+                        if needs_sep {
+                            out.push_str(", ");
                         }
+                        self.write_kind(program, *item, mut_guess_mode, out);
+                        needs_sep = true;
                     }
                     out.push(']');
                 }
             }
             Some(TypeKind::Func { params, ret }) => {
                 out.push_str("fn(");
-                for (idx, param) in params.iter().enumerate() {
+                for (idx, param) in self.storage.kind_span_items(*params).iter().enumerate() {
                     if idx > 0 {
                         out.push_str(", ");
                     }
@@ -820,15 +864,17 @@ mod mutability_tests {
         });
         let anon = types.storage.new_struct(StructInfo { name: None });
 
+        let empty_gens = types.storage.intern_kind_span([]);
+        let empty_lifes = types.storage.intern_life_span([]);
         let widget_ty = types.intern(TypeKind::Struct {
             id: widget,
-            gens: None,
-            lifes: None,
+            gens: empty_gens,
+            lifes: empty_lifes,
         });
         let anon_ty = types.intern(TypeKind::Struct {
             id: anon,
-            gens: None,
-            lifes: None,
+            gens: empty_gens,
+            lifes: empty_lifes,
         });
 
         assert_eq!(types.kind_to_string(&program, widget_ty), "Widget");
@@ -846,10 +892,12 @@ mod mutability_tests {
             name: Some(box_name),
         });
         let life = types.storage.life.push(Some(LifeKind::Static));
+        let gens = types.storage.intern_kind_span([KindId::BOOL]);
+        let lifes = types.storage.intern_life_span([life]);
         let boxed_bool = types.intern(TypeKind::Struct {
             id: sid,
-            gens: Some([KindId::BOOL].into_iter().collect()),
-            lifes: Some([life].into_iter().collect()),
+            gens,
+            lifes,
         });
 
         assert_eq!(

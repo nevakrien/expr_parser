@@ -1,3 +1,4 @@
+use crate::data_structures::index::{Idx, IndexSpan};
 use crate::data_structures::string_intern::StrId;
 /**
  * TODO: Convert IR from tree-shaped to flat list with ids.
@@ -42,140 +43,32 @@ pub struct PatId(pub usize);
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct TExpId(pub usize);
 
-///comment is now for explaining to LLM later LLM should rewrite it to actual docs explaining usage
-///
-///this type would be used to store &[Value] in our dynamic array
-///things that used to push/collect a vec on the fly should be converted to:
-///1. push some sentinal value say Value::Void ahead of time so we have the span of size N ready.
-///2. compile sub expressions and overwrite the sentinal value with the correct thing
-///
-///its generally fine if errors leave sentinal values as errors imply we are gona not read the thing anyway
-///if cleanup would seem needed we add it AFTER this change batch
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct ValueSpan {
-    _start: ValId,
-    _count: usize,
+macro_rules! impl_usize_idx {
+    ($($id:ty),* $(,)?) => {
+        $(
+            impl Idx for $id {
+                #[inline]
+                fn new(idx: usize) -> Self {
+                    Self(idx)
+                }
+
+                #[inline]
+                fn index(self) -> usize {
+                    self.0
+                }
+            }
+        )*
+    };
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct PatternSpan {
-    _start: PatId,
-    _count: usize,
-}
+impl_usize_idx!(ValId, PatId, TExpId);
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct TypeExprSpan {
-    _start: TExpId,
-    _count: usize,
-}
-
-impl ValueSpan {
-    #[inline]
-    pub fn new(start: ValId, count: usize) -> Self {
-        Self {
-            _start: start,
-            _count: count,
-        }
-    }
-
-    #[inline]
-    pub fn start(&self) -> ValId {
-        self._start
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self._count
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self._count == 0
-    }
-
-    #[inline]
-    pub fn at(&self, index: usize) -> ValId {
-        debug_assert!(index < self._count, "ValueSpan index out of bounds");
-        ValId(self._start.0 + index)
-    }
-
-    #[inline]
-    pub fn ids(&self) -> impl DoubleEndedIterator<Item = ValId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(ValId)
-    }
-}
-
-impl PatternSpan {
-    #[inline]
-    pub fn new(start: PatId, count: usize) -> Self {
-        Self {
-            _start: start,
-            _count: count,
-        }
-    }
-
-    #[inline]
-    pub fn start(&self) -> PatId {
-        self._start
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self._count
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self._count == 0
-    }
-
-    #[inline]
-    pub fn at(&self, index: usize) -> PatId {
-        debug_assert!(index < self._count, "PatternSpan index out of bounds");
-        PatId(self._start.0 + index)
-    }
-
-    #[inline]
-    pub fn ids(&self) -> impl DoubleEndedIterator<Item = PatId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(PatId)
-    }
-}
-
-impl TypeExprSpan {
-    #[inline]
-    pub fn new(start: TExpId, count: usize) -> Self {
-        Self {
-            _start: start,
-            _count: count,
-        }
-    }
-
-    #[inline]
-    pub fn start(&self) -> TExpId {
-        self._start
-    }
-
-    #[inline]
-    pub fn len(&self) -> usize {
-        self._count
-    }
-
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self._count == 0
-    }
-
-    #[inline]
-    pub fn at(&self, index: usize) -> TExpId {
-        debug_assert!(index < self._count, "PatternSpan index out of bounds");
-        TExpId(self._start.0 + index)
-    }
-
-    #[inline]
-    pub fn ids(&self) -> impl DoubleEndedIterator<Item = TExpId> + '_ {
-        (self._start.0..self._start.0 + self._count).map(TExpId)
-    }
-}
+/// A contiguous range in the value arena.
+pub type ValueSpan = IndexSpan<ValId>;
+/// A contiguous range in the pattern arena.
+pub type PatternSpan = IndexSpan<PatId>;
+/// A contiguous range in the type-expression arena.
+pub type TypeExprSpan = IndexSpan<TExpId>;
 
 /// Literal values that can appear in the code
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -300,17 +193,14 @@ pub struct Call {
 
 impl Call {
     pub fn pos_args(&self) -> ValueSpan {
-        ValueSpan {
-            _start: self.args._start,
-            _count: self.named_args_start,
-        }
+        self.args.subslice(0, self.named_args_start)
     }
 
     pub fn named_args(&self) -> ValueSpan {
-        ValueSpan {
-            _start: ValId(self.args._start.0 + self.named_args_start),
-            _count: self.args._count - self.named_args_start,
-        }
+        self.args.subslice(
+            self.named_args_start,
+            self.args.len() - self.named_args_start,
+        )
     }
 }
 
@@ -324,17 +214,12 @@ pub struct GenDec {
 
 impl GenDec {
     pub fn lifetimes(&self) -> PatternSpan {
-        PatternSpan {
-            _start: self.parts._start,
-            _count: self.lifetime_end,
-        }
+        self.parts.subslice(0, self.lifetime_end)
     }
 
     pub fn generics(&self) -> PatternSpan {
-        PatternSpan {
-            _start: PatId(self.parts._start.0 + self.lifetime_end),
-            _count: self.parts._count - self.lifetime_end,
-        }
+        self.parts
+            .subslice(self.lifetime_end, self.parts.len() - self.lifetime_end)
     }
 
     pub fn where_clause(&self) -> TypeExprSpan {
@@ -352,17 +237,12 @@ pub struct GenIndex {
 
 impl GenIndex {
     pub fn lifetimes(&self) -> TypeExprSpan {
-        TypeExprSpan {
-            _start: self.parts._start,
-            _count: self.lifetime_end,
-        }
+        self.parts.subslice(0, self.lifetime_end)
     }
 
     pub fn generics(&self) -> TypeExprSpan {
-        TypeExprSpan {
-            _start: TExpId(self.parts._start.0 + self.lifetime_end),
-            _count: self.parts._count - self.lifetime_end,
-        }
+        self.parts
+            .subslice(self.lifetime_end, self.parts.len() - self.lifetime_end)
     }
 }
 

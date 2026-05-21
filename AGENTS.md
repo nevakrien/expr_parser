@@ -16,6 +16,11 @@
 - Agents should only change code to match docs when the agent itself introduced the mismatch in the current task.
 - When adding a new complex subsystem, add a new `agent_docs/<subsystem>.md` file so future agents have a focused starting point.
 
+## Type-System Solver Direction
+- The new type-system code should operate on `KindId`/kinds directly. Do not reintroduce the old duplicated split where types and kinds had parallel unification paths.
+- Baseline `unify` means full equality merge: kind shape, pointer info, mutability variables, and lifetime variables should be merged through their own dedicated merge mechanisms rather than manually special-cased at every use site.
+- If a relation is directional, keep it separate from `unify`. Name the mutating constraint operation `require_subtype`, not a predicate-style name like `subtype_of`, because the operation will likely emit ordered mutability and lifetime constraints instead of just returning a boolean.
+
 ### Current docs index
 - `agent_docs/type_inference.md`: active clean-room type-system refactor direction; old implementation details live in the local detached snapshot at `/home/user/Desktop/rust_stuff/expr_parser/expr_parse_pre`.
 - `agent_docs/cli_debugging.md`: practical guide to using the REPL/CLI to inspect parsed AST shape, inferred types, and typechecker diagnostics while investigating behavior.
