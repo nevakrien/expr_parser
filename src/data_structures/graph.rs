@@ -7,9 +7,7 @@ pub trait DirectedGraph {
     type Node: Idx;
 
     fn num_nodes(&self) -> usize;
-    fn iter_nodes(
-        &self,
-    ) -> impl Iterator<Item = Self::Node> + DoubleEndedIterator + ExactSizeIterator {
+    fn iter_nodes(&self) -> impl DoubleEndedIterator<Item = Self::Node> + ExactSizeIterator {
         (0..self.num_nodes()).map(<Self::Node as Idx>::new)
     }
 
@@ -92,7 +90,7 @@ impl VisitState {
         }
     }
 
-    fn to_done<Node: Idx>(&mut self, cid: CId<Node>) {
+    fn mark_done<Node: Idx>(&mut self, cid: CId<Node>) {
         let VisitState::Working { index, min_val, .. } = *self else {
             return;
         };
@@ -161,10 +159,11 @@ pub fn tarjan<G: DirectedGraph>(graph: &G) -> SCCS<G::Node> {
             index,
             min_val: index,
         };
-        index = index + 1;
+        index += 1;
         scc_stack.push(node);
 
         'recurse: while let Some(frame) = call_stack.last_mut() {
+            #[allow(clippy::while_let_on_iterator)]
             while let Some(next) = frame.edges.next() {
                 match states[next] {
                     VisitState::NotSeen => {
@@ -177,7 +176,7 @@ pub fn tarjan<G: DirectedGraph>(graph: &G) -> SCCS<G::Node> {
                             index,
                             min_val: index,
                         };
-                        index = index + 1;
+                        index += 1;
                         scc_stack.push(next);
 
                         continue 'recurse;
@@ -196,44 +195,43 @@ pub fn tarjan<G: DirectedGraph>(graph: &G) -> SCCS<G::Node> {
             if let VisitState::Working {
                 index: i, min_val, ..
             } = states[frame.node]
+                && i == min_val
             {
-                if i == min_val {
-                    let cid = CId::new(comps.len());
+                let cid = CId::new(comps.len());
 
-                    //first gather members
-                    let mut members = Vec::new();
-                    loop {
-                        let c = scc_stack
-                            .pop()
-                            .expect("SCC root must be present on SCC stack");
+                //first gather members
+                let mut members = Vec::new();
+                loop {
+                    let c = scc_stack
+                        .pop()
+                        .expect("SCC root must be present on SCC stack");
 
-                        states[c].to_done(cid);
-                        map[c] = cid;
-                        members.push(c);
+                    states[c].mark_done(cid);
+                    map[c] = cid;
+                    members.push(c);
 
-                        if c == frame.node {
-                            break;
-                        }
+                    if c == frame.node {
+                        break;
                     }
-                    comps.push(members);
+                }
+                comps.push(members);
 
-                    //now gather the o_dag edges
-                    successor_dedup.clear();
+                //now gather the o_dag edges
+                successor_dedup.clear();
 
-                    let start = o_dag.num_edges();
-                    o_dag.edges.extend(
-                        successor_stack
-                            .drain(frame.successor_len..)
-                            .filter(|s| successor_dedup.insert(*s)),
-                    );
-                    let end = o_dag.num_edges();
+                let start = o_dag.num_edges();
+                o_dag.edges.extend(
+                    successor_stack
+                        .drain(frame.successor_len..)
+                        .filter(|s| successor_dedup.insert(*s)),
+                );
+                let end = o_dag.num_edges();
 
-                    o_dag.nodes.push(start..end);
+                o_dag.nodes.push(start..end);
 
-                    //we are done but a calling parent needs to have us as a successor
-                    if call_stack.last().is_some() {
-                        successor_stack.push(cid);
-                    }
+                //we are done but a calling parent needs to have us as a successor
+                if call_stack.last().is_some() {
+                    successor_stack.push(cid);
                 }
             };
 
@@ -275,13 +273,19 @@ impl<I: Idx> BasicOrder<I> {
     }
 }
 
+impl<I: Idx> Default for BasicOrder<I> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<I: Idx> DirectedGraph for BasicOrder<I> {
     type Node = I;
     fn num_nodes(&self) -> usize {
         self.edges.len()
     }
     fn edges(&self, idx: I) -> impl Iterator<Item = I> {
-        self.edges[idx].iter().map(|(i, _)| *i)
+        self.edges[idx].keys().copied()
     }
 }
 

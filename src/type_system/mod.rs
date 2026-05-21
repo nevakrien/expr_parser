@@ -14,6 +14,7 @@ use crate::error_reporting::ErrorReporter;
 use crate::program::Program;
 use std::error::Error;
 
+#[allow(clippy::type_complexity)]
 pub fn run_typechecker(
     program: &Program,
     _reporter: &mut ErrorReporter,

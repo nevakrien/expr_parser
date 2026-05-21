@@ -615,7 +615,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
-                reporter.report_origin_dump(&program, &solved)?;
+                reporter.report_origin_dump(&program, solved)?;
             }
             Ok(ReplInput::DumpOriginsOf(name)) => {
                 let Some((_types, solved)) = last_typecheck.as_ref() else {
@@ -637,7 +637,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     loc
                 };
 
-                reporter.report_origin_dump_in_region(&program, &solved, Some(&loc))?;
+                reporter.report_origin_dump_in_region(&program, solved, Some(&loc))?;
             }
             Ok(ReplInput::Load(paths)) => {
                 if paths.is_empty() {

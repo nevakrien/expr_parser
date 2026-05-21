@@ -464,6 +464,8 @@ impl<I: Idx> UnionFind<I> {
         id
     }
 
+    /// this method has to take &mut self algorithecally to support O(1) lookup
+    /// making a const version would be O(n) which is absolutly ridiclous
     pub fn find_root(&mut self, idx: I) -> I {
         let p = self[idx];
         if p == idx {
