@@ -46,13 +46,12 @@ impl Idx for u32 {
 
 //INDEX SPAN
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct IndexSpan<I:Idx> {
+pub struct IndexSpan<I: Idx> {
     _start: I,
     _count: I,
 }
 
-
-impl<I:Idx>  IndexSpan<I>  {
+impl<I: Idx> IndexSpan<I> {
     #[inline]
     pub fn new(start: I, count: usize) -> Self {
         Self {
@@ -78,13 +77,13 @@ impl<I:Idx>  IndexSpan<I>  {
 
     #[inline]
     pub fn at(&self, index: usize) -> I {
-        debug_assert!(index < self.len() , "IndexSpan index out of bounds");
+        debug_assert!(index < self.len(), "IndexSpan index out of bounds");
         self._start.plus(index)
     }
 
     #[inline]
     pub fn ids(&self) -> impl DoubleEndedIterator<Item = I> + ExactSizeIterator + '_ {
-        (0.. self.len()).map(|i| self._start.plus(i))
+        (0..self.len()).map(|i| self._start.plus(i))
     }
 
     #[inline]

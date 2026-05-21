@@ -57,8 +57,8 @@ The module layout keeps related data grouped:
 `TypeUniverse` owns two deliberately separate halves:
 
 - `KindStorage`: immutable/interned shape storage and per-id payload stores.
-- `KindLookUp`: union-finds for `KindId`/`PtrId`, lifetime ordering, and the
-  mutability implication solver.
+- `KindLookUp`: union-finds for `KindId`/`PtrId`/lifetime equality, lifetime
+  ordering, and the mutability implication solver.
 
 This split is important for Rust borrowing: common code should be able to hold a
 reference into storage while mutably path-compressing a union-find, using
@@ -68,8 +68,9 @@ field borrows.
 Mutability is no longer stored as `Option<bool>` in `KindStorage`. Pointer shapes
 still carry a `MutId`, but the meaning of that id lives in `KindLookUp.mutable`
 (`MutInfo`): `MutId::FALSE`, `MutId::TRUE`, or an unknown node with implication
-edges. `TypeUniverse::kind_to_string` defaults unresolved pointer mutability by
-pointer style for final display, while `kind_to_string_with_mut_guess(...,
+edges. `KindStorage::kind_to_string(&mut KindLookUp, ...)` defaults unresolved
+pointer mutability by pointer style for final display, while
+`kind_to_string_with_mut_guess(...,
 MutGuessMode::UnknownAsUnknown)` renders unresolved pointer mutability as `?mut`
 for diagnostics that run before all limitations/defaults have been inserted.
 Pointer display follows the language defaults: nullable raw pointers use `*T` for
@@ -92,14 +93,34 @@ IndexVec<KindId, Option<TypeKind>>
 Equal immutable concrete shapes intern to the same `KindId`. `None` slots are
 allowed in storage for completely unsolved kinds, but those unknown slots do not
 participate in structural interning because one unknown may later resolve to many
-contradictory concrete shapes. `TypeKind` is deliberately `Copy`; variable-length
-payloads such as tuple items, function parameters, struct generic arguments, and
-struct lifetime arguments are stored in `KindStorage` side arenas and referenced
-by `IndexSpan`s. Those side-arena spans are interned before being embedded in a
-`TypeKind`, so equal argument lists reuse the same span and keep `TypeKind`
-hashing cheap without heap-owned vectors. If solving refines shape, it should
-intern the refined shape and connect ids through union-find rather than mutating
-a hashmap key in place.
+contradictory concrete shapes. Partial builtin shapes such as an integer with an
+unknown size/sign are allowed to be hash-consed only because the solver is
+monotone: unification may refine an equivalence class toward a more precise
+shape, but it must never make a solved fact less precise or split a class again.
+For the same reason, no hardcoded builtin `KindId` may use a partial builtin with
+`None` fields. Hardcoded ids are global language constants, while partial shapes
+are solver facts that can legally be refined by equality.
+
+`TypeKind` is deliberately `Copy`; variable-length payloads such as tuple items,
+function parameters, struct generic arguments, and struct lifetime arguments are
+represented as natural `IndexSpan<KindId>` / `IndexSpan<LifeId>` rows.
+`TypeUniverse::intern_kind_span` and `TypeUniverse::intern_life_span` first return
+an existing contiguous row without allocation. If the requested ids are not
+contiguous, they hash-cons the requested id list and allocate a fresh contiguous
+alias row only on cache miss: kind aliases are empty `KindId`s whose union-find
+parents point at the requested ids, and lifetime aliases are fresh `LifeId`s whose
+equality roots are merged with the requested ids while also adding bidirectional
+lifetime-order edges. These alias rows intentionally use the same monotone
+quotient model as normal unification: following roots is part of reading a span,
+and alias allocation may add equality facts but must not invalidate existing
+facts.
+
+Shape refinement should normally intern the refined shape and connect ids through
+union-find rather than mutating a hashmap key in place. The current pointer-style
+payload merge is a deliberate exception: pointer style lives in the `PtrId` side
+table, and equality refinement writes the merged side-table payload back to both
+input style ids so all shapes sharing either id observe the stronger fact. This
+is sound only while those payload changes are monotone refinements.
 
 `KindStorage.structs` is the side table for `StructId` metadata that should not
 be part of structural equality. Struct type display uses `StructInfo.name` when
@@ -107,19 +128,27 @@ present (`Box`) and falls back to `UnnamedStruct` for anonymous shapes, then
 prints lifetime and generic arguments in source-style brackets (`Box['static,
 bool]`).
 
+Pointer styles must be allocated through `TypeUniverse::add_ptr_style`, not by
+directly pushing into storage. This keeps `KindStorage`'s pointer-style rows and
+`KindLookUp.ptr`'s pointer union-find in lockstep; direct storage mutation can
+create `PtrId`s that panic when root-compressed.
+
 `TypeUniverse::new()` pre-interns `HARD_CODED_BUILTIN_KINDS` before allocating any
 unknown/user kinds. `KindId` associated constants (`KindId::VOID`, `KindId::STR`,
 `KindId::BOOL`, integer kinds, float kinds, etc.) rely on that fixed order,
-similar to the string interner's hardcoded-name contract. Keep aliases such as
-language-level `float` out of `HARD_CODED_BUILTIN_KINDS`; aliases should resolve
-through `BUILTINS` to the same underlying builtin shape, so `KindId::FLOAT` is
-currently `KindId::F64`. `BUILTINS` maps source-level builtin type names directly
-to these fixed `KindId`s for `Defined::BuildinType` entries.
+similar to the string interner's hardcoded-name contract. Every hardcoded builtin
+must be fully known; a `None` field in a hardcoded builtin would make a global
+language constant refinable by ordinary unification, which is unsound. Keep
+aliases such as language-level `float` out of `HARD_CODED_BUILTIN_KINDS`; aliases
+should resolve through `BUILTINS` to the same underlying builtin shape, so
+`KindId::FLOAT` is currently `KindId::F64`. `BUILTINS` maps source-level builtin
+type names directly to these fixed `KindId`s for `Defined::BuildinType` entries.
 
 `SolvedTypes` intentionally preserves the old result shape used by diagnostics
 and debug dumps: `function_values`, inner value/pattern types, member method
 accesses, implicit deref records, and origin dump data remain present, but all
-old type ids are now `KindId`s and printing goes through `TypeUniverse::kind_to_string`.
+old type ids are now `KindId`s and printing goes through root-compressing
+`KindStorage::kind_to_string(&mut KindLookUp, ...)`.
 Implicit derefs currently use the old solved-data model again: each recorded hop
 is stored as `(KindId, Projection)` in `SolvedTypes`, preserving the deref-chain
 list while attaching the projection kind for each step. The projection data model
@@ -145,6 +174,31 @@ then delegate non-shape equality to the relevant variable systems. For example,
 pointer mutability should merge through `MutInfo`, and lifetime equality should
 merge through the lifetime solver state, rather than every caller manually
 checking `Option<bool>` or lifetime sentinel cases.
+
+The current `TypeUniverse::unify(found, wanted)` implementation lives in
+`src/type_system/solving.rs`. It canonicalizes both `KindId`s with the kind
+union-find, tries to absorb `found` into `wanted` first to preserve old clash
+orientation, then tries the reverse before reporting a `TypeClash`. Unknown kind
+slots (`None`) absorb concrete shapes. Concrete shapes are recursively unified
+for tuples, structs, functions, arrays, and pointers; partial builtin integer,
+float, array-size, and raw-pointer nullability fields are refined by strict
+`Option` merging. Pointer equality merges pointer style, safe-reference lifetime
+equality, target kind, and mutability through `MutInfo::try_unify`. Pointer-style
+payload merges currently write the merged payload back to both input ids so other
+shapes sharing either id observe the equality refinement. Lifetime equality is
+currently strict over the stored `LifeKind` values and fills unknown lifetime
+slots when paired with a known one; lifetime ids are also linked through
+`KindLookUp.life_roots`, and any read/display path should root-compress through
+`&mut KindLookUp` before consulting `KindStorage`.
+
+`unify` is intentionally non-transactional. A failed equality may still leave
+useful monotone refinements behind, and same-shape recursive unification should
+keep walking all compatible child positions before returning failure. For
+example, when two function shapes have the same arity, all parameter pairs and
+the return type are unified even if one parameter pair fails; the caller receives
+a clash after the traversal, but any successful child unifications remain in
+solver state. Do not "fix" this by short-circuiting or rolling back side effects
+unless the solver policy changes deliberately.
 
 Directional relations should not be folded into baseline `unify`. A future
 subtyping/coercion operation should be a separate mutating constraint method,

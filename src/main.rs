@@ -3,7 +3,9 @@ use expr_parser::ir::NameId;
 use expr_parser::parsing::{Expr, LExpr, ParseError, Parser, Token};
 use expr_parser::program::Defined;
 use expr_parser::program::Program;
-use expr_parser::type_system::{SolvedTypes, TypeUniverse, run_typechecker};
+use expr_parser::type_system::{
+    KindLookUp, KindStorage, SolvedTypes, TypeUniverse, run_typechecker,
+};
 use std::env;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -175,7 +177,8 @@ fn lookup_global_name_id(program: &Program, name: &str) -> Option<NameId> {
 
 fn def_type_string(
     program: &Program,
-    types: &TypeUniverse,
+    storage: &KindStorage,
+    look: &mut KindLookUp,
     solved: &SolvedTypes,
     id: NameId,
 ) -> Option<String> {
@@ -184,12 +187,12 @@ fn def_type_string(
         Defined::Func(_funcs) => solved
             .function_types_by_name(id)
             .map(|f| f.ty)
-            .map(|ty| types.kind_to_string(program, ty)),
+            .map(|ty| storage.kind_to_string(look, program, ty)),
         Defined::Type(texp) => solved
             .typedef_types
             .get(texp)
             .copied()
-            .map(|ty| types.kind_to_string(program, ty)),
+            .map(|ty| storage.kind_to_string(look, program, ty)),
         Defined::BuildinType(_) => Some("builtin type".to_string()),
         Defined::BuildinInterface(_) => Some("builtin interface".to_string()),
         Defined::Macro(_) => Some("macro".to_string()),
@@ -199,7 +202,8 @@ fn def_type_string(
 
 fn print_expr_types(
     program: &Program,
-    types: &TypeUniverse,
+    storage: &KindStorage,
+    look: &mut KindLookUp,
     solved: &SolvedTypes,
     batch: &ParseBatch,
 ) {
@@ -214,7 +218,7 @@ fn print_expr_types(
             .clone()
             .next_back()
             .and_then(|idx| solved.type_of(expr_parser::ir::ValId(idx)))
-            .map(|ty| types.kind_to_string(program, ty))
+            .map(|ty| storage.kind_to_string(look, program, ty))
             .unwrap_or_else(|| "<unknown>".to_string());
 
         println!(
@@ -224,7 +228,7 @@ fn print_expr_types(
 
         for name in &info.defined_names {
             let t = lookup_global_name_id(program, name)
-                .and_then(|id| def_type_string(program, types, solved, id))
+                .and_then(|id| def_type_string(program, storage, look, solved, id))
                 .unwrap_or_else(|| "<unknown>".to_string());
             println!("    {}: {}", name, t);
         }
@@ -233,7 +237,8 @@ fn print_expr_types(
 
 fn print_named_types(
     program: &Program,
-    types: &TypeUniverse,
+    storage: &KindStorage,
+    look: &mut KindLookUp,
     solved: &SolvedTypes,
     names: &[String],
 ) {
@@ -242,8 +247,8 @@ fn print_named_types(
             println!("{}: <not found>", name);
             continue;
         };
-        let t =
-            def_type_string(program, types, solved, id).unwrap_or_else(|| "<unknown>".to_string());
+        let t = def_type_string(program, storage, look, solved, id)
+            .unwrap_or_else(|| "<unknown>".to_string());
         println!("{}: {}", name, t);
     }
 }
@@ -383,16 +388,6 @@ fn read_repl_input() -> io::Result<ReplInput> {
             if trimmed == ":types" {
                 return Ok(ReplInput::DumpTypes);
             }
-            if let Some(rest) = trimmed.strip_prefix(":types-of") {
-                let names: Vec<String> = rest.split_whitespace().map(String::from).collect();
-                match names.as_slice() {
-                    [name] => return Ok(ReplInput::DumpTypesOf(name.clone())),
-                    _ => {
-                        eprintln!("Usage: :types-of <name>");
-                        continue;
-                    }
-                }
-            }
             if trimmed == ":origins" {
                 return Ok(ReplInput::DumpOrigins);
             }
@@ -508,12 +503,12 @@ fn run_stdin_batch(options: CliOptions) -> Result<(), Box<dyn std::error::Error>
     reporter.add_source(0, input.clone());
     let _batch = parse_source(&mut program, &input, 0, options.show_ast);
 
-    if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)? {
+    if let Some((mut types, solved)) = finalize_program(&mut reporter, &mut program)? {
         if options.type_dump {
-            reporter.report_type_dump(&program, &types, &solved)?;
+            reporter.report_type_dump(&program, &types.storage, &mut types.look, &solved)?;
         }
         if options.origin_dump {
-            reporter.report_origin_dump(&program, &types, &solved)?;
+            reporter.report_origin_dump(&program, &solved)?;
         }
     }
 
@@ -574,21 +569,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             Ok(ReplInput::ShowType(names)) => {
-                let Some((types, solved)) = last_typecheck.as_ref() else {
+                let Some((types, solved)) = last_typecheck.as_mut() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
-                print_named_types(&program, types, solved, &names);
+                print_named_types(&program, &types.storage, &mut types.look, solved, &names);
             }
             Ok(ReplInput::DumpTypes) => {
-                let Some((types, solved)) = last_typecheck.as_ref() else {
+                let Some((types, solved)) = last_typecheck.as_mut() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
-                reporter.report_type_dump(&program, types, solved)?;
+                reporter.report_type_dump(&program, &types.storage, &mut types.look, solved)?;
             }
             Ok(ReplInput::DumpTypesOf(name)) => {
-                let Some((types, solved)) = last_typecheck.as_ref() else {
+                let Some((types, solved)) = last_typecheck.as_mut() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
@@ -607,14 +602,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     loc
                 };
 
-                reporter.report_type_dump_in_region(&program, types, solved, Some(&loc))?;
+                reporter.report_type_dump_in_region(
+                    &program,
+                    &types.storage,
+                    &mut types.look,
+                    solved,
+                    Some(&loc),
+                )?;
             }
             Ok(ReplInput::DumpOrigins) => {
-                let Some((types, solved)) = last_typecheck.as_ref() else {
+                let Some((_types, solved)) = last_typecheck.as_ref() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
-                reporter.report_origin_dump(&program, &types, &solved)?;
+                reporter.report_origin_dump(&program, &solved)?;
             }
             Ok(ReplInput::DumpOriginsOf(name)) => {
                 let Some((_types, solved)) = last_typecheck.as_ref() else {
@@ -669,15 +670,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)? {
+                if let Some((mut types, solved)) = finalize_program(&mut reporter, &mut program)? {
                     for batch in &batches {
-                        print_expr_types(&program, &types, &solved, batch);
+                        print_expr_types(&program, &types.storage, &mut types.look, &solved, batch);
                     }
                     if type_dump {
-                        reporter.report_type_dump(&program, &types, &solved)?;
+                        reporter.report_type_dump(
+                            &program,
+                            &types.storage,
+                            &mut types.look,
+                            &solved,
+                        )?;
                     }
                     if origin_dump {
-                        reporter.report_origin_dump(&program, &types, &solved)?;
+                        reporter.report_origin_dump(&program, &solved)?;
                     }
                     last_typecheck = Some((types, solved));
                 } else {
@@ -689,13 +695,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 next_file_id += 1;
                 reporter.add_source(file_id, input.clone());
                 let batch = parse_source(&mut program, &input, file_id, show_ast);
-                if let Some((types, solved)) = finalize_program(&mut reporter, &mut program)? {
-                    print_expr_types(&program, &types, &solved, &batch);
+                if let Some((mut types, solved)) = finalize_program(&mut reporter, &mut program)? {
+                    print_expr_types(&program, &types.storage, &mut types.look, &solved, &batch);
                     if type_dump {
-                        reporter.report_type_dump(&program, &types, &solved)?;
+                        reporter.report_type_dump(
+                            &program,
+                            &types.storage,
+                            &mut types.look,
+                            &solved,
+                        )?;
                     }
                     if origin_dump {
-                        reporter.report_origin_dump(&program, &types, &solved)?;
+                        reporter.report_origin_dump(&program, &solved)?;
                     }
                     last_typecheck = Some((types, solved));
                 } else {

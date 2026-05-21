@@ -1,7 +1,9 @@
 use crate::ir::{BinOp, UnOp};
 use crate::parsing::{Loc, OTok, ParseError};
 use crate::program::{CompileError, Program};
-use crate::type_system::{SolvedTypes, TypeClash, TypeError, TypeUniverse};
+use crate::type_system::{
+    KindLookUp, KindStorage, SolvedTypes, TypeClash, TypeError, TypeUniverse,
+};
 use ariadne::{Cache, Color, Label, Report, ReportKind, Source};
 use std::collections::HashMap;
 use std::io;
@@ -1035,16 +1037,18 @@ impl ErrorReporter {
     pub fn report_type_dump(
         &self,
         program: &Program,
-        store: &TypeUniverse,
+        store: &KindStorage,
+        look: &mut KindLookUp,
         solved: &SolvedTypes,
     ) -> io::Result<()> {
-        self.report_type_dump_in_region(program, store, solved, None)
+        self.report_type_dump_in_region(program, store, look, solved, None)
     }
 
     pub fn report_type_dump_in_region(
         &self,
         program: &Program,
-        store: &TypeUniverse,
+        store: &KindStorage,
+        look: &mut KindLookUp,
         solved: &SolvedTypes,
         region: Option<&Loc>,
     ) -> io::Result<()> {
@@ -1065,7 +1069,7 @@ impl ErrorReporter {
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("type expr: {}", store.kind_to_string(program, t)),
+                format!("type expr: {}", store.kind_to_string(look, program, t)),
                 Color::Green,
             ));
         }
@@ -1095,7 +1099,7 @@ impl ErrorReporter {
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("pattern: {}", store.kind_to_string(program, t)),
+                format!("pattern: {}", store.kind_to_string(look, program, t)),
                 Color::Cyan,
             ));
         }
@@ -1150,7 +1154,7 @@ impl ErrorReporter {
             }
             labels_by_file.entry(loc.file).or_default().push((
                 loc.range.clone(),
-                format!("value: {}", store.kind_to_string(program, t)),
+                format!("value: {}", store.kind_to_string(look, program, t)),
                 Color::Yellow,
             ));
         }
@@ -1166,7 +1170,7 @@ impl ErrorReporter {
                 format!(
                     "member method `{}`: {}",
                     member_name,
-                    store.kind_to_string(program, member.full_type)
+                    store.kind_to_string(look, program, member.full_type)
                 ),
                 Color::Magenta,
             ));
@@ -1181,7 +1185,7 @@ impl ErrorReporter {
                 loc.range.clone(),
                 format!(
                     "implicit deref chain: {}",
-                    store.deref_chain_to_string(program, chain)
+                    store.deref_chain_to_string(look, program, chain)
                 ),
                 Color::Blue,
             ));
@@ -1212,12 +1216,7 @@ impl ErrorReporter {
         Ok(())
     }
 
-    pub fn report_origin_dump(
-        &self,
-        program: &Program,
-        _store: &TypeUniverse,
-        solved: &SolvedTypes,
-    ) -> io::Result<()> {
+    pub fn report_origin_dump(&self, program: &Program, solved: &SolvedTypes) -> io::Result<()> {
         self.report_origin_dump_in_region(program, solved, None)
     }
 

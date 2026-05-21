@@ -31,12 +31,6 @@ pub struct KindId(pub u32);
 pub struct PtrId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KindArgId(pub usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LifeArgId(pub usize);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LifeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -50,26 +44,8 @@ pub struct OrigId(pub u32);
 
 impl_idx!(StructId, OrigId, GenId, KindId, PtrId, LifeId, MutId);
 
-macro_rules! impl_usize_idx {
-    ($($id:ty),* $(,)?) => {
-        $(
-            impl Idx for $id {
-                fn new(idx: usize) -> Self {
-                    Self(idx)
-                }
-
-                fn index(self) -> usize {
-                    self.0
-                }
-            }
-        )*
-    };
-}
-
-impl_usize_idx!(KindArgId, LifeArgId);
-
-pub type KindSpan = IndexSpan<KindArgId>;
-pub type LifeSpan = IndexSpan<LifeArgId>;
+pub type KindSpan = IndexSpan<KindId>;
+pub type LifeSpan = IndexSpan<LifeId>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct IntKind {
@@ -146,6 +122,8 @@ pub const HARD_CODED_BUILTIN_KINDS: &[BuiltinKind] = {
     use IntSign::*;
     use IntSize::*;
 
+    // Hardcoded ids are global constants. Do not put partial builtin shapes here:
+    // `None` fields are solver variables and can be refined by unification.
     &[
         BuiltinKind::Int(IntKind {
             size: Some(Int),

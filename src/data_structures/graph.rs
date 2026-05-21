@@ -266,6 +266,13 @@ impl<I: Idx> BasicOrder<I> {
     pub fn add_edge(&mut self, from: I, to: I) {
         self.edges[from].insert(to, ());
     }
+
+    pub fn unify(&mut self, a: I, b: I) {
+        // In an order graph, equality is represented as reachability both ways;
+        // SCC collapse is the later phase that turns this into one component.
+        self.add_edge(a, b);
+        self.add_edge(b, a);
+    }
 }
 
 impl<I: Idx> DirectedGraph for BasicOrder<I> {
