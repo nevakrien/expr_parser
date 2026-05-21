@@ -1,8 +1,8 @@
 use super::Projection;
 use super::TypeClash;
 use super::{
-    ArraySize, BuiltinKind, FloatKind, HARD_CODED_BUILTIN_KINDS, IntKind, KindId, KindSpan, LifeId,
-    LifeKind, LifeSpan, MutId, Nullable, PointerStyle, PtrId, StructId, TypeKind,
+    ArraySize, BuiltinKind, FloatKind, HARD_CODED_BUILTIN_KINDS, IntKind, KindId, KindSpan, LifeId,OriginId,
+    LifeKind, LifeSpan, MutId, Nullable, PointerStyle, PtrId, StructId, TypeKind,OriginVec
 };
 use crate::data_structures::graph::BasicOrder;
 use crate::data_structures::identity_hasher::IdHashMap;
@@ -1933,7 +1933,7 @@ pub struct InnerFunctionTypes {
     pub pat_types: IdHashMap<PatId, KindId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<(KindId, Projection)>>,
-    pub origins: OriginVec<OriginNode>,
+    pub origins: OriginVec,
     pub value_origins: IdHashMap<ValId, OriginId>,
     pub pattern_origins: IdHashMap<PatId, OriginId>,
 }
@@ -1944,25 +1944,3 @@ pub struct SolvedMemberMethodAccessType {
     pub full_type: KindId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OriginId(pub u32);
-
-#[derive(Debug, Clone)]
-pub struct OriginVec<T>(pub Vec<T>);
-
-impl<T> Default for OriginVec<T> {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
-
-impl<T> OriginVec<T> {
-    pub fn get(&self, id: OriginId) -> Option<&T> {
-        self.0.get(id.0 as usize)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OriginNode {
-    pub effective_mutability: Option<bool>,
-}

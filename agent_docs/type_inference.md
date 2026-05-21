@@ -154,6 +154,17 @@ is stored as `(KindId, Projection)` in `SolvedTypes`, preserving the deref-chain
 list while attaching the projection kind for each step. The projection data model
 now lives in `src/type_system/operator_solver.rs` rather than in `TypeKind`.
 
+`src/type_system/local_inference.rs` now contains the first direct port scaffold
+for the old local `gather_constraints` pass. It is intentionally conservative:
+simple literals, names, lets, annotations, casts, address-of/deref shape,
+blocks, comparisons, calls, returns, logic, tuples, arrays, and plain assignment
+follow the old traversal order while translating `CId` clusters to `KindId` and
+recording value/pattern origins through `OriginId`. Complex old subsystems that
+do not yet have clean-room equivalents remain explicit `todo!("implement ... as
+seen in old code at ...")` anchors rather than being redesigned in place. Keep
+future ports algorithmically related to the old code unless the surrounding
+clean-room design has first supplied the replacement abstraction.
+
 ## Shape Solver
 
 Shape solving should answer questions like:

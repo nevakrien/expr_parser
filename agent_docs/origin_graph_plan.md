@@ -42,3 +42,13 @@ legality.
 - Final borrow-check interface.
 
 Avoid reintroducing detailed dependencies on legacy `CId`-returning gather code.
+
+## Current Scaffold Note
+
+The active local gather port records value and pattern provenance in
+`InnerFunctionTypes::{origins,value_origins,pattern_origins}` using the existing
+`OriginId` arena. `OriginNode` currently stores only parent links and effective
+mutability; detailed origin kinds/projections are still deferred. This preserves
+the old important property that expression lowering reads the IR graph once and
+threads explicit origin ids forward, while leaving borrow/lifetime validation for
+later phases.

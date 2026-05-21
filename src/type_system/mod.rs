@@ -1,5 +1,6 @@
 mod errors;
 mod kinds;
+mod local_inference;
 mod operator_solver;
 mod origin;
 mod solving;
@@ -17,7 +18,7 @@ use std::error::Error;
 #[allow(clippy::type_complexity)]
 pub fn run_typechecker(
     program: &Program,
-    _reporter: &mut ErrorReporter,
+    reporter: &mut ErrorReporter,
 ) -> Result<(Result<(TypeUniverse, SolvedTypes), usize>, usize), Box<dyn Error>> {
-    Ok((Ok((TypeUniverse::new(), SolvedTypes::new(program))), 0))
+    local_inference::run_typechecker_impl(program, reporter)
 }

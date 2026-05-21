@@ -1,7 +1,11 @@
+use crate::data_structures::index::IndexVec;
 use crate::ir::PatId;
 use crate::ir::ValId;
 use crate::type_system::MutId;
-use crate::type_system::OrigId;
+use crate::type_system::OriginId;
+
+pub type OriginVec = IndexVec<OriginId,Origin>;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Projection {
@@ -43,7 +47,7 @@ pub enum OriginKind {
         val: ValId,
     },
     Derived {
-        parent: OrigId,
+        parent: OriginId,
         proj: Projection,
     },
 }

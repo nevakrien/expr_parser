@@ -37,12 +37,12 @@ pub struct LifeId(pub u32);
 pub struct MutId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OrigId(pub u32);
+pub struct OriginId(pub u32);
 
 // #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // pub struct FKId(pub u32);
 
-impl_idx!(StructId, OrigId, GenId, KindId, PtrId, LifeId, MutId);
+impl_idx!(StructId, OriginId, GenId, KindId, PtrId, LifeId, MutId);
 
 pub type KindSpan = IndexSpan<KindId>;
 pub type LifeSpan = IndexSpan<LifeId>;
