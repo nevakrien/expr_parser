@@ -1039,7 +1039,7 @@ impl ErrorReporter {
         program: &Program,
         store: &KindStorage,
         look: &mut KindLookUp,
-        solved: &SolvedTypes,
+        solved: &mut SolvedTypes,
     ) -> io::Result<()> {
         self.report_type_dump_in_region(program, store, look, solved, None)
     }
@@ -1049,7 +1049,7 @@ impl ErrorReporter {
         program: &Program,
         store: &KindStorage,
         look: &mut KindLookUp,
-        solved: &SolvedTypes,
+        solved: &mut SolvedTypes,
         region: Option<&Loc>,
     ) -> io::Result<()> {
         let mut labels_by_file: HashMap<usize, Vec<(std::ops::Range<usize>, String, Color)>> =
@@ -1074,80 +1074,14 @@ impl ErrorReporter {
             ));
         }
 
-        let mut pattern_entries = solved
-            .function_values
-            .values()
-            .flat_map(|f| {
-                f.arguments
-                    .iter()
-                    .map(|(pat, _name, ty)| (*pat, *ty))
-                    .chain(
-                        f.inner
-                            .as_ref()
-                            .into_iter()
-                            .flat_map(|inner| inner.pat_types.iter().map(|(pat, ty)| (*pat, *ty))),
-                    )
-            })
-            .collect::<Vec<_>>();
-        pattern_entries.sort_unstable_by_key(|(pat, _)| pat.0);
-        pattern_entries.dedup_by_key(|(pat, _)| *pat);
-
-        for (pat, t) in pattern_entries {
-            let loc = program.pattern_loc(pat);
-            if !loc_in_region(&loc, region) {
-                continue;
-            }
-            labels_by_file.entry(loc.file).or_default().push((
-                loc.range.clone(),
-                format!("pattern: {}", store.kind_to_string(look, program, t)),
-                Color::Cyan,
-            ));
-        }
-
-        let mut value_entries = solved
+        let mut function_entries = solved
             .function_values
             .iter()
-            .flat_map(|(function, f)| {
-                std::iter::once((*function, f.ty)).chain(
-                    f.inner
-                        .as_ref()
-                        .into_iter()
-                        .flat_map(|inner| inner.val_types.iter().map(|(val, ty)| (*val, *ty))),
-                )
-            })
+            .map(|(function, f)| (*function, f.ty))
             .collect::<Vec<_>>();
-        value_entries.sort_unstable_by_key(|(site, _)| site.0);
-        value_entries.dedup_by_key(|(site, _)| *site);
+        function_entries.sort_unstable_by_key(|(site, _)| site.0);
 
-        let mut member_entries = solved
-            .function_values
-            .values()
-            .flat_map(|f| {
-                f.inner.as_ref().into_iter().flat_map(|inner| {
-                    inner
-                        .member_method_types
-                        .iter()
-                        .map(|(site, member)| (*site, *member))
-                })
-            })
-            .collect::<Vec<_>>();
-        member_entries.sort_unstable_by_key(|(site, _)| site.0);
-
-        let mut deref_entries = solved
-            .function_values
-            .values()
-            .flat_map(|f| {
-                f.inner.as_ref().into_iter().flat_map(|inner| {
-                    inner
-                        .implicit_derefs
-                        .iter()
-                        .map(|(site, chain)| (*site, chain.as_slice()))
-                })
-            })
-            .collect::<Vec<_>>();
-        deref_entries.sort_unstable_by_key(|(site, _)| site.0);
-
-        for (site, t) in value_entries {
+        for (site, t) in function_entries {
             let loc = program.value_loc(site);
             if !loc_in_region(&loc, region) {
                 continue;
@@ -1159,36 +1093,155 @@ impl ErrorReporter {
             ));
         }
 
-        for (site, member) in member_entries {
-            let loc = program.value_loc(site);
-            if !loc_in_region(&loc, region) {
-                continue;
-            }
-            let member_name = program.str_intern.resolve(member.member);
-            labels_by_file.entry(loc.file).or_default().push((
-                loc.range.clone(),
-                format!(
-                    "member method `{}`: {}",
-                    member_name,
-                    store.kind_to_string(look, program, member.full_type)
-                ),
-                Color::Magenta,
-            ));
-        }
+        for f in solved.function_values.values_mut() {
+            if let Some(inner) = f.inner.as_mut() {
+                let universe = &mut inner.my_universe;
 
-        for (site, chain) in deref_entries {
-            let loc = program.value_loc(site);
-            if !loc_in_region(&loc, region) {
-                continue;
+                let mut argument_entries = f
+                    .arguments
+                    .iter()
+                    .map(|(pat, _name, ty)| (*pat, *ty))
+                    .collect::<Vec<_>>();
+                argument_entries.sort_unstable_by_key(|(pat, _)| pat.0);
+
+                for (pat, t) in argument_entries {
+                    let loc = program.pattern_loc(pat);
+                    if !loc_in_region(&loc, region) {
+                        continue;
+                    }
+                    labels_by_file.entry(loc.file).or_default().push((
+                        loc.range.clone(),
+                        format!(
+                            "pattern: {}",
+                            universe
+                                .storage
+                                .kind_to_string(&mut universe.look, program, t)
+                        ),
+                        Color::Cyan,
+                    ));
+                }
+
+                let mut pattern_entries = inner
+                    .pat_types
+                    .iter()
+                    .map(|(pat, ty)| (*pat, *ty))
+                    .collect::<Vec<_>>();
+                pattern_entries.sort_unstable_by_key(|(pat, _)| pat.0);
+
+                for (pat, t) in pattern_entries {
+                    let loc = program.pattern_loc(pat);
+                    if !loc_in_region(&loc, region) {
+                        continue;
+                    }
+                    labels_by_file.entry(loc.file).or_default().push((
+                        loc.range.clone(),
+                        format!(
+                            "pattern: {}",
+                            universe
+                                .storage
+                                .kind_to_string(&mut universe.look, program, t)
+                        ),
+                        Color::Cyan,
+                    ));
+                }
+
+                let mut value_entries = inner
+                    .val_types
+                    .iter()
+                    .map(|(val, ty)| (*val, *ty))
+                    .collect::<Vec<_>>();
+                value_entries.sort_unstable_by_key(|(site, _)| site.0);
+
+                for (site, t) in value_entries {
+                    let loc = program.value_loc(site);
+                    if !loc_in_region(&loc, region) {
+                        continue;
+                    }
+                    labels_by_file.entry(loc.file).or_default().push((
+                        loc.range.clone(),
+                        format!(
+                            "value: {}",
+                            universe
+                                .storage
+                                .kind_to_string(&mut universe.look, program, t)
+                        ),
+                        Color::Yellow,
+                    ));
+                }
+
+                let mut member_entries = inner
+                    .member_method_types
+                    .iter()
+                    .map(|(site, member)| (*site, *member))
+                    .collect::<Vec<_>>();
+                member_entries.sort_unstable_by_key(|(site, _)| site.0);
+
+                for (site, member) in member_entries {
+                    let loc = program.value_loc(site);
+                    if !loc_in_region(&loc, region) {
+                        continue;
+                    }
+                    let member_name = program.str_intern.resolve(member.member);
+                    labels_by_file.entry(loc.file).or_default().push((
+                        loc.range.clone(),
+                        format!(
+                            "member method `{}`: {}",
+                            member_name,
+                            universe.storage.kind_to_string(
+                                &mut universe.look,
+                                program,
+                                member.full_type,
+                            )
+                        ),
+                        Color::Magenta,
+                    ));
+                }
+
+                let mut deref_entries = inner
+                    .implicit_derefs
+                    .iter()
+                    .map(|(site, chain)| (*site, chain.clone()))
+                    .collect::<Vec<_>>();
+                deref_entries.sort_unstable_by_key(|(site, _)| site.0);
+
+                for (site, chain) in deref_entries {
+                    let loc = program.value_loc(site);
+                    if !loc_in_region(&loc, region) {
+                        continue;
+                    }
+                    labels_by_file.entry(loc.file).or_default().push((
+                        loc.range.clone(),
+                        format!(
+                            "implicit deref chain: {}",
+                            universe.storage.deref_chain_to_string(
+                                &mut universe.look,
+                                program,
+                                &chain,
+                            )
+                        ),
+                        Color::Blue,
+                    ));
+                }
+            } else {
+                let mut argument_entries = f
+                    .arguments
+                    .iter()
+                    .map(|(pat, _name, ty)| (*pat, *ty))
+                    .collect::<Vec<_>>();
+                argument_entries.sort_unstable_by_key(|(pat, _)| pat.0);
+
+                for (pat, t) in argument_entries {
+                    let loc = program.pattern_loc(pat);
+                    if !loc_in_region(&loc, region) {
+                        continue;
+                    }
+                    labels_by_file.entry(loc.file).or_default().push((
+                        loc.range.clone(),
+                        format!("pattern: {}", store.kind_to_string(look, program, t)),
+                        Color::Cyan,
+                    ));
+                }
             }
-            labels_by_file.entry(loc.file).or_default().push((
-                loc.range.clone(),
-                format!(
-                    "implicit deref chain: {}",
-                    store.deref_chain_to_string(look, program, chain)
-                ),
-                Color::Blue,
-            ));
         }
 
         if labels_by_file.is_empty() {
@@ -1216,34 +1269,43 @@ impl ErrorReporter {
         Ok(())
     }
 
-    pub fn report_origin_dump(&self, program: &Program, solved: &SolvedTypes) -> io::Result<()> {
+    pub fn report_origin_dump(
+        &self,
+        program: &Program,
+        solved: &mut SolvedTypes,
+    ) -> io::Result<()> {
         self.report_origin_dump_in_region(program, solved, None)
     }
 
     pub fn report_origin_dump_in_region(
         &self,
         program: &Program,
-        solved: &SolvedTypes,
+        solved: &mut SolvedTypes,
         region: Option<&Loc>,
     ) -> io::Result<()> {
         let mut labels_by_file: HashMap<usize, Vec<(std::ops::Range<usize>, String, Color)>> =
             HashMap::new();
 
-        for f in solved.function_values.values() {
-            let Some(inner) = &f.inner else { continue };
+        for f in solved.function_values.values_mut() {
+            let Some(inner) = f.inner.as_mut() else {
+                continue;
+            };
+            let universe = &mut inner.my_universe;
 
             for (val, origin) in &inner.value_origins {
-                let Some(origin_node) = inner.origins.get(*origin) else {
+                let Some(origin_node) = universe.storage.get_origin(&mut universe.look, *origin)
+                else {
                     continue;
                 };
                 let loc = program.value_loc(*val);
                 if !loc_in_region(&loc, region) {
                     continue;
                 }
-                let mutability = origin_node
-                    .effective_mutability
-                    .map(|m| if m { "mut" } else { "immut" })
-                    .unwrap_or("unknown");
+                let mutability = if universe.look.mutable.get_guess(origin_node.mutability).unwrap_or(false) {
+                    "mut"
+                } else {
+                    "immut"
+                };
                 labels_by_file.entry(loc.file).or_default().push((
                     loc.range.clone(),
                     format!("origin: {} (mut: {})", origin.0, mutability),
@@ -1252,17 +1314,19 @@ impl ErrorReporter {
             }
 
             for (pat, origin) in &inner.pattern_origins {
-                let Some(origin_node) = inner.origins.get(*origin) else {
+                let Some(origin_node) = universe.storage.get_origin(&mut universe.look, *origin)
+                else {
                     continue;
                 };
                 let loc = program.pattern_loc(*pat);
                 if !loc_in_region(&loc, region) {
                     continue;
                 }
-                let mutability = origin_node
-                    .effective_mutability
-                    .map(|m| if m { "mut" } else { "immut" })
-                    .unwrap_or("unknown");
+                let mutability = if universe.look.mutable.get_guess(origin_node.mutability).unwrap_or(false) {
+                    "mut"
+                } else {
+                    "immut"
+                };
                 labels_by_file.entry(loc.file).or_default().push((
                     loc.range.clone(),
                     format!("origin: {} (mut: {})", origin.0, mutability),

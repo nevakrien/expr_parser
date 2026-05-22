@@ -1,8 +1,9 @@
 use super::Projection;
 use super::TypeClash;
 use super::{
-    ArraySize, BuiltinKind, FloatKind, HARD_CODED_BUILTIN_KINDS, IntKind, KindId, KindSpan, LifeId,OriginId,
-    LifeKind, LifeSpan, MutId, Nullable, PointerStyle, PtrId, StructId, TypeKind,OriginVec
+    ArraySize, BuiltinKind, FloatKind, HARD_CODED_BUILTIN_KINDS, IntKind, KindId, KindSpan, LifeId,
+    LifeKind, LifeSpan, MutId, Nullable, Origin, OriginId, OriginVec, PointerStyle, PtrId,
+    StructId, TypeKind,
 };
 use crate::data_structures::graph::BasicOrder;
 use crate::data_structures::identity_hasher::IdHashMap;
@@ -13,11 +14,13 @@ use crate::program::Program;
 use std::collections::{BTreeSet, HashMap};
 use std::ops::{Index, IndexMut};
 
+#[derive(Debug)]
 pub struct TypeUniverse {
     pub look: KindLookUp,
     pub storage: KindStorage,
 }
 
+#[derive(Debug)]
 pub struct TypeIntern {
     map: IdHashMap<TypeKind, KindId>,
     pub storage: IndexVec<KindId, Option<TypeKind>>,
@@ -405,12 +408,15 @@ pub enum MutSetRes {
     Ok(bool),
 }
 
+#[derive(Debug)]
 pub struct KindLookUp {
-    pub kinds: UnionFind<KindId>,
-    pub ptr: UnionFind<PtrId>,
+    kinds: UnionFind<KindId>,
+    ptr: UnionFind<PtrId>,
     pub mutable: MutInfo,
-    pub life_roots: UnionFind<LifeId>,
-    pub life_order: BasicOrder<LifeId>,
+    origin: UnionFind<OriginId>,
+
+    life_roots: UnionFind<LifeId>,
+    life_order: BasicOrder<LifeId>,
 }
 
 impl KindLookUp {
@@ -418,6 +424,7 @@ impl KindLookUp {
         Self {
             kinds: UnionFind::new(),
             ptr: UnionFind::new(),
+            origin: UnionFind::new(),
             mutable: MutInfo::new(),
             life_roots: UnionFind::new(),
             life_order: BasicOrder::new(),
@@ -441,10 +448,12 @@ impl Default for KindLookUp {
     }
 }
 
+#[derive(Debug)]
 pub struct KindStorage {
     pub types: TypeIntern,
     pub structs: IndexVec<StructId, StructInfo>,
     ptr: IndexVec<PtrId, Option<PointerStyle>>,
+    origin: OriginVec,
     pub life: IndexVec<LifeId, Option<LifeKind>>,
     kind_arg_spans: HashMap<Vec<KindId>, KindSpan>,
     life_arg_spans: HashMap<Vec<LifeId>, LifeSpan>,
@@ -462,6 +471,7 @@ impl KindStorage {
             types: TypeIntern::new(),
             structs: IndexVec::new(),
             ptr: IndexVec::new(),
+            origin: OriginVec::new(),
             life: IndexVec::new(),
             kind_arg_spans: HashMap::new(),
             life_arg_spans: HashMap::new(),
@@ -484,6 +494,16 @@ impl KindStorage {
     /// arg `id` is required to be its own root.
     fn __get_root(&self, id: KindId) -> Option<&TypeKind> {
         self.types[id].as_ref()
+    }
+
+    pub fn get_origin<'a>(&'a self, look: &mut KindLookUp, id: OriginId) -> Option<&'a Origin> {
+        let root = look.origin.find_root(id);
+        self.__get_origin(root)
+    }
+
+    /// arg `id` is required to be its own root.
+    fn __get_origin(&self, id: OriginId) -> Option<&Origin> {
+        self.origin[id].as_ref()
     }
 }
 
@@ -536,6 +556,13 @@ impl TypeUniverse {
     pub fn add_ptr_style(&mut self, style: Option<PointerStyle>) -> PtrId {
         let id = self.storage.ptr.push(style);
         let root_id = self.look.ptr.push_singleton();
+        debug_assert_eq!(id, root_id);
+        id
+    }
+
+    pub fn add_origin(&mut self, origin: Option<Origin>) -> OriginId {
+        let id = self.storage.origin.push(origin);
+        let root_id = self.look.origin.push_singleton();
         debug_assert_eq!(id, root_id);
         id
     }
@@ -1916,7 +1943,7 @@ impl SolvedTypes {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SolvedFunctionTypes {
     pub ty: KindId,
     pub impl_site: Option<ValId>,
@@ -1927,13 +1954,13 @@ pub struct SolvedFunctionTypes {
     pub inner: Option<InnerFunctionTypes>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct InnerFunctionTypes {
+    pub my_universe: TypeUniverse,
     pub val_types: IdHashMap<ValId, KindId>,
     pub pat_types: IdHashMap<PatId, KindId>,
     pub member_method_types: IdHashMap<ValId, SolvedMemberMethodAccessType>,
     pub implicit_derefs: IdHashMap<ValId, Vec<(KindId, Projection)>>,
-    pub origins: OriginVec,
     pub value_origins: IdHashMap<ValId, OriginId>,
     pub pattern_origins: IdHashMap<PatId, OriginId>,
 }
@@ -1943,4 +1970,3 @@ pub struct SolvedMemberMethodAccessType {
     pub member: StrId,
     pub full_type: KindId,
 }
-

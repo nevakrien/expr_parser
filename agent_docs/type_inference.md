@@ -149,6 +149,9 @@ and debug dumps: `function_values`, inner value/pattern types, member method
 accesses, implicit deref records, and origin dump data remain present, but all
 old type ids are now `KindId`s and printing goes through root-compressing
 `KindStorage::kind_to_string(&mut KindLookUp, ...)`.
+Local dump/reporting paths must render any `InnerFunctionTypes` ids against that
+function's `my_universe`; only the external function signature and other global
+definitions live in the outer/global `TypeUniverse`.
 Implicit derefs currently use the old solved-data model again: each recorded hop
 is stored as `(KindId, Projection)` in `SolvedTypes`, preserving the deref-chain
 list while attaching the projection kind for each step. The projection data model

@@ -503,12 +503,12 @@ fn run_stdin_batch(options: CliOptions) -> Result<(), Box<dyn std::error::Error>
     reporter.add_source(0, input.clone());
     let _batch = parse_source(&mut program, &input, 0, options.show_ast);
 
-    if let Some((mut types, solved)) = finalize_program(&mut reporter, &mut program)? {
+    if let Some((mut types, mut solved)) = finalize_program(&mut reporter, &mut program)? {
         if options.type_dump {
-            reporter.report_type_dump(&program, &types.storage, &mut types.look, &solved)?;
+            reporter.report_type_dump(&program, &types.storage, &mut types.look, &mut solved)?;
         }
         if options.origin_dump {
-            reporter.report_origin_dump(&program, &solved)?;
+            reporter.report_origin_dump(&program, &mut solved)?;
         }
     }
 
@@ -611,14 +611,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )?;
             }
             Ok(ReplInput::DumpOrigins) => {
-                let Some((_types, solved)) = last_typecheck.as_ref() else {
+                let Some((_types, solved)) = last_typecheck.as_mut() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
                 reporter.report_origin_dump(&program, solved)?;
             }
             Ok(ReplInput::DumpOriginsOf(name)) => {
-                let Some((_types, solved)) = last_typecheck.as_ref() else {
+                let Some((_types, solved)) = last_typecheck.as_mut() else {
                     println!("No successful typecheck yet. Enter code first.");
                     continue;
                 };
@@ -670,7 +670,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     continue;
                 }
 
-                if let Some((mut types, solved)) = finalize_program(&mut reporter, &mut program)? {
+                if let Some((mut types, mut solved)) =
+                    finalize_program(&mut reporter, &mut program)?
+                {
                     for batch in &batches {
                         print_expr_types(&program, &types.storage, &mut types.look, &solved, batch);
                     }
@@ -679,11 +681,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             &program,
                             &types.storage,
                             &mut types.look,
-                            &solved,
+                            &mut solved,
                         )?;
                     }
                     if origin_dump {
-                        reporter.report_origin_dump(&program, &solved)?;
+                        reporter.report_origin_dump(&program, &mut solved)?;
                     }
                     last_typecheck = Some((types, solved));
                 } else {
@@ -695,18 +697,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 next_file_id += 1;
                 reporter.add_source(file_id, input.clone());
                 let batch = parse_source(&mut program, &input, file_id, show_ast);
-                if let Some((mut types, solved)) = finalize_program(&mut reporter, &mut program)? {
+                if let Some((mut types, mut solved)) =
+                    finalize_program(&mut reporter, &mut program)?
+                {
                     print_expr_types(&program, &types.storage, &mut types.look, &solved, &batch);
                     if type_dump {
                         reporter.report_type_dump(
                             &program,
                             &types.storage,
                             &mut types.look,
-                            &solved,
+                            &mut solved,
                         )?;
                     }
                     if origin_dump {
-                        reporter.report_origin_dump(&program, &solved)?;
+                        reporter.report_origin_dump(&program, &mut solved)?;
                     }
                     last_typecheck = Some((types, solved));
                 } else {
