@@ -408,6 +408,10 @@ pub enum MutSetRes {
     Ok(bool),
 }
 
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutliveReason;
+
 #[derive(Debug)]
 pub struct KindLookUp {
     kinds: UnionFind<KindId>,
@@ -415,8 +419,7 @@ pub struct KindLookUp {
     pub mutable: MutInfo,
     origin: UnionFind<OriginId>,
 
-    life_roots: UnionFind<LifeId>,
-    life_order: BasicOrder<LifeId>,
+    life_order: BasicOrder<LifeId,OutliveReason>,
 }
 
 impl KindLookUp {
@@ -426,7 +429,6 @@ impl KindLookUp {
             ptr: UnionFind::new(),
             origin: UnionFind::new(),
             mutable: MutInfo::new(),
-            life_roots: UnionFind::new(),
             life_order: BasicOrder::new(),
         }
     }
@@ -437,9 +439,6 @@ impl KindLookUp {
         self.kinds.find_root(id)
     }
 
-    pub fn life_root(&mut self, id: LifeId) -> LifeId {
-        self.life_roots.find_root(id)
-    }
 }
 
 impl Default for KindLookUp {
@@ -546,9 +545,7 @@ impl TypeUniverse {
 
     pub fn add_life(&mut self, life: Option<LifeKind>) -> LifeId {
         let id = self.storage.life.push(life);
-        let root_id = self.look.life_roots.push_singleton();
         let order_id = self.look.life_order.add_node();
-        debug_assert_eq!(id, root_id);
         debug_assert_eq!(id, order_id);
         id
     }
@@ -919,25 +916,13 @@ impl TypeUniverse {
     }
 
     fn merge_life(&mut self, dst: LifeId, src: LifeId) -> Option<LifeId> {
-        let dst = self.look.life_root(dst);
-        let src = self.look.life_root(src);
 
         if dst == src {
             return Some(dst);
         }
 
-        let dst_life = self.storage.life[dst];
-        let src_life = self.storage.life[src];
-        let merged = match (dst_life, src_life) {
-            (_, None) => dst_life,
-            (None, Some(life)) => Some(life),
-            (Some(dst_life), Some(src_life)) if dst_life == src_life => Some(dst_life),
-            _ => return None,
-        };
-        self.storage.life[dst] = merged;
-        self.storage.life[src] = merged;
-        self.look.life_roots[src] = dst;
-        self.look.life_order.unify(dst, src);
+        //record the actual path so later finding things isnt confusing
+        self.look.life_order.unify(dst, src,OutliveReason);
         Some(dst)
     }
 
@@ -989,13 +974,14 @@ impl TypeUniverse {
                 if has_lifes || has_gens {
                     out.push('[');
                     let mut needs_sep = false;
-                    for idx in 0..lifes.len() {
-                        if needs_sep {
-                            out.push_str(", ");
-                        }
-                        self.write_life_for_clash(self.life_span_item(lifes, idx), out);
-                        needs_sep = true;
-                    }
+                    // // for now we dont want to show life for clashes
+                    // for idx in 0..lifes.len() {
+                    //     if needs_sep {
+                    //         out.push_str(", ");
+                    //     }
+                    //     self.write_life_for_clash(self.life_span_item(lifes, idx), out);
+                    //     needs_sep = true;
+                    // }
                     for idx in 0..gens.len() {
                         if needs_sep {
                             out.push_str(", ");
@@ -1044,10 +1030,9 @@ impl TypeUniverse {
                             out.push_str("?mut ");
                         }
                     }
-                    Some(PointerStyle::Ref(life)) => {
+                    Some(PointerStyle::Ref(_life)) => {
                         out.push('&');
-                        self.write_life_for_clash(life, out);
-                        out.push(' ');
+                        //we dont show lifetimes for type clashes.
                         if mutable == Some(true) {
                             out.push_str("mut ");
                         } else if mutable.is_none() {
@@ -1066,17 +1051,6 @@ impl TypeUniverse {
                 }
                 self.write_kind_for_clash(tgt, depth + 1, out);
             }
-        }
-    }
-
-    fn write_life_for_clash(&mut self, id: LifeId, out: &mut String) {
-        let id = self.look.life_root(id);
-        match self.storage.life.get(id).copied().flatten() {
-            Some(LifeKind::Static) => out.push_str("'static"),
-            Some(LifeKind::Univeral(Some(id))) => out.push_str(&format!("'a{id}")),
-            Some(LifeKind::Univeral(None)) => out.push_str("'a"),
-            Some(LifeKind::Local) => out.push_str("'local"),
-            None => out.push_str("'_"),
         }
     }
 
@@ -1242,7 +1216,9 @@ impl KindStorage {
                     }
                     Some(PointerStyle::Ref(life)) => {
                         out.push('&');
-                        self.write_life(look, program, life, out);
+                        if false {
+                            self.write_life(look, program, life, out);
+                        }
                         out.push(' ');
                         match mutable {
                             MutGuess::Const => {}
@@ -1263,20 +1239,25 @@ impl KindStorage {
     }
 
     fn write_life(&self, look: &mut KindLookUp, _program: &Program, id: LifeId, out: &mut String) {
-        let id = look.life_root(id);
-        match self.__life_root(id) {
-            Some(LifeKind::Static) => out.push_str("'static"),
-            Some(LifeKind::Univeral(Some(id))) => out.push_str(&format!("'a{id}")),
-            Some(LifeKind::Univeral(None)) => out.push_str("'a"),
-            Some(LifeKind::Local) => out.push_str("'local"),
-            None => out.push_str("'_"),
-        }
+        //TODO use the solved lifetime SCC+SparseMatrix to get a good aproximation
+        //of what exactly is the original lifetime
+        //this should probably not be used most the time... but its a nice feature
+        todo!()
+
+        // let id = look.life_root(id);
+        // match self.__life_root(id) {
+        //     Some(LifeKind::Static) => out.push_str("'static"),
+        //     Some(LifeKind::Univeral(Some(id))) => out.push_str(&format!("'a{id}")),
+        //     Some(LifeKind::Univeral(None)) => out.push_str("'a"),
+        //     Some(LifeKind::Local) => out.push_str("'local"),
+        //     None => out.push_str("'_"),
+        // }
     }
 
-    /// arg `id` is required to be its own root.
-    fn __life_root(&self, id: LifeId) -> Option<LifeKind> {
-        self.life.get(id).copied().flatten()
-    }
+    // /// arg `id` is required to be its own root.
+    // fn __life_root(&self, id: LifeId) -> Option<LifeKind> {
+    //     self.life.get(id).copied().flatten()
+    // }
 }
 
 impl Default for TypeUniverse {
