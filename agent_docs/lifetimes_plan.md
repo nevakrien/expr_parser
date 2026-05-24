@@ -1,12 +1,7 @@
-# Lifetime Refactor Direction
+# Lifetime Direction
 
-The previous detailed lifetime plan described the old hybrid implementation and
-should not be used as the active architecture. The old version is available in
-the local detached snapshot of GitHub `main`:
-
-```text
-/home/user/Desktop/rust_stuff/expr_parser/expr_parse_pre
-```
+The old lifetime implementation mixed ordering, equality, type shape, and
+diagnostics. Treat it as legacy reference material only.
 
 The new direction is to make lifetimes a separate graph/order phase after type
 shape solving, not a set of special cases inside the shape solver.
@@ -52,7 +47,7 @@ retroactive reconstruction unless it is temporary scaffolding for the refactor.
 
 ## Open Design Points
 
-- Exact origin representation after the clean-room type-system rewrite.
+- Exact origin representation.
 - How declaration where-clauses are replayed through generic specialization.
 - Which implicit casts/reborrows remain type obligations vs borrow-check facts.
 - What metadata the future middle IR needs from type solving.

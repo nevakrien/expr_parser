@@ -95,8 +95,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Err(type_error_count) = result {
             println!("Type errors: {type_error_count}");
         }
-        if let Ok((mut store, solved)) = result {
-            reporter.report_type_dump(&program, &store.storage, &mut store.look, &solved)?;
+        if let Ok((mut store, mut solved)) = result {
+            reporter.report_type_dump(&program, &store.storage, &mut store.look, &mut solved)?;
         }
     }
     Ok(())

@@ -1,8 +1,7 @@
 # Mutability Testing Direction
 
-The previous mutability fuzzing sketch was tied to the old solver. Keep the
-testing idea, but do not treat the old implementation details as current
-architecture.
+Keep the template-generated testing idea, but do not copy legacy solver details
+into the current architecture.
 
 ## Useful Idea To Preserve
 

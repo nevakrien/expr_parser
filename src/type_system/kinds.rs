@@ -34,6 +34,13 @@ pub struct PtrId(pub u32);
 pub struct LifeId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UniversalLifeId(pub u32);
+
+impl UniversalLifeId {
+    pub const STATIC: Self = Self(0);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MutId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,7 +49,16 @@ pub struct OriginId(pub u32);
 // #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 // pub struct FKId(pub u32);
 
-impl_idx!(StructId, OriginId, GenId, KindId, PtrId, LifeId, MutId);
+impl_idx!(
+    StructId,
+    OriginId,
+    GenId,
+    KindId,
+    PtrId,
+    LifeId,
+    UniversalLifeId,
+    MutId
+);
 
 pub type KindSpan = IndexSpan<KindId>;
 pub type LifeSpan = IndexSpan<LifeId>;
@@ -232,8 +248,7 @@ pub enum Nullable {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LifeKind {
-    Static,
-    Univeral(Option<u32>),
+    Univeral(Option<UniversalLifeId>),
     Local,
 }
 

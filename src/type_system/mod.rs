@@ -1,16 +1,16 @@
 mod errors;
 mod kinds;
+mod lifetime_solve;
 mod local_inference;
 mod operator_solver;
 mod origin;
 mod solving;
-mod lifetime_solve;
 
 pub use errors::*;
 pub use kinds::*;
+pub use lifetime_solve::*;
 pub use operator_solver::*;
 pub use origin::*;
-pub use lifetime_solve::*;
 pub use solving::*;
 
 use crate::error_reporting::ErrorReporter;

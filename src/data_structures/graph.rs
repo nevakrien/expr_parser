@@ -246,11 +246,11 @@ pub fn tarjan<G: DirectedGraph>(graph: &G) -> SCCS<G::Node> {
 
 ///similar to a classic union find but with A >= B style edges as well
 #[derive(Debug)]
-pub struct BasicOrder<I: Idx,T=()> {
+pub struct BasicOrder<I: Idx, T = ()> {
     edges: IndexVec<I, IdHashMap<I, T>>,
 }
 
-impl<I: Idx,T> BasicOrder<I,T> {
+impl<I: Idx, T> BasicOrder<I, T> {
     pub fn new() -> Self {
         BasicOrder {
             edges: IndexVec::new(),
@@ -261,14 +261,17 @@ impl<I: Idx,T> BasicOrder<I,T> {
         self.edges.push(IdHashMap::default())
     }
 
-    pub fn add_edge(&mut self, from: I, to: I , label : T) {
-        self.edges[from].insert(to,label);
+    pub fn add_edge(&mut self, from: I, to: I, label: T) {
+        self.edges[from].insert(to, label);
     }
 
-    pub fn unify(&mut self, a: I, b: I , label : T) where T:Clone{
+    pub fn unify(&mut self, a: I, b: I, label: T)
+    where
+        T: Clone,
+    {
         // In an order graph, equality is represented as reachability both ways;
         // SCC collapse is the later phase that turns this into one component.
-        self.add_edge(a, b , label.clone());
+        self.add_edge(a, b, label.clone());
         self.add_edge(b, a, label);
     }
 }
@@ -279,7 +282,7 @@ impl<I: Idx> Default for BasicOrder<I> {
     }
 }
 
-impl<I: Idx> DirectedGraph for BasicOrder<I> {
+impl<I: Idx, T> DirectedGraph for BasicOrder<I, T> {
     type Node = I;
     fn num_nodes(&self) -> usize {
         self.edges.len()

@@ -1,13 +1,7 @@
-# Origin / Provenance Refactor Direction
+# Origin / Provenance Direction
 
-The previous origin graph plan targeted the old local type-inference data model.
-It has been replaced by this high-level direction for the clean-room type-system
-rewrite. The old plan remains available in the local detached snapshot of
-GitHub `main`:
-
-```text
-/home/user/Desktop/rust_stuff/expr_parser/expr_parse_pre
-```
+The old origin graph plan targeted the legacy local type-inference data model.
+Treat that detail as reference material only.
 
 ## Goal
 
@@ -19,8 +13,7 @@ should be id-backed and stable enough for diagnostics and downstream IR passes.
 
 Shape solving may create pointer shapes and attach `PtrInfoId`s. It should record
 origin/provenance obligations when an operation creates or transforms a
-reference-like value, but it should not walk old AST side tables to prove borrow
-legality.
+reference-like value, but it should not prove borrow legality.
 
 ## Desired Properties
 
@@ -33,7 +26,7 @@ legality.
 - Function returns should get their own origin even when their lifetime is tied
   to an input.
 
-## Deferred Until New Core Exists
+## Deferred Details
 
 - Exact origin node enum.
 - Exact storage location in solved function metadata.
@@ -41,14 +34,12 @@ legality.
   lowering.
 - Final borrow-check interface.
 
-Avoid reintroducing detailed dependencies on legacy `CId`-returning gather code.
-
 ## Current Scaffold Note
 
-The active local gather port records value and pattern provenance in
-`InnerFunctionTypes::{origins,value_origins,pattern_origins}` using the existing
-`OriginId` arena. `OriginNode` currently stores only parent links and effective
-mutability; detailed origin kinds/projections are still deferred. This preserves
-the old important property that expression lowering reads the IR graph once and
-threads explicit origin ids forward, while leaving borrow/lifetime validation for
-later phases.
+`OriginId`/`Origin` are defined in `src/type_system/origin.rs`. Current origin
+nodes can represent function arguments, locals, globals, transients, and derived
+values with a `Projection`; each origin also carries effective mutability.
+
+`InnerFunctionTypes` has `value_origins` and `pattern_origins` maps for solved
+function metadata. Detailed validation and final borrow/lifetime checks are
+still deferred.

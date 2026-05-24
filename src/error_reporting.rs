@@ -1301,7 +1301,12 @@ impl ErrorReporter {
                 if !loc_in_region(&loc, region) {
                     continue;
                 }
-                let mutability = if universe.look.mutable.get_guess(origin_node.mutability).unwrap_or(false) {
+                let mutability = if universe
+                    .look
+                    .mutable
+                    .get_guess(origin_node.mutability)
+                    .unwrap_or(false)
+                {
                     "mut"
                 } else {
                     "immut"
@@ -1322,7 +1327,12 @@ impl ErrorReporter {
                 if !loc_in_region(&loc, region) {
                     continue;
                 }
-                let mutability = if universe.look.mutable.get_guess(origin_node.mutability).unwrap_or(false) {
+                let mutability = if universe
+                    .look
+                    .mutable
+                    .get_guess(origin_node.mutability)
+                    .unwrap_or(false)
+                {
                     "mut"
                 } else {
                     "immut"

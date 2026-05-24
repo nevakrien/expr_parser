@@ -3,9 +3,11 @@ use super::TypeClash;
 use super::{
     ArraySize, BuiltinKind, FloatKind, HARD_CODED_BUILTIN_KINDS, IntKind, KindId, KindSpan, LifeId,
     LifeKind, LifeSpan, MutId, Nullable, Origin, OriginId, OriginVec, PointerStyle, PtrId,
-    StructId, TypeKind,
+    StructId, TypeKind, UniversalLifeId,
 };
 use crate::data_structures::graph::BasicOrder;
+#[cfg(test)]
+use crate::data_structures::graph::tarjan;
 use crate::data_structures::identity_hasher::IdHashMap;
 use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::data_structures::string_intern::StrId;
@@ -408,9 +410,11 @@ pub enum MutSetRes {
     Ok(bool),
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OutliveReason;
+
+pub type LifeOrder = BasicOrder<LifeId, OutliveReason>;
+pub type LifeInfo = IndexVec<LifeId, Option<LifeKind>>;
 
 #[derive(Debug)]
 pub struct KindLookUp {
@@ -419,7 +423,7 @@ pub struct KindLookUp {
     pub mutable: MutInfo,
     origin: UnionFind<OriginId>,
 
-    life_order: BasicOrder<LifeId,OutliveReason>,
+    life_order: LifeOrder,
 }
 
 impl KindLookUp {
@@ -438,7 +442,6 @@ impl KindLookUp {
     pub fn kind_root(&mut self, id: KindId) -> KindId {
         self.kinds.find_root(id)
     }
-
 }
 
 impl Default for KindLookUp {
@@ -453,7 +456,7 @@ pub struct KindStorage {
     pub structs: IndexVec<StructId, StructInfo>,
     ptr: IndexVec<PtrId, Option<PointerStyle>>,
     origin: OriginVec,
-    pub life: IndexVec<LifeId, Option<LifeKind>>,
+    pub life: LifeInfo,
     kind_arg_spans: HashMap<Vec<KindId>, KindSpan>,
     life_arg_spans: HashMap<Vec<LifeId>, LifeSpan>,
     // pub func_style:IndexVec<FKId,Option<>>,
@@ -548,6 +551,10 @@ impl TypeUniverse {
         let order_id = self.look.life_order.add_node();
         debug_assert_eq!(id, order_id);
         id
+    }
+
+    pub fn add_static_life(&mut self) -> LifeId {
+        self.add_life(Some(LifeKind::Univeral(Some(UniversalLifeId::STATIC))))
     }
 
     pub fn add_ptr_style(&mut self, style: Option<PointerStyle>) -> PtrId {
@@ -658,6 +665,24 @@ impl TypeUniverse {
 
     pub fn get(&mut self, id: KindId) -> Option<&TypeKind> {
         self.storage.get(&mut self.look, id)
+    }
+
+    pub fn ptr_style(&mut self, id: PtrId) -> Option<PointerStyle> {
+        let root = self.look.ptr.find_root(id);
+        self.storage.ptr[root]
+    }
+
+    pub fn life_kind(&self, id: LifeId) -> Option<LifeKind> {
+        self.storage.life.get(id).copied().flatten()
+    }
+
+    pub fn require_lifetime_outlives(
+        &mut self,
+        longer: LifeId,
+        shorter: LifeId,
+        reason: OutliveReason,
+    ) {
+        self.look.life_order.add_edge(longer, shorter, reason);
     }
 
     pub fn unify(&mut self, found: KindId, wanted: KindId) -> Result<KindId, TypeClash> {
@@ -916,13 +941,12 @@ impl TypeUniverse {
     }
 
     fn merge_life(&mut self, dst: LifeId, src: LifeId) -> Option<LifeId> {
-
         if dst == src {
             return Some(dst);
         }
 
         //record the actual path so later finding things isnt confusing
-        self.look.life_order.unify(dst, src,OutliveReason);
+        self.look.life_order.unify(dst, src, OutliveReason);
         Some(dst)
     }
 
@@ -1147,12 +1171,18 @@ impl KindStorage {
                 if has_lifes || has_gens {
                     out.push('[');
                     let mut needs_sep = false;
-                    for life in lifes.ids() {
-                        if needs_sep {
-                            out.push_str(", ");
+                    if false {
+                        // Lifetime names are intentionally omitted here for now.
+                        // Without a dedicated lifetime identity/pretty-printing
+                        // model, showing a concrete lifetime string is more
+                        // misleading than helpful.
+                        for life in lifes.ids() {
+                            if needs_sep {
+                                out.push_str(", ");
+                            }
+                            self.write_life(look, program, life, out);
+                            needs_sep = true;
                         }
-                        self.write_life(look, program, life, out);
-                        needs_sep = true;
                     }
                     for item in gens.ids() {
                         if needs_sep {
@@ -1217,6 +1247,8 @@ impl KindStorage {
                     Some(PointerStyle::Ref(life)) => {
                         out.push('&');
                         if false {
+                            // Keep lifetime printing disabled until we have a
+                            // sensible post-solver identity to show here.
                             self.write_life(look, program, life, out);
                         }
                         out.push(' ');
@@ -1239,19 +1271,10 @@ impl KindStorage {
     }
 
     fn write_life(&self, look: &mut KindLookUp, _program: &Program, id: LifeId, out: &mut String) {
-        //TODO use the solved lifetime SCC+SparseMatrix to get a good aproximation
-        //of what exactly is the original lifetime
-        //this should probably not be used most the time... but its a nice feature
+        let _ = (look, id, out);
+        // TODO: lifetime stringification is intentionally disabled for now.
+        // Without a stable post-solver identity, these names are misleading.
         todo!()
-
-        // let id = look.life_root(id);
-        // match self.__life_root(id) {
-        //     Some(LifeKind::Static) => out.push_str("'static"),
-        //     Some(LifeKind::Univeral(Some(id))) => out.push_str(&format!("'a{id}")),
-        //     Some(LifeKind::Univeral(None)) => out.push_str("'a"),
-        //     Some(LifeKind::Local) => out.push_str("'local"),
-        //     None => out.push_str("'_"),
-        // }
     }
 
     // /// arg `id` is required to be its own root.
@@ -1382,7 +1405,7 @@ mod mutability_tests {
         let mut types = TypeUniverse::new();
         let raw_nullable = types.add_ptr_style(Some(PointerStyle::Raw(Some(Nullable::Yes))));
         let raw_non_null = types.add_ptr_style(Some(PointerStyle::Raw(Some(Nullable::No))));
-        let life = types.add_life(Some(LifeKind::Static));
+        let life = types.add_static_life();
         let safe_ref = types.add_ptr_style(Some(PointerStyle::Ref(life)));
         let program = Program::new();
 
@@ -1424,14 +1447,8 @@ mod mutability_tests {
             types.kind_to_string(&program, const_raw_ref),
             "&'raw const bool"
         );
-        assert_eq!(
-            types.kind_to_string(&program, const_safe_ref),
-            "&'static bool"
-        );
-        assert_eq!(
-            types.kind_to_string(&program, mut_safe_ref),
-            "&'static mut bool"
-        );
+        assert_eq!(types.kind_to_string(&program, const_safe_ref), "& bool");
+        assert_eq!(types.kind_to_string(&program, mut_safe_ref), "& mut bool");
     }
 
     #[test]
@@ -1464,7 +1481,7 @@ mod mutability_tests {
     }
 
     #[test]
-    fn kind_string_formats_struct_parameters_after_name() {
+    fn kind_string_formats_struct_parameters_after_name_without_lifetimes() {
         let mut program = Program::new();
         let box_name = program.str_intern.intern("Box");
         let box_name = program.insert_value_in_global_scope(box_name);
@@ -1473,7 +1490,7 @@ mod mutability_tests {
         let sid = types.storage.new_struct(StructInfo {
             name: Some(box_name),
         });
-        let life = types.add_life(Some(LifeKind::Static));
+        let life = types.add_static_life();
         let gens = types.intern_kind_span([KindId::BOOL]);
         let lifes = types.intern_life_span([life]);
         let boxed_bool = types.intern(TypeKind::Struct {
@@ -1482,10 +1499,7 @@ mod mutability_tests {
             lifes,
         });
 
-        assert_eq!(
-            types.kind_to_string(&program, boxed_bool),
-            "Box['static, bool]"
-        );
+        assert_eq!(types.kind_to_string(&program, boxed_bool), "Box[bool]");
     }
 
     #[test]
@@ -1531,7 +1545,7 @@ mod mutability_tests {
     #[test]
     fn life_span_reuses_natural_rows_or_allocates_alias_rows() {
         let mut types = TypeUniverse::new();
-        let first = types.add_life(Some(LifeKind::Static));
+        let first = types.add_static_life();
         let middle = types.add_life(None);
         let last = types.add_life(Some(LifeKind::Local));
 
@@ -1543,8 +1557,9 @@ mod mutability_tests {
         assert_ne!(alias_span.start(), first);
         assert_eq!(alias_span_again, alias_span);
         assert_eq!(alias_span.len(), 2);
-        assert_eq!(types.storage.life[alias_span.at(0)], Some(LifeKind::Static));
-        assert_eq!(types.storage.life[alias_span.at(1)], Some(LifeKind::Local));
+        let sccs = tarjan(&types.look.life_order);
+        assert_eq!(sccs.map[alias_span.at(0)], sccs.map[first]);
+        assert_eq!(sccs.map[alias_span.at(1)], sccs.map[last]);
     }
 
     #[test]
@@ -1571,20 +1586,13 @@ mod mutability_tests {
     }
 
     #[test]
-    fn life_string_follows_alias_roots_after_refinement() {
+    fn lifetime_scc_follows_alias_roots_after_refinement() {
         let mut types = TypeUniverse::new();
-        let program = Program::new();
         let unknown_life = types.add_life(None);
         let _middle = types.add_life(Some(LifeKind::Local));
-        let static_life = types.add_life(Some(LifeKind::Static));
+        let static_life = types.add_static_life();
         let lifes = types.intern_life_span([unknown_life, static_life]);
-        let sid = types.storage.new_struct(StructInfo { name: None });
-        let no_gens = types.intern_kind_span([]);
-        let struct_ty = types.intern(TypeKind::Struct {
-            id: sid,
-            gens: no_gens,
-            lifes,
-        });
+        let _lifes = lifes;
         let unknown_ref = types.add_ptr_style(Some(PointerStyle::Ref(unknown_life)));
         let static_ref = types.add_ptr_style(Some(PointerStyle::Ref(static_life)));
         let left = types.intern(TypeKind::Ptr {
@@ -1600,10 +1608,8 @@ mod mutability_tests {
 
         types.unify(left, right).unwrap();
 
-        assert_eq!(
-            types.kind_to_string(&program, struct_ty),
-            "UnnamedStruct['static, 'static]"
-        );
+        let sccs = tarjan(&types.look.life_order);
+        assert_eq!(sccs.map[unknown_life], sccs.map[static_life]);
     }
 
     #[test]
@@ -1701,7 +1707,7 @@ mod mutability_tests {
     fn unify_pointer_merges_style_lifetime_and_mutability() {
         let mut types = TypeUniverse::new();
         let unknown_life = types.add_life(None);
-        let static_life = types.add_life(Some(LifeKind::Static));
+        let static_life = types.add_static_life();
         let unknown_style = types.add_ptr_style(Some(PointerStyle::Ref(unknown_life)));
         let static_style = types.add_ptr_style(Some(PointerStyle::Ref(static_life)));
         let unknown_mut = types.look.mutable.add_unknown();
@@ -1726,7 +1732,10 @@ mod mutability_tests {
             types.storage.ptr[style],
             Some(PointerStyle::Ref(static_life))
         );
-        assert_eq!(types.storage.life[static_life], Some(LifeKind::Static));
+        assert_eq!(
+            types.storage.life[static_life],
+            Some(LifeKind::Univeral(Some(UniversalLifeId::STATIC)))
+        );
         assert!(types.look.mutable.must_mut(mutable));
     }
 
@@ -1772,7 +1781,7 @@ mod mutability_tests {
     fn unify_pointer_updates_shared_style_and_lifetime_ids() {
         let mut types = TypeUniverse::new();
         let unknown_life = types.add_life(None);
-        let static_life = types.add_life(Some(LifeKind::Static));
+        let static_life = types.add_static_life();
         let shared_style = types.add_ptr_style(Some(PointerStyle::Ref(unknown_life)));
         let static_style = types.add_ptr_style(Some(PointerStyle::Ref(static_life)));
         let program = Program::new();
@@ -1795,17 +1804,17 @@ mod mutability_tests {
 
         types.unify(first, static_bool).unwrap();
 
-        assert_eq!(types.storage.life[unknown_life], Some(LifeKind::Static));
-        assert_eq!(types.storage.life[static_life], Some(LifeKind::Static));
-        assert_eq!(
-            types.storage.ptr[shared_style],
-            Some(PointerStyle::Ref(static_life))
-        );
-        assert_eq!(
-            types.storage.ptr[static_style],
-            Some(PointerStyle::Ref(static_life))
-        );
-        assert_eq!(types.kind_to_string(&program, second), "&'static str");
+        let sccs = tarjan(&types.look.life_order);
+        assert_eq!(sccs.map[unknown_life], sccs.map[static_life]);
+        let Some(PointerStyle::Ref(shared_life)) = types.storage.ptr[shared_style] else {
+            panic!("expected shared ref style")
+        };
+        let Some(PointerStyle::Ref(static_style_life)) = types.storage.ptr[static_style] else {
+            panic!("expected static ref style")
+        };
+        assert_eq!(sccs.map[shared_life], sccs.map[static_life]);
+        assert_eq!(sccs.map[static_style_life], sccs.map[static_life]);
+        assert_eq!(types.kind_to_string(&program, second), "& str");
     }
 
     #[test]
@@ -1931,7 +1940,8 @@ pub struct SolvedFunctionTypes {
     pub declaration_sites: Vec<ValId>,
     pub arguments: Vec<(PatId, Option<NameId>, KindId)>,
     pub generic_parameters: Vec<(PatId, Option<NameId>)>,
-    pub lifetime_parameters: Vec<(PatId, Option<LifeTimeId>)>,
+    pub lifetime_parameters: IndexVec<UniversalLifeId, Option<(PatId, Option<LifeTimeId>)>>,
+    pub lifetime_edges: Vec<(UniversalLifeId, UniversalLifeId, OutliveReason)>,
     pub inner: Option<InnerFunctionTypes>,
 }
 

@@ -37,9 +37,10 @@ Null-pointer literals:
 - They represent a nullable raw pointer literal (the `*T` / `*const T` / `*mut T` family), not a normal reference.
 - Their target pointee type and mutability are inferred from context (for example assignment/annotation).
 
-Type-level representation:
+IR/type-level representation:
 
-- Function types carry calling convention and generic arity in `TypeValue::Func { calling_convention, generics, ... }`.
+- Function values and type expressions carry calling convention in IR.
+- `TypeKind::Func` currently stores the solved function shape as parameter and return kinds.
 - Known conventions print as `fn(...) -> ...` or `cfn(...) -> ...`.
 - Unknown convention placeholders print as `fn?(...) -> ...`.
 
@@ -58,7 +59,7 @@ Closure support:
 
 - `struct { ... }` uses language-native layout marker (`Hot`).
 - `cstruct { ... }` uses C layout marker (`C`).
-- Current inference/layout code records the marker in `StructRep.layout`.
+- Lowering preserves this marker for later inference/layout work.
 - Today this mainly preserves intent; future passes can branch on it (for example field-reordering only for non-C layout types).
 
 ## Array Type Expressions
@@ -66,9 +67,9 @@ Closure support:
 - Type expressions accept bracket array forms:
   - `[T; N]` for sized arrays.
   - `[T]` parses as an unsized array form.
-- Current typechecking support:
-  - `[T; N]` resolves to `TypeValue::Array(T, ArrayType::Sized(N))`.
-  - `[T]` resolves in type expressions to `TypeValue::Array(T, ArrayType::Unsized)`.
+- Intended solved representation:
+  - `[T; N]` resolves to `TypeKind::Array { inner: T, size: Some(ArraySize::Sized(N)) }`.
+  - `[T]` resolves to `TypeKind::Array { inner: T, size: Some(ArraySize::Unsized) }`.
 - Value/index semantics are still array-focused and evolving; unsized arrays are currently a type-level form, not a fully general runtime container model.
 
 ## Generic Declaration `where` Clauses (Lowering Shape)
@@ -88,12 +89,11 @@ Closure support:
 - This is primarily intended for generic where-constraint forms (for example `T<'a`).
 - Other binary operators in type expressions remain unsupported and continue to emit lowering errors.
 
-## Lifetimes and Reference Kinds (Refactor Contract)
+## Lifetimes and Reference Kinds
 
-The active implementation is expected to move toward the clean-room type-system
-refactor described in `agent_docs/type_inference.md` and
-`agent_docs/lifetimes_plan.md`. Treat older detailed lifetime behavior as
-legacy reference material.
+The active implementation should follow `agent_docs/type_inference.md` and
+`agent_docs/lifetimes_plan.md`. Treat older detailed lifetime behavior as legacy
+reference material only.
 
 Language-level intent to preserve:
 
@@ -105,7 +105,7 @@ Language-level intent to preserve:
 - Lifetime ordering such as `'a < 'b` is not type-shape equality; it belongs to a
   later graph/order phase.
 - Unnamed/elided lifetime behavior is still an open design area for the new
-  solver and should not be copied from old finalization hacks without review.
+  solver.
 
 Parser note:
 
@@ -129,7 +129,7 @@ Type-inference behavior:
 - For smart-pointer-like structs, lookup prefers direct members first; only then falls back to `__deref`/`__deref_mut` targets.
 - Integer member access is reserved for tuples: the index is resolved against tuple arity after implicit deref.
 - `::` is not valid for tuple integer member access (`tuple element access does not support \`::\``).
-- Implicit deref hops are recorded in solved data as a chain of `(KindId, Projection)` entries; this keeps the old per-hop chain model while preserving which projection kind produced each step.
+- Implicit deref hops are recorded in solved data as a chain of `(KindId, Projection)` entries.
 
 Method access/currying:
 
