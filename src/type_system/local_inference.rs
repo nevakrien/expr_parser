@@ -7,9 +7,9 @@ use crate::ir::{
 };
 use crate::program::{Defined, FunctionSet, Program};
 use crate::type_system::{
-    InnerFunctionTypes, KindId, LifeId, LifeKind, MutId, Nullable, Origin, OriginId, OriginKind,
-    OutliveReason, PointerStyle, Projection, SolvedFunctionTypes, SolvedTypes, TypeError, TypeKind,
-    TypeUniverse, UniversalLifeId,
+    GenId, InnerFunctionTypes, KindId, LifeId, LifeKind, MutId, Nullable, Origin, OriginId,
+    OriginKind, OutliveReason, PointerStyle, Projection, SolvedFunctionTypes, SolvedTypes,
+    TypeError, TypeKind, TypeUniverse, UniversalLifeId,
 };
 use std::error::Error;
 
@@ -29,6 +29,7 @@ struct GlobalFunctionInfo {
 #[derive(Debug, Default)]
 struct TypeLoweringContext {
     lifetimes: IdHashMap<LifeTimeId, LifeId>,
+    generics: IdHashMap<NameId, KindId>,
 }
 
 pub fn run_typechecker_impl(
@@ -111,11 +112,17 @@ impl<'a> ConstraintGatherer<'a> {
             };
 
             if member_name.is_none() {
+                // TODO(new-type-system): this is a placeholder for overload/signature
+                // selection. Silently keeping the first signature is order-dependent.
                 self.global_functions
                     .entry(name)
                     .or_insert(GlobalFunctionInfo { site });
+                // TODO(new-type-system): report duplicate/incompatible visible
+                // function signatures instead of silently keeping the first one.
                 self.solved.function_types.entry(name).or_insert(site);
             } else if let Some(member_name) = member_name {
+                // TODO(new-type-system): member overload selection should not be an
+                // order-dependent first-signature cache.
                 self.solved
                     .member_function_types
                     .entry((name, member_name))
@@ -170,6 +177,7 @@ impl<'a> ConstraintGatherer<'a> {
                 &mut self.types,
                 pat,
                 &type_ctx,
+                &mut self.errors,
                 &mut self.checked,
             );
             param_kinds.push(kind);
@@ -183,10 +191,11 @@ impl<'a> ConstraintGatherer<'a> {
                     &mut self.types,
                     ty,
                     &type_ctx,
+                    &mut self.errors,
                     &mut self.checked,
                 )
             })
-            .unwrap_or_else(|| self.types.add_empty());
+            .unwrap_or(KindId::VOID);
 
         let params = self.types.intern_kind_span(param_kinds);
         let ty = self.types.intern(TypeKind::Func { params, ret });
@@ -308,51 +317,46 @@ impl<'a> BodyConstraintGatherer<'a> {
         self.inner
     }
 
+    fn unify_annotation(
+        &mut self,
+        annotation: ValId,
+        constrained: ValId,
+        found: KindId,
+        wanted: KindId,
+    ) {
+        if let Err(clash) = self.types.unify(found, wanted) {
+            self.errors.push(TypeError::AnnotationMismatch {
+                annotation,
+                constrained,
+                clash,
+            });
+        }
+    }
+
+    fn unify_pattern_annotation(
+        &mut self,
+        annotation: PatId,
+        constrained: PatId,
+        found: KindId,
+        wanted: KindId,
+    ) {
+        if let Err(clash) = self.types.unify(found, wanted) {
+            self.errors.push(TypeError::PatternAnnotationMismatch {
+                annotation,
+                constrained,
+                clash,
+            });
+        }
+    }
+
     fn specialize_function_signature(&mut self, site: ValId) -> KindId {
-        let Value::Func {
-            generics,
-            params,
-            output_type,
-            ..
-        } = self.program.value(site)
-        else {
-            return self.types.add_empty();
-        };
+        todo!()
+    }
 
-        let type_ctx = lower_signature_lifetimes(
-            self.program,
-            &mut self.types,
-            generics,
-            &mut self.checked,
-            None,
-            None,
-        );
-
-        let param_kinds: Vec<_> = params
-            .ids()
-            .map(|pat| {
-                gather_type_annotation_on_pattern(
-                    self.program,
-                    &mut self.types,
-                    pat,
-                    &type_ctx,
-                    &mut self.checked,
-                )
-            })
-            .collect();
-        let ret = output_type
-            .map(|ty| {
-                gather_type_expr(
-                    self.program,
-                    &mut self.types,
-                    ty,
-                    &type_ctx,
-                    &mut self.checked,
-                )
-            })
-            .unwrap_or_else(|| self.types.add_empty());
-        let params = self.types.intern_kind_span(param_kinds);
-        self.types.intern(TypeKind::Func { params, ret })
+    fn unify_or_todo(&mut self, found: KindId, wanted: KindId, context: &'static str) {
+        if let Err(clash) = self.types.unify(found, wanted) {
+            todo!("new type system: report {context}: {clash:?}");
+        }
     }
 
     fn bind_function_parameter(&mut self, pat: PatId, kind: KindId) {
@@ -389,7 +393,7 @@ impl<'a> BodyConstraintGatherer<'a> {
                 let inner = self.types.add_empty();
                 for item in items.ids() {
                     let (item_kind, _) = self.gather_constraints(item);
-                    let _ = self.types.unify(item_kind, inner);
+                    self.unify_or_todo(item_kind, inner, "array element type mismatch");
                 }
                 (
                     self.types.intern(TypeKind::Array {
@@ -424,8 +428,10 @@ impl<'a> BodyConstraintGatherer<'a> {
             Value::AddrOf(base, kind) => {
                 let (base_kind, base_origin) = self.gather_constraints(base);
                 let origin = base_origin.or_else(|| self.ensure_place_origin(base, base_kind));
-                let tgt = self.types.add_empty();
-                (make_pointer_kind(&mut self.types, tgt, kind, None), origin)
+                (
+                    make_pointer_kind(&mut self.types, base_kind, kind, None),
+                    origin,
+                )
             }
             Value::Construct(call) | Value::Call(call) => {
                 let result_kind = self.gather_call_like(value, call.base, call.args.ids());
@@ -444,6 +450,7 @@ impl<'a> BodyConstraintGatherer<'a> {
                     &mut self.types,
                     ty,
                     &TypeLoweringContext::default(),
+                    &mut self.errors,
                     &mut self.checked,
                 );
                 let origin = origin.map(|parent| {
@@ -464,9 +471,10 @@ impl<'a> BodyConstraintGatherer<'a> {
                     &mut self.types,
                     ty,
                     &TypeLoweringContext::default(),
+                    &mut self.errors,
                     &mut self.checked,
                 );
-                let _ = self.types.unify(inner_kind, annotated);
+                self.unify_annotation(value, inner, inner_kind, annotated);
                 (annotated, origin)
             }
             Value::TypeDef { pat, ty } => {
@@ -475,6 +483,7 @@ impl<'a> BodyConstraintGatherer<'a> {
                     &mut self.types,
                     ty,
                     &TypeLoweringContext::default(),
+                    &mut self.errors,
                     &mut self.checked,
                 );
                 self.bind_pattern(pat, kind, None);
@@ -485,7 +494,7 @@ impl<'a> BodyConstraintGatherer<'a> {
                 match op {
                     AssignOp::Nothing(value) | AssignOp::Bin(_, value) => {
                         let (value_kind, _) = self.gather_constraints(value);
-                        let _ = self.types.unify(value_kind, target_kind);
+                        self.unify_or_todo(value_kind, target_kind, "assignment type mismatch");
                     }
                     AssignOp::Pre(_) | AssignOp::Post(_) => {}
                 }
@@ -546,17 +555,19 @@ impl<'a> BodyConstraintGatherer<'a> {
                     .unwrap_or((KindId::VOID, None))
             }
             Value::LogicOp { values, .. } => {
-                let _ = self.gather_constraints(values.0);
-                let _ = self.gather_constraints(values.1);
+                let (lhs, _) = self.gather_constraints(values.0);
+                let (rhs, _) = self.gather_constraints(values.1);
+                self.unify_or_todo(lhs, KindId::BOOL, "logic lhs must be bool");
+                self.unify_or_todo(rhs, KindId::BOOL, "logic rhs must be bool");
                 (KindId::BOOL, None)
             }
             Value::If { cond, then, els } => {
                 let (cond_kind, _) = self.gather_constraints(cond);
-                let _ = self.types.unify(cond_kind, KindId::BOOL);
+                self.unify_or_todo(cond_kind, KindId::BOOL, "if condition must be bool");
                 let (then_kind, _) = self.gather_constraints(then);
                 if let Some(els) = els {
                     let (else_kind, else_origin) = self.gather_constraints(els);
-                    let _ = self.types.unify(then_kind, else_kind);
+                    self.unify_or_todo(then_kind, else_kind, "if branch type mismatch");
                     (then_kind, else_origin)
                 } else {
                     (KindId::VOID, None)
@@ -564,7 +575,7 @@ impl<'a> BodyConstraintGatherer<'a> {
             }
             Value::While { cond, body } => {
                 let (cond_kind, _) = self.gather_constraints(cond);
-                let _ = self.types.unify(cond_kind, KindId::BOOL);
+                self.unify_or_todo(cond_kind, KindId::BOOL, "while condition must be bool");
                 let _ = self.gather_constraints(body);
                 (KindId::VOID, None)
             }
@@ -579,7 +590,7 @@ impl<'a> BodyConstraintGatherer<'a> {
                 if let Some(ret) = ret {
                     let (ret_kind, _) = self.gather_constraints(ret);
                     if let Some(expected) = self.output_kind {
-                        let _ = self.types.unify(ret_kind, expected);
+                        self.unify_or_todo(ret_kind, expected, "return type mismatch");
                     }
                 }
                 (KindId::VOID, None)
@@ -589,7 +600,7 @@ impl<'a> BodyConstraintGatherer<'a> {
                 let result = self.types.add_empty();
                 for arm in arms.ids() {
                     let (arm_kind, _) = self.gather_match_arm(arm, scrutinee);
-                    let _ = self.types.unify(arm_kind, result);
+                    self.unify_or_todo(arm_kind, result, "match arm type mismatch");
                 }
                 (result, None)
             }
@@ -636,28 +647,31 @@ impl<'a> BodyConstraintGatherer<'a> {
             Pattern::Wildcard(_) | Pattern::Literal(_) | Pattern::LifeTime(_) | Pattern::Poison => {
             }
             Pattern::Tuple(items) => {
-                for item in items.ids() {
-                    let unknown = self.types.add_empty();
-                    self.bind_pattern(item, unknown, origin);
+                let item_kinds: Vec<_> = items.ids().map(|_| self.types.add_empty()).collect();
+                let tuple_items = self.types.intern_kind_span(item_kinds.iter().copied());
+                let tuple_kind = self.types.intern(TypeKind::Tuple(tuple_items));
+                self.unify_or_todo(expected, tuple_kind, "tuple pattern type mismatch");
+                for (item, item_kind) in items.ids().zip(item_kinds.into_iter()) {
+                    self.bind_pattern(item, item_kind, origin);
                 }
             }
-            Pattern::TypeAnnotation { pat, ty } => {
+            Pattern::TypeAnnotation { pat: inner_pat, ty } => {
                 let annotated = gather_type_expr(
                     self.program,
                     &mut self.types,
                     ty,
                     &TypeLoweringContext::default(),
+                    &mut self.errors,
                     &mut self.checked,
                 );
-                let _ = self.types.unify(expected, annotated);
-                self.bind_pattern(pat, annotated, origin);
+                self.unify_pattern_annotation(pat, inner_pat, expected, annotated);
+                self.bind_pattern(inner_pat, annotated, origin);
             }
             Pattern::AddrOf(inner, kind) => {
                 let pointed_tgt = self.types.add_empty();
                 let pointed = make_pointer_kind(&mut self.types, pointed_tgt, Some(kind), None);
-                let _ = self.types.unify(expected, pointed);
-                let inner_unknown = self.types.add_empty();
-                self.bind_pattern(inner, inner_unknown, origin);
+                self.unify_or_todo(expected, pointed, "addr-of pattern type mismatch");
+                self.bind_pattern(inner, pointed_tgt, origin);
             }
         }
     }
@@ -721,11 +735,19 @@ impl<'a> BodyConstraintGatherer<'a> {
             return self.types.add_empty();
         };
 
+        if arg_kinds.len() != params.len() {
+            todo!(
+                "new type system: report call argument count mismatch: expected {}, found {}",
+                params.len(),
+                arg_kinds.len()
+            );
+        }
+
         for (idx, arg_kind) in arg_kinds.into_iter().enumerate() {
             if idx >= params.len() {
-                break;
+                unreachable!("argument count checked above");
             }
-            let _ = self.types.unify(arg_kind, params.at(idx));
+            self.unify_or_todo(arg_kind, params.at(idx), "call argument type mismatch");
         }
 
         // TODO(new-type-system): this only covers already-function-shaped callees
@@ -839,6 +861,17 @@ fn lower_signature_lifetimes(
         types.require_lifetime_outlives(life_ids[longer], life_ids[shorter], OutliveReason);
     }
 
+    // Bind generic type parameters so that body-level type expressions
+    // (e.g. annotations on parameters or within the function body) can
+    // refer to generic type names.
+    for pat in generics.generics().ids() {
+        let gen_id = GenId(ctx.generics.len() as u32);
+        let kind_id = types.intern(TypeKind::Generic(gen_id));
+        if let Pattern::Bind(name, _) = program.pattern(pat) {
+            ctx.generics.insert(name, kind_id);
+        }
+    }
+
     ctx
 }
 
@@ -847,12 +880,16 @@ fn gather_type_annotation_on_pattern(
     types: &mut TypeUniverse,
     pat: PatId,
     ctx: &TypeLoweringContext,
+    errors: &mut Vec<TypeError>,
     checked: &mut usize,
 ) -> KindId {
     match program.pattern(pat) {
-        Pattern::TypeAnnotation { ty, .. } => gather_type_expr(program, types, ty, ctx, checked),
+        Pattern::TypeAnnotation { ty, .. } => {
+            gather_type_expr(program, types, ty, ctx, errors, checked)
+        }
         Pattern::AddrOf(inner, kind) => {
-            let tgt = gather_type_annotation_on_pattern(program, types, inner, ctx, checked);
+            let tgt =
+                gather_type_annotation_on_pattern(program, types, inner, ctx, errors, checked);
             make_pointer_kind(types, tgt, Some(kind), None)
         }
         _ => types.add_empty(),
@@ -879,22 +916,36 @@ fn gather_type_expr(
     types: &mut TypeUniverse,
     expr: TExpId,
     ctx: &TypeLoweringContext,
+    errors: &mut Vec<TypeError>,
     checked: &mut usize,
 ) -> KindId {
     *checked += 1;
 
     match program.type_expr(expr) {
-        TypeExpr::NameRef(name) => match program.definitions.get(&name) {
-            Some(Defined::BuildinType(kind)) => *kind,
-            _ => types.add_empty(),
-        },
+        TypeExpr::NameRef(name) => {
+            // Generic type parameters shadow global definitions
+            if let Some(&kind) = ctx.generics.get(&name) {
+                return kind;
+            }
+            match program.definitions.get(&name) {
+                Some(Defined::BuildinType(kind)) => *kind,
+                Some(Defined::Type(texp)) => {
+                    // Recursively lower the alias RHS in the current universe
+                    gather_type_expr(program, types, *texp, ctx, errors, checked)
+                }
+                _ => {
+                    errors.push(TypeError::ExpectedTypeExpr { type_expr: expr });
+                    types.add_empty()
+                }
+            }
+        }
         TypeExpr::Ptr {
             base,
             lifetime,
             raw,
             mutable,
         } => {
-            let tgt = gather_type_expr(program, types, base, ctx, checked);
+            let tgt = gather_type_expr(program, types, base, ctx, errors, checked);
             let style = if raw {
                 types.add_ptr_style(Some(PointerStyle::Raw(Some(Nullable::Yes))))
             } else {
@@ -913,13 +964,13 @@ fn gather_type_expr(
         TypeExpr::Tuple(items) => {
             let kinds: Vec<_> = items
                 .ids()
-                .map(|item| gather_type_expr(program, types, item, ctx, checked))
+                .map(|item| gather_type_expr(program, types, item, ctx, errors, checked))
                 .collect();
             let span = types.intern_kind_span(kinds);
             types.intern(TypeKind::Tuple(span))
         }
         TypeExpr::Array(base, size) => {
-            let inner = gather_type_expr(program, types, base, ctx, checked);
+            let inner = gather_type_expr(program, types, base, ctx, errors, checked);
             types.intern(TypeKind::Array {
                 inner,
                 size: size.map(crate::type_system::ArraySize::Sized),
@@ -932,10 +983,10 @@ fn gather_type_expr(
         } => {
             let param_kinds: Vec<_> = params
                 .ids()
-                .map(|param| gather_type_expr(program, types, param, ctx, checked))
+                .map(|param| gather_type_expr(program, types, param, ctx, errors, checked))
                 .collect();
             let ret = output_type
-                .map(|ret| gather_type_expr(program, types, ret, ctx, checked))
+                .map(|ret| gather_type_expr(program, types, ret, ctx, errors, checked))
                 .unwrap_or(KindId::VOID);
             let span = types.intern_kind_span(param_kinds);
             types.intern(TypeKind::Func { params: span, ret })
@@ -947,7 +998,10 @@ fn gather_type_expr(
         | TypeExpr::Enum(_)
         | TypeExpr::Union(_)
         | TypeExpr::Wildcard
-        | TypeExpr::Poison => types.add_empty(),
+        | TypeExpr::Poison => {
+            errors.push(TypeError::ExpectedTypeExpr { type_expr: expr });
+            types.add_empty()
+        }
     }
 }
 
@@ -1196,6 +1250,56 @@ mod tests {
         assert_eq!(
             signature.lifetime_edges,
             vec![(UniversalLifeId(2), UniversalLifeId(1), OutliveReason)]
+        );
+    }
+
+    #[test]
+    fn local_pattern_annotation_reports_addr_of_pointee_mismatch() {
+        let program = gather_program("f = fn(x:bool) { let y:&int = &x; };");
+        let gatherer = run_gatherer(&program);
+
+        assert!(
+            gatherer
+                .errors
+                .iter()
+                .any(|error| matches!(error, TypeError::PatternAnnotationMismatch { .. }))
+        );
+    }
+
+    #[test]
+    fn tuple_pattern_propagates_bound_item_types() {
+        let program = gather_program("f = fn() -> int { let (x, y) = (1:int, false); y };");
+        let gatherer = run_gatherer(&program);
+
+        assert!(matches!(
+            gatherer.errors.as_slice(),
+            [TypeError::FunctionOutputAnnotationMismatch { clash, .. }]
+                if clash.found() == Some("bool") && clash.wanted() == Some("int")
+        ));
+    }
+
+    #[test]
+    fn addr_of_pattern_propagates_inner_type() {
+        let program = gather_program("f = fn() -> int { let &x = &false; x };");
+        let gatherer = run_gatherer(&program);
+
+        assert!(matches!(
+            gatherer.errors.as_slice(),
+            [TypeError::FunctionOutputAnnotationMismatch { clash, .. }]
+                if clash.found() == Some("bool") && clash.wanted() == Some("int")
+        ));
+    }
+
+    #[test]
+    fn invalid_type_expr_in_signature_reports_type_error() {
+        let program = gather_program("f = fn(x:_) {};");
+        let gatherer = run_gatherer(&program);
+
+        assert!(
+            gatherer
+                .errors
+                .iter()
+                .any(|error| matches!(error, TypeError::ExpectedTypeExpr { .. }))
         );
     }
 }

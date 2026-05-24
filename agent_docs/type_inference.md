@@ -189,12 +189,20 @@ should be collected, not to fully typecheck the language yet.
 - Borrow/address-of currently preserves the underlying place origin instead of
   inventing a fresh derived node; later obligation plumbing should record the
   borrow operation itself.
+- Borrow/address-of already constrains the pointer pointee to the borrowed base
+  kind; the remaining missing work there is obligation/provenance detail, not
+  basic pointee-shape propagation.
 - Function calls currently produce a transient result origin and mark the call
   site as the future hook for callable-shape requirements.
 - Function body result vs declared output already reports
   `FunctionOutputAnnotationMismatch` in the current scaffold, so direct
   monomorphic calls lowered into the local universe can surface wrong-return-type
   errors even before the richer pending-requirement machinery exists.
+- Tuple and `&` patterns already project the obvious child shape constraints into
+  bound names, and local value/pattern annotations now report direct mismatch
+  errors instead of silently dropping failed unifications.
+- Unresolved type names/invalid type-expression forms now emit type errors during
+  local/signature lowering instead of always degrading to `_`.
 - Access, index, deref, casts, lets, matches, and pattern binding all have
   explicit slots where future equality constraints and later origin/lifetime
   obligations should be attached.

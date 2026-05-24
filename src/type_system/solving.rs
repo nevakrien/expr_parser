@@ -231,14 +231,19 @@ impl MutInfo {
         root
     }
 
-    fn merge_into(&mut self, idx: MutId, root: MutId) {
+    /// Merge `idx` into `root` (both must be their own root).
+    /// When `idx` is unknown and `root` is a known TRUE, the implication
+    /// edges stored on `idx` are propagated so that notification targets
+    /// become TRUE as well. Returns `Some(MutConflict)` when propagation
+    /// finds a conflict.
+    fn merge_into(&mut self, idx: MutId, root: MutId) -> Option<MutConflict> {
         //make sure we never overide TRUE and FALSE
         if idx.try_answer().is_some() {
             if root.try_answer().is_none() {
                 self.nodes[root].parent = idx;
             }
 
-            return;
+            return None;
         }
 
         //update the union find
@@ -248,11 +253,30 @@ impl MutInfo {
             self.record_reason(root, reason);
         }
 
-        //clear the exostomg notify set
         let mut my_map = std::mem::take(&mut self.nodes[idx].notify);
-        if root.try_answer().is_none() {
-            self.nodes[root].notify.append(&mut my_map);
-        };
+        if let Some(answer) = root.try_answer() {
+            if answer {
+                // Propagate implications: this unknown node is merging into
+                // a known-true root, so all notification targets (recorded as
+                // "if this is true, target is true") must also become true.
+                let root_reason = self.nodes[root]
+                    .reason
+                    .clone()
+                    .unwrap_or_else(|| MutReasonPath::direct(MutReason));
+                for dst in my_map {
+                    let implied = MutReasonPath::implied(root, &root_reason);
+                    if let MutSetRes::Conflict(c) = self.set_true(dst, implied) {
+                        return Some(c);
+                    }
+                }
+            }
+            // root is const (false): implication edges are "src mut => dst mut"
+            // so a const source does not constrain targets.
+            return None;
+        }
+
+        self.nodes[root].notify.append(&mut my_map);
+        None
     }
 
     fn record_reason(&mut self, idx: MutId, reason: MutReasonPath) -> bool {
@@ -288,9 +312,10 @@ impl MutInfo {
             Some((s, d))
         })();
 
-        if ans.is_none() {
-            self.merge_into(src, dst);
-        };
+        if ans.is_none() && self.merge_into(src, dst).is_some() {
+            // merge_into found a conflict during implication propagation
+            return Some((false, true));
+        }
 
         ans
     }
@@ -1251,7 +1276,6 @@ impl KindStorage {
                             // sensible post-solver identity to show here.
                             self.write_life(look, program, life, out);
                         }
-                        out.push(' ');
                         match mutable {
                             MutGuess::Const => {}
                             MutGuess::Mut => out.push_str("mut "),
@@ -1361,6 +1385,24 @@ mod mutability_tests {
     }
 
     #[test]
+    fn try_unify_known_propagates_implications() {
+        let mut muts = MutInfo::new();
+        let a = muts.add_unknown();
+        let b = muts.add_unknown();
+
+        // Unidirectional edge: if a is mut, b must be mut
+        assert!(muts.add_edge(a, b).is_none());
+
+        assert!(!muts.must_mut(a));
+        assert!(!muts.must_mut(b));
+
+        // Unifying a with TRUE should propagate the implication to b
+        assert!(muts.try_unify(a, MutId::TRUE).is_none());
+
+        assert!(muts.must_mut(b));
+    }
+
+    #[test]
     fn edge_from_known_mut_propagates_immediately() {
         let mut muts = MutInfo::new();
         let dst = muts.add_unknown();
@@ -1447,8 +1489,8 @@ mod mutability_tests {
             types.kind_to_string(&program, const_raw_ref),
             "&'raw const bool"
         );
-        assert_eq!(types.kind_to_string(&program, const_safe_ref), "& bool");
-        assert_eq!(types.kind_to_string(&program, mut_safe_ref), "& mut bool");
+        assert_eq!(types.kind_to_string(&program, const_safe_ref), "&bool");
+        assert_eq!(types.kind_to_string(&program, mut_safe_ref), "&mut bool");
     }
 
     #[test]
@@ -1814,7 +1856,7 @@ mod mutability_tests {
         };
         assert_eq!(sccs.map[shared_life], sccs.map[static_life]);
         assert_eq!(sccs.map[static_style_life], sccs.map[static_life]);
-        assert_eq!(types.kind_to_string(&program, second), "& str");
+        assert_eq!(types.kind_to_string(&program, second), "&str");
     }
 
     #[test]
@@ -1867,10 +1909,19 @@ impl SolvedTypes {
     }
 
     pub fn pat_type(&self, id: PatId) -> Option<KindId> {
-        self.function_values.values().find_map(|f| {
+        // Search function arguments first
+        if let Some(kind) = self.function_values.values().find_map(|f| {
             f.arguments
                 .iter()
                 .find_map(|(p, _, t)| (*p == id).then_some(*t))
+        }) {
+            return Some(kind);
+        }
+        // Also search local pattern types from function bodies
+        self.function_values.values().find_map(|f| {
+            f.inner
+                .as_ref()
+                .and_then(|inner| inner.pat_types.get(&id).copied())
         })
     }
 
