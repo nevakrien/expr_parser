@@ -41,6 +41,9 @@ impl<Node: Idx> VecGraph<Node> {
             edges: Vec::new(),
         }
     }
+    pub(crate) fn from_raw(nodes: IndexVec<Node, Range<usize>>, edges: Vec<Node>) -> Self {
+        Self { nodes, edges }
+    }
     pub fn num_edges(&self) -> usize {
         self.edges.len()
     }

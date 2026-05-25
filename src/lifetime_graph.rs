@@ -1,4 +1,5 @@
-use crate::data_structures::index::{IndexVec, UnionFind};
+use crate::data_structures::graph::{tarjan, VecGraph};
+use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::type_inference::{
     CId, ImportedLifetimeOrdering, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge,
     OriginDeclSite, OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind,
@@ -13,6 +14,15 @@ pub struct LifetimeGraphId(pub usize);
 impl LifetimeGraphId {
     fn from_lid(lid: LId, node_count: usize) -> Option<Self> {
         (lid.0 < node_count).then_some(Self(lid.0))
+    }
+}
+
+impl Idx for LifetimeGraphId {
+    fn new(idx: usize) -> Self {
+        LifetimeGraphId(idx)
+    }
+    fn index(self) -> usize {
+        self.0
     }
 }
 
@@ -197,144 +207,43 @@ fn solve_lifetime_scc_with_modes(
     include_origin_edges: bool,
     include_where_clause_edges: bool,
 ) -> LifetimeSccSolve {
-    LifetimeSccState::new(graph, include_origin_edges, include_where_clause_edges).solve()
-}
+    let node_count = graph.lid_count();
+    let mut edges: Vec<LifetimeGraphId> = Vec::new();
+    let mut nodes: IndexVec<LifetimeGraphId, std::ops::Range<usize>> =
+        IndexVec::with_capacity(node_count);
 
-struct LifetimeSccState<'a> {
-    graph: &'a LifetimeOrderingGraph,
-    include_origin_edges: bool,
-    include_where_clause_edges: bool,
-
-    next_index: usize,
-    index: Vec<Option<usize>>,
-    low: Vec<usize>,
-
-    on_stack: Vec<bool>,
-    stack: Vec<LifetimeGraphId>,
-
-    component_of: Vec<usize>,
-    components: Vec<LifetimeSccComponent>,
-}
-
-impl<'a> LifetimeSccState<'a> {
-    fn new(
-        graph: &'a LifetimeOrderingGraph,
-        include_origin_edges: bool,
-        include_where_clause_edges: bool,
-    ) -> Self {
-        let lid_count = graph.lid_count();
-
-        Self {
-            graph,
-            include_origin_edges,
-            include_where_clause_edges,
-            next_index: 0,
-            index: vec![None; lid_count],
-            low: vec![0; lid_count],
-            on_stack: vec![false; lid_count],
-            stack: Vec::new(),
-            component_of: vec![usize::MAX; lid_count],
-            components: Vec::new(),
-        }
-    }
-
-    fn solve(mut self) -> LifetimeSccSolve {
-        for raw in 0..self.graph.lid_count() {
-            let lid = LifetimeGraphId(raw);
-            if self.index[lid.0].is_none() {
-                self.visit(lid);
+    for n in 0..node_count {
+        let start = edges.len();
+        if include_origin_edges {
+            for &idx in &graph.outgoing[n] {
+                edges.push(graph.origin_edges[idx].longer);
             }
         }
-
-        LifetimeSccSolve {
-            component_of: self.component_of,
-            components: self.components,
-        }
-    }
-
-    fn visit(&mut self, v: LifetimeGraphId) {
-        let v_index = self.next_index;
-        self.next_index += 1;
-
-        self.index[v.0] = Some(v_index);
-        self.low[v.0] = v_index;
-
-        self.push_stack(v);
-
-        if self.include_origin_edges {
-            let out_len = self.graph.outgoing(v).len();
-            for out_i in 0..out_len {
-                let edge_index = self.graph.outgoing(v)[out_i];
-                let edge = self.graph.origin_edges[edge_index];
-                self.visit_target(v, edge.longer);
+        if include_where_clause_edges {
+            for &idx in &graph.where_clause_outgoing[n] {
+                edges.push(graph.where_clause_edges[idx].longer);
             }
         }
-
-        if self.include_where_clause_edges {
-            let out_len = self.graph.where_clause_outgoing(v).len();
-            for out_i in 0..out_len {
-                let edge_index = self.graph.where_clause_outgoing(v)[out_i];
-                let edge = self.graph.where_clause_edges[edge_index];
-                self.visit_target(v, edge.longer);
-            }
-        }
-
-        if self.low[v.0] == v_index {
-            self.finish_component(v);
-        }
+        nodes.push(start..edges.len());
     }
 
-    fn push_stack(&mut self, lid: LifetimeGraphId) {
-        self.stack.push(lid);
-        self.on_stack[lid.0] = true;
+    let sccs = tarjan(&VecGraph::from_raw(nodes, edges));
+
+    let lid_count = sccs.map.len();
+    let mut component_of = vec![0; lid_count];
+    for (i, cid) in sccs.map.iter().enumerate() {
+        component_of[i] = cid.index();
     }
+    let components = sccs
+        .comps
+        .into_raw()
+        .into_iter()
+        .map(|nodes| LifetimeSccComponent { nodes })
+        .collect();
 
-    fn visit_target(&mut self, v: LifetimeGraphId, w: LifetimeGraphId) {
-        if self.index[w.0].is_none() {
-            self.visit(w);
-
-            if self.on_stack[w.0] {
-                self.low[v.0] = self.low[v.0].min(self.low[w.0]);
-            }
-            return;
-        }
-
-        if !self.on_stack[w.0] {
-            return;
-        }
-
-        let Some(w_index) = self.index[w.0] else {
-            return;
-        };
-
-        self.low[v.0] = self.low[v.0].min(w_index);
-    }
-
-    fn finish_component(&mut self, root: LifetimeGraphId) {
-        let mut nodes = Vec::new();
-
-        loop {
-            let lid = self
-                .stack
-                .pop()
-                .expect("tarjan stack must contain current root");
-
-            self.on_stack[lid.0] = false;
-
-            nodes.push(lid);
-
-            if lid == root {
-                break;
-            }
-        }
-
-        let component_id = self.components.len();
-
-        for lid in &nodes {
-            self.component_of[lid.0] = component_id;
-        }
-
-        self.components.push(LifetimeSccComponent { nodes });
+    LifetimeSccSolve {
+        component_of,
+        components,
     }
 }
 
