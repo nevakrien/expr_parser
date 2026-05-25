@@ -31,8 +31,8 @@ use crate::local_type_inference::gather_func_constraints;
 use crate::local_type_inference::infer_value_internals;
 use crate::local_type_inference::local_solver;
 
-use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::ErrorReporter;
+use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
 use crate::ir::CallingConvention;
@@ -48,7 +48,6 @@ use crate::parsing::Loc;
 use crate::string_intern::StrId;
 use foldhash::HashMap;
 use std::fmt::Write as _;
-
 
 use crate::program::{Defined, Program};
 
@@ -1317,6 +1316,7 @@ pub enum TypeError {
         operation: &'static str,
         shorter: String,
         longer: String,
+        path: Option<String>,
         related: Option<Loc>,
     },
     UnknownBuiltinMemberMethod {
@@ -4448,12 +4448,7 @@ fn write_tuple_mock_string_inner(
     limit: &mut usize,
 ) {
     let _ = out.write_char('(');
-    for (i, item) in extra.tuple_infers[tuple]
-        .items
-        .iter()
-        .copied()
-        .enumerate()
-    {
+    for (i, item) in extra.tuple_infers[tuple].items.iter().copied().enumerate() {
         if i > 0 {
             let _ = out.write_str(", ");
         }

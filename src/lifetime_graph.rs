@@ -1,12 +1,13 @@
-use crate::data_structures::graph::{tarjan, VecGraph};
+use crate::data_structures::bit_sets::{SparseBits, propegate_constraints};
+use crate::data_structures::graph::{CompId, SCCS, VecGraph, tarjan};
 use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::type_inference::{
     CId, ImportedLifetimeOrdering, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge,
-    OriginDeclSite, OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind,
-    TypeError, TypeValue, find_lid_root, lifetime_for_display, unify_struct_lids,
+    OriginDeclSite, OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind, TypeError,
+    TypeValue, find_lid_root, lifetime_for_display, unify_struct_lids,
 };
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct LifetimeGraphId(pub usize);
@@ -207,6 +208,31 @@ fn solve_lifetime_scc_with_modes(
     include_origin_edges: bool,
     include_where_clause_edges: bool,
 ) -> LifetimeSccSolve {
+    let sccs = lifetime_sccs_with_modes(graph, include_origin_edges, include_where_clause_edges);
+
+    let lid_count = sccs.map.len();
+    let mut component_of = vec![0; lid_count];
+    for (i, cid) in sccs.map.iter().enumerate() {
+        component_of[i] = cid.index();
+    }
+    let components = sccs
+        .comps
+        .into_raw()
+        .into_iter()
+        .map(|nodes| LifetimeSccComponent { nodes })
+        .collect();
+
+    LifetimeSccSolve {
+        component_of,
+        components,
+    }
+}
+
+fn lifetime_sccs_with_modes(
+    graph: &LifetimeOrderingGraph,
+    include_origin_edges: bool,
+    include_where_clause_edges: bool,
+) -> SCCS<LifetimeGraphId> {
     let node_count = graph.lid_count();
     let mut edges: Vec<LifetimeGraphId> = Vec::new();
     let mut nodes: IndexVec<LifetimeGraphId, std::ops::Range<usize>> =
@@ -227,24 +253,7 @@ fn solve_lifetime_scc_with_modes(
         nodes.push(start..edges.len());
     }
 
-    let sccs = tarjan(&VecGraph::from_raw(nodes, edges));
-
-    let lid_count = sccs.map.len();
-    let mut component_of = vec![0; lid_count];
-    for (i, cid) in sccs.map.iter().enumerate() {
-        component_of[i] = cid.index();
-    }
-    let components = sccs
-        .comps
-        .into_raw()
-        .into_iter()
-        .map(|nodes| LifetimeSccComponent { nodes })
-        .collect();
-
-    LifetimeSccSolve {
-        component_of,
-        components,
-    }
+    tarjan(&VecGraph::from_raw(nodes, edges))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,7 +336,6 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     }
     let solve = solve_lifetime_scc(&graph);
     let invalid_components = collect_invalid_lifetime_ordering_components(ctx, &graph, &solve);
-
     for (component_index, component) in solve.components.iter().enumerate() {
         if component.nodes.len() < 2 {
             continue;
@@ -348,10 +356,10 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
         }
     }
 
+    assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
+    validate_discovered_global_lifetime_paths(ctx, &graph);
     validate_known_lifetime_orderings(ctx, &graph);
     validate_imported_lifetime_orderings(ctx);
-
-    assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
 }
 
 fn collect_invalid_lifetime_ordering_components(
@@ -413,9 +421,7 @@ fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrder
 
         let has_impossible_known_order =
             matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater));
-        let has_illegal_global_order = illegal_global_lifetime_ordering(shorter_lt, longer_lt)
-            && !where_clause_ordering_implies(graph, shorter_root, longer_root);
-        if !has_impossible_known_order && !has_illegal_global_order {
+        if !has_impossible_known_order {
             continue;
         }
 
@@ -424,11 +430,7 @@ fn validate_known_lifetime_orderings(ctx: &mut InferState, graph: &LifetimeOrder
             continue;
         }
 
-        if has_illegal_global_order {
-            report_illegal_global_lifetime_ordering(ctx, edge);
-        } else {
-            report_lifetime_ordering_conflict(ctx, edge);
-        }
+        report_lifetime_ordering_conflict(ctx, edge);
     }
 }
 
@@ -453,7 +455,8 @@ fn validate_imported_lifetime_orderings(ctx: &mut InferState) {
 
         let has_impossible_known_order =
             matches!(shorter_lt.partial_cmp(&longer_lt), Some(Ordering::Greater));
-        let has_illegal_global_order = illegal_global_lifetime_ordering(shorter_lt, longer_lt);
+        let has_illegal_global_order = illegal_global_lifetime_ordering(shorter_lt, longer_lt)
+            || illegal_global_to_local_ordering(shorter_lt, longer_lt);
         if !has_impossible_known_order && !has_illegal_global_order {
             continue;
         }
@@ -472,6 +475,7 @@ fn validate_imported_lifetime_orderings(ctx: &mut InferState) {
                 operation: "imported where-clause bound",
                 shorter,
                 longer,
+                path: None,
                 related: None,
             });
         } else {
@@ -723,33 +727,260 @@ fn collect_imported_lifetime_orderings(
     }
 }
 
-fn where_clause_ordering_implies(graph: &LifetimeOrderingGraph, shorter: LId, longer: LId) -> bool {
-    if shorter == longer {
-        return true;
+fn validate_discovered_global_lifetime_paths(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
+    let found_sccs = lifetime_sccs_with_modes(graph, true, true);
+    let where_sccs = lifetime_sccs_with_modes(graph, false, true);
+    let found_reachable = propagated_component_reachability(&found_sccs);
+    let where_reachable = propagated_component_reachability(&where_sccs);
+
+    let mut known_lifetimes = Vec::with_capacity(graph.lid_count());
+    for raw in 0..graph.lid_count() {
+        let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(raw));
+        known_lifetimes.push(ctx.types.lifetimes.life_known[root]);
     }
 
-    let start = LifetimeGraphId(shorter.0);
-    let target = LifetimeGraphId(longer.0);
-    let mut stack = Vec::new();
-    let mut visited = vec![false; graph.lid_count()];
-    stack.push(start);
-    visited[start.0] = true;
+    let mut global_nodes = Vec::new();
+    for (raw, lt) in known_lifetimes.iter().copied().enumerate() {
+        if matches!(lt, Some(LifeTime::External(_) | LifeTime::Static)) {
+            global_nodes.push(LifetimeGraphId(raw));
+        }
+    }
 
-    while let Some(current) = stack.pop() {
-        for &edge_index in graph.where_clause_outgoing(current) {
-            let next = graph.where_clause_edges()[edge_index].longer;
-            if next == target {
-                return true;
+    let mut seen = HashSet::new();
+    for &shorter in &global_nodes {
+        for &longer in &global_nodes {
+            if shorter == longer {
+                continue;
             }
+
+            let shorter_lt = known_lifetimes[shorter.0].expect("global node must be known");
+            let longer_lt = known_lifetimes[longer.0].expect("global node must be known");
+            if !requires_explicit_where_ordering(shorter_lt, longer_lt) {
+                continue;
+            }
+
+            let found_from = found_sccs.map[shorter];
+            let found_to = found_sccs.map[longer];
+            if !found_reachable.contains(found_from, found_to) {
+                continue;
+            }
+
+            let where_from = where_sccs.map[shorter];
+            let where_to = where_sccs.map[longer];
+            if where_reachable.contains(where_from, where_to) {
+                continue;
+            }
+
+            let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(shorter.0));
+            let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(longer.0));
+            if !seen.insert((shorter_root.0, longer_root.0)) {
+                continue;
+            }
+
+            if let Some(path) = shortest_lifetime_path(graph, shorter, longer) {
+                report_illegal_global_lifetime_path(ctx, &path);
+            }
+        }
+
+        for raw_longer in 0..known_lifetimes.len() {
+            let longer = LifetimeGraphId(raw_longer);
+            let Some(longer_lt) = known_lifetimes[longer.0] else {
+                continue;
+            };
+            if !matches!(longer_lt, LifeTime::Local(_)) {
+                continue;
+            }
+
+            let found_from = found_sccs.map[shorter];
+            let found_to = found_sccs.map[longer];
+            if !found_reachable.contains(found_from, found_to) {
+                continue;
+            }
+
+            let shorter_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(shorter.0));
+            let longer_root = find_lid_root(&mut ctx.types.lifetimes.life_parent, LId(longer.0));
+            if !seen.insert((shorter_root.0, longer_root.0)) {
+                continue;
+            }
+
+            if let Some(path) = shortest_lifetime_path(graph, shorter, longer) {
+                report_illegal_global_lifetime_path(ctx, &path);
+            }
+        }
+    }
+
+    report_global_components_containing_locals(ctx, graph, &found_sccs, &known_lifetimes);
+}
+
+fn propagated_component_reachability(
+    sccs: &SCCS<LifetimeGraphId>,
+) -> SparseBits<CompId<LifetimeGraphId>, CompId<LifetimeGraphId>> {
+    let component_count = sccs.comps.len();
+    let mut reachable = SparseBits::new(CompId::new(component_count), component_count);
+    for raw in 0..component_count {
+        let component = CompId::new(raw);
+        reachable.insert(component, component);
+    }
+    propegate_constraints(&mut reachable, sccs);
+    reachable
+}
+
+fn requires_explicit_where_ordering(shorter: LifeTime, longer: LifeTime) -> bool {
+    matches!((shorter, longer), (LifeTime::External(a), LifeTime::External(b)) if a != b)
+}
+
+fn illegal_global_to_local_ordering(shorter: LifeTime, longer: LifeTime) -> bool {
+    matches!(shorter, LifeTime::External(_) | LifeTime::Static)
+        && matches!(longer, LifeTime::Local(_))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LifetimePathStep {
+    Origin(LifetimeOrdering),
+    Where(WhereClauseLifetimeOrdering),
+}
+
+impl LifetimePathStep {
+    fn shorter(self) -> LifetimeGraphId {
+        match self {
+            LifetimePathStep::Origin(edge) => edge.shorter,
+            LifetimePathStep::Where(edge) => edge.shorter,
+        }
+    }
+
+    fn longer(self) -> LifetimeGraphId {
+        match self {
+            LifetimePathStep::Origin(edge) => edge.longer,
+            LifetimePathStep::Where(edge) => edge.longer,
+        }
+    }
+}
+
+fn shortest_lifetime_path(
+    graph: &LifetimeOrderingGraph,
+    start: LifetimeGraphId,
+    target: LifetimeGraphId,
+) -> Option<Vec<LifetimePathStep>> {
+    let mut visited = vec![false; graph.lid_count()];
+    let mut previous: Vec<Option<(LifetimeGraphId, LifetimePathStep)>> =
+        vec![None; graph.lid_count()];
+    let mut queue = VecDeque::new();
+    visited[start.0] = true;
+    queue.push_back(start);
+
+    while let Some(current) = queue.pop_front() {
+        if current == target {
+            break;
+        }
+
+        for step in lifetime_path_steps_from(graph, current) {
+            let next = step.longer();
             if visited[next.0] {
                 continue;
             }
             visited[next.0] = true;
-            stack.push(next);
+            previous[next.0] = Some((current, step));
+            queue.push_back(next);
         }
     }
 
-    false
+    if !visited[target.0] {
+        return None;
+    }
+
+    let mut path = Vec::new();
+    let mut current = target;
+    while current != start {
+        let (prev, step) = previous[current.0]?;
+        path.push(step);
+        current = prev;
+    }
+    path.reverse();
+    Some(path)
+}
+
+fn lifetime_path_steps_from(
+    graph: &LifetimeOrderingGraph,
+    node: LifetimeGraphId,
+) -> impl Iterator<Item = LifetimePathStep> + '_ {
+    graph
+        .outgoing(node)
+        .iter()
+        .map(|&idx| LifetimePathStep::Origin(graph.origin_edges()[idx]))
+        .chain(
+            graph
+                .where_clause_outgoing(node)
+                .iter()
+                .map(|&idx| LifetimePathStep::Where(graph.where_clause_edges()[idx])),
+        )
+}
+
+fn report_illegal_global_lifetime_path(ctx: &mut InferState, path: &[LifetimePathStep]) {
+    if path.is_empty() {
+        return;
+    }
+    let path_text = format_lifetime_path(ctx, path);
+
+    if let Some(origin_edge) = path.iter().find_map(|step| match step {
+        LifetimePathStep::Origin(edge) => Some(*edge),
+        LifetimePathStep::Where(_) => None,
+    }) {
+        report_illegal_global_lifetime_ordering_with_path(ctx, &origin_edge, Some(path_text));
+        return;
+    }
+}
+
+fn format_lifetime_path(ctx: &mut InferState, path: &[LifetimePathStep]) -> String {
+    let mut parts = Vec::with_capacity(path.len() + 1);
+    if let Some(first) = path.first() {
+        parts.push(format_lid_name(ctx, LId(first.shorter().0)));
+    }
+    for step in path {
+        parts.push(format_lid_name(ctx, LId(step.longer().0)));
+    }
+    parts.join(" -> ")
+}
+
+fn report_global_components_containing_locals(
+    ctx: &mut InferState,
+    graph: &LifetimeOrderingGraph,
+    sccs: &SCCS<LifetimeGraphId>,
+    known_lifetimes: &[Option<LifeTime>],
+) {
+    let mut seen_components = HashSet::new();
+    for (component_id, component) in sccs.comps.iter_enumerated() {
+        let global = component.iter().copied().find(|node| {
+            matches!(
+                known_lifetimes[node.0],
+                Some(LifeTime::External(_) | LifeTime::Static)
+            )
+        });
+        let local = component
+            .iter()
+            .copied()
+            .find(|node| matches!(known_lifetimes[node.0], Some(LifeTime::Local(_))));
+        let (Some(global), Some(local)) = (global, local) else {
+            continue;
+        };
+        if !seen_components.insert(component_id.index()) {
+            continue;
+        }
+        if let Some(path) = shortest_lifetime_path(graph, global, local)
+            .or_else(|| shortest_lifetime_path(graph, local, global))
+        {
+            report_lifetime_path_conflict(ctx, &path);
+        }
+    }
+}
+
+fn report_lifetime_path_conflict(ctx: &mut InferState, path: &[LifetimePathStep]) {
+    let Some(origin_edge) = path.iter().find_map(|step| match step {
+        LifetimePathStep::Origin(edge) => Some(*edge),
+        LifetimePathStep::Where(_) => None,
+    }) else {
+        return;
+    };
+    report_lifetime_ordering_conflict(ctx, &origin_edge);
 }
 
 fn format_lid_name(ctx: &mut InferState, lid: LId) -> String {
@@ -799,7 +1030,11 @@ fn report_lifetime_ordering_conflict(ctx: &mut InferState, edge: &LifetimeOrderi
     }
 }
 
-fn report_illegal_global_lifetime_ordering(ctx: &mut InferState, edge: &LifetimeOrdering) {
+fn report_illegal_global_lifetime_ordering_with_path(
+    ctx: &mut InferState,
+    edge: &LifetimeOrdering,
+    path: Option<String>,
+) {
     let source_loc = origin_loc(ctx, edge.source_origin);
     let target_loc = origin_loc(ctx, edge.target_origin);
     let shorter_name = format_lid_name(ctx, LId(edge.shorter.0));
@@ -812,6 +1047,7 @@ fn report_illegal_global_lifetime_ordering(ctx: &mut InferState, edge: &Lifetime
             operation,
             shorter: shorter_name,
             longer: longer_name,
+            path,
             related: Some(related),
         });
         return;
@@ -823,6 +1059,7 @@ fn report_illegal_global_lifetime_ordering(ctx: &mut InferState, edge: &Lifetime
             operation,
             shorter: shorter_name,
             longer: longer_name,
+            path,
             related: None,
         });
     }
@@ -833,8 +1070,10 @@ mod tests {
     use super::{
         LifetimeOrdering, LifetimeOrderingGraph, LifetimeOrderingReason,
         assign_remaining_unresolved_lifetimes_as_unknown, collect_origin_lifetime_orderings,
-        seed_origin_lifetimes_for_graph, solve_lifetime_scc,
+        lifetime_sccs_with_modes, propagated_component_reachability,
+        seed_origin_lifetimes_for_graph, shortest_lifetime_path, solve_lifetime_scc,
     };
+    use crate::data_structures::index::IndexVec;
     use crate::global_type_inference::infer_global_types;
     use crate::ir::{ValId, Value};
     use crate::local_type_inference::{
@@ -843,10 +1082,9 @@ mod tests {
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::run_typecheck_scan;
-    use crate::data_structures::index::IndexVec;
     use crate::type_inference::{
-        InferState, LifeTime, OriginId, OriginKind, OriginNode, PtrKind, ResolveKind,
-        SolvedTypes, TypeError, TypeStore, find_lid_root,
+        InferState, LifeTime, OriginId, OriginKind, OriginNode, PtrKind, ResolveKind, SolvedTypes,
+        TypeError, TypeStore, find_lid_root,
     };
 
     fn gather_program(src: &str) -> Program {
@@ -1154,6 +1392,62 @@ mod tests {
             solve.component_of[forward.shorter.0],
             solve.component_of[forward.longer.0]
         );
+    }
+
+    #[test]
+    fn where_clause_scc_reachability_includes_transitive_ordering() {
+        let mut graph = LifetimeOrderingGraph::new(3);
+        graph.push_where_clause_edge(super::LifetimeGraphId(0), super::LifetimeGraphId(1));
+        graph.push_where_clause_edge(super::LifetimeGraphId(1), super::LifetimeGraphId(2));
+
+        let sccs = lifetime_sccs_with_modes(&graph, false, true);
+        let reachable = propagated_component_reachability(&sccs);
+
+        assert!(reachable.contains(
+            sccs.map[super::LifetimeGraphId(0)],
+            sccs.map[super::LifetimeGraphId(2)]
+        ));
+    }
+
+    #[test]
+    fn shortest_lifetime_path_uses_bfs_path() {
+        let mut graph = LifetimeOrderingGraph::new(4);
+        graph.push_edge(LifetimeOrdering {
+            shorter: super::LifetimeGraphId(0),
+            longer: super::LifetimeGraphId(1),
+            source_origin: OriginId(0),
+            target_origin: OriginId(1),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+        graph.push_edge(LifetimeOrdering {
+            shorter: super::LifetimeGraphId(1),
+            longer: super::LifetimeGraphId(3),
+            source_origin: OriginId(1),
+            target_origin: OriginId(3),
+            reason: LifetimeOrderingReason::Reborrow,
+        });
+        graph.push_edge(LifetimeOrdering {
+            shorter: super::LifetimeGraphId(0),
+            longer: super::LifetimeGraphId(2),
+            source_origin: OriginId(0),
+            target_origin: OriginId(2),
+            reason: LifetimeOrderingReason::Deref,
+        });
+        graph.push_edge(LifetimeOrdering {
+            shorter: super::LifetimeGraphId(2),
+            longer: super::LifetimeGraphId(1),
+            source_origin: OriginId(2),
+            target_origin: OriginId(1),
+            reason: LifetimeOrderingReason::Deref,
+        });
+
+        let path =
+            shortest_lifetime_path(&graph, super::LifetimeGraphId(0), super::LifetimeGraphId(3))
+                .expect("expected path");
+
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0].longer(), super::LifetimeGraphId(1));
+        assert_eq!(path[1].longer(), super::LifetimeGraphId(3));
     }
 
     #[test]

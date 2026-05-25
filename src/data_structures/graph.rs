@@ -1,5 +1,5 @@
-use crate::identity_hasher::IdHashMap;
 use crate::data_structures::index::{Idx, IndexVec};
+use crate::identity_hasher::IdHashMap;
 use std::ops::Range;
 
 pub trait DirectedGraph {

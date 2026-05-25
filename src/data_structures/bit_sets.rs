@@ -1,10 +1,9 @@
-
-use crate::data_structures::index::IndexVec;
-use crate::data_structures::graph::DirectedGraph;
 use crate::data_structures::graph::CompId;
+use crate::data_structures::graph::DirectedGraph;
 use crate::data_structures::graph::SCCS;
-use std::marker::PhantomData;
 use crate::data_structures::index::Idx;
+use crate::data_structures::index::IndexVec;
+use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
 pub struct BS<Node: Idx> {

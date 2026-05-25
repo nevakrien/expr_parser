@@ -322,13 +322,24 @@ impl ErrorReporter {
                 operation,
                 shorter,
                 longer,
+                path,
                 related,
             } => {
                 let message =
                     format!("illegal global lifetime ordering: {longer} must outlive {shorter}");
-                let label = format!(
-                    "this {operation} requires lifetime {longer} to outlive {shorter}, but both are global lifetimes"
-                );
+                let mut label = if longer.starts_with("'l") {
+                    format!(
+                        "this {operation} requires local lifetime {longer} to outlive global lifetime {shorter}"
+                    )
+                } else {
+                    format!(
+                        "this {operation} requires lifetime {longer} to outlive {shorter}, but both are global lifetimes"
+                    )
+                };
+                if let Some(path) = path {
+                    label.push_str("; shortest discovered path: ");
+                    label.push_str(path);
+                }
                 let related_label = format!("lifetime {longer} is taken from here");
                 let mut report = Report::build(ReportKind::Error, loc.file, loc.range.start)
                     .with_message(message)

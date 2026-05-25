@@ -2300,8 +2300,7 @@ fn try_resolve_tuple_int_access(
                         message: "tuple element access does not support `::`",
                     });
                 }
-                let Some(result) = types.extra.tuple_infers[tuple_id].items.get(id).copied()
-                else {
+                let Some(result) = types.extra.tuple_infers[tuple_id].items.get(id).copied() else {
                     return IntAccessResolve::Error(TypeError::Simple {
                         loc: ex.program.value_loc(site),
                         message: "tuple element index is out of bounds for this tuple",
@@ -2992,7 +2991,15 @@ fn specialize_struct_field_type(
     generics: &[CId],
     lifetimes: &[LId],
 ) -> CId {
-    specialize_type(ex, types, field_ty, generics, lifetimes, site, ex.program.value_loc(site))
+    specialize_type(
+        ex,
+        types,
+        field_ty,
+        generics,
+        lifetimes,
+        site,
+        ex.program.value_loc(site),
+    )
 }
 
 impl PendingMemberAccess {
