@@ -2300,7 +2300,7 @@ fn try_resolve_tuple_int_access(
                         message: "tuple element access does not support `::`",
                     });
                 }
-                let Some(result) = types.extra.tuple_infers[tuple_id.0].items.get(id).copied()
+                let Some(result) = types.extra.tuple_infers[tuple_id].items.get(id).copied()
                 else {
                     return IntAccessResolve::Error(TypeError::Simple {
                         loc: ex.program.value_loc(site),
@@ -2809,7 +2809,7 @@ impl PendingImplicitDeref {
                     });
                 }
 
-                let sid = types.extra.struct_infers[rid.0].sid;
+                let sid = types.extra.struct_infers[rid].sid;
                 let Some(struct_name) = ex.store.struct_value(sid).name else {
                     return Ok(ImplicitDerefStep::Done);
                 };
@@ -3142,7 +3142,7 @@ impl PendingMemberAccess {
                 }
 
                 ResolveKind::Struct(rid) => {
-                    let sid = types.extra.struct_infers[rid.0].sid;
+                    let sid = types.extra.struct_infers[rid].sid;
 
                     let (field_ty, struct_name) = {
                         let rep = ex.store.struct_value(sid);
@@ -3162,7 +3162,7 @@ impl PendingMemberAccess {
                             });
                         }
 
-                        let infer = &types.extra.struct_infers[rid.0];
+                        let infer = &types.extra.struct_infers[rid];
                         //unfortunatly yes this does require a clone at the moment
                         //the reason is that we have to borrow struct_infers inside specilize as mut
                         //there is some tricks we can do here with unsafe as those SHOULD... never be changed during specilize
@@ -4212,7 +4212,7 @@ impl PendingDeref {
 
             // inferred struct
             ResolveKind::Struct(rid) => {
-                let sid = types.extra.struct_infers[rid.0].sid;
+                let sid = types.extra.struct_infers[rid].sid;
                 let struct_name = ex.store.struct_value(sid).name;
 
                 struct_name.and_then(|struct_name| {
@@ -5140,7 +5140,7 @@ fn classify_operand(ex: &mut ExternState, types: &mut TypeState, cid: CId) -> Op
             _ => OperandKind::KnownNonUser,
         },
         ResolveKind::Struct(call_id) => {
-            let sid = types.extra.struct_infers[call_id.0].sid;
+            let sid = types.extra.struct_infers[call_id].sid;
             OperandKind::UserStruct(ex.store.struct_value(sid).name)
         }
         ResolveKind::Ptr { tgt, kind, .. } => match kind.is_fancy() {

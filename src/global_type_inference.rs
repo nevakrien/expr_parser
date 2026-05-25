@@ -577,7 +577,7 @@ fn finalize_global(ctx: &mut InferState) {
             let root = types.root(c);
 
             if let ResolveKind::Solved(t) = types.cluster_state(root) {
-                ex.store.structs[sid_i].fields[i].1 = t;
+                ex.store.structs[StructId(sid_i)].fields[i].1 = t;
             } else if c == root {
                 let loc = ex.program.type_expr_loc(loc_expr);
                 ex.errors.push(TypeError::Simple {
@@ -1216,7 +1216,7 @@ pub(crate) fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
         TypeExpr::Struct(def) => {
             let cid = compile_struct_type::<ALLOW_STRUCT_GENERICS>(ctx, texpr, def);
             let sid = match ctx.types.core.cluster[cid].state {
-                ResolveKind::Struct(rid) => ctx.types.extra.struct_infers[rid.0].sid,
+                ResolveKind::Struct(rid) => ctx.types.extra.struct_infers[rid].sid,
                 ResolveKind::Solved(t) => match ctx.ex.store.type_value(t) {
                     TypeValue::Struct { id, .. } => *id,
                     _ => unreachable!("struct def didnt return struct"),
@@ -1224,8 +1224,8 @@ pub(crate) fn do_typedef<const ALLOW_STRUCT_GENERICS: bool>(
                 _ => unreachable!("struct def didnt return struct"),
             };
 
-            debug_assert_eq!(ctx.ex.store.structs[sid.0].name, None);
-            ctx.ex.store.structs[sid.0].name = Some(typedef_name);
+            debug_assert_eq!(ctx.ex.store.structs[sid].name, None);
+            ctx.ex.store.structs[sid].name = Some(typedef_name);
 
             cid
         }

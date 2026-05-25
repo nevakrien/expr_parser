@@ -579,7 +579,7 @@ mod tests {
             generics: Vec::new(),
             lifetimes: Vec::new(),
         });
-        store.values[self_ty.0] = TypeValue::Struct {
+        store.values[self_ty] = TypeValue::Struct {
             id: sid,
             generics: vec![self_ty],
             lifetimes: Vec::new(),

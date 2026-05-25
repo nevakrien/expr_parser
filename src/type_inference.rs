@@ -65,6 +65,18 @@ use crate::program::{Defined, Program};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub usize);
 
+impl Idx for TypeId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
 ///this should only be used for specifiying ERRORS
 ///it is a way of representing unknown types that we can intern
 ///TypeId should not point to this as a general rule
@@ -81,8 +93,32 @@ pub struct BadTypeId(pub TypeId);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GenId(pub usize);
 
+impl Idx for GenId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructId(pub usize);
+
+impl Idx for StructId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
+    }
+}
 
 ///this is rank1 for now and so cant work for closures
 ///when we add them got to add rank and a normelization step and its a whole thing
@@ -327,6 +363,18 @@ pub(crate) struct ImportedLifetimeOrdering {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LifeId(pub u32);
 
+impl Idx for LifeId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx as u32)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 impl Program {
     //TODO make it so we can store TypeId here directly
     //or perhaps move type expressions to use some sort of global type context
@@ -352,11 +400,11 @@ impl Program {
 
 #[derive(Debug)]
 pub struct TypeStore {
-    pub(crate) values: Vec<TypeValue>,
+    pub(crate) values: IndexVec<TypeId, TypeValue>,
     pub(crate) intern: HashMap<TypeValue, TypeId>,
     pub(crate) unused_function_generics: HashMap<TypeId, Vec<usize>>,
 
-    pub(crate) structs: Vec<StructRep>,
+    pub(crate) structs: IndexVec<StructId, StructRep>,
     pub(crate) struct_overloads: IdHashMap<NameId, StructOverloadInfo>,
 }
 
@@ -369,11 +417,11 @@ impl Default for TypeStore {
 impl TypeStore {
     pub fn new() -> Self {
         let mut ans = Self {
-            values: Vec::new(),
+            values: IndexVec::new(),
             intern: HashMap::new(),
             unused_function_generics: HashMap::new(),
 
-            structs: Vec::new(),
+            structs: IndexVec::new(),
             struct_overloads: IdHashMap::default(),
         };
 
@@ -388,7 +436,7 @@ impl TypeStore {
 
     #[inline(always)]
     pub fn type_value(&self, id: TypeId) -> &TypeValue {
-        &self.values[id.0]
+        &self.values[id]
     }
 
     #[inline]
@@ -423,8 +471,7 @@ impl TypeStore {
             _ => None,
         };
 
-        let id = TypeId(self.values.len());
-        self.values.push(ty.clone());
+        let id = self.values.push(ty.clone());
         self.intern.insert(ty, id);
         if let Some(unused_generics) = unused_generics {
             self.unused_function_generics.insert(id, unused_generics);
@@ -594,9 +641,7 @@ impl TypeStore {
 
     #[inline]
     pub fn new_struct(&mut self, rep: StructRep) -> StructId {
-        let sid = StructId(self.structs.len());
-        self.structs.push(rep);
-        sid
+        self.structs.push(rep)
     }
 
     #[cfg(test)]
@@ -625,12 +670,12 @@ impl TypeStore {
 
     #[inline(always)]
     pub fn struct_value(&self, id: StructId) -> &StructRep {
-        &self.structs[id.0]
+        &self.structs[id]
     }
 
     #[inline]
     pub fn set_struct_fields(&mut self, id: StructId, fields: Vec<(NameId, TypeId)>) {
-        self.structs[id.0].fields = fields;
+        self.structs[id].fields = fields;
     }
 
     #[inline(always)]
@@ -1181,6 +1226,18 @@ pub struct InnerFunctionTypes {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PlaceId(pub u32);
+
+impl Idx for PlaceId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx as u32)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ValueKind {
@@ -1762,11 +1819,47 @@ pub(crate) struct Cluster {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct FuncInferId(usize);
 
+impl Idx for FuncInferId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct StructInferId(pub(crate) usize);
 
+impl Idx for StructInferId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct TupleInferId(pub(crate) usize);
+
+impl Idx for TupleInferId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
+    }
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum PtrKind {
@@ -2429,10 +2522,10 @@ impl TypeCore {
 }
 
 pub(crate) struct TypeExtra {
-    pub(crate) func_defs: Vec<FuncInfer>,
+    pub(crate) func_defs: IndexVec<FuncInferId, FuncInfer>,
     pub(crate) struct_defs: Vec<StructDef>,
-    pub(crate) struct_infers: Vec<StructInfer>,
-    pub(crate) tuple_infers: Vec<TupleInfer>,
+    pub(crate) struct_infers: IndexVec<StructInferId, StructInfer>,
+    pub(crate) tuple_infers: IndexVec<TupleInferId, TupleInfer>,
 }
 
 pub(crate) struct LifetimeState {
@@ -2488,10 +2581,10 @@ impl TypeState {
                 cluster: IndexVec::new(),
             },
             extra: TypeExtra {
-                func_defs: Vec::new(),
+                func_defs: IndexVec::new(),
                 struct_defs: Vec::new(),
-                struct_infers: Vec::new(),
-                tuple_infers: Vec::new(),
+                struct_infers: IndexVec::new(),
+                tuple_infers: IndexVec::new(),
             },
             lifetimes: LifetimeState::new(),
         };
@@ -2718,8 +2811,7 @@ impl TypeState {
     }
 
     pub(crate) fn new_func(&mut self, call: FuncInfer) -> CId {
-        let call_id = FuncInferId(self.extra.func_defs.len());
-        self.extra.func_defs.push(call);
+        let call_id = self.extra.func_defs.push(call);
 
         let id = self.new_cluster();
         self.core.cluster[id].state = ResolveKind::Func(call_id);
@@ -2732,8 +2824,7 @@ impl TypeState {
         generics: Vec<CId>,
         lifetimes: Vec<LId>,
     ) -> CId {
-        let call_id = StructInferId(self.extra.struct_infers.len());
-        self.extra.struct_infers.push(StructInfer {
+        let call_id = self.extra.struct_infers.push(StructInfer {
             sid,
             generics,
             lifetimes,
@@ -2745,8 +2836,7 @@ impl TypeState {
     }
 
     pub(crate) fn new_tuple_instance(&mut self, items: Vec<CId>) -> CId {
-        let tuple_id = TupleInferId(self.extra.tuple_infers.len());
-        self.extra.tuple_infers.push(TupleInfer { items });
+        let tuple_id = self.extra.tuple_infers.push(TupleInfer { items });
 
         let id = self.new_cluster();
         self.core.cluster[id].state = ResolveKind::Tuple(tuple_id);
@@ -2972,22 +3062,22 @@ impl TypeState {
 
     #[inline(always)]
     pub fn func(&self, id: FuncInferId) -> &FuncInfer {
-        &self.extra.func_defs[id.0]
+        &self.extra.func_defs[id]
     }
 
     #[inline(always)]
     pub fn func_mut(&mut self, id: FuncInferId) -> &mut FuncInfer {
-        &mut self.extra.func_defs[id.0]
+        &mut self.extra.func_defs[id]
     }
 
     #[inline(always)]
     pub fn struct_infer(&self, id: StructInferId) -> &StructInfer {
-        &self.extra.struct_infers[id.0]
+        &self.extra.struct_infers[id]
     }
 
     #[inline(always)]
     pub fn tuple_infer(&self, id: TupleInferId) -> &TupleInfer {
-        &self.extra.tuple_infers[id.0]
+        &self.extra.tuple_infers[id]
     }
 
     // =========================================================
@@ -3601,7 +3691,7 @@ pub(crate) fn unify_func_with_type(
         }
     };
 
-    let infer_cc = types.extra.func_defs[call.0].calling_convention;
+    let infer_cc = types.extra.func_defs[call].calling_convention;
     let Some(merged_cc) = merge_calling_convention(infer_cc, cc) else {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
@@ -3609,10 +3699,10 @@ pub(crate) fn unify_func_with_type(
         });
     };
 
-    types.extra.func_defs[call.0].calling_convention = merged_cc;
+    types.extra.func_defs[call].calling_convention = merged_cc;
 
-    if types.extra.func_defs[call.0].generics.as_slice() != generics
-        || types.extra.func_defs[call.0].lifetimes != lifetimes
+    if types.extra.func_defs[call].generics.as_slice() != generics
+        || types.extra.func_defs[call].lifetimes != lifetimes
     {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
@@ -3620,7 +3710,7 @@ pub(crate) fn unify_func_with_type(
         });
     }
 
-    let input_len = types.extra.func_defs[call.0].inputs.len();
+    let input_len = types.extra.func_defs[call].inputs.len();
     if params.len() != input_len {
         return Err(TypeClash {
             found: Some(found_func(ex, types)),
@@ -3629,7 +3719,7 @@ pub(crate) fn unify_func_with_type(
     }
 
     for i in 0..input_len {
-        let input = types.extra.func_defs[call.0].inputs[i];
+        let input = types.extra.func_defs[call].inputs[i];
 
         //TODO (maybe): we constantly take the params again from the spot because borrow checker
         //              technically the Vec params points to never reallocs
@@ -3642,7 +3732,7 @@ pub(crate) fn unify_func_with_type(
         force_type(ex, types, input, param_ty)?;
     }
 
-    let output = types.extra.func_defs[call.0].output;
+    let output = types.extra.func_defs[call].output;
     force_type(ex, types, output, ret)?;
 
     Ok(())
@@ -3682,10 +3772,10 @@ pub(crate) fn unify_struct_with_type(
         }
     };
 
-    let call_sid = types.extra.struct_infers[call.0].sid;
+    let call_sid = types.extra.struct_infers[call].sid;
     if call_sid != sid
-        || types.extra.struct_infers[call.0].generics.len() != glen
-        || types.extra.struct_infers[call.0].lifetimes.len() != lifetimes.len()
+        || types.extra.struct_infers[call].generics.len() != glen
+        || types.extra.struct_infers[call].lifetimes.len() != lifetimes.len()
     {
         return Err(TypeClash {
             found: Some(found_struct(ex, types)),
@@ -3694,7 +3784,7 @@ pub(crate) fn unify_struct_with_type(
     }
 
     for (i, target_lt) in lifetimes.iter().copied().enumerate() {
-        let lid = types.extra.struct_infers[call.0].lifetimes[i];
+        let lid = types.extra.struct_infers[call].lifetimes[i];
         if !bind_struct_lid_to_lifetime(types, lid, target_lt) {
             return Err(TypeClash {
                 found: Some(found_struct(ex, types)),
@@ -3704,7 +3794,7 @@ pub(crate) fn unify_struct_with_type(
     }
 
     for i in 0..glen {
-        let input = types.extra.struct_infers[call.0].generics[i];
+        let input = types.extra.struct_infers[call].generics[i];
         let TypeValue::Struct { generics, .. } = ex.store.type_value(ty) else {
             unreachable!();
         };
@@ -3735,7 +3825,7 @@ pub(crate) fn unify_tuple_with_type(
         out
     };
 
-    let ilen = types.extra.tuple_infers[tuple.0].items.len();
+    let ilen = types.extra.tuple_infers[tuple].items.len();
 
     let TypeValue::Tuple(items) = ex.store.type_value(ty) else {
         return Err(TypeClash {
@@ -3756,7 +3846,7 @@ pub(crate) fn unify_tuple_with_type(
             unreachable!();
         };
         let item_ty = items[i];
-        let item = types.extra.tuple_infers[tuple.0].items[i];
+        let item = types.extra.tuple_infers[tuple].items[i];
         force_type(ex, types, item, item_ty)?;
     }
 
@@ -3810,7 +3900,7 @@ fn try_resolve_func_type(
     types: &mut TypeState,
     call: FuncInferId,
 ) -> Option<TypeId> {
-    let func = &mut types.extra.func_defs[call.0];
+    let func = &mut types.extra.func_defs[call];
 
     let mut params = Vec::with_capacity(func.inputs.len());
 
@@ -3857,7 +3947,7 @@ fn try_resolve_struct_type(
     types: &mut TypeState,
     call: StructInferId,
 ) -> Option<TypeId> {
-    let site = &mut types.extra.struct_infers[call.0];
+    let site = &mut types.extra.struct_infers[call];
     let sid = site.sid;
 
     let mut generics = Vec::with_capacity(site.generics.len());
@@ -3891,7 +3981,7 @@ fn try_resolve_tuple_type(
     types: &mut TypeState,
     tuple: TupleInferId,
 ) -> Option<TypeId> {
-    let site = &mut types.extra.tuple_infers[tuple.0];
+    let site = &mut types.extra.tuple_infers[tuple];
 
     let mut items = Vec::with_capacity(site.items.len());
 
@@ -4280,7 +4370,7 @@ fn write_func_mock_string_inner(
     out: &mut String,
     limit: &mut usize,
 ) {
-    let site = &extra.func_defs[call.0];
+    let site = &extra.func_defs[call];
     let _ = out.write_str(calling_convention_keyword(site.calling_convention));
     if !site.generics.is_empty() {
         let _ = out.write_char('[');
@@ -4315,7 +4405,7 @@ fn write_struct_mock_string_inner(
     out: &mut String,
     limit: &mut usize,
 ) {
-    let site = &extra.struct_infers[call.0];
+    let site = &extra.struct_infers[call];
     let rep = ex.store.struct_value(site.sid);
     match rep.name {
         Some(name) => {
@@ -4358,7 +4448,7 @@ fn write_tuple_mock_string_inner(
     limit: &mut usize,
 ) {
     let _ = out.write_char('(');
-    for (i, item) in extra.tuple_infers[tuple.0]
+    for (i, item) in extra.tuple_infers[tuple]
         .items
         .iter()
         .copied()
@@ -4642,8 +4732,7 @@ fn specialize_type_inner(
             }
 
             // create FuncInfer
-            let call_id = FuncInferId(types.extra.func_defs.len());
-            types.extra.func_defs.push(FuncInfer {
+            let call_id = types.extra.func_defs.push(FuncInfer {
                 generics: Vec::new(),
                 lifetimes: 0,
                 lifetime_orderings: Vec::new(),
@@ -4697,8 +4786,7 @@ fn specialize_type_inner(
                 ctx,
             );
 
-            let call_id = StructInferId(types.extra.struct_infers.len());
-            types.extra.struct_infers.push(StructInfer {
+            let call_id = types.extra.struct_infers.push(StructInfer {
                 sid: id,
                 generics: resolved,
                 lifetimes: resolved_lifetimes,
@@ -4748,8 +4836,7 @@ fn specialize_type_inner(
                 new_items.push(specialize_type_inner(ex, types, items[i], ctx));
             }
 
-            let tuple_id = TupleInferId(types.extra.tuple_infers.len());
-            types
+            let tuple_id = types
                 .extra
                 .tuple_infers
                 .push(TupleInfer { items: new_items });
@@ -5273,20 +5360,20 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
         let state = ctx.types.core.cluster[root].state;
         let solved = match state {
             ResolveKind::Func(call) => {
-                let n = ctx.types.extra.func_defs[call.0].inputs.len();
+                let n = ctx.types.extra.func_defs[call].inputs.len();
 
                 let mut params = Vec::with_capacity(n);
                 for i in 0..n {
-                    let cid = ctx.types.extra.func_defs[call.0].inputs[i];
+                    let cid = ctx.types.extra.func_defs[call].inputs[i];
                     let cid = ctx.types.root(cid);
                     params.push(resolve_cluster_to_typeid(ctx, cid)?);
                 }
 
-                let cid = ctx.types.extra.func_defs[call.0].output;
+                let cid = ctx.types.extra.func_defs[call].output;
                 let cid = ctx.types.root(cid);
                 let ret = resolve_cluster_to_typeid(ctx, cid)?;
 
-                let func = &mut ctx.types.extra.func_defs[call.0];
+                let func = &mut ctx.types.extra.func_defs[call];
                 let calling_convention = func.calling_convention;
                 let lifetimes = func.lifetimes;
                 let generics = std::mem::take(&mut func.generics);
@@ -5305,23 +5392,23 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
             }
 
             ResolveKind::Struct(call) => {
-                let n = ctx.types.extra.struct_infers[call.0].generics.len();
+                let n = ctx.types.extra.struct_infers[call].generics.len();
                 let mut generics = Vec::with_capacity(n);
                 for i in 0..n {
-                    let cid = ctx.types.extra.struct_infers[call.0].generics[i];
+                    let cid = ctx.types.extra.struct_infers[call].generics[i];
                     let cid = ctx.types.root(cid);
                     generics.push(resolve_cluster_to_typeid(ctx, cid)?);
                 }
 
-                let m = ctx.types.extra.struct_infers[call.0].lifetimes.len();
+                let m = ctx.types.extra.struct_infers[call].lifetimes.len();
                 let mut lifetimes = Vec::with_capacity(m);
                 for i in 0..m {
-                    let lid = ctx.types.extra.struct_infers[call.0].lifetimes[i];
+                    let lid = ctx.types.extra.struct_infers[call].lifetimes[i];
                     let lid = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
                     lifetimes.push(ctx.types.lifetimes.life_known[lid]?);
                 }
 
-                let sid = ctx.types.extra.struct_infers[call.0].sid;
+                let sid = ctx.types.extra.struct_infers[call].sid;
                 ctx.ex.store.intern(TypeValue::Struct {
                     id: sid,
                     generics,
@@ -5330,11 +5417,11 @@ pub(crate) fn full_resolve_deferred_types(ctx: &mut InferState) {
             }
 
             ResolveKind::Tuple(call) => {
-                let n = ctx.types.extra.tuple_infers[call.0].items.len();
+                let n = ctx.types.extra.tuple_infers[call].items.len();
 
                 let mut items = Vec::with_capacity(n);
                 for i in 0..n {
-                    let cid = ctx.types.extra.tuple_infers[call.0].items[i];
+                    let cid = ctx.types.extra.tuple_infers[call].items[i];
                     let cid = ctx.types.root(cid);
                     items.push(resolve_cluster_to_typeid(ctx, cid)?);
                 }
