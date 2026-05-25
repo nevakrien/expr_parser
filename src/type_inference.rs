@@ -9470,6 +9470,19 @@ mod type_infer_tests {
         infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
     }
 
+
+    #[test]
+    fn basic_reborrow(){
+        let src = "f=fn['a,'b, where 'a<'b](r:&'b int)->&'a int {&*r}";
+
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
     #[test]
     fn nested_box_mut_addr_of_member_uses_mut_deref_chain() {
         let src = r#"
