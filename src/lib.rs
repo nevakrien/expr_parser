@@ -1,3 +1,4 @@
+pub mod data_structures;
 pub mod error_reporting;
 pub mod global_type_inference;
 pub mod identity_hasher;

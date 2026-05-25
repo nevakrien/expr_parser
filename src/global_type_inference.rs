@@ -985,7 +985,7 @@ fn apply_signature_elided_output_lifetime_rule(
         return;
     };
 
-    let mut seen_output_roots = vec![false; ctx.types.lifetimes.life_parent.0.len()];
+    let mut seen_output_roots = vec![false; ctx.types.lifetimes.life_parent.len()];
     let mut output_elided_roots = Vec::with_capacity(lids_after_output - lids_before_output);
     for lid in lids_before_output..lids_after_output {
         let root = ctx.types.find_lid_root(LId(lid));
@@ -1022,7 +1022,7 @@ fn assign_signature_implicit_input_lifetimes(
     lids_before_inputs: usize,
     lids_after_inputs: usize,
 ) -> Vec<LifeTime> {
-    let mut seen_input_roots = vec![false; ctx.types.lifetimes.life_parent.0.len()];
+    let mut seen_input_roots = vec![false; ctx.types.lifetimes.life_parent.len()];
     let mut implicit_input_roots = Vec::with_capacity(lids_after_inputs - lids_before_inputs);
     for lid in lids_before_inputs..lids_after_inputs {
         let root = ctx.types.find_lid_root(LId(lid));
@@ -1915,7 +1915,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
     output_type: Option<TExpId>,
 ) -> (CId, CId) {
     let decl_generics = generics;
-    let lifetime_before_signature = ctx.types.lifetimes.life_parent.0.len();
+    let lifetime_before_signature = ctx.types.lifetimes.life_parent.len();
     let lifetime_generics = generics.lifetimes();
     let generics = generics.generics();
     // Reject generic functions in local scope.
@@ -1938,7 +1938,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         });
     }
 
-    let lids_before_inputs = ctx.types.lifetimes.life_parent.0.len();
+    let lids_before_inputs = ctx.types.lifetimes.life_parent.len();
     bind_lifetime_generics(ctx, lifetime_generics);
 
     let mut generic_info = Vec::with_capacity(generics.len());
@@ -1951,10 +1951,10 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         .ids()
         .map(|pat| gather_pattern_constraints_with_generics::<GLOBAL_SCOPE>(ctx, pat, None))
         .collect::<Vec<_>>();
-    let lids_after_inputs = ctx.types.lifetimes.life_parent.0.len();
+    let lids_after_inputs = ctx.types.lifetimes.life_parent.len();
     let implicit_input_lifetimes =
         assign_signature_implicit_input_lifetimes(ctx, lids_before_inputs, lids_after_inputs);
-    let lids_before_output = ctx.types.lifetimes.life_parent.0.len();
+    let lids_before_output = ctx.types.lifetimes.life_parent.len();
     let output = if let Some(x) = output_type {
         compile_type_expr_with_mode(ctx, x, TypeExprCompileMode::Signature)
     } else {
@@ -1985,7 +1985,7 @@ pub(crate) fn gather_func_signature<const GLOBAL_SCOPE: bool>(
         "function return type must be sized",
     );
 
-    let lids_after_output = ctx.types.lifetimes.life_parent.0.len();
+    let lids_after_output = ctx.types.lifetimes.life_parent.len();
     apply_signature_elided_output_lifetime_rule(
         ctx,
         output_type,

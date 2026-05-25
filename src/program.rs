@@ -1,3 +1,4 @@
+use crate::data_structures::index::IndexVec;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::{
     LABEL_ALREADY_DEFINED_MSG, LifeTimeId, Literal, MEMBER_METHOD_COLLISION_MSG, NameId, PatId,
@@ -127,12 +128,12 @@ pub struct Program {
     definition_locs: IdHashMap<NameId, Loc>,
     // pub current_inference: Vec<TypeInfo>,
     // pub type_store: TypeStore,
-    pub values: Vec<Value>,
-    pub patterns: Vec<Pattern>,
-    pub type_exprs: Vec<TypeExpr>,
-    value_locs: Vec<Loc>,
-    pattern_locs: Vec<Loc>,
-    type_expr_locs: Vec<Loc>,
+    pub values: IndexVec<ValId, Value>,
+    pub patterns: IndexVec<PatId, Pattern>,
+    pub type_exprs: IndexVec<TExpId, TypeExpr>,
+    value_locs: IndexVec<ValId, Loc>,
+    pattern_locs: IndexVec<PatId, Loc>,
+    type_expr_locs: IndexVec<TExpId, Loc>,
 
     names_strs: Vec<StrId>,
     lifetime_strs: Vec<StrId>,
@@ -160,12 +161,12 @@ impl Program {
             definitions: IdHashMap::default(),
             definition_locs: IdHashMap::default(),
             // type_store: TypeStore::new(),
-            values: Vec::new(),
-            patterns: Vec::new(),
-            type_exprs: Vec::new(),
-            value_locs: Vec::new(),
-            pattern_locs: Vec::new(),
-            type_expr_locs: Vec::new(),
+            values: IndexVec::new(),
+            patterns: IndexVec::new(),
+            type_exprs: IndexVec::new(),
+            value_locs: IndexVec::new(),
+            pattern_locs: IndexVec::new(),
+            type_expr_locs: IndexVec::new(),
 
             names_strs: Vec::new(),
             lifetime_strs: Vec::new(),
@@ -226,21 +227,19 @@ impl Program {
     }
 
     pub fn id_value(&mut self, loc: Loc, value: Value) -> ValId {
-        let id = ValId(self.values.len());
-        self.values.push(value);
+        let id = self.values.push(value);
         self.value_locs.push(loc);
         id
     }
 
     pub fn id_pattern(&mut self, loc: Loc, pattern: Pattern) -> PatId {
-        let id = PatId(self.patterns.len());
-        self.patterns.push(pattern);
+        let id = self.patterns.push(pattern);
         self.pattern_locs.push(loc);
         id
     }
 
     pub fn reserve_value_span(&mut self, count: usize) -> ValueSpan {
-        let start = ValId(self.values.len());
+        let start = self.values.next_index();
         for _ in 0..count {
             self.values.push(Value::Literal(Literal::Void));
             self.value_locs.push(Self::placeholder_loc());
@@ -249,7 +248,7 @@ impl Program {
     }
 
     pub fn reserve_pattern_span(&mut self, count: usize) -> PatternSpan {
-        let start = PatId(self.patterns.len());
+        let start = self.patterns.next_index();
         for _ in 0..count {
             self.patterns.push(Pattern::Wildcard(VarKind::Const));
             self.pattern_locs.push(Self::placeholder_loc());
@@ -258,7 +257,7 @@ impl Program {
     }
 
     pub fn reserve_type_expr_span(&mut self, count: usize) -> TypeExprSpan {
-        let start = TExpId(self.type_exprs.len());
+        let start = self.type_exprs.next_index();
         for _ in 0..count {
             self.type_exprs.push(TypeExpr::Wildcard);
             self.type_expr_locs.push(Self::placeholder_loc());
@@ -267,49 +266,48 @@ impl Program {
     }
 
     pub fn id_type_expr(&mut self, loc: Loc, exp: TypeExpr) -> TExpId {
-        let id = TExpId(self.type_exprs.len());
-        self.type_exprs.push(exp);
+        let id = self.type_exprs.push(exp);
         self.type_expr_locs.push(loc);
         id
     }
 
     pub fn set_value(&mut self, id: ValId, loc: Loc, value: Value) {
-        self.value_locs[id.0] = loc;
-        self.values[id.0] = value;
+        self.value_locs[id] = loc;
+        self.values[id] = value;
     }
 
     pub fn set_pattern(&mut self, id: PatId, loc: Loc, pattern: Pattern) {
-        self.pattern_locs[id.0] = loc;
-        self.patterns[id.0] = pattern;
+        self.pattern_locs[id] = loc;
+        self.patterns[id] = pattern;
     }
 
     pub fn set_type_expr(&mut self, id: TExpId, loc: Loc, exp: TypeExpr) {
-        self.type_expr_locs[id.0] = loc;
-        self.type_exprs[id.0] = exp;
+        self.type_expr_locs[id] = loc;
+        self.type_exprs[id] = exp;
     }
 
     pub fn value(&self, id: ValId) -> Value {
-        self.values[id.0]
+        self.values[id]
     }
 
     pub fn pattern(&self, id: PatId) -> Pattern {
-        self.patterns[id.0]
+        self.patterns[id]
     }
 
     pub fn type_expr(&self, id: TExpId) -> TypeExpr {
-        self.type_exprs[id.0]
+        self.type_exprs[id]
     }
 
     pub fn value_loc(&self, v: ValId) -> Loc {
-        self.value_locs[v.0].clone()
+        self.value_locs[v].clone()
     }
 
     pub fn pattern_loc(&self, p: PatId) -> Loc {
-        self.pattern_locs[p.0].clone()
+        self.pattern_locs[p].clone()
     }
 
     pub fn type_expr_loc(&self, t: TExpId) -> Loc {
-        self.type_expr_locs[t.0].clone()
+        self.type_expr_locs[t].clone()
     }
 
     /// Push a new variable scope onto the stack

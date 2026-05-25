@@ -35,3 +35,6 @@ perf*.data.old
 perf*.data.*
 massif.out.*
 profile.json.gz
+
+expr_parse_pre
+expr_parser_refactor

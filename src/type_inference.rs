@@ -31,6 +31,7 @@ use crate::local_type_inference::gather_func_constraints;
 use crate::local_type_inference::infer_value_internals;
 use crate::local_type_inference::local_solver;
 
+use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::ErrorReporter;
 use crate::identity_hasher::IdHashMap;
 use crate::ir::AccessKind;
@@ -47,7 +48,7 @@ use crate::parsing::Loc;
 use crate::string_intern::StrId;
 use foldhash::HashMap;
 use std::fmt::Write as _;
-use std::ops::{Index, IndexMut};
+
 
 use crate::program::{Defined, Program};
 
@@ -1722,61 +1723,36 @@ impl<'a> InferState<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct CId(pub(crate) usize);
 
-pub(crate) struct ClusterVec<T>(pub(crate) Vec<T>);
-impl<T> ClusterVec<T> {
-    pub(crate) fn new() -> Self {
-        Self(Vec::new())
+impl Idx for CId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
     }
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-    #[allow(dead_code)]
-    pub(crate) fn swap(&mut self, a: CId, b: CId) {
-        self.0.swap(a.0, b.0)
-    }
-}
-impl<T> Index<CId> for ClusterVec<T> {
-    type Output = T;
-    fn index(&self, id: CId) -> &T {
-        &self.0[id.0]
-    }
-}
 
-impl<T> IndexMut<CId> for ClusterVec<T> {
-    fn index_mut(&mut self, id: CId) -> &mut T {
-        &mut self.0[id.0]
+    #[inline]
+    fn index(self) -> usize {
+        self.0
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct LId(pub(crate) usize);
 
-pub(crate) struct LifeVec<T>(pub(crate) Vec<T>);
-#[allow(dead_code)]
-impl<T> LifeVec<T> {
-    fn new() -> Self {
-        Self(Vec::new())
+impl Idx for LId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx)
     }
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-    #[allow(dead_code)]
-    fn swap(&mut self, a: LId, b: LId) {
-        self.0.swap(a.0, b.0)
-    }
-}
-impl<T> Index<LId> for LifeVec<T> {
-    type Output = T;
-    fn index(&self, id: LId) -> &T {
-        &self.0[id.0]
+
+    #[inline]
+    fn index(self) -> usize {
+        self.0
     }
 }
 
-impl<T> IndexMut<LId> for LifeVec<T> {
-    fn index_mut(&mut self, id: LId) -> &mut T {
-        &mut self.0[id.0]
-    }
-}
+// Compatibility aliases so callers can transition at their own pace.
+pub(crate) type ClusterVec<T> = IndexVec<CId, T>;
+pub(crate) type LifeVec<T> = IndexVec<LId, T>;
 
 #[derive(Debug)]
 pub(crate) struct Cluster {
@@ -1947,58 +1923,19 @@ pub(crate) enum AssignIncDecFlavor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct OriginId(pub u32);
 
-#[derive(Debug, Clone)]
-pub struct OriginVec<T>(pub Vec<T>);
+impl Idx for OriginId {
+    #[inline]
+    fn new(idx: usize) -> Self {
+        Self(idx as u32)
+    }
 
-impl<T> Default for OriginVec<T> {
-    fn default() -> Self {
-        Self(Vec::new())
+    #[inline]
+    fn index(self) -> usize {
+        self.0 as usize
     }
 }
 
-impl<T> OriginVec<T> {
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.0.clear();
-    }
-
-    pub fn push(&mut self, value: T) {
-        self.0.push(value);
-    }
-
-    pub fn get(&self, id: OriginId) -> Option<&T> {
-        self.0.get(id.0 as usize)
-    }
-
-    pub fn get_mut(&mut self, id: OriginId) -> Option<&mut T> {
-        self.0.get_mut(id.0 as usize)
-    }
-}
-
-impl<T> Index<OriginId> for OriginVec<T> {
-    type Output = T;
-
-    fn index(&self, id: OriginId) -> &T {
-        &self.0[id.0 as usize]
-    }
-}
-
-impl<T> IndexMut<OriginId> for OriginVec<T> {
-    fn index_mut(&mut self, id: OriginId) -> &mut T {
-        &mut self.0[id.0 as usize]
-    }
-}
+pub type OriginVec<T> = IndexVec<OriginId, T>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OriginDeclSite {
@@ -2472,20 +2409,19 @@ impl SearchState {
 
 pub(crate) struct TypeCore {
     // unify-find
-    pub(crate) parent: ClusterVec<CId>,
-    pub(crate) cluster: ClusterVec<Cluster>,
+    pub(crate) parent: UnionFind<CId>,
+    pub(crate) cluster: IndexVec<CId, Cluster>,
 }
 
 impl TypeCore {
     pub(crate) fn find_root(&mut self, x: CId) -> CId {
-        find_root(&mut self.parent, x)
+        self.parent.find_root(x)
     }
 
     #[allow(dead_code)]
     pub(crate) fn new_cluster(&mut self) -> CId {
-        let id = CId(self.parent.len());
-        self.parent.0.push(id);
-        self.cluster.0.push(Cluster {
+        let id = self.parent.push_singleton();
+        self.cluster.push(Cluster {
             state: ResolveKind::Nothing,
         });
         id
@@ -2500,24 +2436,24 @@ pub(crate) struct TypeExtra {
 }
 
 pub(crate) struct LifetimeState {
-    pub(crate) origins: OriginVec<OriginNode>,
+    pub(crate) origins: IndexVec<OriginId, OriginNode>,
     pub(crate) value_origins: IdHashMap<ValId, OriginId>,
     pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
     pub(crate) imported_orderings: Vec<ImportedLifetimeOrdering>,
-    pub(crate) life_parent: LifeVec<LId>,
-    pub(crate) life_known: LifeVec<Option<LifeTime>>,
+    pub(crate) life_parent: UnionFind<LId>,
+    pub(crate) life_known: IndexVec<LId, Option<LifeTime>>,
     pub(crate) next_undeclared_lifetime: u32,
 }
 
 impl LifetimeState {
     fn new() -> Self {
         Self {
-            origins: OriginVec::new(),
+            origins: IndexVec::new(),
             value_origins: IdHashMap::default(),
             pattern_origins: IdHashMap::default(),
             imported_orderings: Vec::new(),
-            life_parent: LifeVec(Vec::new()),
-            life_known: LifeVec(Vec::new()),
+            life_parent: UnionFind::new(),
+            life_known: IndexVec::new(),
             next_undeclared_lifetime: 0,
         }
     }
@@ -2527,8 +2463,8 @@ impl LifetimeState {
         self.value_origins.clear();
         self.pattern_origins.clear();
         self.imported_orderings.clear();
-        self.life_parent.0.clear();
-        self.life_known.0.clear();
+        self.life_parent = UnionFind::new();
+        self.life_known.clear();
         self.next_undeclared_lifetime = 0;
     }
 }
@@ -2540,22 +2476,16 @@ pub(crate) struct TypeState {
 }
 
 #[inline(always)]
-pub(crate) fn find_lid_root(life_parent: &mut LifeVec<LId>, lid: LId) -> LId {
-    let p = life_parent[lid];
-    if p == lid {
-        return lid;
-    }
-    let root = find_lid_root(life_parent, p);
-    life_parent[lid] = root;
-    root
+pub(crate) fn find_lid_root(life_parent: &mut UnionFind<LId>, lid: LId) -> LId {
+    life_parent.find_root(lid)
 }
 
 impl TypeState {
     fn new() -> Self {
         let mut ans = Self {
             core: TypeCore {
-                parent: ClusterVec::new(),
-                cluster: ClusterVec::new(),
+                parent: UnionFind::new(),
+                cluster: IndexVec::new(),
             },
             extra: TypeExtra {
                 func_defs: Vec::new(),
@@ -2581,8 +2511,8 @@ impl TypeState {
         } = &mut self.extra;
 
         // ---- union find ----
-        parent.0.clear();
-        cluster.0.clear();
+        parent.clear();
+        cluster.clear();
 
         // ---- type database ----
         func_defs.clear();
@@ -2606,9 +2536,8 @@ impl TypeState {
 
     #[inline(always)]
     pub(crate) fn new_lid(&mut self) -> LId {
-        let id = LId(self.lifetimes.life_parent.0.len());
-        self.lifetimes.life_parent.0.push(id);
-        self.lifetimes.life_known.0.push(None);
+        let id = self.lifetimes.life_parent.push_singleton();
+        self.lifetimes.life_known.push(None);
         id
     }
 
@@ -2758,9 +2687,8 @@ impl TypeState {
     // =========================================================
 
     pub(crate) fn new_cluster(&mut self) -> CId {
-        let id = CId(self.core.parent.len());
-        self.core.parent.0.push(id);
-        self.core.cluster.0.push(Cluster {
+        let id = self.core.parent.push_singleton();
+        self.core.cluster.push(Cluster {
             state: ResolveKind::Nothing,
         });
         id
@@ -2987,13 +2915,8 @@ impl ReqState {
 // ===========================
 
 #[inline(always)]
-pub(crate) fn find_root(parent: &mut ClusterVec<CId>, x: CId) -> CId {
-    let p = parent[x];
-    if p != x {
-        let r = find_root(parent, p);
-        parent[x] = r;
-    }
-    parent[x]
+pub(crate) fn find_root(parent: &mut UnionFind<CId>, x: CId) -> CId {
+    parent.find_root(x)
 }
 
 ///tries to combine 2 clusters
@@ -4730,9 +4653,8 @@ fn specialize_type_inner(
                 calling_convention,
             });
 
-            let id = CId(types.core.parent.len());
-            types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
+            let id = types.core.parent.push_singleton();
+            types.core.cluster.push(Cluster {
                 state: ResolveKind::Func(call_id),
             });
             id
@@ -4745,9 +4667,8 @@ fn specialize_type_inner(
         } => {
             let id = *id;
             if generics.is_empty() && lifetimes.is_empty() {
-                let idc = CId(types.core.parent.len());
-                types.core.parent.0.push(idc);
-                types.core.cluster.0.push(Cluster {
+                let idc = types.core.parent.push_singleton();
+                types.core.cluster.push(Cluster {
                     state: ResolveKind::Solved(ty),
                 });
                 return idc;
@@ -4783,9 +4704,8 @@ fn specialize_type_inner(
                 lifetimes: resolved_lifetimes,
             });
 
-            let idc = CId(types.core.parent.len());
-            types.core.parent.0.push(idc);
-            types.core.cluster.0.push(Cluster {
+            let idc = types.core.parent.push_singleton();
+            types.core.cluster.push(Cluster {
                 state: ResolveKind::Struct(call_id),
             });
             idc
@@ -4808,9 +4728,8 @@ fn specialize_type_inner(
                 x => PtrKind::Solved(x),
             };
 
-            let id = CId(types.core.parent.len());
-            types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
+            let id = types.core.parent.push_singleton();
+            types.core.cluster.push(Cluster {
                 state: ResolveKind::Ptr {
                     tgt: target,
                     kind,
@@ -4835,9 +4754,8 @@ fn specialize_type_inner(
                 .tuple_infers
                 .push(TupleInfer { items: new_items });
 
-            let id = CId(types.core.parent.len());
-            types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
+            let id = types.core.parent.push_singleton();
+            types.core.cluster.push(Cluster {
                 state: ResolveKind::Tuple(tuple_id),
             });
             id
@@ -4848,9 +4766,8 @@ fn specialize_type_inner(
             let len = *len;
             let inner = specialize_type_inner(ex, types, inner, ctx);
 
-            let id = CId(types.core.parent.len());
-            types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
+            let id = types.core.parent.push_singleton();
+            types.core.cluster.push(Cluster {
                 state: ResolveKind::Array {
                     element: inner,
                     size: len,
@@ -4860,9 +4777,8 @@ fn specialize_type_inner(
         }
 
         TypeValue::Builtin(_) => {
-            let id = CId(types.core.parent.len());
-            types.core.parent.0.push(id);
-            types.core.cluster.0.push(Cluster {
+            let id = types.core.parent.push_singleton();
+            types.core.cluster.push(Cluster {
                 state: ResolveKind::Solved(ty),
             });
             id
@@ -5123,8 +5039,8 @@ pub struct StructOperatorOverload {
 #[inline(always)]
 pub(crate) fn cluster_is_int_like(
     store: &TypeStore,
-    parent: &mut ClusterVec<CId>,
-    cluster: &ClusterVec<Cluster>,
+    parent: &mut UnionFind<CId>,
+    cluster: &IndexVec<CId, Cluster>,
     cid: CId,
 ) -> Option<bool> {
     let root = find_root(parent, cid);
@@ -5144,8 +5060,8 @@ pub(crate) fn cluster_is_int_like(
 #[inline(always)]
 pub(crate) fn cluster_is_float_like(
     store: &TypeStore,
-    parent: &mut ClusterVec<CId>,
-    cluster: &ClusterVec<Cluster>,
+    parent: &mut UnionFind<CId>,
+    cluster: &IndexVec<CId, Cluster>,
     cid: CId,
 ) -> Option<bool> {
     let root = find_root(parent, cid);
@@ -5165,8 +5081,8 @@ pub(crate) fn cluster_is_float_like(
 #[inline(always)]
 pub(crate) fn cluster_is_bool(
     store: &TypeStore,
-    parent: &mut ClusterVec<CId>,
-    cluster: &ClusterVec<Cluster>,
+    parent: &mut UnionFind<CId>,
+    cluster: &IndexVec<CId, Cluster>,
     cid: CId,
 ) -> Option<bool> {
     let root = find_root(parent, cid);

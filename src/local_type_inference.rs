@@ -1,3 +1,4 @@
+use crate::data_structures::index::{IndexVec, UnionFind};
 use crate::global_type_inference::{
     do_typedef, gather_func_signature, is_any_type_builtin_member_name,
     receiver_cluster_for_self_param,
@@ -425,15 +426,15 @@ fn finalize_local(ctx: &mut InferState) {
 fn store_implicit_deref_chains(
     out: &mut IdHashMap<ValId, Vec<TypeId>>,
     entries: &IdHashMap<ValId, Vec<CId>>,
-    parent: &mut ClusterVec<CId>,
-    cluster: &ClusterVec<Cluster>,
+    parent: &mut UnionFind<CId>,
+    cluster: &IndexVec<CId, Cluster>,
 ) {
     out.reserve(out.len() + entries.len());
     for (site, receivers) in entries {
         let mut chain = Vec::with_capacity(receivers.len());
         let mut all_solved = true;
         for receiver in receivers {
-            let root = find_root(parent, *receiver);
+            let root = parent.find_root(*receiver);
             match cluster[root].state {
                 ResolveKind::Solved(t) => chain.push(t),
                 _ => {
@@ -835,7 +836,6 @@ pub(crate) fn gather_constraints(
                 .types
                 .lifetimes
                 .life_known
-                .0
                 .iter()
                 .copied()
                 .flatten()
@@ -2387,9 +2387,8 @@ fn solved_type_to_specialized_local(
         return specialize_type(ex, types, t, &gens, &lifes, loc, ex.program.value_loc(loc));
     }
 
-    let id = CId(types.core.parent.len());
-    types.core.parent.0.push(id);
-    types.core.cluster.0.push(Cluster {
+    let id = types.core.parent.push_singleton();
+    types.core.cluster.push(Cluster {
         state: ResolveKind::Solved(t),
     });
     id

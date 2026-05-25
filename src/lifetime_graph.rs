@@ -1,6 +1,7 @@
+use crate::data_structures::index::{IndexVec, UnionFind};
 use crate::type_inference::{
     CId, ImportedLifetimeOrdering, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge,
-    OriginDeclSite, OriginId, OriginKind, OriginNode, OriginVec, PointerStyle, ResolveKind,
+    OriginDeclSite, OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind,
     TypeError, TypeValue, find_lid_root, lifetime_for_display, unify_struct_lids,
 };
 use std::cmp::Ordering;
@@ -127,7 +128,7 @@ pub(crate) fn collect_decl_lifetime_orderings(
 }
 
 pub(crate) fn collect_origin_lifetime_orderings(
-    origins: &OriginVec<OriginNode>,
+    origins: &IndexVec<OriginId, OriginNode>,
     lid_count: usize,
 ) -> LifetimeOrderingGraph {
     let mut graph = LifetimeOrderingGraph::new(lid_count);
@@ -374,7 +375,7 @@ fn lifetime_for_origin(origin: OriginId, node: &OriginNode) -> Option<OriginLife
 }
 
 fn source_origin_for_ordering(
-    origins: &OriginVec<OriginNode>,
+    origins: &IndexVec<OriginId, OriginNode>,
     mut current: Option<OriginId>,
 ) -> Option<OriginLifetime> {
     while let Some(origin) = current {
@@ -403,7 +404,7 @@ fn source_origin_for_ordering(
 pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
     seed_origin_lifetimes_for_graph(ctx);
 
-    let lid_count = ctx.types.lifetimes.life_parent.0.len();
+    let lid_count = ctx.types.lifetimes.life_parent.len();
     let mut graph = LifetimeOrderingGraph::new(lid_count);
     collect_imported_lifetime_orderings(
         &mut graph,
@@ -679,7 +680,7 @@ fn resolve_pointer_lifetime_for_graph(ctx: &mut InferState, cid: CId) -> Option<
 }
 
 fn find_or_create_lid_for_lifetime(ctx: &mut InferState, lt: LifeTime) -> Option<LId> {
-    for raw in 0..ctx.types.lifetimes.life_parent.0.len() {
+    for raw in 0..ctx.types.lifetimes.life_parent.len() {
         let lid = LId(raw);
         let root = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
         if ctx.types.lifetimes.life_known[root] == Some(lt) {
@@ -694,7 +695,7 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(
     ctx: &mut InferState,
     graph: &LifetimeOrderingGraph,
 ) {
-    let root_count = ctx.types.lifetimes.life_parent.0.len();
+    let root_count = ctx.types.lifetimes.life_parent.len();
     let mut predecessors: Vec<Vec<LId>> = vec![Vec::new(); root_count];
 
     for edge in graph.origin_edges() {
@@ -761,7 +762,7 @@ fn assign_remaining_unresolved_lifetimes_as_unknown(
 
 fn next_local_lifetime_id(ctx: &InferState) -> u32 {
     let mut next = 0;
-    for known in ctx.types.lifetimes.life_known.0.iter().copied().flatten() {
+    for known in ctx.types.lifetimes.life_known.iter().copied().flatten() {
         if let LifeTime::Local(id) = known {
             next = next.max(id.0.saturating_add(1));
         }
@@ -786,7 +787,7 @@ fn canonicalize_origin_lifetime_seed_roots(ctx: &mut InferState) {
 
 fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
     let mut next = 0;
-    for known in ctx.types.lifetimes.life_known.0.iter().copied().flatten() {
+    for known in ctx.types.lifetimes.life_known.iter().copied().flatten() {
         if let LifeTime::Unknown(id) = known {
             next = next.max(id.0.saturating_add(1));
         }
@@ -796,13 +797,13 @@ fn next_unknown_lifetime_id(ctx: &InferState) -> u32 {
 
 fn collect_imported_lifetime_orderings(
     graph: &mut LifetimeOrderingGraph,
-    life_parent: &mut crate::type_inference::LifeVec<LId>,
+    life_parent: &mut UnionFind<LId>,
     imported_orderings: &[ImportedLifetimeOrdering],
     lid_count: usize,
 ) {
     for edge in imported_orderings {
-        let shorter = find_lid_root(life_parent, edge.shorter);
-        let longer = find_lid_root(life_parent, edge.longer);
+        let shorter = life_parent.find_root(edge.shorter);
+        let longer = life_parent.find_root(edge.longer);
         let Some(shorter) = LifetimeGraphId::from_lid(shorter, lid_count) else {
             continue;
         };
@@ -933,8 +934,9 @@ mod tests {
     use crate::parsing::Parser;
     use crate::program::{Defined, Program};
     use crate::type_inference::run_typecheck_scan;
+    use crate::data_structures::index::IndexVec;
     use crate::type_inference::{
-        InferState, LifeTime, OriginId, OriginKind, OriginNode, OriginVec, PtrKind, ResolveKind,
+        InferState, LifeTime, OriginId, OriginKind, OriginNode, PtrKind, ResolveKind,
         SolvedTypes, TypeError, TypeStore, find_lid_root,
     };
 
@@ -1013,7 +1015,7 @@ mod tests {
                 .inner_types_of_function(ctx.req.owner.expect("owner should be set"))
                 .map(|inner| inner.origins.clone())
                 .unwrap_or_else(|| ctx.types.lifetimes.origins.clone());
-            let lid_count = ctx.types.lifetimes.life_parent.0.len();
+            let lid_count = ctx.types.lifetimes.life_parent.len();
             collect_origin_lifetime_orderings(&origins, lid_count)
         })
     }
@@ -1024,7 +1026,7 @@ mod tests {
             .to_vec()
     }
 
-    fn collect_origins_from_function(src: &str, name: &str) -> OriginVec<OriginNode> {
+    fn collect_origins_from_function(src: &str, name: &str) -> IndexVec<OriginId, OriginNode> {
         with_inferred_function_ctx(src, name, |ctx| {
             ctx.ex
                 .ans
@@ -1195,14 +1197,12 @@ mod tests {
             collect_origins_from_function("S=struct{x:int}; f=fn(s:&S){ let y = &s.x; };", "f");
         assert!(
             origins
-                .0
                 .iter()
                 .any(|node| matches!(node.kind, OriginKind::PlaceRoot(_))),
             "expected at least one PlaceRoot origin in simple let addr-of case"
         );
         assert!(
             !origins
-                .0
                 .iter()
                 .any(|node| matches!(node.kind, OriginKind::RawRoot(_))),
             "did not expect RawRoot origin in simple let addr-of case"
@@ -1261,7 +1261,7 @@ mod tests {
             seed_origin_lifetimes_for_graph(ctx);
 
             let mut local_binding_lifetimes = Vec::new();
-            for node in &ctx.types.lifetimes.origins.0 {
+            for node in ctx.types.lifetimes.origins.iter() {
                 if !matches!(node.kind, OriginKind::BindingRoot) {
                     continue;
                 }
@@ -1357,7 +1357,7 @@ mod tests {
             seed_origin_lifetimes_for_graph(ctx);
             let graph = collect_origin_lifetime_orderings(
                 &ctx.types.lifetimes.origins,
-                ctx.types.lifetimes.life_parent.0.len(),
+                ctx.types.lifetimes.life_parent.len(),
             );
             assign_remaining_unresolved_lifetimes_as_unknown(ctx, &graph);
 
