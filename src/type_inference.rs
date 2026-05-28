@@ -360,6 +360,12 @@ pub(crate) struct ImportedLifetimeOrdering {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DeclaredAllowedLifetimeOrdering {
+    pub(crate) shorter: LId,
+    pub(crate) longer: LId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LifeId(pub u32);
 
 impl Idx for LifeId {
@@ -2533,6 +2539,7 @@ pub(crate) struct LifetimeState {
     pub(crate) value_origins: IdHashMap<ValId, OriginId>,
     pub(crate) pattern_origins: IdHashMap<PatId, OriginId>,
     pub(crate) imported_orderings: Vec<ImportedLifetimeOrdering>,
+    pub(crate) declared_allowed_orderings: Vec<DeclaredAllowedLifetimeOrdering>,
     pub(crate) life_parent: UnionFind<LId>,
     pub(crate) life_known: IndexVec<LId, Option<LifeTime>>,
     pub(crate) next_undeclared_lifetime: u32,
@@ -2545,6 +2552,7 @@ impl LifetimeState {
             value_origins: IdHashMap::default(),
             pattern_origins: IdHashMap::default(),
             imported_orderings: Vec::new(),
+            declared_allowed_orderings: Vec::new(),
             life_parent: UnionFind::new(),
             life_known: IndexVec::new(),
             next_undeclared_lifetime: 0,
@@ -2556,6 +2564,7 @@ impl LifetimeState {
         self.value_origins.clear();
         self.pattern_origins.clear();
         self.imported_orderings.clear();
+        self.declared_allowed_orderings.clear();
         self.life_parent = UnionFind::new();
         self.life_known.clear();
         self.next_undeclared_lifetime = 0;
@@ -9470,9 +9479,8 @@ mod type_infer_tests {
         infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
     }
 
-
     #[test]
-    fn basic_reborrow(){
+    fn basic_reborrow() {
         let src = "f=fn['a,'b, where 'a<'b](r:&'b int)->&'a int {&*r}";
 
         let program = gather_program(src);

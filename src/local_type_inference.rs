@@ -2187,12 +2187,14 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
         .function_types_by_value(value)
         .map_or(0, |known| known.lifetime_parameters.len());
 
+    let mut lifetime_param_lids = Vec::with_capacity(lifetime_param_count);
     for i in 0..lifetime_param_count {
         // **CRITICAL INVARIANT:** local function-body lifetime binders must be
         // recreated in declaration order so `LifeTime::External(i)` continues to
         // match both the lifetime parameter index and the declaration-local
         // `LifetimeGraphId(i)` used by stored where-clause metadata.
         let lid = ctx.types.new_lid_known(LifeTime::External(i as u32));
+        lifetime_param_lids.push(lid);
         if let Some((pat, maybe_lt_name)) = ctx
             .ex
             .ans
@@ -2205,6 +2207,24 @@ fn load_known_function_signature_for_value(ctx: &mut InferState, value: ValId) -
                 .local_lifetimes
                 .insert(lt_name, (LifeTime::External(i as u32), lid));
             let _ = pat;
+        }
+    }
+
+    if let TypeValue::Func {
+        lifetime_orderings, ..
+    } = ctx.ex.store.type_value(known_ty)
+    {
+        for edge in lifetime_orderings {
+            let Some(&shorter) = lifetime_param_lids.get(edge.shorter.0) else {
+                continue;
+            };
+            let Some(&longer) = lifetime_param_lids.get(edge.longer.0) else {
+                continue;
+            };
+            ctx.types
+                .lifetimes
+                .declared_allowed_orderings
+                .push(DeclaredAllowedLifetimeOrdering { shorter, longer });
         }
     }
 

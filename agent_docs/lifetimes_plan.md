@@ -134,6 +134,10 @@ Important distinction:
 
 Declared requirements therefore need an explicit representation separate from
 the body-origin graph, even if both are stored using origin-local references.
+During function-body checking, the function's own declared `where` lifetime
+edges are treated as allowed orderings for global-lifetime validation, not as
+imported obligations. Imported struct/callee requirements remain separate so a
+call or construction cannot satisfy itself by adding the very ordering it needs.
 
 One required form is:
 

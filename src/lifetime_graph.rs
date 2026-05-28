@@ -2,9 +2,9 @@ use crate::data_structures::bit_sets::{SparseBits, propegate_constraints};
 use crate::data_structures::graph::{CompId, SCCS, VecGraph, tarjan};
 use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::type_inference::{
-    CId, ImportedLifetimeOrdering, InferState, LId, LifeId, LifeTime, LifetimeOrderingEdge,
-    OriginDeclSite, OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind, TypeError,
-    TypeValue, find_lid_root, lifetime_for_display, unify_struct_lids,
+    CId, DeclaredAllowedLifetimeOrdering, ImportedLifetimeOrdering, InferState, LId, LifeId,
+    LifeTime, LifetimeOrderingEdge, OriginDeclSite, OriginId, OriginKind, OriginNode, PointerStyle,
+    ResolveKind, TypeError, TypeValue, find_lid_root, lifetime_for_display, unify_struct_lids,
 };
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
@@ -727,9 +727,38 @@ fn collect_imported_lifetime_orderings(
     }
 }
 
+fn collect_declared_allowed_lifetime_orderings(
+    graph: &mut LifetimeOrderingGraph,
+    life_parent: &mut UnionFind<LId>,
+    allowed_orderings: &[DeclaredAllowedLifetimeOrdering],
+    lid_count: usize,
+) {
+    for edge in allowed_orderings {
+        let shorter = life_parent.find_root(edge.shorter);
+        let longer = life_parent.find_root(edge.longer);
+        let Some(shorter) = LifetimeGraphId::from_lid(shorter, lid_count) else {
+            continue;
+        };
+        let Some(longer) = LifetimeGraphId::from_lid(longer, lid_count) else {
+            continue;
+        };
+        graph.push_where_clause_edge(shorter, longer);
+    }
+}
+
 fn validate_discovered_global_lifetime_paths(ctx: &mut InferState, graph: &LifetimeOrderingGraph) {
     let found_sccs = lifetime_sccs_with_modes(graph, true, true);
-    let where_sccs = lifetime_sccs_with_modes(graph, false, true);
+    let mut allowed_graph = LifetimeOrderingGraph::new(graph.lid_count());
+    for edge in graph.where_clause_edges() {
+        allowed_graph.push_where_clause_edge(edge.shorter, edge.longer);
+    }
+    collect_declared_allowed_lifetime_orderings(
+        &mut allowed_graph,
+        &mut ctx.types.lifetimes.life_parent,
+        &ctx.types.lifetimes.declared_allowed_orderings,
+        graph.lid_count(),
+    );
+    let where_sccs = lifetime_sccs_with_modes(&allowed_graph, false, true);
     let found_reachable = propagated_component_reachability(&found_sccs);
     let where_reachable = propagated_component_reachability(&where_sccs);
 
@@ -1314,6 +1343,18 @@ mod tests {
             "expected illegal global lifetime ordering error, got {:?}",
             errs
         );
+    }
+
+    #[test]
+    fn declared_where_clause_allows_discovered_global_lifetime_ordering() {
+        let src = "f=fn['a,'b where 'b < 'a](r1:&'a &'a int)->&'b &'a int { & & * * r1 }";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
     }
 
     #[test]
