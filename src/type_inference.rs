@@ -9470,6 +9470,15 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn annotated_let_rejects_local_reference_as_external_lifetime() {
+        assert_function_lifetime_error_containing(
+            "f = fn['a](x:&'a int) { let y = 0; let r:&'a int = &y; };",
+            "f",
+            "illegal global lifetime ordering",
+        );
+    }
+
+    #[test]
     fn nested_box_ptr_member_assignment_through_mut_chain_typechecks() {
         let src = r#"
             Box = struct[T]{ptr:&'raw T};
