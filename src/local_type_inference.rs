@@ -832,18 +832,6 @@ pub(crate) fn gather_constraints(
                 "let binding type must be sized",
             );
             // let-expr evaluates to the bound pattern value => alias
-            let mut next_local_lifetime = ctx
-                .types
-                .lifetimes
-                .life_known
-                .iter()
-                .copied()
-                .flatten()
-                .fold(0u32, |acc, lt| match lt {
-                    LifeTime::Local(id) => acc.max(id.0.saturating_add(1)),
-                    _ => acc,
-                });
-
             let mut pat_stack = vec![pat];
             while let Some(cur_pat) = pat_stack.pop() {
                 match ctx.ex.program.pattern(cur_pat).clone() {
@@ -855,10 +843,8 @@ pub(crate) fn gather_constraints(
                             });
 
                             if should_seed_local {
-                                let local_lid = ctx
-                                    .types
-                                    .new_lid_known(LifeTime::Local(LifeId(next_local_lifetime)));
-                                next_local_lifetime += 1;
+                                let local = ctx.types.mint_local_lifetime();
+                                let local_lid = ctx.types.new_lid_known(local);
                                 if let Some(node) = ctx.types.origin_mut(origin) {
                                     node.lifetime_seed = Some(local_lid);
                                 }

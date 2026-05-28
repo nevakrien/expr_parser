@@ -2542,6 +2542,8 @@ pub(crate) struct LifetimeState {
     pub(crate) declared_allowed_orderings: Vec<DeclaredAllowedLifetimeOrdering>,
     pub(crate) life_parent: UnionFind<LId>,
     pub(crate) life_known: IndexVec<LId, Option<LifeTime>>,
+    pub(crate) next_local_lifetime: u32,
+    pub(crate) next_unknown_lifetime: u32,
     pub(crate) next_undeclared_lifetime: u32,
 }
 
@@ -2555,6 +2557,8 @@ impl LifetimeState {
             declared_allowed_orderings: Vec::new(),
             life_parent: UnionFind::new(),
             life_known: IndexVec::new(),
+            next_local_lifetime: 0,
+            next_unknown_lifetime: 0,
             next_undeclared_lifetime: 0,
         }
     }
@@ -2567,7 +2571,21 @@ impl LifetimeState {
         self.declared_allowed_orderings.clear();
         self.life_parent = UnionFind::new();
         self.life_known.clear();
+        self.next_local_lifetime = 0;
+        self.next_unknown_lifetime = 0;
         self.next_undeclared_lifetime = 0;
+    }
+
+    fn note_known_lifetime(&mut self, known: LifeTime) {
+        match known {
+            LifeTime::Local(id) => {
+                self.next_local_lifetime = self.next_local_lifetime.max(id.0.saturating_add(1));
+            }
+            LifeTime::Unknown(id) => {
+                self.next_unknown_lifetime = self.next_unknown_lifetime.max(id.0.saturating_add(1));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -2646,6 +2664,7 @@ impl TypeState {
     #[inline(always)]
     pub(crate) fn new_lid_known(&mut self, known: LifeTime) -> LId {
         let id = self.new_lid();
+        self.lifetimes.note_known_lifetime(known);
         self.lifetimes.life_known[id] = Some(known);
         id
     }
@@ -2660,6 +2679,20 @@ impl TypeState {
         let id = self.lifetimes.next_undeclared_lifetime;
         self.lifetimes.next_undeclared_lifetime += 1;
         LifeTime::External(id)
+    }
+
+    #[inline(always)]
+    pub(crate) fn mint_local_lifetime(&mut self) -> LifeTime {
+        let id = self.lifetimes.next_local_lifetime;
+        self.lifetimes.next_local_lifetime += 1;
+        LifeTime::Local(LifeId(id))
+    }
+
+    #[inline(always)]
+    pub(crate) fn mint_unknown_lifetime(&mut self) -> LifeTime {
+        let id = self.lifetimes.next_unknown_lifetime;
+        self.lifetimes.next_unknown_lifetime += 1;
+        LifeTime::Unknown(LifeId(id))
     }
 
     // =========================================================

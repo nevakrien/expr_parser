@@ -23,6 +23,7 @@ There is also an explicit engineering style used in the file: many internal "wor
 Recent lifetime/deref work added two important implementation details:
 
 - `TypeState` now carries a lightweight lifetime union-find (`LId` parent + origin site storage) used by implicit deref chains.
+- `LifetimeState` also tracks monotonic counters for synthesized local/unknown lifetime names, so hot local-inference paths and late lifetime-graph promotion do not rescan `life_known` just to mint the next `LifeId`.
 - Implicit deref resolution threads shared chain state (`shared_lid`, chain mutability) through `resolve_struct_deref_target`, so multiple deref hops can share one lifetime identity and defer mutability collapse until enough information is known.
 - Finalization currently applies a temporary hack that normalizes unresolved pointer lifetime kinds (`SafeRef`/`SomeRef`) to `Ref(Unknown)` right before `finalize`.
 - Unresolved finalization diagnostics (`Unresolved`, `UnresolvedPattern`, `UnresolvedTypeExpr`) now carry a best-effort mock type string for richer error output.
