@@ -9431,6 +9431,18 @@ mod type_infer_tests {
     }
 
     #[test]
+    fn local_function_call_accepts_imported_ordering_declared_by_caller() {
+        let src = "g = fn['a,'b where 'a < 'b](x:&'a int, y:&'b int)->void {}; f = fn['a,'b where 'a < 'b](x:&'a int, y:&'b int) { g(x, y); };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
     fn implicit_deref_rejects_imported_reversed_declared_ordering() {
         assert_function_lifetime_error_containing(
             "type Inner = struct['a,'b where 'a < 'b] { short:&'a int, long:&'b int }; Box = struct['a,'b] { tag:&'a int, extra:&'b int }; Box.__deref = fn['a,'b where 'b < 'a](self:&Box['a,'b])->&Inner['b,'a]; f = fn['a,'b](b:Box['a,'b]) { let _out:&'a int = b.long; };",
