@@ -2081,6 +2081,8 @@ pub struct OriginNode {
     pub(crate) decl_site: Option<OriginDeclSite>,
     pub declared_mutability: Option<bool>,
     pub effective_mutability: Option<bool>,
+    /// Storage occupied by this value, distinct from any pointee region.
+    pub(crate) place_region: Option<LId>,
     pub(crate) lifetime_seed: Option<LId>,
 }
 
@@ -2723,6 +2725,7 @@ impl TypeState {
             decl_site,
             declared_mutability,
             effective_mutability,
+            place_region: None,
             lifetime_seed,
         });
         id
@@ -9539,6 +9542,62 @@ mod type_infer_tests {
         infer_global_types(&program, &mut store, &mut solved_types).unwrap();
         let f = find_value_by_name(&program, "f");
         infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn reborrow_through_local_array_preserves_input_lifetime() {
+        let src = "f = fn['a](p:&'a int)->&'a int { let a = [p]; &*a[0] };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn reborrow_through_local_struct_preserves_input_lifetime() {
+        let src = "S = struct['a]{r:&'a int}; f = fn['a](p:&'a int)->&'a int { let s:S['a] = S{p}; &*s.r };";
+        let program = gather_program(src);
+        let mut store = TypeStore::new();
+        let mut solved_types = SolvedTypes::new(&program);
+        infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+        let f = find_value_by_name(&program, "f");
+        infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+    }
+
+    #[test]
+    fn pointer_storage_is_not_the_pointee_region() {
+        for src in [
+            "f=fn['a](p:&'a int)->&'a &'a int { &p };",
+            "f=fn['a](p:&'a int)->&'a &'a int { let q=p; &q };",
+            "f=fn['a](p:&'a int)->&'a &'a int { let a=[p]; &a[0] };",
+            "S=struct['a]{r:&'a int}; f=fn['a](p:&'a int)->&'a &'a int { let s:S['a]=S{p}; &s.r };",
+        ] {
+            assert_function_lifetime_error_containing(src, "f", "illegal global lifetime ordering");
+        }
+
+        for src in [
+            "f=fn['a](p:&'a int)->&'a int { &*p };",
+            "f=fn['a](p:&'a int)->&'a int { let q=p; &*q };",
+            "f=fn['a](p:&'a int)->&'a int { let q=&p; &**q };",
+            "f=fn['a,'b](p:&'a &'b int)->&'b int { &**p };",
+            "f=fn['a,'b](p:&'a &'b int)->&'b int { let q=&p; &***q };",
+            "f=fn['a,'b](p:&'a &'b int)->&'b int { let a=[p]; &**a[0] };",
+        ] {
+            let program = gather_program(src);
+            let mut store = TypeStore::new();
+            let mut solved_types = SolvedTypes::new(&program);
+            infer_global_types(&program, &mut store, &mut solved_types).unwrap();
+            let f = find_value_by_name(&program, "f");
+            infer_value_internals(&program, &mut store, &mut solved_types, f).unwrap();
+        }
+    }
+
+    #[test]
+    fn reference_to_expired_block_local_is_rejected() {
+        let src = "f = fn()->int { let r = { let x = 1; &x }; *r };";
+        assert_function_lifetime_error_containing(src, "f", "lifetime");
     }
 
     #[test]

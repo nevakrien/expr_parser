@@ -72,16 +72,33 @@ without imposing new type-level lifetime equalities:
   style, and fully solved pointer types equivalently.
 - An associated reference lifetime replaces any stale origin seed; the two
   are **not unified**. Region/provenance information is not a type equality.
-- Only member/index place projections inherit parent region seeds when they
-  have no seed. A reference-producing origin without a resolved lifetime gets
-  a fresh node, not the parent's region.
+- `OriginNode.place_region` distinguishes storage from the reference lifetime
+  used as an operation's `lifetime_seed`. Arguments receive independent local
+  storage regions too. Binding parent links preserve provenance/mutability but
+  do not make a binding share its initializer's storage.
+- `ProvenanceValue` is a lazy structural view over an inferred cluster or solved
+  type. `PointerProvenance` wraps a `ProvenancePlace` containing both its region
+  and the shape of its stored value. Dereference consumes exactly one pointer
+  layer; nested pointers are not flattened to their innermost region.
+- Dereferencing creates no ordering edge against the storage of the pointer
+  being loaded. `&p` borrows the pointer variable's storage; `&*p` borrows the
+  pointee region. The distinction also applies to references stored in local
+  arrays/structs.
+- Member/index projections get independent constraint seeds rather than copying
+  their parent's lifetime. Their accessed storage region comes from the last
+  pointer in a recorded implicit-deref chain, or the parent place for by-value
+  access. Projection edges bound those seeds by the accessed container region.
+- Raw dereferences retain an unconstrained seed but no bounded `place_region`,
+  preventing discovered projection bounds from crossing the raw boundary.
 - Bounds between a borrow and its source are emitted as ordering edges. For
   `let y = 0; let r:&'a int = &y`, the graph must retain `'a <= region(y)` so
   validation rejects an external lifetime bounded by local storage.
 
-This is a targeted separation at graph seeding, not a complete storage-region
-model: provenance aliases still use parent-linked binding roots, and reference
-values versus the storage of reference-valued bindings need further modeling.
+This is still not a complete storage-duration/dataflow model: block expiration,
+control-flow paths (including goto), assignment-dependent provenance, and
+temporary storage lifetimes need further analysis. In particular, rvalue borrow
+origins still reuse their reference lifetime as their place region; do not treat
+that as implemented temporary-storage validation.
 
 A constraint `L_a <= L_b` means lifetime `L_b` outlives lifetime `L_a`.
 

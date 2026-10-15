@@ -3,7 +3,7 @@ use crate::data_structures::graph::{CompId, SCCS, VecGraph, tarjan};
 use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::type_inference::{
     CId, ImportedLifetimeOrdering, InferState, LId, LifeTime, LifetimeOrderingEdge, OriginDeclSite,
-    OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind, TypeError, TypeValue,
+    OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind, TypeError, TypeId, TypeValue,
     find_lid_root, lifetime_for_display, unify_lids,
 };
 use std::cmp::Ordering;
@@ -165,14 +165,28 @@ pub(crate) fn collect_origin_lifetime_orderings(
         let Some(reason) = ordering_reason(node.kind) else {
             continue;
         };
+        // Dereference selects an existing pointee region. It does not create
+        // an outlives requirement against the pointer value's storage.
+        if reason == LifetimeOrderingReason::Deref {
+            continue;
+        }
 
         let Some(shorter) = lifetime_for_origin(origin, node) else {
             continue;
         };
 
-        let Some(parent) = source_origin_for_ordering(origins, node.parent) else {
+        let Some(mut parent) = source_origin_for_ordering(origins, node.parent) else {
             continue;
         };
+        if matches!(
+            node.kind,
+            OriginKind::MemberProjection | OriginKind::IndexProjection
+        ) && let Some(region) = node.place_region
+        {
+            // An implicit dereference selects the container's pointee region,
+            // not the storage of the pointer used to reach that container.
+            parent.lid = region;
+        }
 
         let Some(shorter_id) = LifetimeGraphId::from_lid(shorter.lid, lid_count) else {
             continue;
@@ -274,6 +288,27 @@ struct OriginLifetime {
     lid: LId,
 }
 
+/// A lazy structural view of a value, not a region. Keeping the pointee's
+/// shape lets each dereference consume exactly one pointer layer, including
+/// when some layers are deferred and others are already solved.
+#[derive(Debug, Clone, Copy)]
+enum ProvenanceValue {
+    Inferred(CId),
+    Solved(TypeId),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProvenancePlace {
+    region: LId,
+    value: ProvenanceValue,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PointerProvenance {
+    pointee: ProvenancePlace,
+    raw: bool,
+}
+
 fn ordering_reason(kind: OriginKind) -> Option<LifetimeOrderingReason> {
     match kind {
         OriginKind::Reborrow(_) => Some(LifetimeOrderingReason::Reborrow),
@@ -312,18 +347,15 @@ fn source_origin_for_ordering(
         let node = origins.get(origin)?;
 
         match node.kind {
-            OriginKind::BindingRoot if node.parent.is_some() => {
-                current = node.parent;
-            }
             OriginKind::MemberProjection | OriginKind::IndexProjection => {
-                if let Some(info) = lifetime_for_origin(origin, node) {
-                    return Some(info);
+                if let Some(lid) = node.place_region {
+                    return Some(OriginLifetime { origin, lid });
                 }
                 current = node.parent;
             }
             OriginKind::RawRoot(_) => return None,
             _ => {
-                return lifetime_for_origin(origin, node);
+                return node.place_region.map(|lid| OriginLifetime { origin, lid });
             }
         }
     }
@@ -505,26 +537,18 @@ fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
         let mut seed_lid =
             current_seed.map(|lid| find_lid_root(&mut ctx.types.lifetimes.life_parent, lid));
 
-        if let Some(cid) = kind.associated_pointer()
-            && let Some(lid) = resolve_pointer_lifetime_for_graph(ctx, cid)
+        let pointer_value = match kind {
+            OriginKind::Deref(src) => parent
+                .and_then(|parent| value_provenance_for_origin(ctx, parent))
+                .or(Some(ProvenanceValue::Inferred(src))),
+            _ => kind.associated_pointer().map(ProvenanceValue::Inferred),
+        };
+        if let Some(value) = pointer_value
+            && let Some(pointer) = resolve_pointer_provenance(ctx, value)
         {
             // The reference type supplies this origin's reference lifetime.
             // An old region seed is not an equality constraint on that type.
-            seed_lid = Some(find_lid_root(&mut ctx.types.lifetimes.life_parent, lid));
-        }
-
-        if seed_lid.is_none()
-            // Only place projections inherit a region. Reference-producing
-            // origins need their own lifetime, bounded by an edge to the parent.
-            && matches!(kind, OriginKind::MemberProjection | OriginKind::IndexProjection)
-            && let Some(parent_origin) = parent
-            && let Some(parent_node) = ctx.types.origin(parent_origin)
-            && let Some(parent_lid) = parent_node.lifetime_seed
-        {
-            seed_lid = Some(find_lid_root(
-                &mut ctx.types.lifetimes.life_parent,
-                parent_lid,
-            ));
+            seed_lid = Some(pointer.pointee.region);
         }
 
         if seed_lid.is_none() {
@@ -544,36 +568,144 @@ fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
     }
 
     canonicalize_origin_lifetime_seed_roots(ctx);
+
+    // Seed storage separately from reference contents. Parent links remain
+    // intact for mutability/provenance, but a binding's initializer does not
+    // become the storage region of the binding itself.
+    for raw in 0..origin_count {
+        let origin = OriginId(raw as u32);
+        let node = ctx.types.origin(origin).unwrap();
+        let (kind, seed, existing) = (node.kind, node.lifetime_seed, node.place_region);
+        if let OriginKind::Deref(source) = kind
+            && let Some(pointer) =
+                resolve_pointer_provenance(ctx, ProvenanceValue::Inferred(source))
+            && pointer.raw
+        {
+            // A raw dereference is a provenance boundary, not a bound on the
+            // lifetime of references subsequently formed from that place.
+            ctx.types.origin_mut(origin).unwrap().place_region = None;
+            continue;
+        }
+        let region = match kind {
+            OriginKind::ArgumentRoot(_) => match existing {
+                Some(region) => region,
+                None => {
+                    let local = ctx.types.mint_local_lifetime();
+                    ctx.types.new_lid_known(local)
+                }
+            },
+            OriginKind::MemberProjection | OriginKind::IndexProjection => {
+                projection_place_region(ctx, origin).unwrap_or(seed.unwrap())
+            }
+            _ => seed.unwrap(),
+        };
+        let region = ctx.types.find_lid_root(region);
+        ctx.types.origin_mut(origin).unwrap().place_region = Some(region);
+    }
 }
 
-fn resolve_pointer_lifetime_for_graph(ctx: &mut InferState, cid: CId) -> Option<LId> {
-    let cid = ctx.types.root(cid);
-    match ctx.types.cluster_state(cid) {
-        ResolveKind::Ptr { kind, .. } => match kind {
-            crate::type_inference::PtrKind::RefInfer(lid) => {
-                Some(find_lid_root(&mut ctx.types.lifetimes.life_parent, lid))
+fn value_provenance_for_origin(ctx: &mut InferState, origin: OriginId) -> Option<ProvenanceValue> {
+    let node = ctx.types.origin(origin)?;
+    let (kind, site) = (node.kind, node.decl_site);
+    if let OriginKind::Deref(source) = kind {
+        // The value *stored in* the dereferenced place retains its shape.
+        // For &&T this is &T, not the region of the outer pointer's pointee.
+        return Some(
+            resolve_pointer_provenance(ctx, ProvenanceValue::Inferred(source))?
+                .pointee
+                .value,
+        );
+    }
+    if let Some(cid) = kind.associated_pointer() {
+        return Some(ProvenanceValue::Inferred(cid));
+    }
+    let cluster = match site? {
+        OriginDeclSite::Value(site) => ctx.search.value_cluster(site),
+        OriginDeclSite::Pattern(site) => ctx
+            .search
+            .pat_cluster
+            .iter()
+            .rev()
+            .find_map(|&(pat, cid)| (pat == site).then_some(cid)),
+    }?;
+    Some(ProvenanceValue::Inferred(cluster))
+}
+
+fn projection_place_region(ctx: &mut InferState, origin: OriginId) -> Option<LId> {
+    let node = ctx.types.origin(origin)?;
+    let (parent, site) = (node.parent, node.decl_site);
+    if let Some(OriginDeclSite::Value(site)) = site {
+        // The chain includes the resolved (non-pointer) container at the end.
+        // The last pointer before it supplies the accessed storage region.
+        let count = ctx.req.implicit_deref_sites.get(&site).map_or(0, Vec::len);
+        for i in (0..count).rev() {
+            let receiver = ctx.req.implicit_deref_sites[&site][i];
+            if let Some(pointer) =
+                resolve_pointer_provenance(ctx, ProvenanceValue::Inferred(receiver))
+            {
+                return Some(pointer.pointee.region);
             }
-            crate::type_inference::PtrKind::Solved(PointerStyle::Ref(lt)) => {
-                find_or_create_lid_for_lifetime(ctx, lt)
-            }
-            crate::type_inference::PtrKind::Solved(PointerStyle::Raw(_)) => {
-                Some(ctx.types.new_lid())
-            }
-            _ => None,
-        },
+        }
+    }
+    let parent = ctx.types.origin(parent?)?;
+    parent.place_region.or(parent.lifetime_seed)
+}
+
+fn resolve_pointer_provenance(
+    ctx: &mut InferState,
+    value: ProvenanceValue,
+) -> Option<PointerProvenance> {
+    let state = match value {
+        ProvenanceValue::Inferred(cid) => {
+            let cid = ctx.types.root(cid);
+            ctx.types.cluster_state(cid)
+        }
+        ProvenanceValue::Solved(ty) => ResolveKind::Solved(ty),
+    };
+    let (region, value, raw) = match state {
+        ResolveKind::Ptr { kind, tgt, .. } => {
+            let region = match kind {
+                crate::type_inference::PtrKind::RefInfer(lid) => {
+                    find_lid_root(&mut ctx.types.lifetimes.life_parent, lid)
+                }
+                crate::type_inference::PtrKind::Solved(PointerStyle::Ref(lt)) => {
+                    find_or_create_lid_for_lifetime(ctx, lt)?
+                }
+                crate::type_inference::PtrKind::Solved(PointerStyle::Raw(_)) => ctx.types.new_lid(),
+                _ => return None,
+            };
+            (
+                region,
+                ProvenanceValue::Inferred(tgt),
+                matches!(
+                    kind,
+                    crate::type_inference::PtrKind::Solved(PointerStyle::Raw(_))
+                ),
+            )
+        }
         ResolveKind::Solved(ty) => match *ctx.ex.store.type_value(ty) {
             TypeValue::Ptr {
                 style: PointerStyle::Ref(lt),
+                tgt,
                 ..
-            } => find_or_create_lid_for_lifetime(ctx, lt),
+            } => (
+                find_or_create_lid_for_lifetime(ctx, lt)?,
+                ProvenanceValue::Solved(tgt),
+                false,
+            ),
             TypeValue::Ptr {
                 style: PointerStyle::Raw(_),
+                tgt,
                 ..
-            } => Some(ctx.types.new_lid()),
-            _ => None,
+            } => (ctx.types.new_lid(), ProvenanceValue::Solved(tgt), true),
+            _ => return None,
         },
-        _ => None,
-    }
+        _ => return None,
+    };
+    Some(PointerProvenance {
+        pointee: ProvenancePlace { region, value },
+        raw,
+    })
 }
 
 fn find_or_create_lid_for_lifetime(ctx: &mut InferState, lt: LifeTime) -> Option<LId> {
@@ -1369,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn lifetime_cycle_error_mentions_named_lifetimes() {
+    fn nested_reborrow_reports_required_named_lifetime_ordering() {
         let src = "f=fn['a,'b](r1:&'a &'a int,r2:&'a &'b int)->&'a &'a int { & & * * r2 }";
         let program = gather_program(src);
         let mut store = TypeStore::new();
@@ -1379,23 +1511,32 @@ mod tests {
         let f = find_value_by_name(&program, "f");
         let errs = infer_value_internals(&program, &mut store, &mut solved_types, f)
             .err()
-            .expect("expected lifetime cycle to fail");
+            .expect("expected undeclared reborrow ordering to fail");
 
-        assert!(
-            errs.iter()
-                .filter(|err| {
-                    matches!(
-                        err,
-                        TypeError::IllegalGlobalLifetimeOrdering { shorter, longer, .. }
-                            if shorter.contains("'a") && longer.contains("'b")
-                                || shorter.contains("'b") && longer.contains("'a")
-                    )
-                })
-                .count()
-                == 2,
-            "expected exactly two illegal global lifetime ordering errors, got {:?}",
-            errs
+        // **r2 reaches the 'b pointee. Borrowing it for 'a requires 'a <= 'b;
+        // loading the inner pointer does not also require the reverse bound.
+        assert_eq!(
+            errs.len(),
+            1,
+            "expected only the reborrow error, got {errs:?}"
         );
+        let TypeError::IllegalGlobalLifetimeOrdering {
+            loc,
+            operation,
+            shorter,
+            longer,
+            path,
+            related,
+        } = &errs[0]
+        else {
+            panic!("expected a named lifetime ordering error, got {errs:?}");
+        };
+        assert_eq!(*operation, "reborrow");
+        assert_eq!(shorter, "'a");
+        assert_eq!(longer, "'b");
+        assert_eq!(path.as_deref(), Some("'a -> 'b"));
+        assert_eq!(&src[loc.range.clone()], "& * * r2");
+        assert_eq!(&src[related.as_ref().unwrap().range.clone()], "* * r2");
     }
 
     #[test]
