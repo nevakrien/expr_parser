@@ -1013,7 +1013,7 @@ fn apply_signature_elided_output_lifetime_rule(
 
     let target_lifetime = implicit_input_lifetimes[0];
     for output_root in output_elided_roots {
-        let _ = bind_struct_lid_to_lifetime(&mut ctx.types, output_root, target_lifetime);
+        let _ = bind_lid_to_lifetime(&mut ctx.types, output_root, target_lifetime);
     }
 }
 
@@ -1038,7 +1038,7 @@ fn assign_signature_implicit_input_lifetimes(
     let mut implicit_input_lifetimes = Vec::with_capacity(implicit_input_roots.len());
     for root in implicit_input_roots {
         let fresh = ctx.types.mint_undeclared_signature_lifetime();
-        let _ = bind_struct_lid_to_lifetime(&mut ctx.types, root, fresh);
+        let _ = bind_lid_to_lifetime(&mut ctx.types, root, fresh);
         implicit_input_lifetimes.push(fresh);
     }
     implicit_input_lifetimes

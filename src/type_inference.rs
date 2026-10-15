@@ -2929,7 +2929,7 @@ fn merge_lifetime_known_strict(
 }
 
 #[inline(always)]
-pub(crate) fn unify_struct_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
+pub(crate) fn unify_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
     let ra = types.find_lid_root(a);
     let rb = types.find_lid_root(b);
     if ra == rb {
@@ -2949,11 +2949,7 @@ pub(crate) fn unify_struct_lids(types: &mut TypeState, a: LId, b: LId) -> bool {
 }
 
 #[inline(always)]
-pub(crate) fn bind_struct_lid_to_lifetime(
-    types: &mut TypeState,
-    lid: LId,
-    target: LifeTime,
-) -> bool {
+pub(crate) fn bind_lid_to_lifetime(types: &mut TypeState, lid: LId, target: LifeTime) -> bool {
     let root = types.find_lid_root(lid);
     let Some(merged) = merge_lifetime_known_strict(types.lifetimes.life_known[root], Some(target))
     else {
@@ -3321,7 +3317,7 @@ fn __try_absorb(
             for i in 0..dst_llen {
                 let dst_s = types.struct_infer(dst_call);
                 let src_s = types.struct_infer(src_call);
-                if !unify_struct_lids(types, dst_s.lifetimes[i], src_s.lifetimes[i]) {
+                if !unify_lids(types, dst_s.lifetimes[i], src_s.lifetimes[i]) {
                     return Err(types.clash(ex, dst, src));
                 }
             }
@@ -3546,7 +3542,7 @@ fn merge_ptr_kind(types: &mut TypeState, a: PtrKind, b: PtrKind) -> Option<PtrKi
     use PtrKind::*;
 
     if let (RefInfer(la), RefInfer(lb)) = (a, b) {
-        if !unify_struct_lids(types, la, lb) {
+        if !unify_lids(types, la, lb) {
             return None;
         }
         return Some(RefInfer(la));
@@ -3555,7 +3551,7 @@ fn merge_ptr_kind(types: &mut TypeState, a: PtrKind, b: PtrKind) -> Option<PtrKi
     if let (RefInfer(lid), Solved(PointerStyle::Ref(lt)))
     | (Solved(PointerStyle::Ref(lt)), RefInfer(lid)) = (a, b)
     {
-        if !bind_struct_lid_to_lifetime(types, lid, lt) {
+        if !bind_lid_to_lifetime(types, lid, lt) {
             return None;
         }
         return Some(RefInfer(lid));
@@ -3667,7 +3663,7 @@ pub(crate) fn unify_ptr_with_type(
             }
         }
         (PtrKind::RefInfer(lid), PointerStyle::Ref(b)) => {
-            if !bind_struct_lid_to_lifetime(types, lid, b) {
+            if !bind_lid_to_lifetime(types, lid, b) {
                 return Err(TypeClash {
                     found: Some(found_ptr(ex, types)),
                     wanted: Some(type_string_from_type_id(ex, ty)),
@@ -3827,7 +3823,7 @@ pub(crate) fn unify_struct_with_type(
 
     for (i, target_lt) in lifetimes.iter().copied().enumerate() {
         let lid = types.extra.struct_infers[call].lifetimes[i];
-        if !bind_struct_lid_to_lifetime(types, lid, target_lt) {
+        if !bind_lid_to_lifetime(types, lid, target_lt) {
             return Err(TypeClash {
                 found: Some(found_struct(ex, types)),
                 wanted: Some(type_string_from_type_id(ex, ty)),

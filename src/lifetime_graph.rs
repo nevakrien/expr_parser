@@ -4,7 +4,7 @@ use crate::data_structures::index::{Idx, IndexVec, UnionFind};
 use crate::type_inference::{
     CId, ImportedLifetimeOrdering, InferState, LId, LifeTime, LifetimeOrderingEdge, OriginDeclSite,
     OriginId, OriginKind, OriginNode, PointerStyle, ResolveKind, TypeError, TypeValue,
-    find_lid_root, lifetime_for_display, unify_struct_lids,
+    find_lid_root, lifetime_for_display, unify_lids,
 };
 use std::cmp::Ordering;
 use std::collections::{HashSet, VecDeque};
@@ -343,25 +343,7 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
         lid_count,
     );
     let origin_graph = collect_origin_lifetime_orderings(&ctx.types.lifetimes.origins, lid_count);
-    eprintln!(
-        "DBG origins {} lids {}",
-        ctx.types.lifetimes.origins.len(),
-        lid_count
-    );
-    for raw in 0..ctx.types.lifetimes.origins.len() {
-        let origin = OriginId(raw as u32);
-        if let Some(node) = ctx.types.origin(origin) {
-            eprintln!(
-                "DBG origin {raw}: {:?} parent {:?} seed {:?}",
-                node.kind, node.parent, node.lifetime_seed
-            );
-        }
-    }
     for edge in origin_graph.origin_edges() {
-        eprintln!(
-            "DBG edge {:?}->{:?} {:?}",
-            edge.shorter, edge.longer, edge.reason
-        );
         graph.push_edge(*edge);
     }
     let solve = solve_lifetime_scc(&graph);
@@ -382,7 +364,7 @@ pub(crate) fn solve_local_lifetimes_by_graph(ctx: &mut InferState) {
         let leader = LId(component.nodes[0].0);
         for &node in component.nodes.iter().skip(1) {
             let lid = LId(node.0);
-            let _ = unify_struct_lids(&mut ctx.types, leader, lid);
+            let _ = unify_lids(&mut ctx.types, leader, lid);
         }
     }
 
@@ -526,25 +508,15 @@ fn seed_origin_lifetimes_for_graph(ctx: &mut InferState) {
         if let Some(cid) = kind.associated_pointer()
             && let Some(lid) = resolve_pointer_lifetime_for_graph(ctx, cid)
         {
-            let pointer_lid = find_lid_root(&mut ctx.types.lifetimes.life_parent, lid);
-            seed_lid = Some(match seed_lid {
-                Some(existing) => {
-                    if existing != pointer_lid {
-                        //WTF???? this seems buged?
-                        if !unify_struct_lids(&mut ctx.types, existing, pointer_lid) {
-                            pointer_lid
-                        } else {
-                            find_lid_root(&mut ctx.types.lifetimes.life_parent, existing)
-                        }
-                    } else {
-                        existing
-                    }
-                }
-                None => pointer_lid,
-            });
+            // The reference type supplies this origin's reference lifetime.
+            // An old region seed is not an equality constraint on that type.
+            seed_lid = Some(find_lid_root(&mut ctx.types.lifetimes.life_parent, lid));
         }
 
         if seed_lid.is_none()
+            // Only place projections inherit a region. Reference-producing
+            // origins need their own lifetime, bounded by an edge to the parent.
+            && matches!(kind, OriginKind::MemberProjection | OriginKind::IndexProjection)
             && let Some(parent_origin) = parent
             && let Some(parent_node) = ctx.types.origin(parent_origin)
             && let Some(parent_lid) = parent_node.lifetime_seed
@@ -580,6 +552,9 @@ fn resolve_pointer_lifetime_for_graph(ctx: &mut InferState, cid: CId) -> Option<
         ResolveKind::Ptr { kind, .. } => match kind {
             crate::type_inference::PtrKind::RefInfer(lid) => {
                 Some(find_lid_root(&mut ctx.types.lifetimes.life_parent, lid))
+            }
+            crate::type_inference::PtrKind::Solved(PointerStyle::Ref(lt)) => {
+                find_or_create_lid_for_lifetime(ctx, lt)
             }
             crate::type_inference::PtrKind::Solved(PointerStyle::Raw(_)) => {
                 Some(ctx.types.new_lid())
@@ -1594,6 +1569,92 @@ mod tests {
         assert_eq!(path.len(), 2);
         assert_eq!(path[0].longer(), super::LifetimeGraphId(1));
         assert_eq!(path[1].longer(), super::LifetimeGraphId(3));
+    }
+
+    #[test]
+    fn reference_lifetime_seeding_preserves_source_regions_across_representations() {
+        with_inferred_function_ctx("f=fn(){};", "f", |ctx| {
+            let int_ty = ctx
+                .ex
+                .store
+                .intern(crate::type_inference::TypeValue::Builtin(
+                    crate::type_inference::BuiltinType::Int,
+                ));
+            for representation in 0..4 {
+                let local = ctx.types.mint_local_lifetime();
+                let storage = ctx.types.new_lid_known(local);
+                let parent = ctx.types.new_unchecked_origin(
+                    OriginKind::BindingRoot,
+                    None,
+                    None,
+                    None,
+                    Some(storage),
+                );
+                let external = ctx.types.new_lid_known(LifeTime::External(0));
+                let target = ctx.new_cluster();
+                let pointer = ctx.new_cluster();
+                let style = crate::type_inference::PointerStyle::Ref(LifeTime::External(0));
+                let state = match representation {
+                    0 => ResolveKind::Ptr {
+                        tgt: target,
+                        kind: PtrKind::RefInfer(external),
+                        mutable: Some(false),
+                    },
+                    1 => ResolveKind::Ptr {
+                        tgt: target,
+                        kind: PtrKind::Solved(style),
+                        mutable: Some(false),
+                    },
+                    2 => ResolveKind::Solved(ctx.ex.store.intern(
+                        crate::type_inference::TypeValue::Ptr {
+                            tgt: int_ty,
+                            style,
+                            mutable: false,
+                        },
+                    )),
+                    _ => ResolveKind::Ptr {
+                        tgt: target,
+                        kind: PtrKind::SafeRef,
+                        mutable: Some(false),
+                    },
+                };
+                ctx.types.set_cluster_state(pointer, state);
+                // Exercise both a stale inherited seed and an unseeded borrow.
+                let seed = (representation < 3).then_some(storage);
+                let borrow = ctx.types.new_unchecked_origin(
+                    OriginKind::Reborrow(pointer),
+                    Some(parent),
+                    None,
+                    None,
+                    seed,
+                );
+                seed_origin_lifetimes_for_graph(ctx);
+
+                let seed = ctx.types.origin(borrow).unwrap().lifetime_seed.unwrap();
+                let reference_root = ctx.types.find_lid_root(seed);
+                let storage_root = ctx.types.find_lid_root(storage);
+                assert_ne!(reference_root, storage_root);
+                assert_eq!(ctx.types.lifetimes.life_known[storage_root], Some(local));
+                if representation < 3 {
+                    assert_eq!(
+                        ctx.types.lifetimes.life_known[reference_root],
+                        Some(LifeTime::External(0))
+                    );
+                } else {
+                    assert_eq!(ctx.types.lifetimes.life_known[reference_root], None);
+                }
+                let graph = collect_origin_lifetime_orderings(
+                    &ctx.types.lifetimes.origins,
+                    ctx.types.lifetimes.life_parent.len(),
+                );
+                assert!(graph.origin_edges().iter().any(|edge| {
+                    edge.source_origin == borrow
+                        && edge.target_origin == parent
+                        && edge.shorter.0 == reference_root.0
+                        && edge.longer.0 == storage_root.0
+                }));
+            }
+        });
     }
 
     #[test]

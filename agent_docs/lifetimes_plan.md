@@ -61,6 +61,28 @@ The key design point is that gather/type-compile code should thread parent
 origin information directly instead of retroactively reconstructing parentage
 through side maps.
 
+## Current Origin Seeding Invariants
+
+`src/lifetime_graph.rs::seed_origin_lifetimes_for_graph` assigns graph nodes
+without imposing new type-level lifetime equalities:
+
+- Binding roots receive independent local storage-region seeds.
+- Origins with associated reference pointers use the reference's inferred
+  lifetime. Lookup handles `RefInfer`, deferred pointers with solved reference
+  style, and fully solved pointer types equivalently.
+- An associated reference lifetime replaces any stale origin seed; the two
+  are **not unified**. Region/provenance information is not a type equality.
+- Only member/index place projections inherit parent region seeds when they
+  have no seed. A reference-producing origin without a resolved lifetime gets
+  a fresh node, not the parent's region.
+- Bounds between a borrow and its source are emitted as ordering edges. For
+  `let y = 0; let r:&'a int = &y`, the graph must retain `'a <= region(y)` so
+  validation rejects an external lifetime bounded by local storage.
+
+This is a targeted separation at graph seeding, not a complete storage-region
+model: provenance aliases still use parent-linked binding roots, and reference
+values versus the storage of reference-valued bindings need further modeling.
+
 A constraint `L_a <= L_b` means lifetime `L_b` outlives lifetime `L_a`.
 
 Edges therefore represent **upper-bound relationships**.
